@@ -12,8 +12,8 @@ except Exception as exc:  # pragma: no cover - pillow missing or broken
         allow_module_level=True,
     )
 
-from iPhoto.config import DEFAULT_EXCLUDE, DEFAULT_INCLUDE
-from iPhoto.io.scanner import scan_album
+from iPhotos.src.iPhoto.config import DEFAULT_EXCLUDE, DEFAULT_INCLUDE
+from iPhotos.src.iPhoto.io.scanner import scan_album
 
 
 def create_image(path: Path) -> None:
