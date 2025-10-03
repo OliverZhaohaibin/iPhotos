@@ -18,6 +18,7 @@ from PySide6.QtCore import (
     Signal,
 )
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QImage, QImageReader, QPainter, QPixmap
+from shiboken6 import Shiboken
 from PIL import Image, ImageOps
 from PIL.ImageQt import ImageQt
 import pillow_heif
@@ -62,11 +63,16 @@ class _ThumbnailJob(QRunnable):
         image = self._render_media()
         if image is not None:
             self._write_cache(image)
-        self._loader._delivered.emit(
-            self._loader._make_key(self._rel, self._size, self._stamp),
-            image,
-            self._rel,
-        )
+        if not Shiboken.isValid(self._loader):  # pragma: no cover - loader destroyed mid-job
+            return
+        try:
+            self._loader._delivered.emit(
+                self._loader._make_key(self._rel, self._size, self._stamp),
+                image,
+                self._rel,
+            )
+        except RuntimeError:  # pragma: no cover - race with QObject deletion
+            pass
 
     def _render_media(self) -> Optional[QImage]:  # pragma: no cover - worker helper
         if self._is_video:
@@ -151,7 +157,7 @@ class _ThumbnailJob(QRunnable):
             self._cache_path.parent.mkdir(parents=True, exist_ok=True)
             tmp_path = self._cache_path.with_suffix(self._cache_path.suffix + ".tmp")
             if canvas.save(str(tmp_path), "PNG"):
-                self._loader._safe_unlink(self._cache_path)
+                _ThumbnailLoader._safe_unlink(self._cache_path)
                 try:
                     tmp_path.replace(self._cache_path)
                 except OSError:
