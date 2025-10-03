@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -15,13 +16,13 @@ except Exception as exc:  # pragma: no cover - pillow missing or broken
 
 pytest.importorskip("PySide6", reason="PySide6 is required for GUI tests", exc_type=ImportError)
 pytest.importorskip("PySide6.QtWidgets", reason="Qt widgets not available", exc_type=ImportError)
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QPixmap
 from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QApplication  # type: ignore  # noqa: E402
 
 from iPhotos.src.iPhoto.gui.facade import AppFacade
-from iPhotos.src.iPhoto.gui.ui.models.asset_model import AssetModel, Roles
+from iPhotos.src.iPhoto.gui.ui.models.asset_model import AssetModel, Roles, _ThumbnailJob
 from iPhotos.src.iPhoto.config import WORK_DIR_NAME
 
 
@@ -81,3 +82,24 @@ def test_asset_model_populates_rows(tmp_path: Path, qapp: QApplication) -> None:
             break
     assert thumbs_dir.exists()
     assert any(thumbs_dir.iterdir())
+
+
+def test_thumbnail_job_seek_targets_clamp(tmp_path: Path, qapp: QApplication) -> None:
+    dummy_loader = cast(Any, object())
+    video_path = tmp_path / "clip.MOV"
+    video_path.touch()
+    cache_path = tmp_path / "cache.png"
+    job = _ThumbnailJob(
+        dummy_loader,
+        "clip.MOV",
+        video_path,
+        QSize(192, 192),
+        1,
+        cache_path,
+        is_video=True,
+        still_image_time=0.2,
+        duration=0.06,
+    )
+    targets = job._seek_targets()
+    assert targets[0] == pytest.approx(0.05)
+    assert targets[1:] == [0.0, None]

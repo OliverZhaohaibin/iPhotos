@@ -73,6 +73,7 @@ class _ThumbnailJob(QRunnable):
         *,
         is_video: bool,
         still_image_time: Optional[float],
+        duration: Optional[float],
     ) -> None:
         super().__init__()
         self._loader = loader
@@ -83,6 +84,7 @@ class _ThumbnailJob(QRunnable):
         self._cache_path = cache_path
         self._is_video = is_video
         self._still_image_time = still_image_time
+        self._duration = duration
 
     def run(self) -> None:  # pragma: no cover - executed in worker thread
         image = self._render_media()
@@ -122,14 +124,21 @@ class _ThumbnailJob(QRunnable):
         return self._composite_canvas(image)
 
     def _render_video(self) -> Optional[QImage]:  # pragma: no cover - worker helper
-        try:
-            frame_data = extract_video_frame(
-                self._abs_path,
-                at=self._still_image_time,
-                scale=(max(self._size.width(), 1), max(self._size.height(), 1)),
-                format="jpeg",
-            )
-        except ExternalToolError:
+        frame_data: Optional[bytes] = None
+        for target in self._seek_targets():
+            try:
+                frame_data = extract_video_frame(
+                    self._abs_path,
+                    at=target,
+                    scale=(max(self._size.width(), 1), max(self._size.height(), 1)),
+                    format="jpeg",
+                )
+            except ExternalToolError:
+                frame_data = None
+                continue
+            if frame_data:
+                break
+        if not frame_data:
             return None
         image = QImage()
         if not image.loadFromData(frame_data, "JPG") and not image.loadFromData(
@@ -192,6 +201,42 @@ class _ThumbnailJob(QRunnable):
         painter.end()
         return canvas
 
+    def _seek_targets(self) -> List[Optional[float]]:
+        """Yield seek timestamps prioritized for thumbnail extraction."""
+
+        targets: List[Optional[float]] = []
+        seen: Set[Optional[float]] = set()
+
+        def add(candidate: Optional[float]) -> None:
+            key: Optional[float]
+            value: Optional[float]
+            if candidate is None:
+                key = None
+                value = None
+            else:
+                value = self._normalize_seek(candidate)
+                key = value
+            if key in seen:
+                return
+            seen.add(key)
+            targets.append(value)
+
+        if self._still_image_time is not None:
+            add(self._still_image_time)
+        add(0.0)
+        add(None)
+        return targets
+
+    def _normalize_seek(self, value: float) -> float:
+        """Clamp seek *value* within the duration bounds."""
+
+        normalized = max(value, 0.0)
+        if self._duration and self._duration > 0:
+            max_seek = max(self._duration - 0.01, 0.0)
+            if normalized > max_seek:
+                normalized = max_seek
+        return normalized
+
     def _write_cache(self, canvas: QImage) -> None:  # pragma: no cover - worker helper
         try:
             self._cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -244,6 +289,7 @@ class _ThumbnailLoader(QObject):
         is_image: bool,
         is_video: bool = False,
         still_image_time: Optional[float] = None,
+        duration: Optional[float] = None,
     ) -> Optional[QPixmap]:
         if self._album_root is None or self._album_root_str is None:
             return None
@@ -281,6 +327,7 @@ class _ThumbnailLoader(QObject):
             cache_path,
             is_video=is_video,
             still_image_time=still_image_time,
+            duration=duration,
         )
         self._pending.add(key)
         self._pool.start(job)
@@ -501,6 +548,7 @@ class AssetModel(QAbstractListModel):
                 "dt": row.get("dt"),
                 "featured": self._is_featured(rel, featured),
                 "still_image_time": row.get("still_image_time"),
+                "dur": row.get("dur"),
             }
             payload.append(entry)
 
@@ -593,10 +641,19 @@ class AssetModel(QAbstractListModel):
                 return pixmap
         if bool(row.get("is_video")):
             still_time = row.get("still_image_time")
+            duration = row.get("dur")
             if isinstance(still_time, (int, float)):
                 still_hint: Optional[float] = float(still_time)
             else:
-                still_hint = 0.15
+                still_hint = 0.0
+            if isinstance(duration, (int, float)):
+                duration_value: Optional[float] = float(duration)
+            else:
+                duration_value = None
+            if still_hint is not None and duration_value and duration_value > 0:
+                max_seek = max(duration_value - 0.01, 0.0)
+                if still_hint > max_seek:
+                    still_hint = max_seek
             pixmap = self._thumb_loader.request(
                 rel,
                 abs_path,
@@ -604,6 +661,7 @@ class AssetModel(QAbstractListModel):
                 is_image=False,
                 is_video=True,
                 still_image_time=still_hint,
+                duration=duration_value,
             )
             if pixmap is not None:
                 self._thumb_cache[rel] = pixmap
