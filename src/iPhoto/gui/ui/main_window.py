@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 from ...appctx import AppContext
 from ..facade import AppFacade
 from .models.asset_model import AssetModel, Roles
+from .widgets.asset_delegate import AssetGridDelegate
 
 
 class MainWindow(QMainWindow):
@@ -55,21 +56,25 @@ class MainWindow(QMainWindow):
 
         container = QWidget()
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setContentsMargins(8, 8, 8, 8)
         self._album_label.setObjectName("albumLabel")
         layout.addWidget(self._album_label)
 
         self._list_view.setModel(self._asset_model)
+        self._list_view.setItemDelegate(AssetGridDelegate(self._list_view))
         self._list_view.setSelectionMode(QListView.ExtendedSelection)
         self._list_view.setViewMode(QListView.IconMode)
         self._list_view.setIconSize(QSize(192, 192))
-        self._list_view.setGridSize(QSize(216, 248))
-        self._list_view.setSpacing(12)
+        self._list_view.setGridSize(QSize(194, 194))
+        self._list_view.setSpacing(2)
         self._list_view.setUniformItemSizes(True)
         self._list_view.setResizeMode(QListView.Adjust)
         self._list_view.setMovement(QListView.Static)
         self._list_view.setWrapping(True)
-        self._list_view.setWordWrap(True)
+        self._list_view.setWordWrap(False)
+        self._list_view.setStyleSheet(
+            "QListView::item { margin: 0px; padding: 0px; }"
+        )
         self._list_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         layout.addWidget(self._list_view, stretch=1)
 

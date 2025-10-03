@@ -111,13 +111,18 @@ class _ThumbnailJob(QRunnable):
 
     def _composite_canvas(self, image: QImage) -> QImage:  # pragma: no cover - worker helper
         canvas = QImage(self._size, QImage.Format_ARGB32)
-        canvas.fill(QColor("#2d2d2d"))
-        scaled = image.scaled(self._size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        canvas.fill(QColor("#1b1b1b"))
+        scaled = image.scaled(
+            self._size,
+            Qt.KeepAspectRatioByExpanding,
+            Qt.SmoothTransformation,
+        )
         painter = QPainter(canvas)
         painter.setRenderHint(QPainter.Antialiasing)
-        x = (canvas.width() - scaled.width()) // 2
-        y = (canvas.height() - scaled.height()) // 2
-        painter.drawImage(x, y, scaled)
+        target_rect = canvas.rect()
+        source_rect = scaled.rect()
+        source_rect.moveCenter(target_rect.center())
+        painter.drawImage(target_rect, scaled, source_rect)
         painter.end()
         return canvas
 
@@ -282,11 +287,11 @@ class AssetModel(QAbstractListModel):
             return None
         row = self._rows[index.row()]
         if role == Qt.DisplayRole:
-            return row["name"]
+            return ""
         if role == Qt.DecorationRole:
             return self._resolve_thumbnail(row)
         if role == Qt.SizeHintRole:
-            return QSize(self._thumb_size.width() + 24, self._thumb_size.height() + 48)
+            return QSize(self._thumb_size.width(), self._thumb_size.height())
         if role == Roles.REL:
             return row["rel"]
         if role == Roles.ABS:
@@ -457,7 +462,7 @@ class AssetModel(QAbstractListModel):
         if cached is not None:
             return cached
         canvas = QPixmap(self._thumb_size)
-        canvas.fill(QColor("#2d2d2d"))
+        canvas.fill(QColor("#1b1b1b"))
         painter = QPainter(canvas)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(QColor("#f0f0f0"))
