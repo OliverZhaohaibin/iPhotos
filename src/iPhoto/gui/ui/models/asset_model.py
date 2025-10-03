@@ -33,6 +33,22 @@ from ...facade import AppFacade
 
 _PILLOW = load_pillow()
 
+_IMAGE_EXTENSIONS = {
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".heic",
+    ".heif",
+    ".heifs",
+    ".heicf",
+}
+_VIDEO_EXTENSIONS = {
+    ".mov",
+    ".mp4",
+    ".m4v",
+    ".qt",
+}
+
 if _PILLOW is not None:
     Image = _PILLOW.Image
     ImageOps = _PILLOW.ImageOps
@@ -458,9 +474,7 @@ class AssetModel(QAbstractListModel):
                 continue
 
             abs_path = str((self._album_root / rel).resolve())
-            mime = (row.get("mime") or "").lower()
-            is_image = mime.startswith("image/")
-            is_video = mime.startswith("video/")
+            is_image, is_video = self._classify_media(row)
             live_motion: Optional[str] = None
             live_group_id: Optional[str] = None
             if live_info and live_info.get("role") == "still":
@@ -533,6 +547,32 @@ class AssetModel(QAbstractListModel):
             return True
         live_ref = f"{rel}#live"
         return live_ref in featured
+
+    @staticmethod
+    def _classify_media(row: Dict[str, object]) -> Tuple[bool, bool]:
+        """Return ``(is_image, is_video)`` for *row* with legacy fallbacks."""
+
+        mime_raw = row.get("mime")
+        mime = mime_raw.lower() if isinstance(mime_raw, str) else ""
+        is_image = mime.startswith("image/")
+        is_video = mime.startswith("video/")
+        if is_image or is_video:
+            return is_image, is_video
+
+        legacy_kind = row.get("type")
+        if isinstance(legacy_kind, str):
+            kind = legacy_kind.lower()
+            if kind == "image":
+                return True, False
+            if kind == "video":
+                return False, True
+
+        suffix = Path(str(row.get("rel", ""))).suffix.lower()
+        if suffix in _IMAGE_EXTENSIONS:
+            return True, False
+        if suffix in _VIDEO_EXTENSIONS:
+            return False, True
+        return False, False
 
     # ------------------------------------------------------------------
     # Thumbnail helpers

@@ -1,4 +1,4 @@
-from iPhoto.utils.deps import debugger_prerequisites
+from iPhotos.src.iPhoto.utils.deps import debugger_prerequisites
 
 
 def test_debugger_prerequisites_detects_ctypes_support():
