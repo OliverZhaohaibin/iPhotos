@@ -34,8 +34,9 @@ def extract_video_frame(
     *,
     at: Optional[float] = None,
     scale: Optional[tuple[int, int]] = None,
+    format: str = "jpeg",
 ) -> bytes:
-    """Return a PNG frame extracted from *source*.
+    """Return a still frame extracted from *source*.
 
     Parameters
     ----------
@@ -46,7 +47,18 @@ def extract_video_frame(
     scale:
         Optional ``(width, height)`` hint used to scale the output frame while
         preserving aspect ratio.
+    format:
+        Output image format. ``"jpeg"`` is used by default because Qt decoders
+        handle it more reliably on Windows. ``"png"`` remains available for
+        callers that prefer lossless output.
     """
+
+    fmt = format.lower()
+    if fmt not in {"png", "jpeg"}:
+        raise ValueError("format must be either 'png' or 'jpeg'")
+
+    suffix = ".png" if fmt == "png" else ".jpg"
+    codec = "png" if fmt == "png" else "mjpeg"
 
     command: list[str] = [
         "ffmpeg",
@@ -64,6 +76,8 @@ def extract_video_frame(
         "-an",
         "-frames:v",
         "1",
+        "-vsync",
+        "0",
     ]
     filters: list[str] = []
     if scale is not None:
@@ -81,9 +95,11 @@ def extract_video_frame(
     filters.append("format=rgba")
     if filters:
         command += ["-vf", ",".join(filters)]
-    command += ["-f", "image2", "-vcodec", "png"]
+    command += ["-f", "image2", "-vcodec", codec]
+    if fmt == "jpeg":
+        command += ["-q:v", "2"]
 
-    fd, tmp_name = tempfile.mkstemp(suffix=".png")
+    fd, tmp_name = tempfile.mkstemp(suffix=suffix)
     tmp_path = Path(tmp_name)
     try:
         os.close(fd)

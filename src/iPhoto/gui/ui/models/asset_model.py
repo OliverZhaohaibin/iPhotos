@@ -20,11 +20,21 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QImage, QImageReader, QPainter, QPixmap
 from shiboken6 import Shiboken
-from PIL import Image, ImageOps
-from PIL.ImageQt import ImageQt
-import pillow_heif
 
-pillow_heif.register_heif_opener()
+try:  # pragma: no cover - optional dependency
+    from PIL import Image, ImageOps
+    from PIL.ImageQt import ImageQt
+except Exception:  # pragma: no cover - pillow not available or broken
+    Image = None  # type: ignore[assignment]
+    ImageOps = None  # type: ignore[assignment]
+    ImageQt = None  # type: ignore[assignment]
+else:  # pragma: no cover - executed when pillow is present
+    try:
+        import pillow_heif
+    except Exception:  # pragma: no cover - pillow-heif optional
+        pillow_heif = None  # type: ignore[assignment]
+    else:
+        pillow_heif.register_heif_opener()
 
 from ....cache.index_store import IndexStore
 from ....config import WORK_DIR_NAME
@@ -103,13 +113,18 @@ class _ThumbnailJob(QRunnable):
                 self._abs_path,
                 at=self._still_image_time,
                 scale=(max(self._size.width(), 1), max(self._size.height(), 1)),
+                format="jpeg",
             )
         except ExternalToolError:
             return None
         image = QImage()
-        if not image.loadFromData(frame_data, "PNG"):
+        if not image.loadFromData(frame_data, "JPG") and not image.loadFromData(
+            frame_data, "JPEG"
+        ):
+            if Image is None or ImageOps is None or ImageQt is None:
+                return None
             try:
-                with Image.open(BytesIO(frame_data)) as img:
+                with Image.open(BytesIO(frame_data)) as img:  # type: ignore[union-attr]
                     img = ImageOps.exif_transpose(img)
                     qt_image = ImageQt(img.convert("RGBA"))
                     image = QImage(qt_image)
@@ -123,8 +138,10 @@ class _ThumbnailJob(QRunnable):
         suffix = self._abs_path.suffix.lower()
         if suffix not in {".heic", ".heif", ".heifs", ".heicf"}:
             return None
+        if Image is None or ImageOps is None or ImageQt is None:
+            return None
         try:
-            with Image.open(self._abs_path) as img:
+            with Image.open(self._abs_path) as img:  # type: ignore[union-attr]
                 img = ImageOps.exif_transpose(img)
                 resample = getattr(Image, "Resampling", Image)
                 resample_filter = getattr(resample, "LANCZOS", Image.BICUBIC)
