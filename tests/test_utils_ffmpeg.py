@@ -37,7 +37,8 @@ def test_extract_video_frame_uses_yuv_format_for_jpeg(monkeypatch: pytest.Monkey
     vf_index = command.index("-vf")
     vf_expression = command[vf_index + 1]
     assert "format=yuv420p" in vf_expression
-    assert "force_divisible_by=2" in vf_expression
+    assert "scale=min(320,iw):min(240,ih):force_original_aspect_ratio=decrease" in vf_expression
+    assert "scale=max(2,trunc(iw/2)*2):max(2,trunc(ih/2)*2)" in vf_expression
     assert "format=rgba" not in vf_expression
 
 
@@ -65,7 +66,7 @@ def test_extract_video_frame_uses_rgba_for_png(monkeypatch: pytest.MonkeyPatch, 
     vf_expression = command[vf_index + 1]
     assert "format=rgba" in vf_expression
     assert "format=yuv420p" not in vf_expression
-    assert "force_divisible_by=2" not in vf_expression
+    assert "scale=max(2,trunc(iw/2)*2):max(2,trunc(ih/2)*2)" not in vf_expression
 
 
 def test_extract_video_frame_without_scale_enforces_even_dimensions(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -90,4 +91,5 @@ def test_extract_video_frame_without_scale_enforces_even_dimensions(monkeypatch:
     assert "-vf" in command
     vf_index = command.index("-vf")
     vf_expression = command[vf_index + 1]
-    assert "scale=iw:ih:force_divisible_by=2" in vf_expression
+    assert "scale=iw:ih" in vf_expression
+    assert "scale=max(2,trunc(iw/2)*2):max(2,trunc(ih/2)*2)" in vf_expression
