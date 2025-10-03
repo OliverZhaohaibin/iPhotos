@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from iPhoto.core.pairing import pair_live
+from iPhotos.src.iPhoto.core.pairing import pair_live
 
 
 def iso(ts: datetime) -> str:

@@ -20,9 +20,9 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QApplication  # type: ignore  # noqa: E402
 
-from iPhoto.gui.facade import AppFacade
-from iPhoto.gui.ui.models.asset_model import AssetModel, Roles
-from iPhoto.config import WORK_DIR_NAME
+from iPhotos.src.iPhoto.gui.facade import AppFacade
+from iPhotos.src.iPhoto.gui.ui.models.asset_model import AssetModel, Roles
+from iPhotos.src.iPhoto.config import WORK_DIR_NAME
 
 
 def _create_image(path: Path) -> None:
