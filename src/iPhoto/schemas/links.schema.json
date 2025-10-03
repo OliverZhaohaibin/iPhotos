@@ -1,0 +1,28 @@
+{
+  "$id": "iPhoto/links.schema.json",
+  "type": "object",
+  "required": ["schema"],
+  "properties": {
+    "schema": { "const": "iPhoto/links@1" },
+    "live_groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "still", "motion"],
+        "properties": {
+          "id": { "type": "string" },
+          "still": { "type": "string" },
+          "motion": { "type": "string" },
+          "content_id": { "type": "string" },
+          "still_image_time": { "type": "number" },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "clips": {
+      "type": "array"
+    }
+  },
+  "additionalProperties": false
+}
