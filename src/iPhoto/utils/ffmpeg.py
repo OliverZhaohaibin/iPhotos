@@ -59,8 +59,11 @@ def extract_video_frame(
     if scale is not None:
         width, height = scale
         if width > 0 and height > 0:
+            # Avoid single-quoted filter expressions because ``ffmpeg`` on Windows does not
+            # interpret them the same way as Unix shells. Passing the raw expression keeps the
+            # command portable across platforms when using ``subprocess`` with ``shell=False``.
             filters.append(
-                "scale='min({w},iw)':'min({h},ih)':force_original_aspect_ratio=decrease".format(
+                "scale=min({w},iw):min({h},ih):force_original_aspect_ratio=decrease".format(
                     w=width,
                     h=height,
                 )
