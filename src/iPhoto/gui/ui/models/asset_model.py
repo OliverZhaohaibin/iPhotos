@@ -110,8 +110,8 @@ class _ThumbnailJob(QRunnable):
             return None
 
     def _composite_canvas(self, image: QImage) -> QImage:  # pragma: no cover - worker helper
-        canvas = QImage(self._size, QImage.Format_ARGB32)
-        canvas.fill(QColor("#1b1b1b"))
+        canvas = QImage(self._size, QImage.Format_ARGB32_Premultiplied)
+        canvas.fill(Qt.transparent)
         scaled = image.scaled(
             self._size,
             Qt.KeepAspectRatioByExpanding,
@@ -121,7 +121,16 @@ class _ThumbnailJob(QRunnable):
         painter.setRenderHint(QPainter.Antialiasing)
         target_rect = canvas.rect()
         source_rect = scaled.rect()
-        source_rect.moveCenter(target_rect.center())
+        if source_rect.width() > target_rect.width():
+            diff = source_rect.width() - target_rect.width()
+            left = diff // 2
+            right = diff - left
+            source_rect.adjust(left, 0, -right, 0)
+        if source_rect.height() > target_rect.height():
+            diff = source_rect.height() - target_rect.height()
+            top = diff // 2
+            bottom = diff - top
+            source_rect.adjust(0, top, 0, -bottom)
         painter.drawImage(target_rect, scaled, source_rect)
         painter.end()
         return canvas

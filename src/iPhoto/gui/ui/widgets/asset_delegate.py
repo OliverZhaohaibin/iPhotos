@@ -25,19 +25,23 @@ class AssetGridDelegate(QStyledItemDelegate):
         painter.save()
         rect = option.rect
         pixmap = index.data(Qt.DecorationRole)
-        painter.fillRect(rect, option.palette.color(QPalette.Base))
 
         if isinstance(pixmap, QPixmap) and not pixmap.isNull():
             painter.setRenderHint(QPainter.Antialiasing, True)
             painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-            painter.setClipRect(rect)
             scaled = pixmap.scaled(rect.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-            top_left = QPoint(
-                rect.x() + (rect.width() - scaled.width()) // 2,
-                rect.y() + (rect.height() - scaled.height()) // 2,
-            )
-            painter.drawPixmap(top_left, scaled)
-            painter.setClipping(False)
+            source = scaled.rect()
+            if source.width() > rect.width():
+                diff = source.width() - rect.width()
+                left = diff // 2
+                right = diff - left
+                source.adjust(left, 0, -right, 0)
+            if source.height() > rect.height():
+                diff = source.height() - rect.height()
+                top = diff // 2
+                bottom = diff - top
+                source.adjust(0, top, 0, -bottom)
+            painter.drawPixmap(rect, scaled, source)
         else:
             painter.fillRect(rect, QColor("#1b1b1b"))
 
