@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence
 
@@ -51,10 +53,18 @@ def extract_video_frame(
         "-hide_banner",
         "-loglevel",
         _FFMPEG_LOG_LEVEL,
+        "-nostdin",
+        "-y",
     ]
     if at is not None:
         command += ["-ss", f"{max(at, 0):.3f}"]
-    command += ["-i", str(source), "-frames:v", "1"]
+    command += [
+        "-i",
+        str(source),
+        "-an",
+        "-frames:v",
+        "1",
+    ]
     filters: list[str] = []
     if scale is not None:
         width, height = scale
@@ -71,15 +81,22 @@ def extract_video_frame(
     filters.append("format=rgba")
     if filters:
         command += ["-vf", ",".join(filters)]
-    command += ["-f", "image2", "-vcodec", "png", "pipe:1"]
+    command += ["-f", "image2", "-vcodec", "png"]
 
-    process = _run_command(command)
-    if process.returncode != 0 or not process.stdout:
-        stderr = process.stderr.decode("utf-8", "ignore").strip()
-        raise ExternalToolError(
-            f"ffmpeg failed to extract frame from {source}: {stderr or 'unknown error'}"
-        )
-    return bytes(process.stdout)
+    fd, tmp_name = tempfile.mkstemp(suffix=".png")
+    tmp_path = Path(tmp_name)
+    try:
+        os.close(fd)
+        command.append(str(tmp_path))
+        process = _run_command(command)
+        if process.returncode != 0 or not tmp_path.exists() or tmp_path.stat().st_size == 0:
+            stderr = process.stderr.decode("utf-8", "ignore").strip()
+            raise ExternalToolError(
+                f"ffmpeg failed to extract frame from {source}: {stderr or 'unknown error'}"
+            )
+        return tmp_path.read_bytes()
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 def probe_media(source: Path) -> Dict[str, Any]:
