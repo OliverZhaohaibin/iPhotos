@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 import typer
 from rich import print
 
-from . import app as app_facade
+if __package__ in (None, ""):
+    package_root = Path(__file__).resolve().parent.parent
+    if str(package_root) not in sys.path:
+        sys.path.insert(0, str(package_root))
+    from iPhoto import app as app_facade  # type: ignore  # pragma: no cover
+else:
+    from . import app as app_facade
 from .cache.index_store import IndexStore
 from .config import WORK_DIR_NAME
 from .errors import AlbumNotFoundError, IPhotoError, LockTimeoutError, ManifestInvalidError
