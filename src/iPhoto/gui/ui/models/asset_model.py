@@ -18,6 +18,11 @@ from PySide6.QtCore import (
     Signal,
 )
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QImage, QImageReader, QPainter, QPixmap
+from PIL import Image, ImageOps
+from PIL.ImageQt import ImageQt
+import pillow_heif
+
+pillow_heif.register_heif_opener()
 
 from ....cache.index_store import IndexStore
 from ....config import WORK_DIR_NAME
@@ -55,28 +60,21 @@ class _ThumbnailJob(QRunnable):
         )
 
     def _load_image(self) -> Optional[QImage]:  # pragma: no cover - worker helper
+        target = self._size
         reader = QImageReader(str(self._abs_path))
         reader.setAutoTransform(True)
         original_size = reader.size()
-        target = (
-            original_size.scaled(self._size, Qt.KeepAspectRatio)
-            if original_size.isValid()
-            else self._size
-        )
-        if target.isValid() and not target.isEmpty():
-            reader.setScaledSize(target)
+        if original_size.isValid():
+            scaled = original_size.scaled(self._size, Qt.KeepAspectRatio)
+            if scaled.isValid() and not scaled.isEmpty():
+                target = scaled
+                reader.setScaledSize(scaled)
         image = reader.read()
         if image.isNull():
-            return None
-        canvas = QImage(self._size, QImage.Format_ARGB32)
-        canvas.fill(QColor("#2d2d2d"))
-        scaled = image.scaled(self._size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        painter = QPainter(canvas)
-        painter.setRenderHint(QPainter.Antialiasing)
-        x = (canvas.width() - scaled.width()) // 2
-        y = (canvas.height() - scaled.height()) // 2
-        painter.drawImage(x, y, scaled)
-        painter.end()
+            image = self._fallback_heif(target)
+            if image is None:
+                return None
+        canvas = self._composite_canvas(image)
         try:
             self._cache_path.parent.mkdir(parents=True, exist_ok=True)
             tmp_path = self._cache_path.with_suffix(self._cache_path.suffix + ".tmp")
@@ -93,6 +91,34 @@ class _ThumbnailJob(QRunnable):
                 tmp_path.unlink(missing_ok=True)
         except Exception:  # pragma: no cover - cache write failures are non-fatal
             pass
+        return canvas
+
+    def _fallback_heif(self, target: QSize) -> Optional[QImage]:  # pragma: no cover - worker helper
+        suffix = self._abs_path.suffix.lower()
+        if suffix not in {".heic", ".heif", ".heifs", ".heicf"}:
+            return None
+        try:
+            with Image.open(self._abs_path) as img:
+                img = ImageOps.exif_transpose(img)
+                resample = getattr(Image, "Resampling", Image)
+                resample_filter = getattr(resample, "LANCZOS", Image.BICUBIC)
+                if target.isValid() and not target.isEmpty():
+                    img.thumbnail((target.width(), target.height()), resample_filter)
+                qt_image = ImageQt(img.convert("RGBA"))
+                return QImage(qt_image)
+        except Exception:
+            return None
+
+    def _composite_canvas(self, image: QImage) -> QImage:  # pragma: no cover - worker helper
+        canvas = QImage(self._size, QImage.Format_ARGB32)
+        canvas.fill(QColor("#2d2d2d"))
+        scaled = image.scaled(self._size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        painter = QPainter(canvas)
+        painter.setRenderHint(QPainter.Antialiasing)
+        x = (canvas.width() - scaled.width()) // 2
+        y = (canvas.height() - scaled.height()) // 2
+        painter.drawImage(x, y, scaled)
+        painter.end()
         return canvas
 
 
