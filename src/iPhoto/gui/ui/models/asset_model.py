@@ -79,7 +79,18 @@ class _ThumbnailJob(QRunnable):
         painter.end()
         try:
             self._cache_path.parent.mkdir(parents=True, exist_ok=True)
-            canvas.save(str(self._cache_path), "PNG")
+            tmp_path = self._cache_path.with_suffix(self._cache_path.suffix + ".tmp")
+            if canvas.save(str(tmp_path), "PNG"):
+                self._loader._safe_unlink(self._cache_path)
+                try:
+                    tmp_path.replace(self._cache_path)
+                except OSError:
+                    # If the cache file is locked, leave the temp file as-is so
+                    # the caller still receives an in-memory pixmap. Cleanup is
+                    # best effort only.
+                    tmp_path.unlink(missing_ok=True)
+            else:  # pragma: no cover - Qt returns False on IO errors
+                tmp_path.unlink(missing_ok=True)
         except Exception:  # pragma: no cover - cache write failures are non-fatal
             pass
         return canvas
@@ -135,7 +146,7 @@ class _ThumbnailLoader(QObject):
             if not pixmap.isNull():
                 self._memory[key] = pixmap
                 return pixmap
-            cache_path.unlink(missing_ok=True)
+            self._safe_unlink(cache_path)
         if key in self._pending:
             return None
         job = _ThumbnailJob(self, rel, path, size, stamp, cache_path)
@@ -179,6 +190,23 @@ class _ThumbnailLoader(QObject):
         self._memory[key] = pixmap
         if self._album_root is not None:
             self.ready.emit(self._album_root, rel, pixmap)
+
+    @staticmethod
+    def _safe_unlink(path: Path) -> None:
+        """Best-effort removal of a cache file on all platforms."""
+
+        try:
+            path.unlink(missing_ok=True)
+        except PermissionError:
+            # Windows keeps a handle open when another process (e.g. antivirus or
+            # an image previewer) is scanning the file. Mark the file for lazy
+            # cleanup by renaming so future attempts use a fresh cache entry.
+            try:
+                path.rename(path.with_suffix(path.suffix + ".stale"))
+            except OSError:
+                pass
+        except OSError:
+            pass
 
 
 
