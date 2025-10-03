@@ -13,12 +13,21 @@ if __package__ in (None, ""):
     if str(package_root) not in sys.path:
         sys.path.insert(0, str(package_root))
     from iPhoto import app as app_facade  # type: ignore  # pragma: no cover
+    from iPhoto.cache.index_store import IndexStore  # type: ignore  # pragma: no cover
+    from iPhoto.config import WORK_DIR_NAME  # type: ignore  # pragma: no cover
+    from iPhoto.errors import (
+        AlbumNotFoundError,
+        IPhotoError,
+        LockTimeoutError,
+        ManifestInvalidError,
+    )  # type: ignore  # pragma: no cover
+    from iPhoto.models.album import Album  # type: ignore  # pragma: no cover
 else:
     from . import app as app_facade
-from .cache.index_store import IndexStore
-from .config import WORK_DIR_NAME
-from .errors import AlbumNotFoundError, IPhotoError, LockTimeoutError, ManifestInvalidError
-from .models.album import Album
+    from .cache.index_store import IndexStore
+    from .config import WORK_DIR_NAME
+    from .errors import AlbumNotFoundError, IPhotoError, LockTimeoutError, ManifestInvalidError
+    from .models.album import Album
 
 app = typer.Typer(help="Folder-native photo manager with Live Photo support")
 cover_app = typer.Typer(help="Manage album covers")
