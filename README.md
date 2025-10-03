@@ -40,3 +40,9 @@ iphoto-gui /photos/LondonTrip
 Video thumbnail generation and duration metadata rely on the `ffmpeg` toolchain.
 Install `ffmpeg`/`ffprobe` and ensure they are on your `PATH` so Windows users
 receive motion previews instead of placeholders.
+
+Image metadata and HEIC decoding fall back to Pillow when available. On some
+Windows Python builds the optional `_ctypes` extension is missing, which prevents
+Pillow from importing. In that case the application skips Pillow-backed features
+and continues with basic placeholders; install a Python distribution that
+includes `_ctypes` to re-enable rich previews.

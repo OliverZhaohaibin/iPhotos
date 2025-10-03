@@ -6,22 +6,33 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
 
-from PIL import Image, UnidentifiedImageError
-
-try:  # pragma: no cover - optional dependency registration
-    from pillow_heif import register_heif_opener
-except ImportError:  # pragma: no cover
-    register_heif_opener = None
-
 from ..errors import ExternalToolError
 from ..utils.ffmpeg import probe_media
+from ..utils.deps import load_pillow
 
-if register_heif_opener is not None:  # pragma: no branch
-    register_heif_opener()
+_PILLOW = load_pillow()
 
+if _PILLOW is not None:
+    Image = _PILLOW.Image
+    UnidentifiedImageError = _PILLOW.UnidentifiedImageError
+else:  # pragma: no cover - exercised only when Pillow is missing
+    Image = None  # type: ignore[assignment]
+    UnidentifiedImageError = None  # type: ignore[assignment]
 
 def read_image_meta(path: Path) -> Dict[str, Any]:
     """Read metadata for an image file using Pillow."""
+
+    if Image is None or UnidentifiedImageError is None:
+        return {
+            "w": None,
+            "h": None,
+            "mime": None,
+            "dt": None,
+            "make": None,
+            "model": None,
+            "gps": None,
+            "content_id": None,
+        }
 
     try:
         with Image.open(path) as img:

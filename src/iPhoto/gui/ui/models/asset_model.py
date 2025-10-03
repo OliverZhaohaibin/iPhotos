@@ -21,20 +21,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QImage, QImageReader, QPainter, QPixmap
 from shiboken6 import Shiboken
 
-try:  # pragma: no cover - optional dependency
-    from PIL import Image, ImageOps
-    from PIL.ImageQt import ImageQt
-except Exception:  # pragma: no cover - pillow not available or broken
-    Image = None  # type: ignore[assignment]
-    ImageOps = None  # type: ignore[assignment]
-    ImageQt = None  # type: ignore[assignment]
-else:  # pragma: no cover - executed when pillow is present
-    try:
-        import pillow_heif
-    except Exception:  # pragma: no cover - pillow-heif optional
-        pillow_heif = None  # type: ignore[assignment]
-    else:
-        pillow_heif.register_heif_opener()
+from ....utils.deps import load_pillow
 
 from ....cache.index_store import IndexStore
 from ....config import WORK_DIR_NAME
@@ -43,6 +30,17 @@ from ....utils.ffmpeg import extract_video_frame
 from ....utils.jsonio import read_json
 from ....utils.pathutils import ensure_work_dir
 from ...facade import AppFacade
+
+_PILLOW = load_pillow()
+
+if _PILLOW is not None:
+    Image = _PILLOW.Image
+    ImageOps = _PILLOW.ImageOps
+    ImageQt = _PILLOW.ImageQt
+else:  # pragma: no cover - executed when Pillow is missing
+    Image = None  # type: ignore[assignment]
+    ImageOps = None  # type: ignore[assignment]
+    ImageQt = None  # type: ignore[assignment]
 
 
 class _ThumbnailJob(QRunnable):

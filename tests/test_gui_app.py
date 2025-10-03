@@ -4,7 +4,14 @@ import os
 from pathlib import Path
 
 import pytest
-from PIL import Image
+
+try:
+    from PIL import Image
+except Exception as exc:  # pragma: no cover - pillow missing or broken
+    pytest.skip(
+        f"Pillow unavailable for GUI tests: {exc}",
+        allow_module_level=True,
+    )
 
 pytest.importorskip("PySide6", reason="PySide6 is required for GUI tests", exc_type=ImportError)
 pytest.importorskip("PySide6.QtWidgets", reason="Qt widgets not available", exc_type=ImportError)

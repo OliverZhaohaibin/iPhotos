@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PIL import Image
+import pytest
+
+try:
+    from PIL import Image
+except Exception as exc:  # pragma: no cover - pillow missing or broken
+    pytest.skip(
+        f"Pillow unavailable for scanner tests: {exc}",
+        allow_module_level=True,
+    )
 
 from iPhoto.config import DEFAULT_EXCLUDE, DEFAULT_INCLUDE
 from iPhoto.io.scanner import scan_album
