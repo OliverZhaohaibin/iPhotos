@@ -92,7 +92,12 @@ def extract_video_frame(
                     h=height,
                 )
             )
-    filters.append("format=rgba")
+    if fmt == "png":
+        filters.append("format=rgba")
+    else:
+        # ``mjpeg`` encoders expect YUV input. Explicitly request a compatible pixel
+        # format so ``ffmpeg`` does not error out on sources with alpha channels.
+        filters.append("format=yuv420p")
     if filters:
         command += ["-vf", ",".join(filters)]
     command += ["-f", "image2", "-vcodec", codec]
