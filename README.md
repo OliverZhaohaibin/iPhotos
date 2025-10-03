@@ -46,3 +46,25 @@ Windows Python builds the optional `_ctypes` extension is missing, which prevent
 Pillow from importing. In that case the application skips Pillow-backed features
 and continues with basic placeholders; install a Python distribution that
 includes `_ctypes` to re-enable rich previews.
+
+### Troubleshooting PyCharm debugging
+
+If PyCharm's debugger aborts with ``ImportError: DLL load failed while importing
+_ctypes`` the active Python runtime lacks the native ``_ctypes`` extension. That
+binary ships with official CPython builds but may be absent in some Anaconda
+environments. Use the helper script to verify the requirement:
+
+```bash
+python scripts/check_debugger.py
+```
+
+When the check fails install the missing dependency and reinstall Python inside
+your environment, for example:
+
+```bash
+conda install libffi
+conda install python --force-reinstall
+```
+
+Alternatively switch the interpreter to a python.org build where ``_ctypes`` is
+always available.
