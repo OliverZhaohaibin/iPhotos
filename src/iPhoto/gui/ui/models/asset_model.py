@@ -223,6 +223,8 @@ class _ThumbnailJob(QRunnable):
 
         if self._still_image_time is not None:
             add(self._still_image_time)
+        else:
+            add(None)
         add(0.0)
         add(None)
         return targets
@@ -645,7 +647,7 @@ class AssetModel(QAbstractListModel):
             if isinstance(still_time, (int, float)):
                 still_hint: Optional[float] = float(still_time)
             else:
-                still_hint = 0.0
+                still_hint = None
             if isinstance(duration, (int, float)):
                 duration_value: Optional[float] = float(duration)
             else:
