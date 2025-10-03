@@ -1,0 +1,44 @@
+{
+  "$id": "iPhoto/album.schema.json",
+  "type": "object",
+  "required": ["schema", "title"],
+  "properties": {
+    "schema": { "const": "iPhoto/album@1" },
+    "id": { "type": "string" },
+    "title": { "type": "string", "minLength": 1 },
+    "description": { "type": "string" },
+    "created": { "type": "string", "format": "date-time" },
+    "modified": { "type": "string", "format": "date-time" },
+    "cover": { "type": "string" },
+    "featured": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "order": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "filters": {
+      "type": "object",
+      "properties": {
+        "include": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "exclude": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "virtual_groups": { "type": "array" },
+    "tags": { "type": "array", "items": { "type": "string" } },
+    "people": { "type": "array", "items": { "type": "string" } },
+    "ui": { "type": "object" },
+    "write_policy": { "type": "object" },
+    "conflict": { "type": "object" },
+    "custom": { "type": "object" }
+  },
+  "additionalProperties": false
+}
