@@ -8,6 +8,8 @@ from PIL import Image
 
 pytest.importorskip("PySide6", reason="PySide6 is required for GUI tests", exc_type=ImportError)
 pytest.importorskip("PySide6.QtWidgets", reason="Qt widgets not available", exc_type=ImportError)
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QApplication  # type: ignore  # noqa: E402
 
 from iPhoto.gui.facade import AppFacade
@@ -54,3 +56,6 @@ def test_asset_model_populates_rows(tmp_path: Path, qapp: QApplication) -> None:
     index = model.index(0, 0)
     assert model.data(index, Roles.REL) == "IMG_2001.JPG"
     assert model.data(index, Roles.FEATURED) is False
+    decoration = model.data(index, Qt.DecorationRole)
+    assert isinstance(decoration, QPixmap)
+    assert not decoration.isNull()

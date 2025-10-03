@@ -6,7 +6,8 @@ from enum import IntEnum
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt
+from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt, QSize
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPixmap
 
 from ....cache.index_store import IndexStore
 from ....config import WORK_DIR_NAME
@@ -38,6 +39,8 @@ class AssetModel(QAbstractListModel):
         self._facade = facade
         self._album_root: Optional[Path] = None
         self._rows: List[Dict[str, object]] = []
+        self._thumb_cache: Dict[str, QPixmap] = {}
+        self._thumb_size = QSize(192, 192)
         facade.albumOpened.connect(self._on_album_opened)
         facade.indexUpdated.connect(self._on_index_updated)
         facade.linksUpdated.connect(self._on_links_updated)
@@ -56,6 +59,10 @@ class AssetModel(QAbstractListModel):
         row = self._rows[index.row()]
         if role == Qt.DisplayRole:
             return row["name"]
+        if role == Qt.DecorationRole:
+            return self._resolve_thumbnail(row)
+        if role == Qt.SizeHintRole:
+            return QSize(self._thumb_size.width() + 24, self._thumb_size.height() + 48)
         if role == Roles.REL:
             return row["rel"]
         if role == Roles.ABS:
@@ -126,7 +133,7 @@ class AssetModel(QAbstractListModel):
         payload: List[Dict[str, object]] = []
         for row in index_rows:
             rel = str(row["rel"])
-            abs_path = (self._album_root / rel).resolve().as_posix()
+            abs_path = str((self._album_root / rel).resolve())
             mime = (row.get("mime") or "").lower()
             is_image = mime.startswith("image/")
             is_video = mime.startswith("video/")
@@ -148,6 +155,9 @@ class AssetModel(QAbstractListModel):
 
         self.beginResetModel()
         self._rows = payload
+        # Drop any thumbnails that no longer correspond to a listed asset.
+        active = {row_data["rel"] for row_data in payload}
+        self._thumb_cache = {rel: pix for rel, pix in self._thumb_cache.items() if rel in active}
         self.endResetModel()
 
     @staticmethod
@@ -182,3 +192,62 @@ class AssetModel(QAbstractListModel):
             return True
         live_ref = f"{rel}#live"
         return live_ref in featured
+
+    # ------------------------------------------------------------------
+    # Thumbnail helpers
+    # ------------------------------------------------------------------
+    def _resolve_thumbnail(self, row: Dict[str, object]) -> QPixmap:
+        rel = str(row["rel"])
+        cached = self._thumb_cache.get(rel)
+        if cached is not None:
+            return cached
+        abs_path = Path(str(row["abs"]))
+        is_image = bool(row.get("is_image"))
+        is_video = bool(row.get("is_video"))
+        pixmap = self._create_thumbnail(abs_path, is_image=is_image, is_video=is_video)
+        self._thumb_cache[rel] = pixmap
+        return pixmap
+
+    def _create_thumbnail(self, path: Path, *, is_image: bool, is_video: bool) -> QPixmap:
+        canvas = QPixmap(self._thumb_size)
+        canvas.fill(QColor("#2d2d2d"))
+        if is_image:
+            source = QPixmap(str(path))
+            if not source.isNull():
+                scaled = source.scaled(
+                    self._thumb_size,
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation,
+                )
+                painter = QPainter(canvas)
+                painter.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
+                x = (canvas.width() - scaled.width()) // 2
+                y = (canvas.height() - scaled.height()) // 2
+                painter.drawPixmap(x, y, scaled)
+                painter.end()
+                return canvas
+        # For videos or load failures, draw a placeholder with the file suffix.
+        painter = QPainter(canvas)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QColor("#f0f0f0"))
+        painter.setBrush(Qt.NoBrush)
+        suffix = path.suffix.lower().lstrip(".")
+        if is_video and not suffix:
+            suffix = "video"
+        elif not suffix:
+            suffix = "media"
+        font = QFont()
+        font.setPointSize(14)
+        font.setBold(True)
+        painter.setFont(font)
+        metrics = QFontMetrics(font)
+        text = suffix.upper()
+        text_width = metrics.horizontalAdvance(text)
+        text_height = metrics.height()
+        painter.drawText(
+            (canvas.width() - text_width) // 2,
+            (canvas.height() + text_height // 2) // 2,
+            text,
+        )
+        painter.end()
+        return canvas

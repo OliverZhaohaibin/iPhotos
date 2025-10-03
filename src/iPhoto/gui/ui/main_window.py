@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import QSize
 from PySide6.QtWidgets import (
     QFileDialog,
     QLabel,
@@ -60,10 +61,15 @@ class MainWindow(QMainWindow):
 
         self._list_view.setModel(self._asset_model)
         self._list_view.setSelectionMode(QListView.ExtendedSelection)
-        self._list_view.setAlternatingRowColors(True)
+        self._list_view.setViewMode(QListView.IconMode)
+        self._list_view.setIconSize(QSize(192, 192))
+        self._list_view.setGridSize(QSize(216, 248))
+        self._list_view.setSpacing(12)
         self._list_view.setUniformItemSizes(True)
         self._list_view.setResizeMode(QListView.Adjust)
-        self._list_view.setViewMode(QListView.ListMode)
+        self._list_view.setMovement(QListView.Static)
+        self._list_view.setWrapping(True)
+        self._list_view.setWordWrap(True)
         self._list_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         layout.addWidget(self._list_view, stretch=1)
 
