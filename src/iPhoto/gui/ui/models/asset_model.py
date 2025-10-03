@@ -26,6 +26,8 @@ pillow_heif.register_heif_opener()
 
 from ....cache.index_store import IndexStore
 from ....config import WORK_DIR_NAME
+from ....errors import ExternalToolError
+from ....utils.ffmpeg import extract_video_frame
 from ....utils.jsonio import read_json
 from ....utils.pathutils import ensure_work_dir
 from ...facade import AppFacade
@@ -42,6 +44,9 @@ class _ThumbnailJob(QRunnable):
         size: QSize,
         stamp: int,
         cache_path: Path,
+        *,
+        is_video: bool,
+        still_image_time: Optional[float],
     ) -> None:
         super().__init__()
         self._loader = loader
@@ -50,16 +55,25 @@ class _ThumbnailJob(QRunnable):
         self._size = size
         self._stamp = stamp
         self._cache_path = cache_path
+        self._is_video = is_video
+        self._still_image_time = still_image_time
 
     def run(self) -> None:  # pragma: no cover - executed in worker thread
-        image = self._load_image()
+        image = self._render_media()
+        if image is not None:
+            self._write_cache(image)
         self._loader._delivered.emit(
             self._loader._make_key(self._rel, self._size, self._stamp),
             image,
             self._rel,
         )
 
-    def _load_image(self) -> Optional[QImage]:  # pragma: no cover - worker helper
+    def _render_media(self) -> Optional[QImage]:  # pragma: no cover - worker helper
+        if self._is_video:
+            return self._render_video()
+        return self._render_image()
+
+    def _render_image(self) -> Optional[QImage]:  # pragma: no cover - worker helper
         target = self._size
         reader = QImageReader(str(self._abs_path))
         reader.setAutoTransform(True)
@@ -74,24 +88,21 @@ class _ThumbnailJob(QRunnable):
             image = self._fallback_heif(target)
             if image is None:
                 return None
-        canvas = self._composite_canvas(image)
+        return self._composite_canvas(image)
+
+    def _render_video(self) -> Optional[QImage]:  # pragma: no cover - worker helper
         try:
-            self._cache_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp_path = self._cache_path.with_suffix(self._cache_path.suffix + ".tmp")
-            if canvas.save(str(tmp_path), "PNG"):
-                self._loader._safe_unlink(self._cache_path)
-                try:
-                    tmp_path.replace(self._cache_path)
-                except OSError:
-                    # If the cache file is locked, leave the temp file as-is so
-                    # the caller still receives an in-memory pixmap. Cleanup is
-                    # best effort only.
-                    tmp_path.unlink(missing_ok=True)
-            else:  # pragma: no cover - Qt returns False on IO errors
-                tmp_path.unlink(missing_ok=True)
-        except Exception:  # pragma: no cover - cache write failures are non-fatal
-            pass
-        return canvas
+            frame_data = extract_video_frame(
+                self._abs_path,
+                at=self._still_image_time,
+                scale=(max(self._size.width(), 1), max(self._size.height(), 1)),
+            )
+        except ExternalToolError:
+            return None
+        image = QImage.fromData(frame_data, "PNG")
+        if image.isNull():
+            return None
+        return self._composite_canvas(image)
 
     def _fallback_heif(self, target: QSize) -> Optional[QImage]:  # pragma: no cover - worker helper
         suffix = self._abs_path.suffix.lower()
@@ -135,6 +146,21 @@ class _ThumbnailJob(QRunnable):
         painter.end()
         return canvas
 
+    def _write_cache(self, canvas: QImage) -> None:  # pragma: no cover - worker helper
+        try:
+            self._cache_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = self._cache_path.with_suffix(self._cache_path.suffix + ".tmp")
+            if canvas.save(str(tmp_path), "PNG"):
+                self._loader._safe_unlink(self._cache_path)
+                try:
+                    tmp_path.replace(self._cache_path)
+                except OSError:
+                    tmp_path.unlink(missing_ok=True)
+            else:  # pragma: no cover - Qt returns False on IO errors
+                tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
 
 class _ThumbnailLoader(QObject):
     """Asynchronous thumbnail renderer with disk and memory caching."""
@@ -163,11 +189,22 @@ class _ThumbnailLoader(QObject):
         self._failures.clear()
         self._missing.clear()
 
-    def request(self, rel: str, path: Path, size: QSize, *, is_image: bool) -> Optional[QPixmap]:
+    def request(
+        self,
+        rel: str,
+        path: Path,
+        size: QSize,
+        *,
+        is_image: bool,
+        is_video: bool = False,
+        still_image_time: Optional[float] = None,
+    ) -> Optional[QPixmap]:
         if self._album_root is None or self._album_root_str is None:
             return None
         base_key = self._base_key(rel, size)
-        if not is_image or base_key in self._missing:
+        if base_key in self._missing:
+            return None
+        if not is_image and not is_video:
             return None
         try:
             stamp = int(path.stat().st_mtime)
@@ -189,7 +226,16 @@ class _ThumbnailLoader(QObject):
             self._safe_unlink(cache_path)
         if key in self._pending:
             return None
-        job = _ThumbnailJob(self, rel, path, size, stamp, cache_path)
+        job = _ThumbnailJob(
+            self,
+            rel,
+            path,
+            size,
+            stamp,
+            cache_path,
+            is_video=is_video,
+            still_image_time=still_image_time,
+        )
         self._pending.add(key)
         self._pool.start(job)
         return None
@@ -410,6 +456,7 @@ class AssetModel(QAbstractListModel):
                 "size": self._determine_size(row, is_image),
                 "dt": row.get("dt"),
                 "featured": self._is_featured(rel, featured),
+                "still_image_time": row.get("still_image_time"),
             }
             payload.append(entry)
 
@@ -471,6 +518,23 @@ class AssetModel(QAbstractListModel):
         abs_path = Path(str(row["abs"]))
         if bool(row.get("is_image")):
             pixmap = self._thumb_loader.request(rel, abs_path, self._thumb_size, is_image=True)
+            if pixmap is not None:
+                self._thumb_cache[rel] = pixmap
+                return pixmap
+        if bool(row.get("is_video")):
+            still_time = row.get("still_image_time")
+            if isinstance(still_time, (int, float)):
+                still_hint: Optional[float] = float(still_time)
+            else:
+                still_hint = None
+            pixmap = self._thumb_loader.request(
+                rel,
+                abs_path,
+                self._thumb_size,
+                is_image=False,
+                is_video=True,
+                still_image_time=still_hint,
+            )
             if pixmap is not None:
                 self._thumb_cache[rel] = pixmap
                 return pixmap

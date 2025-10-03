@@ -34,3 +34,9 @@ Optionally provide an album path to open immediately:
 ```bash
 iphoto-gui /photos/LondonTrip
 ```
+
+### External tools
+
+Video thumbnail generation and duration metadata rely on the `ffmpeg` toolchain.
+Install `ffmpeg`/`ffprobe` and ensure they are on your `PATH` so Windows users
+receive motion previews instead of placeholders.

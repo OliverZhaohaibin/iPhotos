@@ -14,6 +14,7 @@ except ImportError:  # pragma: no cover
     register_heif_opener = None
 
 from ..errors import ExternalToolError
+from ..utils.ffmpeg import probe_media
 
 if register_heif_opener is not None:  # pragma: no branch
     register_heif_opener()
@@ -54,10 +55,51 @@ def read_video_meta(path: Path) -> Dict[str, Any]:
     """Return basic metadata for a video file."""
 
     mime = "video/quicktime" if path.suffix.lower() in {".mov", ".qt"} else "video/mp4"
-    return {
+    info: Dict[str, Any] = {
         "mime": mime,
         "dur": None,
         "codec": None,
         "content_id": None,
         "still_image_time": None,
+        "w": None,
+        "h": None,
     }
+    try:
+        metadata = probe_media(path)
+    except ExternalToolError:
+        return info
+
+    fmt = metadata.get("format", {}) if isinstance(metadata, dict) else {}
+    duration = fmt.get("duration")
+    if isinstance(duration, str):
+        try:
+            info["dur"] = float(duration)
+        except ValueError:
+            info["dur"] = None
+    streams = metadata.get("streams", []) if isinstance(metadata, dict) else []
+    if isinstance(streams, list):
+        for stream in streams:
+            if not isinstance(stream, dict):
+                continue
+            if stream.get("codec_type") == "video":
+                codec = stream.get("codec_name")
+                if isinstance(codec, str):
+                    info["codec"] = codec
+                width = stream.get("width")
+                height = stream.get("height")
+                if isinstance(width, int) and isinstance(height, int):
+                    info["w"] = width
+                    info["h"] = height
+                tags = stream.get("tags")
+                if isinstance(tags, dict):
+                    still_time = tags.get("com.apple.quicktime.still-image-time")
+                    if isinstance(still_time, str):
+                        try:
+                            info["still_image_time"] = float(still_time)
+                        except ValueError:
+                            info["still_image_time"] = None
+            elif stream.get("codec_type") == "audio":
+                codec = stream.get("codec_name")
+                if isinstance(codec, str) and not info.get("codec"):
+                    info["codec"] = codec
+    return info
