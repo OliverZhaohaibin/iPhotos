@@ -19,3 +19,18 @@ iphoto pair /path/to/album
 ```
 
 Use `iphoto cover set`, `iphoto feature add|rm`, and `iphoto report` for additional management tasks.
+
+### Launching the desktop UI
+
+The project ships with a PySide6-based desktop interface. After installing the
+package you can launch it with:
+
+```bash
+iphoto-gui
+```
+
+Optionally provide an album path to open immediately:
+
+```bash
+iphoto-gui /photos/LondonTrip
+```
