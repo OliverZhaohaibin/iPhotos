@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from enum import IntEnum
+from io import BytesIO
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -105,7 +106,15 @@ class _ThumbnailJob(QRunnable):
             )
         except ExternalToolError:
             return None
-        image = QImage.fromData(frame_data, "PNG")
+        image = QImage()
+        if not image.loadFromData(frame_data, "PNG"):
+            try:
+                with Image.open(BytesIO(frame_data)) as img:
+                    img = ImageOps.exif_transpose(img)
+                    qt_image = ImageQt(img.convert("RGBA"))
+                    image = QImage(qt_image)
+            except Exception:
+                return None
         if image.isNull():
             return None
         return self._composite_canvas(image)
@@ -532,7 +541,7 @@ class AssetModel(QAbstractListModel):
             if isinstance(still_time, (int, float)):
                 still_hint: Optional[float] = float(still_time)
             else:
-                still_hint = None
+                still_hint = 0.15
             pixmap = self._thumb_loader.request(
                 rel,
                 abs_path,
