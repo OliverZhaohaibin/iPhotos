@@ -19,6 +19,7 @@ dependencies = [
   "imagehash>=4",
   "xxhash>=3",
   "python-dateutil>=2",
+  "opencv-python-headless>=4.10",
 ]
 
 [project.scripts]

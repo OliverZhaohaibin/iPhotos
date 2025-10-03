@@ -11,6 +11,11 @@ from typing import Any, Dict, Optional, Sequence
 
 from ..errors import ExternalToolError
 
+try:  # pragma: no cover - optional dependency detection
+    import cv2  # type: ignore
+except Exception:  # pragma: no cover - OpenCV not available or broken
+    cv2 = None  # type: ignore[assignment]
+
 _FFMPEG_LOG_LEVEL = "error"
 
 
@@ -57,8 +62,24 @@ def extract_video_frame(
     if fmt not in {"png", "jpeg"}:
         raise ValueError("format must be either 'png' or 'jpeg'")
 
-    suffix = ".png" if fmt == "png" else ".jpg"
-    codec = "png" if fmt == "png" else "mjpeg"
+    try:
+        return _extract_with_ffmpeg(source, at=at, scale=scale, format=fmt)
+    except ExternalToolError as exc:
+        fallback = _extract_with_opencv(source, at=at, scale=scale, format=fmt)
+        if fallback is not None:
+            return fallback
+        raise exc
+
+
+def _extract_with_ffmpeg(
+    source: Path,
+    *,
+    at: Optional[float],
+    scale: Optional[tuple[int, int]],
+    format: str,
+) -> bytes:
+    suffix = ".png" if format == "png" else ".jpg"
+    codec = "png" if format == "png" else "mjpeg"
 
     command: list[str] = [
         "ffmpeg",
@@ -83,32 +104,24 @@ def extract_video_frame(
     if scale is not None:
         width, height = scale
         if width > 0 and height > 0:
-            # Avoid single-quoted filter expressions because ``ffmpeg`` on Windows does not
-            # interpret them the same way as Unix shells. Passing the raw expression keeps the
-            # command portable across platforms when using ``subprocess`` with ``shell=False``.
             filters.append(
                 "scale=min({w},iw):min({h},ih):force_original_aspect_ratio=decrease".format(
                     w=width,
                     h=height,
                 )
             )
-    if fmt == "jpeg":
+    if format == "jpeg":
         if not filters:
             filters.append("scale=iw:ih")
-        # Older ffmpeg builds (notably on Windows) do not understand ``force_divisible_by``.
-        # Rounding to the nearest even integer keeps YUV-compatible frame sizes without relying
-        # on that option.
         filters.append("scale=max(2,trunc(iw/2)*2):max(2,trunc(ih/2)*2)")
-    if fmt == "png":
+    if format == "png":
         filters.append("format=rgba")
     else:
-        # ``mjpeg`` encoders expect YUV input. Explicitly request a compatible pixel
-        # format so ``ffmpeg`` does not error out on sources with alpha channels.
         filters.append("format=yuv420p")
     if filters:
         command += ["-vf", ",".join(filters)]
     command += ["-f", "image2", "-vcodec", codec]
-    if fmt == "jpeg":
+    if format == "jpeg":
         command += ["-q:v", "2"]
 
     fd, tmp_name = tempfile.mkstemp(suffix=suffix)
@@ -126,6 +139,114 @@ def extract_video_frame(
     finally:
         tmp_path.unlink(missing_ok=True)
 
+
+def _extract_with_opencv(
+    source: Path,
+    *,
+    at: Optional[float],
+    scale: Optional[tuple[int, int]],
+    format: str,
+) -> Optional[bytes]:
+    if cv2 is None:
+        return None
+
+    try:
+        capture = cv2.VideoCapture(str(source))
+    except Exception:
+        return None
+
+    is_opened = True
+    try:
+        is_opened = bool(capture.isOpened())
+    except Exception:
+        is_opened = False
+    if not is_opened:
+        try:
+            capture.release()
+        except Exception:
+            pass
+        return None
+
+    try:
+        if at is not None and at >= 0:
+            seconds = max(at, 0.0)
+            try:
+                positioned = capture.set(getattr(cv2, "CAP_PROP_POS_MSEC", 0), seconds * 1000.0)
+            except Exception:
+                positioned = False
+            if not positioned:
+                try:
+                    fps = capture.get(getattr(cv2, "CAP_PROP_FPS", 5.0))
+                except Exception:
+                    fps = 0.0
+                if fps and fps > 0:
+                    try:
+                        capture.set(
+                            getattr(cv2, "CAP_PROP_POS_FRAMES", 1),
+                            max(int(round(fps * seconds)), 0),
+                        )
+                    except Exception:
+                        pass
+        ok, frame = capture.read()
+    except Exception:
+        return None
+    finally:
+        try:
+            capture.release()
+        except Exception:
+            pass
+
+    if not ok or frame is None:
+        return None
+
+    try:
+        height, width = frame.shape[:2]
+    except Exception:
+        return None
+
+    target_frame = frame
+    if (
+        scale is not None
+        and width > 0
+        and height > 0
+        and scale[0] > 0
+        and scale[1] > 0
+    ):
+        max_width, max_height = scale
+        ratio = min(max_width / width, max_height / height)
+        if ratio < 1.0:
+            new_width = max(int(width * ratio), 1)
+            new_height = max(int(height * ratio), 1)
+            if format == "jpeg":
+                if new_width % 2 == 1 and new_width > 1:
+                    new_width -= 1
+                if new_height % 2 == 1 and new_height > 1:
+                    new_height -= 1
+            interpolation = getattr(cv2, "INTER_AREA", 3)
+            try:
+                target_frame = cv2.resize(target_frame, (new_width, new_height), interpolation=interpolation)
+            except Exception:
+                return None
+
+    extension = ".png" if format == "png" else ".jpg"
+    params: list[int] = []
+    if format == "jpeg":
+        jpeg_quality = getattr(cv2, "IMWRITE_JPEG_QUALITY", None)
+        if jpeg_quality is not None:
+            params = [int(jpeg_quality), 92]
+
+    try:
+        success, buffer = cv2.imencode(extension, target_frame, params)
+    except Exception:
+        return None
+
+    if not success:
+        return None
+
+    try:
+        return bytes(buffer)
+    except Exception:
+        return None
 
 def probe_media(source: Path) -> Dict[str, Any]:
     """Return ffprobe metadata for *source*.
