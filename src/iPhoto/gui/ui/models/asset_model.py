@@ -2,18 +2,184 @@
 
 from __future__ import annotations
 
+import hashlib
 from enum import IntEnum
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set, Tuple
 
-from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt, QSize
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPixmap
+from PySide6.QtCore import (
+    QAbstractListModel,
+    QModelIndex,
+    QObject,
+    QRunnable,
+    QThreadPool,
+    Qt,
+    QSize,
+    Signal,
+)
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QImage, QImageReader, QPainter, QPixmap
 
 from ....cache.index_store import IndexStore
 from ....config import WORK_DIR_NAME
 from ....utils.jsonio import read_json
 from ....utils.pathutils import ensure_work_dir
 from ...facade import AppFacade
+
+
+class _ThumbnailJob(QRunnable):
+    """Background task that renders a thumbnail ``QImage``."""
+
+    def __init__(
+        self,
+        loader: "_ThumbnailLoader",
+        rel: str,
+        abs_path: Path,
+        size: QSize,
+        stamp: int,
+        cache_path: Path,
+    ) -> None:
+        super().__init__()
+        self._loader = loader
+        self._rel = rel
+        self._abs_path = abs_path
+        self._size = size
+        self._stamp = stamp
+        self._cache_path = cache_path
+
+    def run(self) -> None:  # pragma: no cover - executed in worker thread
+        image = self._load_image()
+        self._loader._delivered.emit(
+            self._loader._make_key(self._rel, self._size, self._stamp),
+            image,
+            self._rel,
+        )
+
+    def _load_image(self) -> Optional[QImage]:  # pragma: no cover - worker helper
+        reader = QImageReader(str(self._abs_path))
+        reader.setAutoTransform(True)
+        original_size = reader.size()
+        target = (
+            original_size.scaled(self._size, Qt.KeepAspectRatio)
+            if original_size.isValid()
+            else self._size
+        )
+        if target.isValid() and not target.isEmpty():
+            reader.setScaledSize(target)
+        image = reader.read()
+        if image.isNull():
+            return None
+        canvas = QImage(self._size, QImage.Format_ARGB32)
+        canvas.fill(QColor("#2d2d2d"))
+        scaled = image.scaled(self._size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        painter = QPainter(canvas)
+        painter.setRenderHint(QPainter.Antialiasing)
+        x = (canvas.width() - scaled.width()) // 2
+        y = (canvas.height() - scaled.height()) // 2
+        painter.drawImage(x, y, scaled)
+        painter.end()
+        try:
+            self._cache_path.parent.mkdir(parents=True, exist_ok=True)
+            canvas.save(str(self._cache_path), "PNG")
+        except Exception:  # pragma: no cover - cache write failures are non-fatal
+            pass
+        return canvas
+
+
+class _ThumbnailLoader(QObject):
+    """Asynchronous thumbnail renderer with disk and memory caching."""
+
+    ready = Signal(object, str, QPixmap)
+    _delivered = Signal(object, object, str)
+
+    def __init__(self, parent: Optional[QObject] = None) -> None:
+        super().__init__(parent)
+        self._pool = QThreadPool.globalInstance()
+        self._album_root: Optional[Path] = None
+        self._album_root_str: Optional[str] = None
+        self._memory: Dict[Tuple[str, str, int, int, int], QPixmap] = {}
+        self._pending: Set[Tuple[str, str, int, int, int]] = set()
+        self._failures: Set[Tuple[str, str, int, int, int]] = set()
+        self._missing: Set[Tuple[str, str, int, int]] = set()
+        self._delivered.connect(self._handle_result)
+
+    def reset_for_album(self, root: Path) -> None:
+        if self._album_root and self._album_root == root:
+            return
+        self._album_root = root
+        self._album_root_str = str(root.resolve())
+        self._memory.clear()
+        self._pending.clear()
+        self._failures.clear()
+        self._missing.clear()
+
+    def request(self, rel: str, path: Path, size: QSize, *, is_image: bool) -> Optional[QPixmap]:
+        if self._album_root is None or self._album_root_str is None:
+            return None
+        base_key = self._base_key(rel, size)
+        if not is_image or base_key in self._missing:
+            return None
+        try:
+            stamp = int(path.stat().st_mtime)
+        except FileNotFoundError:
+            self._missing.add(base_key)
+            return None
+        key = self._make_key(rel, size, stamp)
+        cached = self._memory.get(key)
+        if cached is not None:
+            return cached
+        if key in self._failures:
+            return None
+        cache_path = self._cache_path(rel, size, stamp)
+        if cache_path.exists():
+            pixmap = QPixmap(str(cache_path))
+            if not pixmap.isNull():
+                self._memory[key] = pixmap
+                return pixmap
+            cache_path.unlink(missing_ok=True)
+        if key in self._pending:
+            return None
+        job = _ThumbnailJob(self, rel, path, size, stamp, cache_path)
+        self._pending.add(key)
+        self._pool.start(job)
+        return None
+
+    def _base_key(self, rel: str, size: QSize) -> Tuple[str, str, int, int]:
+        assert self._album_root_str is not None
+        return (self._album_root_str, rel, size.width(), size.height())
+
+    def _make_key(self, rel: str, size: QSize, stamp: int) -> Tuple[str, str, int, int, int]:
+        base = self._base_key(rel, size)
+        return (*base, stamp)
+
+    def _cache_path(self, rel: str, size: QSize, stamp: int) -> Path:
+        assert self._album_root is not None
+        digest = hashlib.sha1(rel.encode("utf-8")).hexdigest()
+        filename = f"{digest}_{stamp}_{size.width()}x{size.height()}.png"
+        return self._album_root / WORK_DIR_NAME / "thumbs" / filename
+
+    def _handle_result(
+        self,
+        key: Tuple[str, str, int, int, int],
+        image: Optional[QImage],
+        rel: str,
+    ) -> None:
+        self._pending.discard(key)
+        if image is None:
+            self._failures.add(key)
+            return
+        pixmap = QPixmap.fromImage(image)
+        if pixmap.isNull():
+            self._failures.add(key)
+            return
+        # Keep only the latest entry for the same asset and size.
+        base = key[:-1]
+        obsolete = [existing for existing in self._memory if existing[:-1] == base and existing != key]
+        for existing in obsolete:
+            self._memory.pop(existing, None)
+        self._memory[key] = pixmap
+        if self._album_root is not None:
+            self.ready.emit(self._album_root, rel, pixmap)
+
 
 
 class Roles(IntEnum):
@@ -39,8 +205,12 @@ class AssetModel(QAbstractListModel):
         self._facade = facade
         self._album_root: Optional[Path] = None
         self._rows: List[Dict[str, object]] = []
+        self._row_lookup: Dict[str, int] = {}
         self._thumb_cache: Dict[str, QPixmap] = {}
+        self._placeholder_cache: Dict[str, QPixmap] = {}
         self._thumb_size = QSize(192, 192)
+        self._thumb_loader = _ThumbnailLoader(self)
+        self._thumb_loader.ready.connect(self._on_thumb_ready)
         facade.albumOpened.connect(self._on_album_opened)
         facade.indexUpdated.connect(self._on_index_updated)
         facade.linksUpdated.connect(self._on_links_updated)
@@ -108,6 +278,7 @@ class AssetModel(QAbstractListModel):
     # ------------------------------------------------------------------
     def _on_album_opened(self, root: Path) -> None:
         self._album_root = root
+        self._thumb_loader.reset_for_album(root)
         self._reload()
 
     def _on_index_updated(self, root: Path) -> None:
@@ -155,8 +326,9 @@ class AssetModel(QAbstractListModel):
 
         self.beginResetModel()
         self._rows = payload
+        self._row_lookup = {row_data["rel"]: idx for idx, row_data in enumerate(payload)}
         # Drop any thumbnails that no longer correspond to a listed asset.
-        active = {row_data["rel"] for row_data in payload}
+        active = set(self._row_lookup.keys())
         self._thumb_cache = {rel: pix for rel, pix in self._thumb_cache.items() if rel in active}
         self.endResetModel()
 
@@ -201,53 +373,49 @@ class AssetModel(QAbstractListModel):
         cached = self._thumb_cache.get(rel)
         if cached is not None:
             return cached
+        placeholder = self._placeholder_for(rel, bool(row.get("is_video")))
+        if not self._album_root:
+            return placeholder
         abs_path = Path(str(row["abs"]))
-        is_image = bool(row.get("is_image"))
-        is_video = bool(row.get("is_video"))
-        pixmap = self._create_thumbnail(abs_path, is_image=is_image, is_video=is_video)
-        self._thumb_cache[rel] = pixmap
-        return pixmap
+        if bool(row.get("is_image")):
+            pixmap = self._thumb_loader.request(rel, abs_path, self._thumb_size, is_image=True)
+            if pixmap is not None:
+                self._thumb_cache[rel] = pixmap
+                return pixmap
+        return placeholder
 
-    def _create_thumbnail(self, path: Path, *, is_image: bool, is_video: bool) -> QPixmap:
+    def _on_thumb_ready(self, root: Path, rel: str, pixmap: QPixmap) -> None:
+        if not self._album_root or root != self._album_root:
+            return
+        self._thumb_cache[rel] = pixmap
+        index = self._row_lookup.get(rel)
+        if index is None:
+            return
+        model_index = self.index(index, 0)
+        self.dataChanged.emit(model_index, model_index, [Qt.DecorationRole])
+
+    def _placeholder_for(self, rel: str, is_video: bool) -> QPixmap:
+        suffix = Path(rel).suffix.lower().lstrip(".")
+        if not suffix:
+            suffix = "video" if is_video else "media"
+        key = f"{suffix}|{is_video}"
+        cached = self._placeholder_cache.get(key)
+        if cached is not None:
+            return cached
         canvas = QPixmap(self._thumb_size)
         canvas.fill(QColor("#2d2d2d"))
-        if is_image:
-            source = QPixmap(str(path))
-            if not source.isNull():
-                scaled = source.scaled(
-                    self._thumb_size,
-                    Qt.KeepAspectRatio,
-                    Qt.SmoothTransformation,
-                )
-                painter = QPainter(canvas)
-                painter.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
-                x = (canvas.width() - scaled.width()) // 2
-                y = (canvas.height() - scaled.height()) // 2
-                painter.drawPixmap(x, y, scaled)
-                painter.end()
-                return canvas
-        # For videos or load failures, draw a placeholder with the file suffix.
         painter = QPainter(canvas)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(QColor("#f0f0f0"))
-        painter.setBrush(Qt.NoBrush)
-        suffix = path.suffix.lower().lstrip(".")
-        if is_video and not suffix:
-            suffix = "video"
-        elif not suffix:
-            suffix = "media"
         font = QFont()
         font.setPointSize(14)
         font.setBold(True)
         painter.setFont(font)
         metrics = QFontMetrics(font)
-        text = suffix.upper()
-        text_width = metrics.horizontalAdvance(text)
-        text_height = metrics.height()
-        painter.drawText(
-            (canvas.width() - text_width) // 2,
-            (canvas.height() + text_height // 2) // 2,
-            text,
-        )
+        label = suffix.upper()
+        text_width = metrics.horizontalAdvance(label)
+        baseline = (canvas.height() + metrics.ascent()) // 2
+        painter.drawText((canvas.width() - text_width) // 2, baseline, label)
         painter.end()
+        self._placeholder_cache[key] = canvas
         return canvas

@@ -10,10 +10,12 @@ pytest.importorskip("PySide6", reason="PySide6 is required for GUI tests", exc_t
 pytest.importorskip("PySide6.QtWidgets", reason="Qt widgets not available", exc_type=ImportError)
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
+from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QApplication  # type: ignore  # noqa: E402
 
 from iPhoto.gui.facade import AppFacade
 from iPhoto.gui.ui.models.asset_model import AssetModel, Roles
+from iPhoto.config import WORK_DIR_NAME
 
 
 def _create_image(path: Path) -> None:
@@ -56,6 +58,19 @@ def test_asset_model_populates_rows(tmp_path: Path, qapp: QApplication) -> None:
     index = model.index(0, 0)
     assert model.data(index, Roles.REL) == "IMG_2001.JPG"
     assert model.data(index, Roles.FEATURED) is False
+    spy = QSignalSpy(model.dataChanged)
     decoration = model.data(index, Qt.DecorationRole)
     assert isinstance(decoration, QPixmap)
     assert not decoration.isNull()
+    spy.wait(500)
+    qapp.processEvents()
+    refreshed = model.data(index, Qt.DecorationRole)
+    assert isinstance(refreshed, QPixmap)
+    assert not refreshed.isNull()
+    thumbs_dir = tmp_path / WORK_DIR_NAME / "thumbs"
+    for _ in range(10):
+        qapp.processEvents()
+        if thumbs_dir.exists() and any(thumbs_dir.iterdir()):
+            break
+    assert thumbs_dir.exists()
+    assert any(thumbs_dir.iterdir())
