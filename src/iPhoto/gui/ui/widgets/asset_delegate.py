@@ -47,6 +47,9 @@ class AssetGridDelegate(QStyledItemDelegate):
             overlay.setAlpha(110)
             painter.fillRect(rect, overlay)
 
+        if index.data(Roles.IS_LIVE):
+            self._draw_live_badge(painter, option, rect)
+
         if index.data(Roles.IS_VIDEO):
             self._draw_duration_badge(painter, option, rect, index.data(Roles.SIZE))
 
@@ -94,6 +97,31 @@ class AssetGridDelegate(QStyledItemDelegate):
         painter.setPen(QColor("white"))
         painter.setFont(font)
         painter.drawText(badge_rect, Qt.AlignCenter, text)
+        painter.restore()
+
+    def _draw_live_badge(
+        self,
+        painter: QPainter,
+        option: QStyleOptionViewItem,
+        rect: QRect,
+    ) -> None:
+        font = self._duration_font or QFont(option.font)
+        font.setPointSizeF(max(8.0, option.font.pointSizeF() - 2))
+        font.setBold(True)
+        metrics = QFontMetrics(font)
+        label = "LIVE"
+        padding = 5
+        height = metrics.height() + padding
+        width = metrics.horizontalAdvance(label) + padding * 2
+        badge_rect = QRect(rect.left() + 8, rect.top() + 8, width, height)
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 140))
+        painter.drawRoundedRect(badge_rect, 6, 6)
+        painter.setPen(QColor("white"))
+        painter.setFont(font)
+        painter.drawText(badge_rect, Qt.AlignCenter, label)
         painter.restore()
 
     @staticmethod

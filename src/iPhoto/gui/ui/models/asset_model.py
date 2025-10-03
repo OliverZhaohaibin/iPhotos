@@ -254,6 +254,7 @@ class Roles(IntEnum):
     SIZE = Qt.UserRole + 8
     DT = Qt.UserRole + 9
     FEATURED = Qt.UserRole + 10
+    LIVE_MOTION_REL = Qt.UserRole + 11
 
 
 class AssetModel(QAbstractListModel):
@@ -306,6 +307,8 @@ class AssetModel(QAbstractListModel):
             return row["is_live"]
         if role == Roles.LIVE_GROUP_ID:
             return row["live_group_id"]
+        if role == Roles.LIVE_MOTION_REL:
+            return row["live_motion"]
         if role == Roles.SIZE:
             return row["size"]
         if role == Roles.DT:
@@ -325,6 +328,7 @@ class AssetModel(QAbstractListModel):
                 Roles.IS_VIDEO: b"isVideo",
                 Roles.IS_LIVE: b"isLive",
                 Roles.LIVE_GROUP_ID: b"liveGroupId",
+                Roles.LIVE_MOTION_REL: b"liveMotion",
                 Roles.SIZE: b"size",
                 Roles.DT: b"dt",
                 Roles.FEATURED: b"featured",
@@ -363,11 +367,27 @@ class AssetModel(QAbstractListModel):
         payload: List[Dict[str, object]] = []
         for row in index_rows:
             rel = str(row["rel"])
+            live_info = live_map.get(rel)
+            if live_info and live_info.get("role") == "motion" and live_info.get("still"):
+                # Skip the motion component of a Live Photo; the still will represent it.
+                continue
+
             abs_path = str((self._album_root / rel).resolve())
             mime = (row.get("mime") or "").lower()
             is_image = mime.startswith("image/")
             is_video = mime.startswith("video/")
-            live_info = live_map.get(rel)
+            live_motion: Optional[str] = None
+            live_group_id: Optional[str] = None
+            if live_info and live_info.get("role") == "still":
+                motion_rel = live_info.get("motion")
+                if isinstance(motion_rel, str) and motion_rel:
+                    live_motion = motion_rel
+                group_id = live_info.get("id")
+                if isinstance(group_id, str):
+                    live_group_id = group_id
+            elif live_info and isinstance(live_info.get("id"), str):
+                live_group_id = live_info["id"]  # pragma: no cover - motion branch skipped above
+
             entry: Dict[str, object] = {
                 "rel": rel,
                 "abs": abs_path,
@@ -375,8 +395,9 @@ class AssetModel(QAbstractListModel):
                 "name": Path(rel).name,
                 "is_image": is_image,
                 "is_video": is_video,
-                "is_live": bool(live_info),
-                "live_group_id": live_info[0] if live_info else None,
+                "is_live": bool(live_motion),
+                "live_group_id": live_group_id,
+                "live_motion": live_motion,
                 "size": self._determine_size(row, is_image),
                 "dt": row.get("dt"),
                 "featured": self._is_featured(rel, featured),
@@ -392,7 +413,7 @@ class AssetModel(QAbstractListModel):
         self.endResetModel()
 
     @staticmethod
-    def _load_live_map(root: Path) -> Dict[str, tuple[str, str]]:
+    def _load_live_map(root: Path) -> Dict[str, Dict[str, object]]:
         path = root / WORK_DIR_NAME / "links.json"
         if not path.exists():
             return {}
@@ -400,15 +421,18 @@ class AssetModel(QAbstractListModel):
             data = read_json(path)
         except Exception:  # pragma: no cover - invalid JSON handled softly
             return {}
-        mapping: Dict[str, tuple[str, str]] = {}
+        mapping: Dict[str, Dict[str, object]] = {}
         for group in data.get("live_groups", []):
             gid = group.get("id")
             still = group.get("still")
             motion = group.get("motion")
-            if gid and still:
-                mapping[str(still)] = (gid, "still")
-            if gid and motion:
-                mapping[str(motion)] = (gid, "motion")
+            if not isinstance(gid, str):
+                continue
+            record: Dict[str, object] = {"id": gid, "still": still, "motion": motion}
+            if isinstance(still, str) and still:
+                mapping[still] = {**record, "role": "still"}
+            if isinstance(motion, str) and motion:
+                mapping[motion] = {**record, "role": "motion"}
         return mapping
 
     @staticmethod
