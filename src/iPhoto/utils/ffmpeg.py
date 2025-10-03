@@ -86,12 +86,16 @@ def extract_video_frame(
             # Avoid single-quoted filter expressions because ``ffmpeg`` on Windows does not
             # interpret them the same way as Unix shells. Passing the raw expression keeps the
             # command portable across platforms when using ``subprocess`` with ``shell=False``.
-            filters.append(
-                "scale=min({w},iw):min({h},ih):force_original_aspect_ratio=decrease".format(
-                    w=width,
-                    h=height,
-                )
+            scale_expr = "scale=min({w},iw):min({h},ih):force_original_aspect_ratio=decrease".format(
+                w=width,
+                h=height,
             )
+            if fmt == "jpeg":
+                scale_expr += ":force_divisible_by=2"
+            filters.append(scale_expr)
+    elif fmt == "jpeg":
+        # JPEG extractions require YUV pixel formats which expect even dimensions.
+        filters.append("scale=iw:ih:force_divisible_by=2")
     if fmt == "png":
         filters.append("format=rgba")
     else:
