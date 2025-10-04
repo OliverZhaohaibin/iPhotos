@@ -79,6 +79,7 @@ class PlayerSurface(QWidget):
             content if isinstance(content, QStackedWidget) else None
         )
         self._host_widget: QWidget | None = None
+        self._window_host: QWidget | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -86,15 +87,14 @@ class PlayerSurface(QWidget):
         content.setParent(self)
         layout.addWidget(content)
 
-        overlay.setParent(self)
-        overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
-        overlay.setAttribute(Qt.WidgetAttribute.WA_AlwaysStackOnTop, True)
-        overlay.hide()
+        self._configure_overlay_window()
+        self.destroyed.connect(self._overlay.close)
 
         if self._stacked is not None:
             self._stacked.currentChanged.connect(self._on_stack_changed)
 
         self._bind_overlay_host()
+        self._ensure_window_filter()
 
     # ------------------------------------------------------------------
     # Overlay visibility management
@@ -104,8 +104,8 @@ class PlayerSurface(QWidget):
 
         self._controls_visible = True
         self._bind_overlay_host()
-        if self._overlay.parent() is not self:
-            self._overlay.setParent(self)
+        self._ensure_window_filter()
+        self._sync_overlay_parent()
         self._overlay.show()
         self.refresh_controls()
         self.schedule_refresh()
@@ -142,7 +142,12 @@ class PlayerSurface(QWidget):
 
     def showEvent(self, event) -> None:  # pragma: no cover - GUI behaviour
         super().showEvent(event)
+        self._ensure_window_filter()
         self.refresh_controls()
+
+    def hideEvent(self, event) -> None:  # pragma: no cover - GUI behaviour
+        super().hideEvent(event)
+        self._overlay.hide()
 
     # ------------------------------------------------------------------
     # Helpers
@@ -151,8 +156,6 @@ class PlayerSurface(QWidget):
         if not self._controls_visible:
             return
         host = self._host_widget or self
-        if self._overlay.parent() is not self:
-            self._overlay.setParent(self)
         rect = host.rect()
         available_width = max(0, rect.width() - (2 * self._margin))
         if available_width == 0 or rect.height() <= 0:
@@ -160,7 +163,7 @@ class PlayerSurface(QWidget):
         hint = self._overlay.sizeHint()
         overlay_width = min(hint.width(), available_width)
         overlay_height = hint.height()
-        host_origin = host.mapTo(self, rect.topLeft()) if host is not self else rect.topLeft()
+        host_origin = host.mapToGlobal(rect.topLeft())
         x = host_origin.x() + (rect.width() - overlay_width) // 2
         y = host_origin.y() + max(0, rect.height() - overlay_height - self._margin)
         self._overlay.setGeometry(x, y, overlay_width, overlay_height)
@@ -171,8 +174,21 @@ class PlayerSurface(QWidget):
             QEvent.Type.Resize,
             QEvent.Type.Move,
             QEvent.Type.Show,
+            QEvent.Type.Hide,
+        }:
+            if event.type() == QEvent.Type.Hide:
+                self._overlay.hide()
+            else:
+                self.schedule_refresh()
+        if obj is self._window_host and event.type() in {
+            QEvent.Type.Move,
+            QEvent.Type.Resize,
+            QEvent.Type.Show,
+            QEvent.Type.WindowStateChange,
         }:
             self.schedule_refresh()
+        if obj is self._window_host and event.type() == QEvent.Type.Hide:
+            self._overlay.hide()
         return super().eventFilter(obj, event)
 
     def _on_stack_changed(self, _index: int) -> None:
@@ -194,9 +210,37 @@ class PlayerSurface(QWidget):
         self._host_widget = target
         if self._host_widget is not None and self._host_widget is not self:
             self._host_widget.installEventFilter(self)
-        # keep overlay parented to the player surface to avoid Qt's native video
-        # widgets occluding the floating controls. Geometry is computed relative to
-        # ``self`` during :meth:`_reposition_overlay`.
+        self.schedule_refresh()
+
+    def _ensure_window_filter(self) -> None:
+        window = self.window()
+        if window is self._window_host:
+            return
+        if self._window_host is not None:
+            self._window_host.removeEventFilter(self)
+        self._window_host = window
+        if self._window_host is not None:
+            self._window_host.installEventFilter(self)
+
+    def _configure_overlay_window(self) -> None:
+        flags = (
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.WindowDoesNotAcceptFocus
+        )
+        self._overlay.setWindowFlags(flags)
+        self._overlay.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self._overlay.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self._overlay.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._overlay.hide()
+
+    def _sync_overlay_parent(self) -> None:
+        window = self.window()
+        if window is self._overlay.parent():
+            return
+        self._overlay.setParent(window)
+        self._configure_overlay_window()
 
 
 class MainWindow(QMainWindow):
