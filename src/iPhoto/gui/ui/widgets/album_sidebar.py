@@ -231,7 +231,7 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         )
 
     def _paint_new_album_button(self, painter: QPainter, option: QStyleOptionViewItem) -> None:
-        rect = self._button_rect(option)
+        rect = self._button_rect(option.rect)
         if rect.width() <= 0 or rect.height() <= 0:
             return
         painter.save()
@@ -251,10 +251,15 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
             painter.drawPixmap(icon_rect, icon)
         painter.restore()
 
-    def _button_rect(self, option: QStyleOptionViewItem) -> QRect:
-        size = max(BUTTON_MIN_SIZE, min(option.rect.height() - 8, option.rect.height()))
-        left = option.rect.right() - BUTTON_MARGIN - size
-        top = option.rect.center().y() - (size // 2)
+    def _button_rect(self, cell_rect: QRect) -> QRect:
+        """Return the target button rect for a given item *cell_rect*."""
+
+        if not cell_rect.isValid():
+            return QRect()
+        height = cell_rect.height()
+        size = max(BUTTON_MIN_SIZE, min(height - 8, height))
+        left = cell_rect.right() - BUTTON_MARGIN - size
+        top = cell_rect.center().y() - (size // 2)
         return QRect(left, top, size, size)
 
     def _icon_for_size(self, size: int) -> QPixmap:
@@ -283,9 +288,7 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
     def button_rect_for_index(self, index: QModelIndex) -> QRect:
         if not index.isValid() or not self._is_album_node(index):
             return QRect()
-        option = self._view.viewOptions()
-        option.rect = self._view.visualRect(index)
-        return self._button_rect(option)
+        return self._button_rect(self._view.visualRect(index))
 
     def hit_test_button(self, index: QModelIndex, pos: QPoint) -> bool:
         rect = self.button_rect_for_index(index)
