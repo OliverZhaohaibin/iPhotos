@@ -16,7 +16,6 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QSizePolicy,
-    QStackedLayout,
     QStackedWidget,
     QStatusBar,
     QToolBar,
@@ -74,9 +73,9 @@ class PlayerSurface(QWidget):
         self._content = content
         self._overlay = overlay
 
-        self._stack = QStackedLayout(self)
-        self._stack.setContentsMargins(0, 0, 0, 0)
-        self._stack.setStackingMode(QStackedLayout.StackingMode.StackAll)
+        base_layout = QVBoxLayout(self)
+        base_layout.setContentsMargins(0, 0, 0, 0)
+        base_layout.setSpacing(0)
 
         self._content_container = QWidget(self)
         content_layout = QVBoxLayout(self._content_container)
@@ -84,11 +83,14 @@ class PlayerSurface(QWidget):
         content_layout.setSpacing(0)
         content.setParent(self._content_container)
         content_layout.addWidget(content)
-        self._stack.addWidget(self._content_container)
+        base_layout.addWidget(self._content_container)
 
         self._overlay_container = QWidget(self)
         self._overlay_container.setAttribute(
             Qt.WidgetAttribute.WA_TransparentForMouseEvents, True
+        )
+        self._overlay_container.setAttribute(
+            Qt.WidgetAttribute.WA_NoSystemBackground, True
         )
         overlay_layout = QVBoxLayout(self._overlay_container)
         overlay_layout.setContentsMargins(
@@ -101,20 +103,18 @@ class PlayerSurface(QWidget):
         row.setSpacing(0)
         row.addStretch(1)
         overlay.setParent(self._overlay_container)
+        overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         row.addWidget(overlay)
         row.addStretch(1)
         overlay_layout.addLayout(row)
-        self._stack.addWidget(self._overlay_container)
-        overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self._overlay_container.hide()
         overlay.hide()
 
     def show_controls(self) -> None:
         """Display the floating overlay controls."""
 
-        if self._controls_visible:
-            return
         self._controls_visible = True
+        self._overlay_container.setGeometry(self.rect())
         self._overlay_container.show()
         self._overlay.show()
         self._overlay_container.raise_()
@@ -124,15 +124,17 @@ class PlayerSurface(QWidget):
     def hide_controls(self) -> None:
         """Hide the floating overlay controls."""
 
-        if not self._controls_visible:
-            return
         self._controls_visible = False
         self._overlay.hide()
         self._overlay_container.hide()
 
     def resizeEvent(self, event) -> None:  # pragma: no cover - GUI behaviour
-        self._stack.setGeometry(self.rect())
+        self._overlay_container.setGeometry(self.rect())
         super().resizeEvent(event)
+
+    def showEvent(self, event) -> None:  # pragma: no cover - GUI behaviour
+        self._overlay_container.setGeometry(self.rect())
+        super().showEvent(event)
 
 
 class MainWindow(QMainWindow):
