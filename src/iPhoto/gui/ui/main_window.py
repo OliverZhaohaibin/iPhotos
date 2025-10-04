@@ -6,7 +6,7 @@ import importlib.util
 from pathlib import Path
 
 from PySide6.QtCore import QItemSelectionModel, QRect, QSize, Qt
-from PySide6.QtGui import QImageReader, QPixmap
+from PySide6.QtGui import QImage, QImageReader, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFileDialog,
@@ -33,6 +33,17 @@ from .widgets.image_viewer import ImageViewer
 from .widgets.player_bar import PlayerBar
 from .widgets.preview_window import PreviewWindow
 from .media import MediaController, PlaylistController, require_multimedia
+from ...utils.deps import load_pillow
+
+_PILLOW = load_pillow()
+if _PILLOW is not None:
+    _Image = _PILLOW.Image
+    _ImageOps = _PILLOW.ImageOps
+    _ImageQt = _PILLOW.ImageQt
+else:  # pragma: no cover - executed when Pillow is unavailable
+    _Image = None  # type: ignore[assignment]
+    _ImageOps = None  # type: ignore[assignment]
+    _ImageQt = None  # type: ignore[assignment]
 
 if importlib.util.find_spec("PySide6.QtMultimediaWidgets") is not None:
     from PySide6.QtMultimediaWidgets import QVideoWidget
@@ -407,9 +418,28 @@ class MainWindow(QMainWindow):
         reader = QImageReader(str(source))
         reader.setAutoTransform(True)
         image = reader.read()
-        if image.isNull():
+        if not image.isNull():
+            pixmap = QPixmap.fromImage(image)
+            if not pixmap.isNull():
+                return pixmap
+        # Qt's image plugins omit HEIF/HEIC on some platforms. Fall back to Pillow when
+        # available so that the inline viewer can display those assets.
+        fallback = self._load_image_with_pillow(source)
+        if fallback is not None:
+            return fallback
+        return None
+
+    def _load_image_with_pillow(self, source: Path) -> QPixmap | None:
+        if _Image is None or _ImageOps is None or _ImageQt is None:
             return None
-        pixmap = QPixmap.fromImage(image)
+        try:
+            with _Image.open(source) as img:  # type: ignore[attr-defined]
+                img = _ImageOps.exif_transpose(img)  # type: ignore[attr-defined]
+                qt_image = _ImageQt(img.convert("RGBA"))  # type: ignore[attr-defined]
+        except Exception:  # pragma: no cover - Pillow loader failure propagates as warning
+            return None
+        qimage = QImage(qt_image)
+        pixmap = QPixmap.fromImage(qimage)
         if pixmap.isNull():
             return None
         return pixmap
