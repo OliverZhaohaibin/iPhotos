@@ -6,6 +6,7 @@ import importlib.util
 from pathlib import Path
 
 from PySide6.QtCore import QItemSelectionModel, QRect, QSize, Qt
+from PySide6.QtGui import QImageReader, QPixmap
 from PySide6.QtWidgets import (
     QFileDialog,
     QLabel,
@@ -24,6 +25,7 @@ from ..facade import AppFacade
 from .models.asset_model import AssetModel, Roles
 from .widgets.asset_delegate import AssetGridDelegate
 from .widgets.asset_grid import AssetGrid
+from .widgets.image_viewer import ImageViewer
 from .widgets.player_bar import PlayerBar
 from .widgets.preview_window import PreviewWindow
 from .media import MediaController, PlaylistController, require_multimedia
@@ -52,7 +54,8 @@ class MainWindow(QMainWindow):
         self._list_view = AssetGrid()
         self._status = QStatusBar()
         self._video_widget = QVideoWidget()
-        self._player_placeholder = QLabel("Select a video to start playback.")
+        self._image_viewer = ImageViewer()
+        self._player_placeholder = QLabel("Select a photo or video to preview.")
         self._player_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._player_placeholder.setStyleSheet(
             "background-color: black; color: white; font-size: 16px;"
@@ -108,6 +111,7 @@ class MainWindow(QMainWindow):
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
         self._player_stack.addWidget(self._player_placeholder)
+        self._player_stack.addWidget(self._image_viewer)
         self._player_stack.addWidget(self._video_widget)
         self._player_stack.setCurrentWidget(self._player_placeholder)
         player_layout.addWidget(self._player_stack)
@@ -116,21 +120,31 @@ class MainWindow(QMainWindow):
 
         self._list_view.setModel(self._asset_model)
         self._list_view.setItemDelegate(AssetGridDelegate(self._list_view))
-        self._list_view.setSelectionMode(AssetGrid.ExtendedSelection)
+        self._list_view.setSelectionMode(AssetGrid.SingleSelection)
         self._list_view.setViewMode(AssetGrid.IconMode)
         self._list_view.setIconSize(QSize(192, 192))
         self._list_view.setGridSize(QSize(194, 194))
-        self._list_view.setSpacing(2)
+        self._list_view.setSpacing(6)
         self._list_view.setUniformItemSizes(True)
         self._list_view.setResizeMode(AssetGrid.Adjust)
         self._list_view.setMovement(AssetGrid.Static)
-        self._list_view.setWrapping(True)
+        self._list_view.setFlow(self._list_view.LeftToRight)
+        self._list_view.setWrapping(False)
+        self._list_view.setHorizontalScrollMode(self._list_view.ScrollPerPixel)
+        self._list_view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._list_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._list_view.setWordWrap(False)
         self._list_view.setStyleSheet(
             "QListView::item { margin: 0px; padding: 0px; }"
         )
-        self._list_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        layout.addWidget(self._list_view, stretch=1)
+        strip_height = self._list_view.iconSize().height() + 24
+        self._list_view.setMinimumHeight(strip_height)
+        self._list_view.setMaximumHeight(strip_height + 16)
+        self._list_view.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        layout.addWidget(self._list_view, stretch=0)
 
         self.setCentralWidget(container)
         self.setStatusBar(self._status)
@@ -197,9 +211,14 @@ class MainWindow(QMainWindow):
     def _on_item_clicked(self, index) -> None:
         if not index.isValid():
             return
-        if not index.data(Roles.IS_VIDEO):
+        abs_path = index.data(Roles.ABS)
+        if not abs_path:
             return
-        self._playlist.set_current(index.row())
+        is_video = bool(index.data(Roles.IS_VIDEO))
+        if is_video:
+            self._playlist.set_current(index.row())
+            return
+        self._display_image(Path(abs_path))
 
     def _on_request_preview(self, index) -> None:
         if not index or not index.isValid():
@@ -222,17 +241,36 @@ class MainWindow(QMainWindow):
     def _cancel_preview(self) -> None:
         self._preview_window.close_preview(False)
 
+    def _display_image(self, source: Path) -> None:
+        pixmap = self._load_image_pixmap(source)
+        if pixmap is None:
+            self._status.showMessage(f"Unable to display {source.name}")
+            QMessageBox.warning(
+                self,
+                "iPhoto",
+                f"Could not load {source}",
+            )
+            return
+        self._preview_window.close_preview(False)
+        self._media.stop()
+        self._playlist.clear()
+        self._player_bar.reset()
+        self._player_bar.setEnabled(False)
+        self._image_viewer.set_pixmap(pixmap)
+        self._show_image_surface()
+        self._status.showMessage(f"Viewing {source.name}")
+
     def _on_playlist_current_changed(self, row: int) -> None:
         selection_model = self._list_view.selectionModel()
         if selection_model is None:
             return
-        selection_model.clearSelection()
         if row < 0:
             self._player_bar.reset()
             self._player_bar.setEnabled(False)
             self._media.stop()
             self._show_player_placeholder()
             return
+        selection_model.clearSelection()
         index = self._asset_model.index(row, 0)
         selection_model.select(
             index,
@@ -279,14 +317,31 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Player presentation helpers
     # ------------------------------------------------------------------
+    def _load_image_pixmap(self, source: Path) -> QPixmap | None:
+        reader = QImageReader(str(source))
+        reader.setAutoTransform(True)
+        image = reader.read()
+        if image.isNull():
+            return None
+        pixmap = QPixmap.fromImage(image)
+        if pixmap.isNull():
+            return None
+        return pixmap
+
     def _show_player_placeholder(self) -> None:
         """Ensure the placeholder is visible when nothing is selected."""
 
         if self._player_stack.currentWidget() is not self._player_placeholder:
             self._player_stack.setCurrentWidget(self._player_placeholder)
+        self._image_viewer.clear()
 
     def _show_video_surface(self) -> None:
         """Reveal the video widget inside the stacked player area."""
 
         if self._player_stack.currentWidget() is not self._video_widget:
             self._player_stack.setCurrentWidget(self._video_widget)
+        self._player_bar.setEnabled(True)
+
+    def _show_image_surface(self) -> None:
+        if self._player_stack.currentWidget() is not self._image_viewer:
+            self._player_stack.setCurrentWidget(self._image_viewer)

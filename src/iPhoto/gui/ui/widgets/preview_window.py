@@ -71,16 +71,22 @@ class PreviewWindow(QWidget):
         self._media.stop()
         self._media.load(path)
 
-        width = PREVIEW_WINDOW_DEFAULT_WIDTH
-        height = max(1, int(width * 9 / 16))
-        self.resize(width, height)
-
-        if at is not None:
-            if isinstance(at, QRect):
-                origin = at.topRight() + QPoint(16, 0)
-            else:
-                origin = at
+        if isinstance(at, QRect):
+            width = max(PREVIEW_WINDOW_DEFAULT_WIDTH, at.width())
+            height = max(int(width * 9 / 16), at.height())
+            width = max(width, int(height * 16 / 9))
+            self.resize(width, height)
+            center = at.center()
+            origin = QPoint(center.x() - self.width() // 2, center.y() - self.height() // 2)
+            origin = self._clamp_to_screen(origin)
             self.move(origin)
+        else:
+            width = PREVIEW_WINDOW_DEFAULT_WIDTH
+            height = max(1, int(width * 9 / 16))
+            self.resize(width, height)
+            if isinstance(at, QPoint):
+                origin = self._clamp_to_screen(at)
+                self.move(origin)
 
         self.show()
         self.raise_()
@@ -101,3 +107,17 @@ class PreviewWindow(QWidget):
         self._close_timer.stop()
         self._media.stop()
         self.hide()
+
+    def _clamp_to_screen(self, origin: QPoint) -> QPoint:
+        screen = self.screen()
+        if screen is None:
+            return origin
+        area = screen.availableGeometry()
+        min_x = area.x()
+        min_y = area.y()
+        max_x = area.x() + max(0, area.width() - self.width())
+        max_y = area.y() + max(0, area.height() - self.height())
+        return QPoint(
+            max(min_x, min(origin.x(), max_x)),
+            max(min_y, min(origin.y(), max_y)),
+        )
