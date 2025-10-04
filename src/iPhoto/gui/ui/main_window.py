@@ -6,7 +6,7 @@ import importlib.util
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QEvent, QItemSelectionModel, QRect, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QItemSelectionModel, QModelIndex, QRect, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QImage, QImageReader, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -453,6 +453,7 @@ class MainWindow(QMainWindow):
         self._sidebar.allPhotosSelected.connect(self._open_all_photos)
         self._sidebar.staticNodeSelected.connect(self._on_static_node_selected)
         self._sidebar.bindLibraryRequested.connect(self._show_bind_library_dialog)
+        self._sidebar.requestNewAlbum.connect(self._on_request_new_album)
         self._facade.albumOpened.connect(self._on_album_opened)
         self._asset_model.modelReset.connect(self._update_status)
         self._asset_model.rowsInserted.connect(self._update_status)
@@ -509,6 +510,18 @@ class MainWindow(QMainWindow):
         if bound_root is not None:
             self._context.settings.set("basic_library_path", str(bound_root))
             self._status.showMessage(f"Basic Library bound to {bound_root}")
+
+    def _on_request_new_album(self, index: QModelIndex) -> None:
+        model = self._sidebar.model()
+        parent_path = model.path_from_index(index)
+        if parent_path is None:
+            return
+        album = self._facade.create_album(parent_path)
+        if album is None:
+            return
+        self._context.library.scan_tree()
+        model.reload()
+        self._sidebar.select_path(album.root)
 
     def open_album_from_path(self, path: Path) -> None:
         """Open *path* as the active album."""

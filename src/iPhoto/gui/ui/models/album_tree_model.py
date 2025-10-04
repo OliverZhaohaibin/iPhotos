@@ -182,6 +182,19 @@ class AlbumTreeModel(QAbstractItemModel):
             return None
         return self._item_from_index(index)
 
+    def path_from_index(self, index: QModelIndex) -> Path | None:
+        """Return the filesystem path represented by *index*, if any."""
+
+        item = self.item_from_index(index)
+        if item is None or item.album is None:
+            return None
+        return item.album.path
+
+    def reload(self) -> None:
+        """Compatibility wrapper used by UI helpers to rebuild the tree."""
+
+        self.refresh()
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

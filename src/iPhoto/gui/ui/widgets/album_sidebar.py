@@ -5,8 +5,26 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QModelIndex, QPoint, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPalette, QPen
+from PySide6.QtCore import (
+    QEvent,
+    QModelIndex,
+    QPoint,
+    QPointF,
+    QRect,
+    QSize,
+    Qt,
+    Signal,
+    QVariantAnimation,
+)
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontMetrics,
+    QPainter,
+    QPalette,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
@@ -22,6 +40,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ....config import ALBUM_HOVER_FADE_MS, NEW_ALBUM_ICON_PATH
 from ....errors import LibraryError
 from ....library.manager import LibraryManager
 from ....library.tree import AlbumNode
@@ -45,6 +64,14 @@ DISABLED_TEXT = QColor(0, 0, 0, 90)
 SECTION_TEXT = QColor(0, 0, 0, 160)
 SEPARATOR_COLOR = QColor(0, 0, 0, 40)
 
+NEW_BUTTON_BG = QColor(0, 0, 0, 32)
+NEW_BUTTON_BG_ACTIVE = QColor(0, 0, 0, 96)
+NEW_BUTTON_ICON = QColor(245, 245, 245)
+
+BUTTON_MARGIN = 8
+BUTTON_MIN_SIZE = 22
+BUTTON_ICON_RATIO = 0.55
+
 ROW_HEIGHT = 36
 ROW_RADIUS = 10
 LEFT_PADDING = 14
@@ -53,6 +80,21 @@ ICON_TEXT_GAP = 10
 
 class AlbumSidebarDelegate(QStyledItemDelegate):
     """Custom delegate painting the sidebar with a macOS inspired style."""
+
+    def __init__(self, view: QTreeView) -> None:
+        super().__init__(view)
+        self._view = view
+        self._hover_index = QModelIndex()
+        self._hover_opacity = 0.0
+        self._target_opacity = 0.0
+        self._button_hot = False
+        self._animation = QVariantAnimation(self)
+        self._animation.setDuration(ALBUM_HOVER_FADE_MS)
+        self._animation.valueChanged.connect(self._on_animation_value_changed)
+        self._animation.finished.connect(self._on_animation_finished)
+        icon_path = Path(__file__).resolve().parents[3] / NEW_ALBUM_ICON_PATH
+        self._icon_source = QPixmap(str(icon_path))
+        self._icon_cache: dict[int, QPixmap] = {}
 
     def sizeHint(  # noqa: D401 - inherited docstring
         self, option: QStyleOptionViewItem, _index: QModelIndex
@@ -138,7 +180,144 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         elided = metrics.elidedText(text, Qt.TextElideMode.ElideRight, text_rect.width())
         painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, elided)
 
+        if self._should_draw_new_album(node_type, index):
+            self._paint_new_album_button(painter, option)
+
         painter.restore()
+
+    # ------------------------------------------------------------------
+    # Hover state helpers
+    # ------------------------------------------------------------------
+    def set_hover_index(self, index: QModelIndex, *, hot: bool) -> None:
+        if not index.isValid() or not self._is_album_node(index):
+            self.clear_hover()
+            return
+        if self._hover_index == index:
+            if self._button_hot != hot:
+                self._button_hot = hot
+                self._update_index(index)
+            if self._target_opacity != 1.0:
+                self._animate_to(1.0)
+            return
+        previous = self._hover_index
+        self._hover_index = QModelIndex(index)
+        self._button_hot = hot
+        self._animate_to(1.0)
+        self._update_index(previous)
+        self._update_index(self._hover_index)
+
+    def clear_hover(self) -> None:
+        if not self._hover_index.isValid() and self._hover_opacity == 0.0:
+            return
+        self._button_hot = False
+        self._animate_to(0.0)
+
+    def reset(self) -> None:
+        self._animation.stop()
+        self._hover_index = QModelIndex()
+        self._hover_opacity = 0.0
+        self._target_opacity = 0.0
+        self._button_hot = False
+
+    # ------------------------------------------------------------------
+    # Painting helpers
+    # ------------------------------------------------------------------
+    def _should_draw_new_album(self, node_type: NodeType, index: QModelIndex) -> bool:
+        return (
+            node_type == NodeType.ALBUM
+            and self._hover_index.isValid()
+            and index == self._hover_index
+            and self._hover_opacity > 0.0
+        )
+
+    def _paint_new_album_button(self, painter: QPainter, option: QStyleOptionViewItem) -> None:
+        rect = self._button_rect(option)
+        if rect.width() <= 0 or rect.height() <= 0:
+            return
+        painter.save()
+        painter.setOpacity(self._hover_opacity)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(NEW_BUTTON_BG_ACTIVE if self._button_hot else NEW_BUTTON_BG)
+        radius = rect.height() / 2
+        painter.drawRoundedRect(rect, radius, radius)
+        icon_size = int(rect.height() * BUTTON_ICON_RATIO)
+        icon = self._icon_for_size(icon_size)
+        if not icon.isNull():
+            icon_rect = QRect(rect)
+            dx = (rect.width() - icon.width()) // 2
+            dy = (rect.height() - icon.height()) // 2
+            icon_rect.adjust(dx, dy, -dx, -dy)
+            painter.drawPixmap(icon_rect, icon)
+        painter.restore()
+
+    def _button_rect(self, option: QStyleOptionViewItem) -> QRect:
+        size = max(BUTTON_MIN_SIZE, min(option.rect.height() - 8, option.rect.height()))
+        left = option.rect.right() - BUTTON_MARGIN - size
+        top = option.rect.center().y() - (size // 2)
+        return QRect(left, top, size, size)
+
+    def _icon_for_size(self, size: int) -> QPixmap:
+        size = max(12, size)
+        cached = self._icon_cache.get(size)
+        if cached is not None:
+            return cached
+        if self._icon_source.isNull():
+            return QPixmap()
+        scaled = self._icon_source.scaled(
+            size,
+            size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        tinted = QPixmap(scaled.size())
+        tinted.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(tinted)
+        painter.drawPixmap(0, 0, scaled)
+        painter.setCompositionMode(QPainter.CompositionMode_SourceIn)
+        painter.fillRect(tinted.rect(), NEW_BUTTON_ICON)
+        painter.end()
+        self._icon_cache[size] = tinted
+        return tinted
+
+    def button_rect_for_index(self, index: QModelIndex) -> QRect:
+        if not index.isValid() or not self._is_album_node(index):
+            return QRect()
+        option = self._view.viewOptions()
+        option.rect = self._view.visualRect(index)
+        return self._button_rect(option)
+
+    def hit_test_button(self, index: QModelIndex, pos: QPoint) -> bool:
+        rect = self.button_rect_for_index(index)
+        return rect.contains(pos)
+
+    def _update_index(self, index: QModelIndex) -> None:
+        if not index.isValid():
+            return
+        rect = self._view.visualRect(index)
+        self._view.viewport().update(rect.adjusted(-2, -2, 2, 2))
+
+    def _animate_to(self, value: float) -> None:
+        self._animation.stop()
+        self._animation.setStartValue(self._hover_opacity)
+        self._animation.setEndValue(value)
+        self._target_opacity = value
+        self._animation.start()
+
+    def _on_animation_value_changed(self, value: float) -> None:
+        self._hover_opacity = float(value)
+        if self._hover_index.isValid():
+            self._update_index(self._hover_index)
+
+    def _on_animation_finished(self) -> None:
+        if self._target_opacity == 0.0:
+            index = self._hover_index
+            self._hover_index = QModelIndex()
+            self._update_index(index)
+
+    def _is_album_node(self, index: QModelIndex) -> bool:
+        node_type = index.data(AlbumTreeRole.NODE_TYPE)
+        return node_type == NodeType.ALBUM
 
 
 class AlbumSidebar(QWidget):
@@ -148,6 +327,7 @@ class AlbumSidebar(QWidget):
     allPhotosSelected = Signal()
     staticNodeSelected = Signal(str)
     bindLibraryRequested = Signal()
+    requestNewAlbum = Signal(QModelIndex)
 
     ALL_PHOTOS_TITLE = (
         AlbumTreeModel.STATIC_NODES[0]
@@ -195,7 +375,8 @@ class AlbumSidebar(QWidget):
         self._tree.setIconSize(QSize(18, 18))
         self._tree.setMouseTracking(True)
         self._tree.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
-        self._tree.setItemDelegate(AlbumSidebarDelegate(self._tree))
+        self._delegate = AlbumSidebarDelegate(self._tree)
+        self._tree.setItemDelegate(self._delegate)
         self._tree.setFrameShape(QFrame.Shape.NoFrame)
         self._tree.setAlternatingRowColors(False)
         self._tree.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -211,6 +392,7 @@ class AlbumSidebar(QWidget):
             "QTreeView::item:selected { background: transparent; }"
             "QTreeView::item:hover { background: transparent; }"
         )
+        self._tree.viewport().installEventFilter(self)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
@@ -219,6 +401,7 @@ class AlbumSidebar(QWidget):
         layout.addWidget(self._tree, stretch=1)
 
         self._model.modelReset.connect(self._on_model_reset)
+        self._model.modelReset.connect(self._delegate.reset)
         self._expand_defaults()
         self._update_title()
 
@@ -299,6 +482,11 @@ class AlbumSidebar(QWidget):
         self._tree.setCurrentIndex(index)
         self._tree.scrollTo(index)
 
+    def model(self) -> AlbumTreeModel:
+        """Expose the underlying model for coordinating actions."""
+
+        return self._model
+
     def select_all_photos(self) -> None:
         """Select the "All Photos" static node if it is available."""
 
@@ -342,6 +530,35 @@ class AlbumSidebar(QWidget):
             menu.addAction("Set Basic Library…", self.bindLibraryRequested.emit)
         if not menu.isEmpty():
             menu.exec(global_pos)
+
+    # ------------------------------------------------------------------
+    # Event filter handling hover/click for the new album affordance
+    # ------------------------------------------------------------------
+    def eventFilter(self, obj, event):  # pragma: no cover - GUI behaviour
+        if obj is self._tree.viewport():
+            if event.type() in {QEvent.Type.MouseMove, QEvent.Type.HoverMove}:
+                pos = self._event_pos(event)
+                index = self._tree.indexAt(pos)
+                hot = self._delegate.hit_test_button(index, pos) if index.isValid() else False
+                self._delegate.set_hover_index(index, hot=hot)
+            elif event.type() in {QEvent.Type.Leave, QEvent.Type.HoverLeave}:
+                self._delegate.clear_hover()
+            elif event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                pos = event.pos()
+                index = self._tree.indexAt(pos)
+                if self._delegate.hit_test_button(index, pos):
+                    self.requestNewAlbum.emit(index)
+                    self._delegate.clear_hover()
+                    return True
+        return super().eventFilter(obj, event)
+
+    @staticmethod
+    def _event_pos(event) -> QPoint:
+        if hasattr(event, "position"):
+            point = event.position()
+            if isinstance(point, QPointF):
+                return QPoint(int(point.x()), int(point.y()))
+        return event.pos()
 
     def _prompt_new_album(self, parent_item: Optional[AlbumTreeItem] = None) -> None:
         base_item = None

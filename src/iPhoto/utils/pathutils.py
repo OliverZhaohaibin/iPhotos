@@ -8,6 +8,27 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 
+def ensure_unique_subfolder(parent: Path, base_name: str) -> Path:
+    """Return a unique sub-folder path under *parent* based on *base_name*.
+
+    The helper mirrors macOS behaviour by appending an incrementing suffix when a
+    folder with the desired name already exists (e.g. ``"New Album 2"``). The
+    returned path is **not** created; callers are responsible for invoking
+    :meth:`Path.mkdir` once any additional validation has been performed.
+    """
+
+    if not parent.exists() or not parent.is_dir():
+        raise FileNotFoundError(f"Parent directory does not exist: {parent}")
+
+    normalized = base_name.strip() or "New Folder"
+    candidate = parent / normalized
+    suffix = 2
+    while candidate.exists():
+        candidate = parent / f"{normalized} {suffix}"
+        suffix += 1
+    return candidate
+
+
 def _expand(pattern: str) -> Iterator[str]:
     match = re.search(r"\{([^}]+)\}", pattern)
     if not match:

@@ -38,6 +38,35 @@ class Album:
         return Album(root, manifest)
 
     @staticmethod
+    def init(root: Path, *, title: Optional[str] = None) -> "Album":
+        """Create a brand-new album directory rooted at *root*.
+
+        The directory is created along with an initial manifest matching the
+        schema enforced elsewhere in the application. A convenience marker file
+        ``.iphoto.album`` is also written to aid discovery when metadata is
+        missing.
+        """
+
+        root.mkdir(parents=True, exist_ok=False)
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        manifest = {
+            "schema": "iPhoto/album@1",
+            "title": title or root.name,
+            "created": now,
+            "modified": now,
+            "cover": "",
+            "featured": [],
+            "filters": {},
+            "tags": [],
+        }
+        album = Album(root, manifest)
+        album.save()
+        marker = root / ".iphoto.album"
+        if not marker.exists():
+            marker.touch()
+        return album
+
+    @staticmethod
     def _find_manifest(root: Path) -> Optional[Path]:
         for name in ALBUM_MANIFEST_NAMES:
             candidate = root / name

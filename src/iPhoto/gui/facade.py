@@ -8,8 +8,10 @@ from typing import List, Optional
 from PySide6.QtCore import QObject, Signal
 
 from .. import app as backend
+from ..config import NEW_ALBUM_DEFAULT_NAME
 from ..errors import IPhotoError
 from ..models.album import Album
+from ..utils.pathutils import ensure_unique_subfolder
 
 
 class AppFacade(QObject):
@@ -74,6 +76,22 @@ class AppFacade(QObject):
             return []
         self.linksUpdated.emit(album.root)
         return [group.__dict__ for group in groups]
+
+    # ------------------------------------------------------------------
+    # Album creation helpers
+    # ------------------------------------------------------------------
+    def create_album(self, parent: Path, *, base_name: Optional[str] = None) -> Optional[Album]:
+        """Create a new sub-album under *parent* and return the resulting album."""
+
+        name = base_name or NEW_ALBUM_DEFAULT_NAME
+        try:
+            target = ensure_unique_subfolder(parent, name)
+            album = Album.init(target, title=target.name)
+        except (FileNotFoundError, OSError, IPhotoError) as exc:
+            self.errorRaised.emit(str(exc))
+            return None
+        self.indexUpdated.emit(parent)
+        return album
 
     # ------------------------------------------------------------------
     # Manifest helpers

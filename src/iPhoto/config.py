@@ -19,6 +19,14 @@ ALBUM_MANIFEST_NAMES: Final[list[str]] = [".iphoto.album.json", ".iPhoto/manifes
 WORK_DIR_NAME: Final[str] = ".iPhoto"
 
 # ---------------------------------------------------------------------------
+# Album creation helpers
+# ---------------------------------------------------------------------------
+
+ALBUM_HOVER_FADE_MS: Final[int] = 200
+NEW_ALBUM_ICON_PATH: Final[str] = "gui/ui/icon/plus.circle.svg"
+NEW_ALBUM_DEFAULT_NAME: Final[str] = "New Album"
+
+# ---------------------------------------------------------------------------
 # UI interaction constants
 # ---------------------------------------------------------------------------
 
