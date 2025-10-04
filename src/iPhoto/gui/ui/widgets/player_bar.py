@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -14,9 +14,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
-
-SCRUB_REFRESH_INTERVAL_MS = 33
 
 
 class PlayerBar(QWidget):
@@ -41,11 +38,6 @@ class PlayerBar(QWidget):
         self._play_button = self._create_tool_button("▶", "Play/Pause")
         self._play_button.setCheckable(False)
         self._next_button = self._create_tool_button("⏭", "Next video")
-
-        self._scrub_pending_value: Optional[int] = None
-        self._scrub_timer = QTimer(self)
-        self._scrub_timer.setSingleShot(True)
-        self._scrub_timer.timeout.connect(self._emit_pending_scrub)
 
         self._position_slider = QSlider(Qt.Orientation.Horizontal, self)
         self._position_slider.setRange(0, 0)
@@ -166,26 +158,19 @@ class PlayerBar(QWidget):
 
     def _on_slider_pressed(self) -> None:
         self._scrubbing = True
-        self._scrub_pending_value = self._position_slider.value()
-        self._schedule_scrub_emit(immediate=True)
+        self.seekRequested.emit(self._position_slider.value())
         self.scrubStarted.emit()
 
     def _on_slider_released(self) -> None:
         self._scrubbing = False
-        self._scrub_timer.stop()
         self.seekRequested.emit(self._position_slider.value())
-        self._scrub_pending_value = None
         self.scrubFinished.emit()
 
     def _on_slider_value_changed(self, value: int) -> None:
         if self._updating_position:
             return
         self._elapsed_label.setText(self._format_ms(value))
-        if self._scrubbing:
-            self._scrub_pending_value = value
-            self._schedule_scrub_emit()
-        else:
-            self.seekRequested.emit(value)
+        self.seekRequested.emit(value)
 
     def sizeHint(self) -> QSize:  # pragma: no cover - Qt sizing
         base = super().sizeHint()
@@ -211,28 +196,6 @@ class PlayerBar(QWidget):
                 self._bar._updating_position = False
 
         return _Guard(self)
-
-    # ------------------------------------------------------------------
-    # Scrubbing helpers
-    # ------------------------------------------------------------------
-    def _schedule_scrub_emit(self, *, immediate: bool = False) -> None:
-        if not self._scrubbing:
-            return
-        if immediate:
-            self._emit_pending_scrub()
-            return
-        if self._scrub_timer.isActive():
-            return
-        self._scrub_timer.start(SCRUB_REFRESH_INTERVAL_MS)
-
-    def _emit_pending_scrub(self) -> None:
-        if self._scrub_pending_value is None:
-            return
-        value = self._scrub_pending_value
-        self._scrub_pending_value = None
-        self.seekRequested.emit(value)
-        if self._scrubbing:
-            self._scrub_timer.start(SCRUB_REFRESH_INTERVAL_MS)
 
     # ------------------------------------------------------------------
     # Formatting
