@@ -26,3 +26,8 @@ LONG_PRESS_THRESHOLD_MS: Final[int] = 350
 PREVIEW_WINDOW_DEFAULT_WIDTH: Final[int] = 640
 PREVIEW_WINDOW_MUTED: Final[bool] = True
 PREVIEW_WINDOW_CLOSE_DELAY_MS: Final[int] = 150
+
+# Maximum number of bytes to preload into memory for the active video. When the
+# file on disk is smaller than this threshold the media controller will stream
+# it from RAM to make seeking as responsive as possible.
+VIDEO_MEMORY_CACHE_MAX_BYTES: Final[int] = 512 * 1024 * 1024

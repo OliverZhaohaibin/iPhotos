@@ -6,12 +6,14 @@ import importlib.util
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QObject, QUrl, Signal
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, QUrl, Signal
 
 if importlib.util.find_spec("PySide6.QtMultimedia") is not None:
     from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 else:  # pragma: no cover - requires optional Qt module
     QAudioOutput = QMediaPlayer = None  # type: ignore[assignment]
+
+from iPhoto.config import VIDEO_MEMORY_CACHE_MAX_BYTES
 
 
 def is_multimedia_available() -> bool:
@@ -51,6 +53,8 @@ class MediaController(QObject):
         self._audio = QAudioOutput(self)
         self._player.setAudioOutput(self._audio)
         self._current_source: Optional[Path] = None
+        self._memory_data: Optional[QByteArray] = None
+        self._memory_buffer: Optional[QBuffer] = None
 
         self._player.positionChanged.connect(self._on_position_changed)
         self._player.durationChanged.connect(self._on_duration_changed)
@@ -72,6 +76,31 @@ class MediaController(QObject):
         """Load media from *path* without immediately starting playback."""
 
         self._current_source = path
+        self._release_memory_buffer()
+
+        if VIDEO_MEMORY_CACHE_MAX_BYTES > 0:
+            try:
+                file_size = path.stat().st_size
+            except OSError:
+                file_size = None
+            else:
+                if file_size <= VIDEO_MEMORY_CACHE_MAX_BYTES:
+                    try:
+                        payload = path.read_bytes()
+                    except (OSError, MemoryError):
+                        payload = None
+                    else:
+                        buffer_data = QByteArray(payload)
+                        buffer = QBuffer(self)
+                        buffer.setData(buffer_data)
+                        if buffer.open(QIODevice.ReadOnly):
+                            self._memory_data = buffer_data
+                            self._memory_buffer = buffer
+                            self._player.setSourceDevice(
+                                buffer, QUrl.fromLocalFile(str(path))
+                            )
+                            return
+
         self._player.setSource(QUrl.fromLocalFile(str(path)))
 
     def play(self) -> None:
@@ -150,3 +179,11 @@ class MediaController(QObject):
             self.errorOccurred.emit(message)
         else:  # pragma: no cover - Qt may provide empty strings
             self.errorOccurred.emit("An unknown media playback error occurred.")
+
+    def _release_memory_buffer(self) -> None:
+        """Release any in-memory cached media payload."""
+
+        if self._memory_buffer is not None and self._memory_buffer.isOpen():
+            self._memory_buffer.close()
+        self._memory_buffer = None
+        self._memory_data = None
