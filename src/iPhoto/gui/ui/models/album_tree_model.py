@@ -11,6 +11,7 @@ from PySide6.QtCore import QAbstractItemModel, QModelIndex, QObject, Qt
 
 from ....library.manager import LibraryManager
 from ....library.tree import AlbumNode
+from ..icons import load_icon
 
 
 class AlbumTreeRole(int, Enum):
@@ -74,6 +75,15 @@ class AlbumTreeModel(QAbstractItemModel):
 
     TRAILING_STATIC_NODES: tuple[str, ...] = ("Recently Deleted",)
 
+    _STATIC_ICON_NAMES: dict[str, str] = {
+        "All Photos": "photo.on.rectangle.svg",
+        "Videos": "video.fill.svg",
+        "Live Photos": "livephoto.svg",
+        "Favorites": "suit.heart.fill.svg",
+        "Recently Deleted": "trash.svg",
+    }
+    _STATIC_ICON_COLOR = "#1e73ff"
+
     def __init__(self, library: LibraryManager, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._library = library
@@ -117,6 +127,12 @@ class AlbumTreeModel(QAbstractItemModel):
             return item.title
         if role == Qt.ItemDataRole.ToolTipRole and item.album is not None:
             return str(item.album.path)
+        if role == Qt.ItemDataRole.DecorationRole:
+            icon_name = None
+            if item.node_type == NodeType.STATIC:
+                icon_name = self._STATIC_ICON_NAMES.get(item.title)
+            if icon_name:
+                return load_icon(icon_name, color=self._STATIC_ICON_COLOR)
         if role == AlbumTreeRole.NODE_TYPE:
             return item.node_type
         if role == AlbumTreeRole.ALBUM_NODE:

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Optional
 
 from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -14,6 +15,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from ..icons import load_icon
 
 
 class PlayerBar(QWidget):
@@ -34,10 +37,21 @@ class PlayerBar(QWidget):
         self._updating_position = False
         self._scrubbing = False
 
-        self._prev_button = self._create_tool_button("⏮", "Previous video")
-        self._play_button = self._create_tool_button("▶", "Play/Pause")
+        icon_color = "#ffffff"
+        muted_color = "#a0a0a0"
+        self._prev_icon = load_icon(
+            "play.fill.svg", color=icon_color, mirror_horizontal=True
+        )
+        self._play_icon = load_icon("play.fill.svg", color=icon_color)
+        self._pause_icon = load_icon("pause.fill.svg", color=icon_color)
+        self._next_icon = load_icon("play.fill.svg", color=icon_color)
+        self._volume_icon = load_icon("speaker.3.fill.svg", color=icon_color)
+        self._muted_icon = load_icon("speaker.3.fill.svg", color=muted_color)
+
+        self._prev_button = self._create_tool_button(self._prev_icon, "Previous video")
+        self._play_button = self._create_tool_button(self._play_icon, "Play")
         self._play_button.setCheckable(False)
-        self._next_button = self._create_tool_button("⏭", "Next video")
+        self._next_button = self._create_tool_button(self._next_icon, "Next video")
 
         self._position_slider = QSlider(Qt.Orientation.Horizontal, self)
         self._position_slider.setRange(0, 0)
@@ -56,7 +70,9 @@ class PlayerBar(QWidget):
         self._volume_slider.setFixedWidth(110)
         self._volume_slider.setToolTip("Volume")
 
-        self._mute_button = self._create_tool_button("🔇", "Mute", checkable=True)
+        self._mute_button = self._create_tool_button(
+            self._volume_icon, "Mute", checkable=True
+        )
 
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         layout = QVBoxLayout(self)
@@ -90,7 +106,7 @@ class PlayerBar(QWidget):
         self._prev_button.clicked.connect(self.previousRequested.emit)
         self._play_button.clicked.connect(self.playPauseRequested.emit)
         self._next_button.clicked.connect(self.nextRequested.emit)
-        self._mute_button.toggled.connect(self.muteToggled.emit)
+        self._mute_button.toggled.connect(self._on_mute_toggled)
         self._volume_slider.valueChanged.connect(self._on_volume_changed)
         self._position_slider.sliderPressed.connect(self._on_slider_pressed)
         self._position_slider.sliderReleased.connect(self._on_slider_released)
@@ -134,9 +150,13 @@ class PlayerBar(QWidget):
 
         name = getattr(state, "name", None)
         if name == "PlayingState":
-            self._play_button.setText("⏸")
+            self._play_button.setIcon(self._pause_icon)
+            self._play_button.setToolTip("Pause")
+            self._play_button.setAccessibleName("Pause")
         else:
-            self._play_button.setText("▶")
+            self._play_button.setIcon(self._play_icon)
+            self._play_button.setToolTip("Play")
+            self._play_button.setAccessibleName("Play")
 
     def set_volume(self, volume: int) -> None:
         """Synchronise the volume slider without emitting signals."""
@@ -151,6 +171,10 @@ class PlayerBar(QWidget):
 
         was_blocked = self._mute_button.blockSignals(True)
         self._mute_button.setChecked(muted)
+        self._mute_button.setIcon(self._muted_icon if muted else self._volume_icon)
+        tooltip = "Unmute" if muted else "Mute"
+        self._mute_button.setToolTip(tooltip)
+        self._mute_button.setAccessibleName(tooltip)
         self._mute_button.blockSignals(was_blocked)
 
     def reset(self) -> None:
@@ -158,13 +182,22 @@ class PlayerBar(QWidget):
 
         self.set_duration(0)
         self.set_position(0)
-        self._play_button.setText("▶")
+        self._play_button.setIcon(self._play_icon)
+        self._play_button.setToolTip("Play")
+        self._play_button.setAccessibleName("Play")
 
     # ------------------------------------------------------------------
     # Slots
     # ------------------------------------------------------------------
     def _on_volume_changed(self, value: int) -> None:
         self.volumeChanged.emit(value)
+
+    def _on_mute_toggled(self, muted: bool) -> None:
+        self._mute_button.setIcon(self._muted_icon if muted else self._volume_icon)
+        tooltip = "Unmute" if muted else "Mute"
+        self._mute_button.setToolTip(tooltip)
+        self._mute_button.setAccessibleName(tooltip)
+        self.muteToggled.emit(muted)
 
     def _on_slider_pressed(self) -> None:
         self._scrubbing = True
@@ -223,11 +256,12 @@ class PlayerBar(QWidget):
     # Styling helpers
     # ------------------------------------------------------------------
     def _create_tool_button(
-        self, text: str, tooltip: str, *, checkable: bool = False
+        self, icon: QIcon, tooltip: str, *, checkable: bool = False
     ) -> QToolButton:
         button = QToolButton(self)
-        button.setText(text)
+        button.setIcon(icon)
         button.setToolTip(tooltip)
+        button.setAccessibleName(tooltip)
         button.setAutoRaise(True)
         button.setCheckable(checkable)
         button.setIconSize(QSize(28, 28))
