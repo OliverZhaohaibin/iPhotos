@@ -10,6 +10,7 @@ from PySide6.QtGui import QImageReader, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFileDialog,
+    QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QStatusBar,
     QToolBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -53,6 +55,7 @@ class MainWindow(QMainWindow):
         self._facade: AppFacade = context.facade
         self._asset_model = AssetModel(self._facade)
         self._album_label = QLabel("Open a folder to browse your photos.")
+        self._grid_view = AssetGrid()
         self._list_view = AssetGrid()
         self._status = QStatusBar()
         self._video_widget = QVideoWidget()
@@ -67,6 +70,9 @@ class MainWindow(QMainWindow):
             QSizePolicy.Policy.Expanding,
         )
         self._player_stack = QStackedWidget()
+        self._view_stack = QStackedWidget()
+        self._gallery_page: QWidget | None = None
+        self._detail_page: QWidget | None = None
         self._player_bar = PlayerBar()
         self._player_bar.setEnabled(False)
         self._media = MediaController(self)
@@ -74,6 +80,7 @@ class MainWindow(QMainWindow):
         self._playlist = PlaylistController(self)
         self._playlist.bind_model(self._asset_model)
         self._preview_window = PreviewWindow(self)
+        self._back_button = QToolButton()
         self.setWindowTitle("iPhoto")
         self.resize(1200, 720)
         self._build_ui()
@@ -101,6 +108,51 @@ class MainWindow(QMainWindow):
         self._album_label.setObjectName("albumLabel")
         layout.addWidget(self._album_label)
 
+        gallery_page = QWidget()
+        self._gallery_page = gallery_page
+        gallery_layout = QVBoxLayout(gallery_page)
+        gallery_layout.setContentsMargins(0, 0, 0, 0)
+        gallery_layout.setSpacing(0)
+        self._grid_view.setModel(self._asset_model)
+        self._grid_view.setItemDelegate(AssetGridDelegate(self._grid_view))
+        self._grid_view.setSelectionMode(QListView.SelectionMode.SingleSelection)
+        self._grid_view.setViewMode(QListView.ViewMode.IconMode)
+        self._grid_view.setIconSize(QSize(192, 192))
+        self._grid_view.setGridSize(QSize(194, 194))
+        self._grid_view.setSpacing(6)
+        self._grid_view.setUniformItemSizes(True)
+        self._grid_view.setResizeMode(QListView.ResizeMode.Adjust)
+        self._grid_view.setMovement(QListView.Movement.Static)
+        self._grid_view.setFlow(QListView.Flow.LeftToRight)
+        self._grid_view.setWrapping(True)
+        self._grid_view.setHorizontalScrollMode(
+            QAbstractItemView.ScrollMode.ScrollPerPixel
+        )
+        self._grid_view.setVerticalScrollMode(
+            QAbstractItemView.ScrollMode.ScrollPerPixel
+        )
+        self._grid_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._grid_view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._grid_view.setWordWrap(False)
+        gallery_layout.addWidget(self._grid_view)
+
+        detail_page = QWidget()
+        self._detail_page = detail_page
+        detail_layout = QVBoxLayout(detail_page)
+        detail_layout.setContentsMargins(0, 0, 0, 0)
+        detail_layout.setSpacing(6)
+        header = QWidget()
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(6)
+        self._back_button.setText("← Back")
+        self._back_button.setToolTip("Return to grid view")
+        self._back_button.setAutoRaise(True)
+        self._back_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        header_layout.addWidget(self._back_button)
+        header_layout.addStretch(1)
+        detail_layout.addWidget(header)
+
         player_container = QWidget()
         player_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         player_layout = QVBoxLayout(player_container)
@@ -118,7 +170,7 @@ class MainWindow(QMainWindow):
         self._player_stack.setCurrentWidget(self._player_placeholder)
         player_layout.addWidget(self._player_stack)
         player_layout.addWidget(self._player_bar)
-        layout.addWidget(player_container)
+        detail_layout.addWidget(player_container)
 
         self._list_view.setModel(self._asset_model)
         self._list_view.setItemDelegate(AssetGridDelegate(self._list_view))
@@ -148,7 +200,12 @@ class MainWindow(QMainWindow):
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Fixed,
         )
-        layout.addWidget(self._list_view, stretch=0)
+        detail_layout.addWidget(self._list_view, stretch=0)
+
+        self._view_stack.addWidget(gallery_page)
+        self._view_stack.addWidget(detail_page)
+        self._view_stack.setCurrentWidget(gallery_page)
+        layout.addWidget(self._view_stack)
 
         self.setCentralWidget(container)
         self.setStatusBar(self._status)
@@ -160,8 +217,12 @@ class MainWindow(QMainWindow):
         self._asset_model.modelReset.connect(self._update_status)
         self._asset_model.rowsInserted.connect(self._update_status)
         self._asset_model.rowsRemoved.connect(self._update_status)
-        self._list_view.itemClicked.connect(self._on_item_clicked)
-        self._list_view.requestPreview.connect(self._on_request_preview)
+        self._grid_view.itemClicked.connect(self._on_grid_item_clicked)
+        self._grid_view.requestPreview.connect(self._on_grid_request_preview)
+        self._grid_view.previewReleased.connect(self._close_preview_after_release)
+        self._grid_view.previewCancelled.connect(self._cancel_preview)
+        self._list_view.itemClicked.connect(self._on_filmstrip_item_clicked)
+        self._list_view.requestPreview.connect(self._on_filmstrip_request_preview)
         self._list_view.previewReleased.connect(self._close_preview_after_release)
         self._list_view.previewCancelled.connect(self._cancel_preview)
         self._playlist.currentChanged.connect(self._on_playlist_current_changed)
@@ -178,6 +239,7 @@ class MainWindow(QMainWindow):
         self._media.volumeChanged.connect(self._player_bar.set_volume)
         self._media.mutedChanged.connect(self._player_bar.set_muted)
         self._media.errorOccurred.connect(self._show_error)
+        self._back_button.clicked.connect(self._show_gallery_view)
 
     # ------------------------------------------------------------------
     # Event handlers
@@ -201,6 +263,7 @@ class MainWindow(QMainWindow):
         title = self._facade.current_album.manifest.get("title") if self._facade.current_album else root.name
         self._album_label.setText(f"{title} — {root}")
         self._update_status()
+        self._show_gallery_view()
 
     def _update_status(self) -> None:
         count = self._asset_model.rowCount()
@@ -212,19 +275,32 @@ class MainWindow(QMainWindow):
             message = f"{count} assets indexed"
         self._status.showMessage(message)
 
-    def _on_item_clicked(self, index) -> None:
-        if not index.isValid():
+    def _on_grid_item_clicked(self, index) -> None:
+        self._activate_index(index)
+
+    def _on_filmstrip_item_clicked(self, index) -> None:
+        self._activate_index(index)
+
+    def _activate_index(self, index) -> None:
+        if not index or not index.isValid():
             return
         abs_path = index.data(Roles.ABS)
         if not abs_path:
             return
-        is_video = bool(index.data(Roles.IS_VIDEO))
-        if is_video:
-            self._playlist.set_current(index.row())
+        row = index.row()
+        if bool(index.data(Roles.IS_VIDEO)):
+            self._show_detail_view()
+            self._playlist.set_current(row)
             return
-        self._display_image(Path(abs_path))
+        self._display_image(Path(abs_path), row=row)
 
-    def _on_request_preview(self, index) -> None:
+    def _on_grid_request_preview(self, index) -> None:
+        self._show_preview_for_index(self._grid_view, index)
+
+    def _on_filmstrip_request_preview(self, index) -> None:
+        self._show_preview_for_index(self._list_view, index)
+
+    def _show_preview_for_index(self, view: AssetGrid, index) -> None:
         if not index or not index.isValid():
             return
         if not index.data(Roles.IS_VIDEO):
@@ -232,9 +308,9 @@ class MainWindow(QMainWindow):
         abs_path = index.data(Roles.ABS)
         if not abs_path:
             return
-        rect = self._list_view.visualRect(index)
+        rect = view.visualRect(index)
         global_rect = QRect(
-            self._list_view.viewport().mapToGlobal(rect.topLeft()),
+            view.viewport().mapToGlobal(rect.topLeft()),
             rect.size(),
         )
         self._preview_window.show_preview(Path(abs_path), global_rect)
@@ -245,7 +321,7 @@ class MainWindow(QMainWindow):
     def _cancel_preview(self) -> None:
         self._preview_window.close_preview(False)
 
-    def _display_image(self, source: Path) -> None:
+    def _display_image(self, source: Path, row: int | None = None) -> None:
         pixmap = self._load_image_pixmap(source)
         if pixmap is None:
             self._status.showMessage(f"Unable to display {source.name}")
@@ -262,6 +338,9 @@ class MainWindow(QMainWindow):
         self._player_bar.setEnabled(False)
         self._image_viewer.set_pixmap(pixmap)
         self._show_image_surface()
+        self._show_detail_view()
+        if row is not None:
+            self._select_filmstrip_row(row)
         self._status.showMessage(f"Viewing {source.name}")
 
     def _on_playlist_current_changed(self, row: int) -> None:
@@ -273,6 +352,7 @@ class MainWindow(QMainWindow):
             self._player_bar.setEnabled(False)
             self._media.stop()
             self._show_player_placeholder()
+            selection_model.clearSelection()
             return
         selection_model.clearSelection()
         index = self._asset_model.index(row, 0)
@@ -287,6 +367,7 @@ class MainWindow(QMainWindow):
         )
         self._list_view.scrollTo(index)
         self._player_bar.setEnabled(True)
+        self._show_detail_view()
 
     def _on_playlist_source_changed(self, source: Path) -> None:
         self._preview_window.close_preview(False)
@@ -295,6 +376,7 @@ class MainWindow(QMainWindow):
         self._player_bar.set_position(0)
         self._player_bar.set_duration(0)
         self._show_video_surface()
+        self._show_detail_view()
         self._media.play()
         self._status.showMessage(f"Playing {source.name}")
 
@@ -349,3 +431,37 @@ class MainWindow(QMainWindow):
     def _show_image_surface(self) -> None:
         if self._player_stack.currentWidget() is not self._image_viewer:
             self._player_stack.setCurrentWidget(self._image_viewer)
+
+    def _show_detail_view(self) -> None:
+        if self._detail_page is not None and self._view_stack.currentWidget() is not self._detail_page:
+            self._view_stack.setCurrentWidget(self._detail_page)
+
+    def _show_gallery_view(self) -> None:
+        self._preview_window.close_preview(False)
+        self._media.stop()
+        self._playlist.clear()
+        self._player_bar.reset()
+        self._player_bar.setEnabled(False)
+        self._show_player_placeholder()
+        self._image_viewer.clear()
+        self._list_view.clearSelection()
+        self._grid_view.clearSelection()
+        if self._gallery_page is not None:
+            self._view_stack.setCurrentWidget(self._gallery_page)
+        self._status.showMessage("Browse your library")
+
+    def _select_filmstrip_row(self, row: int) -> None:
+        selection_model = self._list_view.selectionModel()
+        if selection_model is None or row < 0:
+            return
+        index = self._asset_model.index(row, 0)
+        selection_model.setCurrentIndex(
+            index,
+            QItemSelectionModel.SelectionFlag.NoUpdate,
+        )
+        selection_model.select(
+            index,
+            QItemSelectionModel.SelectionFlag.ClearAndSelect
+            | QItemSelectionModel.SelectionFlag.Rows,
+        )
+        self._list_view.scrollTo(index)
