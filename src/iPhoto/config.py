@@ -15,3 +15,12 @@ THUMB_SIZES: Final[list[tuple[int, int]]] = [(256, 256), (512, 512)]
 SCHEMA_DIR: Final[Path] = Path(__file__).resolve().parent / "schemas"
 ALBUM_MANIFEST_NAMES: Final[list[str]] = [".iphoto.album.json", ".iPhoto/manifest.json"]
 WORK_DIR_NAME: Final[str] = ".iPhoto"
+
+# ---------------------------------------------------------------------------
+# UI interaction constants
+# ---------------------------------------------------------------------------
+
+LONG_PRESS_THRESHOLD_MS: Final[int] = 350
+PREVIEW_WINDOW_DEFAULT_WIDTH: Final[int] = 640
+PREVIEW_WINDOW_MUTED: Final[bool] = True
+PREVIEW_WINDOW_CLOSE_DELAY_MS: Final[int] = 150
