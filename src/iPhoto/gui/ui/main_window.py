@@ -80,24 +80,31 @@ class PlayerSurface(QWidget):
         self._overlay_visible = visible
         self._overlay.setVisible(visible)
         if visible:
+            self._layout_overlay()
             self._overlay.raise_()
 
     def resizeEvent(self, event) -> None:  # pragma: no cover - GUI behaviour
         self._content.setGeometry(self.rect())
-        if self._overlay_visible:
-            hint = self._overlay.sizeHint()
-            minimum = self._overlay.minimumSizeHint()
-            height = max(hint.height(), minimum.height())
-            width = max(hint.width(), minimum.width())
-            available_width = max(0, self.width() - (self._margin * 2))
-            width = min(max(width, available_width), self.width())
-            x = max(0, (self.width() - width) // 2)
-            y = self.height() - height - self._margin
-            if y < self._margin:
-                y = self._margin
-            self._overlay.setGeometry(x, y, width, height)
-            self._overlay.raise_()
+        self._layout_overlay()
         super().resizeEvent(event)
+
+    def _layout_overlay(self) -> None:
+        """Position the overlay bar relative to the current widget size."""
+
+        if not self._overlay_visible:
+            return
+        hint = self._overlay.sizeHint()
+        minimum = self._overlay.minimumSizeHint()
+        height = max(hint.height(), minimum.height())
+        width = max(hint.width(), minimum.width())
+        available_width = max(0, self.width() - (self._margin * 2))
+        width = min(max(width, available_width), self.width())
+        x = max(0, (self.width() - width) // 2)
+        y = self.height() - height - self._margin
+        if y < self._margin:
+            y = self._margin
+        self._overlay.setGeometry(x, y, width, height)
+        self._overlay.raise_()
 
 
 class MainWindow(QMainWindow):
