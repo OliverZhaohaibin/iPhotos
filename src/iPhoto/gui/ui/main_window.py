@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QSizePolicy,
+    QSplitter,
     QStackedWidget,
     QStatusBar,
     QToolBar,
@@ -28,6 +29,7 @@ from ...appctx import AppContext
 from ...config import VIDEO_COMPLETE_HOLD_BACKSTEP_MS
 from ..facade import AppFacade
 from .models.asset_model import AssetModel, Roles
+from .widgets.album_sidebar import AlbumSidebar
 from .widgets.asset_delegate import AssetGridDelegate
 from .widgets.asset_grid import AssetGrid
 from .widgets.image_viewer import ImageViewer
@@ -253,6 +255,8 @@ class MainWindow(QMainWindow):
         self._context = context
         self._facade: AppFacade = context.facade
         self._asset_model = AssetModel(self._facade)
+        self._sidebar = AlbumSidebar(self)
+        self._sidebar.setMinimumWidth(240)
         self._album_label = QLabel("Open a folder to browse your photos.")
         self._grid_view = AssetGrid()
         self._list_view = AssetGrid()
@@ -305,8 +309,8 @@ class MainWindow(QMainWindow):
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
         self._album_label.setObjectName("albumLabel")
-        layout.addWidget(self._album_label)
 
         gallery_page = QWidget()
         self._gallery_page = gallery_page
@@ -410,13 +414,30 @@ class MainWindow(QMainWindow):
         self._view_stack.addWidget(gallery_page)
         self._view_stack.addWidget(detail_page)
         self._view_stack.setCurrentWidget(gallery_page)
-        layout.addWidget(self._view_stack)
+
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(6)
+        right_layout.addWidget(self._album_label)
+        right_layout.addWidget(self._view_stack)
+
+        splitter = QSplitter()
+        splitter.setChildrenCollapsible(False)
+        splitter.addWidget(self._sidebar)
+        splitter.addWidget(right_panel)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        layout.addWidget(splitter)
 
         self.setCentralWidget(container)
         self.setStatusBar(self._status)
         self._status.showMessage("Ready")
 
     def _connect_signals(self) -> None:
+        self._sidebar.albumSelected.connect(self.open_album_from_path)
+        self._sidebar.albumCreated.connect(self.open_album_from_path)
+        self._sidebar.albumRemoved.connect(self._on_sidebar_album_removed)
         self._facade.errorRaised.connect(self._show_error)
         self._facade.albumOpened.connect(self._on_album_opened)
         self._asset_model.modelReset.connect(self._update_status)
@@ -470,8 +491,30 @@ class MainWindow(QMainWindow):
     def _show_error(self, message: str) -> None:
         QMessageBox.critical(self, "iPhoto", message)
 
+    def _on_sidebar_album_removed(self, path: Path) -> None:
+        current = self._facade.current_album
+        if current is not None and current.root == path:
+            self._status.showMessage("Album removed. Select another album.")
+            QMessageBox.information(
+                self,
+                "iPhoto",
+                "The active album was deleted. Please choose another album from the sidebar.",
+            )
+            self._album_label.setText("Album removed — select another album.")
+
     def _on_album_opened(self, root: Path) -> None:
-        title = self._facade.current_album.manifest.get("title") if self._facade.current_album else root.name
+        library_root = self._determine_library_root(root)
+        if self._context.library_root != library_root:
+            self._context.set_library_root(library_root)
+            self._sidebar.set_library_root(library_root)
+        else:
+            self._sidebar.set_library_root(library_root)
+        self._sidebar.select_album(root)
+        title = (
+            self._facade.current_album.manifest.get("title")
+            if self._facade.current_album
+            else root.name
+        )
         self._album_label.setText(f"{title} — {root}")
         self._update_status()
         self._show_gallery_view()
@@ -485,6 +528,21 @@ class MainWindow(QMainWindow):
         else:
             message = f"{count} assets indexed"
         self._status.showMessage(message)
+
+    def _determine_library_root(self, album_root: Path) -> Path:
+        resolved = album_root.resolve()
+        current = self._context.library_root
+        if current is not None:
+            try:
+                resolved.relative_to(current)
+            except ValueError:
+                pass
+            else:
+                return current
+        parent = resolved.parent
+        if parent == resolved:
+            return resolved
+        return parent
 
     def _on_grid_item_clicked(self, index) -> None:
         self._activate_index(index)

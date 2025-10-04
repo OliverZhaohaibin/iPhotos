@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any, cast
@@ -16,12 +17,14 @@ except Exception as exc:  # pragma: no cover - pillow missing or broken
 
 pytest.importorskip("PySide6", reason="PySide6 is required for GUI tests", exc_type=ImportError)
 pytest.importorskip("PySide6.QtWidgets", reason="Qt widgets not available", exc_type=ImportError)
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import QModelIndex, Qt, QSize
 from PySide6.QtGui import QPixmap
 from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QApplication  # type: ignore  # noqa: E402
 
 from iPhotos.src.iPhoto.gui.facade import AppFacade
+from iPhotos.src.iPhoto.gui.ui.actions.album_actions import AlbumActions
+from iPhotos.src.iPhoto.gui.ui.models.album_tree_model import AlbumTreeModel, NodeType
 from iPhotos.src.iPhoto.gui.ui.models.asset_model import AssetModel, Roles, _ThumbnailJob
 from iPhotos.src.iPhoto.config import WORK_DIR_NAME
 
@@ -138,3 +141,46 @@ def test_thumbnail_job_seek_targets_without_hint(tmp_path: Path, qapp: QApplicat
     duration_targets = with_duration._seek_targets()
     assert duration_targets[0] == pytest.approx(2.0, rel=1e-3)
     assert duration_targets[1:] == [None]
+
+
+def test_album_actions_create_rename_delete(tmp_path: Path, qapp: QApplication) -> None:
+    actions = AlbumActions()
+    created = actions.create_album(tmp_path, "旅行日记")
+    manifest = json.loads((created / ".iphoto.album.json").read_text(encoding="utf-8"))
+    assert manifest["title"] == "旅行日记"
+    assert (created / ".iphoto.album").exists()
+
+    renamed = actions.rename_album(created, "重命名相簿")
+    updated_manifest = json.loads((renamed / ".iphoto.album.json").read_text(encoding="utf-8"))
+    assert updated_manifest["title"] == "重命名相簿"
+
+    actions.delete_album(renamed)
+    assert not renamed.exists()
+
+
+def test_album_tree_model_discovers_albums(tmp_path: Path, qapp: QApplication) -> None:
+    actions = AlbumActions()
+    first = actions.create_album(tmp_path, "伦敦行")
+    nested_parent = tmp_path / "Europe"
+    nested_parent.mkdir()
+    second = actions.create_album(nested_parent, "巴黎日记")
+
+    model = AlbumTreeModel()
+    model.set_library_root(tmp_path)
+    qapp.processEvents()
+
+    discovered: set[Path] = set()
+
+    def _collect(index: QModelIndex) -> None:
+        node = model.node_from_index(index)
+        if node.type == NodeType.ALBUM and node.path is not None:
+            discovered.add(node.path)
+        for row in range(model.rowCount(index)):
+            _collect(model.index(row, 0, index))
+
+    root_index = QModelIndex()
+    for row in range(model.rowCount(root_index)):
+        _collect(model.index(row, 0, root_index))
+
+    assert first in discovered
+    assert second in discovered

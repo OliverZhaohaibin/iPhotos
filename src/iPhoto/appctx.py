@@ -24,6 +24,7 @@ class AppContext:
 
     facade: "AppFacade" = field(default_factory=_create_facade)
     recent_albums: List[Path] = field(default_factory=list)
+    library_root: Path | None = None
 
     def remember_album(self, root: Path) -> None:
         """Track *root* in the recent albums list, keeping the most recent first."""
@@ -33,3 +34,8 @@ class AppContext:
         self.recent_albums.insert(0, normalized)
         # Keep the list short to avoid unbounded growth.
         del self.recent_albums[10:]
+
+    def set_library_root(self, root: Path | None) -> None:
+        """Update the active library root directory."""
+
+        self.library_root = root.resolve() if root is not None else None
