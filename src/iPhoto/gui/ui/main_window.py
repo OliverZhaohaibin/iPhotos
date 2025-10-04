@@ -6,7 +6,7 @@ import importlib.util
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QItemSelectionModel, QRect, QSize, Qt, QTimer
-from PySide6.QtGui import QImage, QImageReader, QPixmap
+from PySide6.QtGui import QAction, QImage, QImageReader, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFileDialog,
@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 
 from ...appctx import AppContext
 from ...config import VIDEO_COMPLETE_HOLD_BACKSTEP_MS
+from ...errors import LibraryError
 from ..facade import AppFacade
 from .models.asset_model import AssetModel, Roles
 from .widgets.asset_delegate import AssetGridDelegate
@@ -292,14 +293,28 @@ class MainWindow(QMainWindow):
     # UI setup
     # ------------------------------------------------------------------
     def _build_ui(self) -> None:
+        open_action = QAction("Open Album Folder…", self)
+        open_action.triggered.connect(self._show_open_dialog)
+        rescan_action = QAction("Rescan", self)
+        rescan_action.triggered.connect(lambda: self._facade.rescan_current())
+        pair_action = QAction("Rebuild Live Links", self)
+        pair_action.triggered.connect(lambda: self._facade.pair_live_current())
+        bind_library_action = QAction("Set Basic Library…", self)
+        bind_library_action.triggered.connect(self._show_bind_library_dialog)
+
+        file_menu = self.menuBar().addMenu("&File")
+        file_menu.addAction(open_action)
+        file_menu.addSeparator()
+        file_menu.addAction(bind_library_action)
+        file_menu.addSeparator()
+        file_menu.addAction(rescan_action)
+        file_menu.addAction(pair_action)
+
         toolbar = QToolBar("Main")
         toolbar.setMovable(False)
-        open_action = toolbar.addAction("Open Album…")
-        open_action.triggered.connect(lambda _: self._show_open_dialog())
-        rescan_action = toolbar.addAction("Rescan")
-        rescan_action.triggered.connect(lambda _: self._facade.rescan_current())
-        pair_action = toolbar.addAction("Rebuild Live Links")
-        pair_action.triggered.connect(lambda _: self._facade.pair_live_current())
+        toolbar.addAction(open_action)
+        toolbar.addAction(rescan_action)
+        toolbar.addAction(pair_action)
         self.addToolBar(toolbar)
 
         container = QWidget()
@@ -415,9 +430,12 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(container)
         self.setStatusBar(self._status)
         self._status.showMessage("Ready")
+        if self._context.library.root() is None:
+            QTimer.singleShot(0, self._prompt_for_basic_library)
 
     def _connect_signals(self) -> None:
         self._facade.errorRaised.connect(self._show_error)
+        self._context.library.errorRaised.connect(self._show_error)
         self._facade.albumOpened.connect(self._on_album_opened)
         self._asset_model.modelReset.connect(self._update_status)
         self._asset_model.rowsInserted.connect(self._update_status)
@@ -460,6 +478,21 @@ class MainWindow(QMainWindow):
         if path:
             self.open_album_from_path(Path(path))
 
+    def _show_bind_library_dialog(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select Basic Library")
+        if not path:
+            return
+        root = Path(path)
+        try:
+            self._context.library.bind_path(root)
+        except LibraryError as exc:
+            self._show_error(str(exc))
+            return
+        bound_root = self._context.library.root()
+        if bound_root is not None:
+            self._context.settings.set("basic_library_path", str(bound_root))
+            self._status.showMessage(f"Basic Library bound to {bound_root}")
+
     def open_album_from_path(self, path: Path) -> None:
         """Open *path* as the active album."""
 
@@ -485,6 +518,16 @@ class MainWindow(QMainWindow):
         else:
             message = f"{count} assets indexed"
         self._status.showMessage(message)
+
+    def _prompt_for_basic_library(self) -> None:
+        if self._context.library.root() is not None:
+            return
+        QMessageBox.information(
+            self,
+            "Bind Basic Library",
+            "Select a folder to use as your Basic Library.",
+        )
+        self._show_bind_library_dialog()
 
     def _on_grid_item_clicked(self, index) -> None:
         self._activate_index(index)
