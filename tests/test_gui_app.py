@@ -101,8 +101,8 @@ def test_thumbnail_job_seek_targets_clamp(tmp_path: Path, qapp: QApplication) ->
         duration=0.06,
     )
     targets = job._seek_targets()
-    assert targets[0] == pytest.approx(0.05)
-    assert targets[1:] == [0.0, None]
+    assert targets[0] == pytest.approx(0.03, rel=1e-3)
+    assert targets[1:] == [None]
 
 
 def test_thumbnail_job_seek_targets_without_hint(tmp_path: Path, qapp: QApplication) -> None:
@@ -122,5 +122,19 @@ def test_thumbnail_job_seek_targets_without_hint(tmp_path: Path, qapp: QApplicat
         duration=None,
     )
     targets = job._seek_targets()
-    assert targets[0] is None
-    assert targets[1:] == [0.0]
+    assert targets == [None]
+
+    with_duration = _ThumbnailJob(
+        dummy_loader,
+        "clip.MOV",
+        video_path,
+        QSize(192, 192),
+        1,
+        cache_path,
+        is_video=True,
+        still_image_time=None,
+        duration=4.0,
+    )
+    duration_targets = with_duration._seek_targets()
+    assert duration_targets[0] == pytest.approx(2.0, rel=1e-3)
+    assert duration_targets[1:] == [None]

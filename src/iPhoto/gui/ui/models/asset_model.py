@@ -24,7 +24,7 @@ from shiboken6 import Shiboken
 from ....utils.deps import load_pillow
 
 from ....cache.index_store import IndexStore
-from ....config import WORK_DIR_NAME
+from ....config import THUMBNAIL_SEEK_GUARD_SEC, WORK_DIR_NAME
 from ....errors import ExternalToolError
 from ....utils.ffmpeg import extract_video_frame
 from ....utils.jsonio import read_json
@@ -208,11 +208,9 @@ class _ThumbnailJob(QRunnable):
         seen: Set[Optional[float]] = set()
 
         def add(candidate: Optional[float]) -> None:
-            key: Optional[float]
-            value: Optional[float]
             if candidate is None:
-                key = None
-                value = None
+                key: Optional[float] = None
+                value: Optional[float] = None
             else:
                 value = self._normalize_seek(candidate)
                 key = value
@@ -223,9 +221,8 @@ class _ThumbnailJob(QRunnable):
 
         if self._still_image_time is not None:
             add(self._still_image_time)
-        else:
-            add(None)
-        add(0.0)
+        elif self._duration is not None and self._duration > 0:
+            add(self._duration / 2.0)
         add(None)
         return targets
 
@@ -234,7 +231,11 @@ class _ThumbnailJob(QRunnable):
 
         normalized = max(value, 0.0)
         if self._duration and self._duration > 0:
-            max_seek = max(self._duration - 0.01, 0.0)
+            guard = min(
+                max(THUMBNAIL_SEEK_GUARD_SEC, self._duration * 0.1),
+                self._duration / 2.0,
+            )
+            max_seek = max(self._duration - guard, 0.0)
             if normalized > max_seek:
                 normalized = max_seek
         return normalized
