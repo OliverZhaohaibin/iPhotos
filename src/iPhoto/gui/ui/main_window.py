@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QSizePolicy,
+    QSplitter,
     QStackedWidget,
     QStatusBar,
     QToolBar,
@@ -29,6 +30,7 @@ from ...config import VIDEO_COMPLETE_HOLD_BACKSTEP_MS
 from ...errors import LibraryError
 from ..facade import AppFacade
 from .models.asset_model import AssetModel, Roles
+from .widgets.album_sidebar import AlbumSidebar
 from .widgets.asset_delegate import AssetGridDelegate
 from .widgets.asset_grid import AssetGrid
 from .widgets.image_viewer import ImageViewer
@@ -255,6 +257,7 @@ class MainWindow(QMainWindow):
         self._facade: AppFacade = context.facade
         self._asset_model = AssetModel(self._facade)
         self._album_label = QLabel("Open a folder to browse your photos.")
+        self._sidebar = AlbumSidebar(context.library, self)
         self._grid_view = AssetGrid()
         self._list_view = AssetGrid()
         self._status = QStatusBar()
@@ -317,11 +320,11 @@ class MainWindow(QMainWindow):
         toolbar.addAction(pair_action)
         self.addToolBar(toolbar)
 
-        container = QWidget()
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(8, 8, 8, 8)
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(8, 8, 8, 8)
         self._album_label.setObjectName("albumLabel")
-        layout.addWidget(self._album_label)
+        right_layout.addWidget(self._album_label)
 
         gallery_page = QWidget()
         self._gallery_page = gallery_page
@@ -425,9 +428,17 @@ class MainWindow(QMainWindow):
         self._view_stack.addWidget(gallery_page)
         self._view_stack.addWidget(detail_page)
         self._view_stack.setCurrentWidget(gallery_page)
-        layout.addWidget(self._view_stack)
+        right_layout.addWidget(self._view_stack)
 
-        self.setCentralWidget(container)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.addWidget(self._sidebar)
+        splitter.addWidget(right_panel)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setCollapsible(0, False)
+        splitter.setCollapsible(1, False)
+
+        self.setCentralWidget(splitter)
         self.setStatusBar(self._status)
         self._status.showMessage("Ready")
         if self._context.library.root() is None:
@@ -436,6 +447,8 @@ class MainWindow(QMainWindow):
     def _connect_signals(self) -> None:
         self._facade.errorRaised.connect(self._show_error)
         self._context.library.errorRaised.connect(self._show_error)
+        self._sidebar.albumSelected.connect(self.open_album_from_path)
+        self._sidebar.bindLibraryRequested.connect(self._show_bind_library_dialog)
         self._facade.albumOpened.connect(self._on_album_opened)
         self._asset_model.modelReset.connect(self._update_status)
         self._asset_model.rowsInserted.connect(self._update_status)
@@ -506,6 +519,7 @@ class MainWindow(QMainWindow):
     def _on_album_opened(self, root: Path) -> None:
         title = self._facade.current_album.manifest.get("title") if self._facade.current_album else root.name
         self._album_label.setText(f"{title} — {root}")
+        self._sidebar.select_path(root)
         self._update_status()
         self._show_gallery_view()
 
