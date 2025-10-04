@@ -71,7 +71,7 @@ def load_icon(
         tinted.fill(Qt.GlobalColor.transparent)
         painter = QPainter(tinted)
         painter.fillRect(tinted.rect(), tint)
-        painter.setCompositionMode(QPainter.CompositionMode.DestinationIn)
+        painter.setCompositionMode(QPainter.CompositionMode_DestinationIn)
         painter.drawPixmap(0, 0, pixmap)
         painter.end()
         pixmap = tinted
