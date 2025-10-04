@@ -29,3 +29,35 @@ class PairingConflictError(IPhotoError):
 
 class LockTimeoutError(IPhotoError):
     """Raised when a file-level lock cannot be acquired in time."""
+
+
+class SettingsError(IPhotoError):
+    """Base class for settings related failures."""
+
+
+class SettingsLoadError(SettingsError):
+    """Raised when the settings file cannot be parsed or loaded."""
+
+
+class SettingsValidationError(SettingsError):
+    """Raised when settings data fails schema validation."""
+
+
+class LibraryError(IPhotoError):
+    """Base class for errors occurring while managing the basic library."""
+
+
+class LibraryUnavailableError(LibraryError):
+    """Raised when the configured basic library cannot be accessed."""
+
+
+class AlbumNameConflictError(LibraryError):
+    """Raised when trying to create or rename an album to an existing name."""
+
+
+class AlbumDepthError(LibraryError):
+    """Raised when attempting to create albums deeper than the supported nesting level."""
+
+
+class AlbumOperationError(LibraryError):
+    """Raised when album file-system operations fail."""

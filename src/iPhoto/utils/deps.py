@@ -37,9 +37,13 @@ def load_pillow() -> Optional[PillowSupport]:
 
     try:
         from PIL import Image, ImageOps, UnidentifiedImageError
-        from PIL.ImageQt import ImageQt
     except Exception:  # pragma: no cover - optional dependency missing or broken
         return None
+
+    try:
+        from PIL.ImageQt import ImageQt
+    except Exception:  # pragma: no cover - Qt bindings unavailable
+        ImageQt = None  # type: ignore[assignment]
 
     try:  # pragma: no cover - pillow-heif optional
         from pillow_heif import register_heif_opener
