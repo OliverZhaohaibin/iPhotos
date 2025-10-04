@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 
 from PySide6.QtCore import QItemSelectionModel, QRect, QSize
-from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
     QFileDialog,
     QLabel,
@@ -25,7 +25,17 @@ from .widgets.asset_delegate import AssetGridDelegate
 from .widgets.asset_grid import AssetGrid
 from .widgets.player_bar import PlayerBar
 from .widgets.preview_window import PreviewWindow
-from .media import MediaController, PlaylistController
+from .media import MediaController, PlaylistController, require_multimedia
+
+if importlib.util.find_spec("PySide6.QtMultimediaWidgets") is not None:
+    from PySide6.QtMultimediaWidgets import QVideoWidget
+else:  # pragma: no cover - requires optional Qt module
+    class QVideoWidget(QWidget):  # type: ignore[misc]
+        def __init__(self, *args, **kwargs) -> None:  # pragma: no cover - fallback
+            raise RuntimeError(
+                "PySide6.QtMultimediaWidgets is unavailable. Install PySide6 with "
+                "QtMultimedia support to enable video playback."
+            )
 
 
 class MainWindow(QMainWindow):
@@ -33,6 +43,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self, context: AppContext) -> None:
         super().__init__()
+        require_multimedia()
         self._context = context
         self._facade: AppFacade = context.facade
         self._asset_model = AssetModel(self._facade)

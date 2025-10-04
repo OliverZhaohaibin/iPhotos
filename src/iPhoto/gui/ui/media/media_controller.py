@@ -2,12 +2,32 @@
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QObject, QUrl, Signal
-from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
-from PySide6.QtMultimediaWidgets import QVideoWidget
+
+if importlib.util.find_spec("PySide6.QtMultimedia") is not None:
+    from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+else:  # pragma: no cover - requires optional Qt module
+    QAudioOutput = QMediaPlayer = None  # type: ignore[assignment]
+
+
+def is_multimedia_available() -> bool:
+    """Return whether QtMultimedia is importable in the current environment."""
+
+    return QMediaPlayer is not None and QAudioOutput is not None
+
+
+def require_multimedia() -> None:
+    """Raise a clear error if QtMultimedia support is missing."""
+
+    if not is_multimedia_available():
+        raise RuntimeError(
+            "PySide6 QtMultimedia modules are unavailable. Install PySide6 with "
+            "QtMultimedia support to enable video playback features."
+        )
 
 
 class MediaController(QObject):
@@ -16,16 +36,19 @@ class MediaController(QObject):
     errorOccurred = Signal(str)
     positionChanged = Signal(int)
     durationChanged = Signal(int)
-    playbackStateChanged = Signal(QMediaPlayer.PlaybackState)
+    playbackStateChanged = Signal(object)
     mutedChanged = Signal(bool)
     volumeChanged = Signal(int)
 
     def __init__(self, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
+        require_multimedia()
+        assert QMediaPlayer is not None  # for type-checkers
+        assert QAudioOutput is not None
+
         self._player = QMediaPlayer(self)
         self._audio = QAudioOutput(self)
         self._player.setAudioOutput(self._audio)
-        self._video_widget: Optional[QVideoWidget] = None
         self._current_source: Optional[Path] = None
 
         self._player.positionChanged.connect(self._on_position_changed)
@@ -38,10 +61,9 @@ class MediaController(QObject):
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
-    def set_video_output(self, widget: QVideoWidget) -> None:
+    def set_video_output(self, widget: object) -> None:
         """Display video frames on *widget*."""
 
-        self._video_widget = widget
         self._player.setVideoOutput(widget)
 
     def load(self, path: Path) -> None:
@@ -99,7 +121,7 @@ class MediaController(QObject):
 
         return self._audio.isMuted()
 
-    def playback_state(self) -> QMediaPlayer.PlaybackState:
+    def playback_state(self) -> object:
         """Return the current playback state."""
 
         return self._player.playbackState()
@@ -121,7 +143,7 @@ class MediaController(QObject):
     def _on_volume_changed(self, volume: float) -> None:
         self.volumeChanged.emit(int(round(volume * 100)))
 
-    def _on_error(self, _error: QMediaPlayer.Error, message: str) -> None:
+    def _on_error(self, _error: object, message: str) -> None:
         if message:
             self.errorOccurred.emit(message)
         else:  # pragma: no cover - Qt may provide empty strings

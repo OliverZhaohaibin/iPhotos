@@ -14,8 +14,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from PySide6.QtMultimedia import QMediaPlayer
-
 
 class PlayerBar(QWidget):
     """Present transport controls, a progress slider and volume settings."""
@@ -109,10 +107,11 @@ class PlayerBar(QWidget):
             self._position_slider.setValue(position)
         self._elapsed_label.setText(self._format_ms(position))
 
-    def set_playback_state(self, state: QMediaPlayer.PlaybackState) -> None:
+    def set_playback_state(self, state: object) -> None:
         """Switch the play button icon based on *state*."""
 
-        if state == QMediaPlayer.PlaybackState.PlayingState:
+        name = getattr(state, "name", None)
+        if name == "PlayingState":
             self._play_button.setText("⏸")
         else:
             self._play_button.setText("▶")
@@ -137,7 +136,7 @@ class PlayerBar(QWidget):
 
         self.set_duration(0)
         self.set_position(0)
-        self.set_playback_state(QMediaPlayer.PlaybackState.StoppedState)
+        self._play_button.setText("▶")
 
     # ------------------------------------------------------------------
     # Slots

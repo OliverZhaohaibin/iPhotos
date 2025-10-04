@@ -2,25 +2,36 @@
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QPoint, QRect, Qt, QTimer
 from PySide6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
-from PySide6.QtMultimediaWidgets import QVideoWidget
 
 from ....config import (
     PREVIEW_WINDOW_CLOSE_DELAY_MS,
     PREVIEW_WINDOW_DEFAULT_WIDTH,
     PREVIEW_WINDOW_MUTED,
 )
-from ..media import MediaController
+from ..media import MediaController, require_multimedia
+
+if importlib.util.find_spec("PySide6.QtMultimediaWidgets") is not None:
+    from PySide6.QtMultimediaWidgets import QVideoWidget
+else:  # pragma: no cover - requires optional Qt module
+    class QVideoWidget(QWidget):  # type: ignore[misc]
+        def __init__(self, *args, **kwargs) -> None:  # pragma: no cover - fallback
+            raise RuntimeError(
+                "PySide6.QtMultimediaWidgets is unavailable. Install PySide6 with "
+                "QtMultimedia support to preview videos."
+            )
 
 
 class PreviewWindow(QWidget):
     """Frameless preview surface that reuses the media controller API."""
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
+        require_multimedia()
         flags = (
             Qt.WindowType.Tool
             | Qt.WindowType.FramelessWindowHint
