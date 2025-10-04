@@ -70,7 +70,7 @@ class PlayerSurface(QWidget):
     ) -> None:
         super().__init__(parent)
         self._margin = margin
-        self._overlay_visible = True
+        self._controls_visible = False
         self._content = content
         self._overlay = overlay
 
@@ -106,12 +106,29 @@ class PlayerSurface(QWidget):
         overlay_layout.addLayout(row)
         self._stack.addWidget(self._overlay_container)
         overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self._overlay_container.hide()
+        overlay.hide()
 
-    def set_overlay_visible(self, visible: bool) -> None:
-        self._overlay_visible = visible
-        self._overlay_container.setVisible(visible)
-        if visible:
-            self._overlay.adjustSize()
+    def show_controls(self) -> None:
+        """Display the floating overlay controls."""
+
+        if self._controls_visible:
+            return
+        self._controls_visible = True
+        self._overlay_container.show()
+        self._overlay.show()
+        self._overlay_container.raise_()
+        self._overlay.raise_()
+        self._overlay.adjustSize()
+
+    def hide_controls(self) -> None:
+        """Hide the floating overlay controls."""
+
+        if not self._controls_visible:
+            return
+        self._controls_visible = False
+        self._overlay.hide()
+        self._overlay_container.hide()
 
     def resizeEvent(self, event) -> None:  # pragma: no cover - GUI behaviour
         self._stack.setGeometry(self.rect())
@@ -245,7 +262,7 @@ class MainWindow(QMainWindow):
         self._player_surface.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
-        self._player_surface.set_overlay_visible(False)
+        self._player_surface.hide_controls()
         player_layout.addWidget(self._player_surface)
         detail_layout.addWidget(player_container)
 
@@ -513,10 +530,10 @@ class MainWindow(QMainWindow):
     def _show_player_placeholder(self) -> None:
         """Ensure the placeholder is visible when nothing is selected."""
 
+        self._player_surface.hide_controls()
         if self._player_stack.currentWidget() is not self._player_placeholder:
             self._player_stack.setCurrentWidget(self._player_placeholder)
         self._image_viewer.clear()
-        self._player_surface.set_overlay_visible(False)
 
     def _show_video_surface(self) -> None:
         """Reveal the video widget inside the stacked player area."""
@@ -524,12 +541,12 @@ class MainWindow(QMainWindow):
         if self._player_stack.currentWidget() is not self._video_widget:
             self._player_stack.setCurrentWidget(self._video_widget)
         self._player_bar.setEnabled(True)
-        self._player_surface.set_overlay_visible(True)
+        self._player_surface.show_controls()
 
     def _show_image_surface(self) -> None:
+        self._player_surface.hide_controls()
         if self._player_stack.currentWidget() is not self._image_viewer:
             self._player_stack.setCurrentWidget(self._image_viewer)
-        self._player_surface.set_overlay_visible(False)
 
     def _show_detail_view(self) -> None:
         if self._detail_page is not None and self._view_stack.currentWidget() is not self._detail_page:
