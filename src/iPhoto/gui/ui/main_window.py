@@ -8,10 +8,12 @@ from pathlib import Path
 from PySide6.QtCore import QItemSelectionModel, QRect, QSize, Qt
 from PySide6.QtGui import QImageReader, QPixmap
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QFileDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
+    QListView,
     QSizePolicy,
     QStackedWidget,
     QStatusBar,
@@ -120,17 +122,19 @@ class MainWindow(QMainWindow):
 
         self._list_view.setModel(self._asset_model)
         self._list_view.setItemDelegate(AssetGridDelegate(self._list_view))
-        self._list_view.setSelectionMode(AssetGrid.SingleSelection)
-        self._list_view.setViewMode(AssetGrid.IconMode)
+        self._list_view.setSelectionMode(QListView.SelectionMode.SingleSelection)
+        self._list_view.setViewMode(QListView.ViewMode.IconMode)
         self._list_view.setIconSize(QSize(192, 192))
         self._list_view.setGridSize(QSize(194, 194))
         self._list_view.setSpacing(6)
         self._list_view.setUniformItemSizes(True)
-        self._list_view.setResizeMode(AssetGrid.Adjust)
-        self._list_view.setMovement(AssetGrid.Static)
-        self._list_view.setFlow(self._list_view.LeftToRight)
+        self._list_view.setResizeMode(QListView.ResizeMode.Adjust)
+        self._list_view.setMovement(QListView.Movement.Static)
+        self._list_view.setFlow(QListView.Flow.LeftToRight)
         self._list_view.setWrapping(False)
-        self._list_view.setHorizontalScrollMode(self._list_view.ScrollPerPixel)
+        self._list_view.setHorizontalScrollMode(
+            QAbstractItemView.ScrollMode.ScrollPerPixel
+        )
         self._list_view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._list_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._list_view.setWordWrap(False)
