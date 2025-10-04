@@ -279,6 +279,7 @@ class MainWindow(QMainWindow):
         self._playlist.bind_model(self._asset_model)
         self._preview_window = PreviewWindow(self)
         self._back_button = QToolButton()
+        self._resume_playback_after_scrub = False
         self.setWindowTitle("iPhoto")
         self.resize(1200, 720)
         self._build_ui()
@@ -436,6 +437,8 @@ class MainWindow(QMainWindow):
         self._player_bar.volumeChanged.connect(self._media.set_volume)
         self._player_bar.muteToggled.connect(self._media.set_muted)
         self._player_bar.seekRequested.connect(self._media.seek)
+        self._player_bar.scrubStarted.connect(self._on_scrub_started)
+        self._player_bar.scrubFinished.connect(self._on_scrub_finished)
         self._media.positionChanged.connect(self._on_media_position_changed)
         self._media.durationChanged.connect(self._player_bar.set_duration)
         self._media.playbackStateChanged.connect(self._player_bar.set_playback_state)
@@ -609,6 +612,21 @@ class MainWindow(QMainWindow):
             self._player_surface.refresh_controls()
             self._player_surface.schedule_refresh(60)
             self._player_overlay_confirmed = True
+
+    def _on_scrub_started(self) -> None:
+        """Pause playback while the user drags the progress slider."""
+
+        state = self._media.playback_state()
+        self._resume_playback_after_scrub = getattr(state, "name", "") == "PlayingState"
+        if self._resume_playback_after_scrub:
+            self._media.pause()
+
+    def _on_scrub_finished(self) -> None:
+        """Resume playback if it was active before scrubbing."""
+
+        if self._resume_playback_after_scrub:
+            self._media.play()
+        self._resume_playback_after_scrub = False
     def _play_previous(self) -> None:
         self._playlist.previous()
 
@@ -667,6 +685,7 @@ class MainWindow(QMainWindow):
 
         self._player_surface.hide_controls()
         self._player_overlay_confirmed = False
+        self._resume_playback_after_scrub = False
         if self._player_stack.currentWidget() is not self._player_placeholder:
             self._player_stack.setCurrentWidget(self._player_placeholder)
         self._image_viewer.clear()
@@ -678,6 +697,7 @@ class MainWindow(QMainWindow):
             self._player_stack.setCurrentWidget(self._video_widget)
         self._player_bar.setEnabled(True)
         self._player_overlay_confirmed = False
+        self._resume_playback_after_scrub = False
         self._player_surface.show_controls()
         # Ensure the overlay is raised once the video widget has attached and
         # started rendering frames.
@@ -687,6 +707,7 @@ class MainWindow(QMainWindow):
     def _show_image_surface(self) -> None:
         self._player_surface.hide_controls()
         self._player_overlay_confirmed = False
+        self._resume_playback_after_scrub = False
         if self._player_stack.currentWidget() is not self._image_viewer:
             self._player_stack.setCurrentWidget(self._image_viewer)
 

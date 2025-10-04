@@ -26,6 +26,8 @@ class PlayerBar(QWidget):
     previousRequested = Signal()
     nextRequested = Signal()
     seekRequested = Signal(int)
+    scrubStarted = Signal()
+    scrubFinished = Signal()
     volumeChanged = Signal(int)
     muteToggled = Signal(bool)
 
@@ -118,6 +120,8 @@ class PlayerBar(QWidget):
     def set_position(self, position_ms: int) -> None:
         """Update the slider and elapsed label to *position_ms*."""
 
+        if self._scrubbing:
+            return
         position = max(0, min(position_ms, self._duration if self._duration else position_ms))
         with self._block_position_updates():
             self._position_slider.setValue(position)
@@ -164,12 +168,14 @@ class PlayerBar(QWidget):
         self._scrubbing = True
         self._scrub_pending_value = self._position_slider.value()
         self._schedule_scrub_emit(immediate=True)
+        self.scrubStarted.emit()
 
     def _on_slider_released(self) -> None:
         self._scrubbing = False
         self._scrub_timer.stop()
         self.seekRequested.emit(self._position_slider.value())
         self._scrub_pending_value = None
+        self.scrubFinished.emit()
 
     def _on_slider_value_changed(self, value: int) -> None:
         if self._updating_position:
@@ -184,6 +190,11 @@ class PlayerBar(QWidget):
     def sizeHint(self) -> QSize:  # pragma: no cover - Qt sizing
         base = super().sizeHint()
         return QSize(max(base.width(), 420), base.height())
+
+    def is_scrubbing(self) -> bool:
+        """Return whether the user is currently dragging the progress slider."""
+
+        return self._scrubbing
 
     # ------------------------------------------------------------------
     # Context managers
