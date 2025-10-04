@@ -27,7 +27,14 @@ class AlbumSidebar(QWidget):
     """Composite widget exposing library navigation and actions."""
 
     albumSelected = Signal(Path)
+    allPhotosSelected = Signal()
     bindLibraryRequested = Signal()
+
+    ALL_PHOTOS_TITLE = (
+        AlbumTreeModel.STATIC_NODES[0]
+        if AlbumTreeModel.STATIC_NODES
+        else "All Photos"
+    )
 
     def __init__(self, library: LibraryManager, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -35,6 +42,7 @@ class AlbumSidebar(QWidget):
         self._model = AlbumTreeModel(library, self)
         self._pending_selection: Path | None = None
         self._current_selection: Path | None = None
+        self._current_static_selection: str | None = None
 
         self._title = QLabel("Basic Library")
         self._title.setObjectName("albumSidebarTitle")
@@ -88,6 +96,8 @@ class AlbumSidebar(QWidget):
             self._pending_selection = None
         elif self._current_selection is not None:
             self.select_path(self._current_selection)
+        elif self._current_static_selection == self.ALL_PHOTOS_TITLE:
+            self.select_all_photos()
 
     def _update_title(self) -> None:
         root = self._library.root()
@@ -105,6 +115,18 @@ class AlbumSidebar(QWidget):
         if node_type == NodeType.ACTION:
             self.bindLibraryRequested.emit()
             return
+        if (
+            node_type == NodeType.STATIC
+            and item.title == self.ALL_PHOTOS_TITLE
+        ):
+            if self._library.root() is None:
+                self.bindLibraryRequested.emit()
+                return
+            self._current_selection = None
+            self._current_static_selection = item.title
+            self.allPhotosSelected.emit()
+            return
+        self._current_static_selection = None
         album = item.album
         if album is not None:
             self._current_selection = album.path
@@ -123,6 +145,18 @@ class AlbumSidebar(QWidget):
         index = self._model.index_for_path(path)
         if not index.isValid():
             return
+        self._current_static_selection = None
+        self._tree.setCurrentIndex(index)
+        self._tree.scrollTo(index)
+
+    def select_all_photos(self) -> None:
+        """Select the "All Photos" static node if it is available."""
+
+        index = self._find_static_index(self.ALL_PHOTOS_TITLE)
+        if not index.isValid():
+            return
+        self._current_selection = None
+        self._current_static_selection = self.ALL_PHOTOS_TITLE
         self._tree.setCurrentIndex(index)
         self._tree.scrollTo(index)
 
@@ -211,6 +245,20 @@ class AlbumSidebar(QWidget):
         from PySide6.QtCore import QUrl
 
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(album.path)))
+
+    def _find_static_index(self, title: str) -> QModelIndex:
+        root_index = self._model.index(0, 0)
+        if not root_index.isValid():
+            return QModelIndex()
+        item = self._model.item_from_index(root_index)
+        if item is None:
+            return QModelIndex()
+        for row in range(self._model.rowCount(root_index)):
+            index = self._model.index(row, 0, root_index)
+            child = self._model.item_from_index(index)
+            if child and child.title == title:
+                return index
+        return QModelIndex()
 
 
 __all__ = ["AlbumSidebar"]
