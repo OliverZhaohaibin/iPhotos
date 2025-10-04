@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from iPhoto.utils.deps import debugger_prerequisites
+from iPhotos.src.iPhoto.utils.deps import debugger_prerequisites
 
 
 def main() -> int:

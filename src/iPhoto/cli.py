@@ -15,7 +15,7 @@ if __package__ in (None, ""):
     from iPhoto import app as app_facade  # type: ignore  # pragma: no cover
     from iPhoto.cache.index_store import IndexStore  # type: ignore  # pragma: no cover
     from iPhoto.config import WORK_DIR_NAME  # type: ignore  # pragma: no cover
-    from iPhoto.errors import (
+    from iPhotos.src.iPhoto.errors import (
         AlbumNotFoundError,
         IPhotoError,
         LockTimeoutError,
