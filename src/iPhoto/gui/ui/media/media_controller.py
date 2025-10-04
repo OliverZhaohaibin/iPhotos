@@ -37,6 +37,7 @@ class MediaController(QObject):
     positionChanged = Signal(int)
     durationChanged = Signal(int)
     playbackStateChanged = Signal(object)
+    mediaStatusChanged = Signal(object)
     mutedChanged = Signal(bool)
     volumeChanged = Signal(int)
 
@@ -54,6 +55,7 @@ class MediaController(QObject):
         self._player.positionChanged.connect(self._on_position_changed)
         self._player.durationChanged.connect(self._on_duration_changed)
         self._player.playbackStateChanged.connect(self.playbackStateChanged.emit)
+        self._player.mediaStatusChanged.connect(self.mediaStatusChanged.emit)
         self._player.errorOccurred.connect(self._on_error)
         self._audio.mutedChanged.connect(self.mutedChanged.emit)
         self._audio.volumeChanged.connect(self._on_volume_changed)

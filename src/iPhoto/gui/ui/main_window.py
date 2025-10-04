@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-from PySide6.QtCore import QItemSelectionModel, QRect, QSize, Qt
+from PySide6.QtCore import QItemSelectionModel, QRect, QSize, Qt, QTimer
 from PySide6.QtGui import QImage, QImageReader, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -72,6 +72,9 @@ class PlayerSurface(QWidget):
         self._controls_visible = False
         self._content = content
         self._overlay = overlay
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.timeout.connect(self.refresh_controls)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -81,6 +84,7 @@ class PlayerSurface(QWidget):
 
         overlay.setParent(self)
         overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        overlay.setAttribute(Qt.WidgetAttribute.WA_AlwaysStackOnTop, True)
         overlay.hide()
 
     # ------------------------------------------------------------------
@@ -91,26 +95,43 @@ class PlayerSurface(QWidget):
 
         self._controls_visible = True
         self._overlay.show()
-        self._overlay.raise_()
-        self._reposition_overlay()
-        self._overlay.update()
+        self.refresh_controls()
+        self.schedule_refresh()
 
     def hide_controls(self) -> None:
         """Hide the floating overlay controls."""
 
         self._controls_visible = False
         self._overlay.hide()
+        self._refresh_timer.stop()
+
+    def refresh_controls(self) -> None:
+        """Force the overlay to realign with the viewer when visible."""
+
+        if not self._controls_visible:
+            return
+        self._overlay.raise_()
+        self._reposition_overlay()
+        self._overlay.update()
+
+    def schedule_refresh(self, delay_ms: int = 0) -> None:
+        """Queue a deferred refresh to run after layout/paint settles."""
+
+        if not self._controls_visible:
+            return
+        self._refresh_timer.stop()
+        self._refresh_timer.start(max(0, delay_ms))
 
     # ------------------------------------------------------------------
     # QWidget API
     # ------------------------------------------------------------------
     def resizeEvent(self, event) -> None:  # pragma: no cover - GUI behaviour
         super().resizeEvent(event)
-        self._reposition_overlay()
+        self.refresh_controls()
 
     def showEvent(self, event) -> None:  # pragma: no cover - GUI behaviour
         super().showEvent(event)
-        self._reposition_overlay()
+        self.refresh_controls()
 
     # ------------------------------------------------------------------
     # Helpers
@@ -258,6 +279,7 @@ class MainWindow(QMainWindow):
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
         self._player_surface.hide_controls()
+        self._player_overlay_confirmed = False
         player_layout.addWidget(self._player_surface)
         detail_layout.addWidget(player_container)
 
@@ -322,11 +344,15 @@ class MainWindow(QMainWindow):
         self._player_bar.volumeChanged.connect(self._media.set_volume)
         self._player_bar.muteToggled.connect(self._media.set_muted)
         self._player_bar.seekRequested.connect(self._media.seek)
-        self._media.positionChanged.connect(self._player_bar.set_position)
+        self._media.positionChanged.connect(self._on_media_position_changed)
         self._media.durationChanged.connect(self._player_bar.set_duration)
         self._media.playbackStateChanged.connect(self._player_bar.set_playback_state)
+        self._media.playbackStateChanged.connect(
+            lambda _state: self._player_surface.schedule_refresh()
+        )
         self._media.volumeChanged.connect(self._player_bar.set_volume)
         self._media.mutedChanged.connect(self._player_bar.set_muted)
+        self._media.mediaStatusChanged.connect(self._on_media_status_changed)
         self._media.errorOccurred.connect(self._show_error)
         self._back_button.clicked.connect(self._show_gallery_view)
 
@@ -469,6 +495,28 @@ class MainWindow(QMainWindow):
         self._media.play()
         self._status.showMessage(f"Playing {source.name}")
 
+    def _on_media_status_changed(self, status: object) -> None:
+        """Raise the overlay whenever playback surfaces update."""
+
+        # ``QMediaPlayer.MediaStatus`` values expose a ``name`` attribute. We
+        # keep the guard tolerant of unexpected objects to avoid crashes when
+        # optional QtMultimedia backends differ.
+        name = getattr(status, "name", None)
+        if name in {"LoadedMedia", "BufferingMedia", "BufferedMedia", "StalledMedia"}:
+            self._player_surface.refresh_controls()
+            self._player_surface.schedule_refresh(120)
+
+    def _on_media_position_changed(self, position_ms: int) -> None:
+        """Update progress UI and ensure the overlay stays visible."""
+
+        self._player_bar.set_position(position_ms)
+        if position_ms > 0 and not self._player_overlay_confirmed:
+            # The first non-zero frame confirms the video widget is actively
+            # rendering. Re-raise the floating controls so they cannot be
+            # obscured by late-arriving native surfaces.
+            self._player_surface.refresh_controls()
+            self._player_surface.schedule_refresh(60)
+            self._player_overlay_confirmed = True
     def _play_previous(self) -> None:
         self._playlist.previous()
 
@@ -526,6 +574,7 @@ class MainWindow(QMainWindow):
         """Ensure the placeholder is visible when nothing is selected."""
 
         self._player_surface.hide_controls()
+        self._player_overlay_confirmed = False
         if self._player_stack.currentWidget() is not self._player_placeholder:
             self._player_stack.setCurrentWidget(self._player_placeholder)
         self._image_viewer.clear()
@@ -536,10 +585,16 @@ class MainWindow(QMainWindow):
         if self._player_stack.currentWidget() is not self._video_widget:
             self._player_stack.setCurrentWidget(self._video_widget)
         self._player_bar.setEnabled(True)
+        self._player_overlay_confirmed = False
         self._player_surface.show_controls()
+        # Ensure the overlay is raised once the video widget has attached and
+        # started rendering frames.
+        self._player_surface.schedule_refresh()
+        self._player_surface.schedule_refresh(150)
 
     def _show_image_surface(self) -> None:
         self._player_surface.hide_controls()
+        self._player_overlay_confirmed = False
         if self._player_stack.currentWidget() is not self._image_viewer:
             self._player_stack.setCurrentWidget(self._image_viewer)
 
