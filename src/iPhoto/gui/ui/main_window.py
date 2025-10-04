@@ -86,6 +86,7 @@ class PlayerSurface(QWidget):
         content.setParent(self)
         layout.addWidget(content)
 
+        overlay.setParent(self)
         overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         overlay.setAttribute(Qt.WidgetAttribute.WA_AlwaysStackOnTop, True)
         overlay.hide()
@@ -103,6 +104,8 @@ class PlayerSurface(QWidget):
 
         self._controls_visible = True
         self._bind_overlay_host()
+        if self._overlay.parent() is not self:
+            self._overlay.setParent(self)
         self._overlay.show()
         self.refresh_controls()
         self.schedule_refresh()
@@ -148,8 +151,8 @@ class PlayerSurface(QWidget):
         if not self._controls_visible:
             return
         host = self._host_widget or self
-        if self._overlay.parent() is not host:
-            self._overlay.setParent(host)
+        if self._overlay.parent() is not self:
+            self._overlay.setParent(self)
         rect = host.rect()
         available_width = max(0, rect.width() - (2 * self._margin))
         if available_width == 0 or rect.height() <= 0:
@@ -157,8 +160,9 @@ class PlayerSurface(QWidget):
         hint = self._overlay.sizeHint()
         overlay_width = min(hint.width(), available_width)
         overlay_height = hint.height()
-        x = (rect.width() - overlay_width) // 2
-        y = max(0, rect.height() - overlay_height - self._margin)
+        host_origin = host.mapTo(self, rect.topLeft()) if host is not self else rect.topLeft()
+        x = host_origin.x() + (rect.width() - overlay_width) // 2
+        y = host_origin.y() + max(0, rect.height() - overlay_height - self._margin)
         self._overlay.setGeometry(x, y, overlay_width, overlay_height)
         self._overlay.raise_()
 
@@ -190,11 +194,9 @@ class PlayerSurface(QWidget):
         self._host_widget = target
         if self._host_widget is not None and self._host_widget is not self:
             self._host_widget.installEventFilter(self)
-        self._overlay.setParent(self._host_widget)
-        if self._controls_visible:
-            self._overlay.show()
-        else:
-            self._overlay.hide()
+        # keep overlay parented to the player surface to avoid Qt's native video
+        # widgets occluding the floating controls. Geometry is computed relative to
+        # ``self`` during :meth:`_reposition_overlay`.
 
 
 class MainWindow(QMainWindow):
