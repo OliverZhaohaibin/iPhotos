@@ -420,6 +420,7 @@ class AssetModel(QAbstractListModel):
         self._thumb_cache: Dict[str, QPixmap] = {}
         self._placeholder_cache: Dict[str, QPixmap] = {}
         self._thumb_size = QSize(192, 192)
+        self._filter_mode: Optional[str] = None
         self._thumb_loader = _ThumbnailLoader(self)
         self._thumb_loader.ready.connect(self._on_thumb_ready)
         facade.albumOpened.connect(self._on_album_opened)
@@ -467,6 +468,29 @@ class AssetModel(QAbstractListModel):
         if role == Roles.FEATURED:
             return row["featured"]
         return None
+
+    def set_filter_mode(self, mode: Optional[str]) -> None:
+        """Limit the exposed assets according to *mode*.
+
+        ``None`` disables filtering and restores the default behaviour. The
+        recognised filter values are:
+
+        ``"videos"``
+            Only list assets flagged as videos.
+
+        ``"live"``
+            Only list Live Photo stills.
+
+        ``"favorites"``
+            Only list assets flagged as featured/favourited.
+        """
+
+        normalized = mode.casefold() if isinstance(mode, str) and mode else None
+        if normalized == self._filter_mode:
+            return
+        self._filter_mode = normalized
+        if self._album_root is not None:
+            self._reload()
 
     def roleNames(self) -> Dict[int, bytes]:  # type: ignore[override]
         names = super().roleNames()
@@ -555,6 +579,8 @@ class AssetModel(QAbstractListModel):
             }
             payload.append(entry)
 
+        payload = self._filter_rows(payload)
+
         self.beginResetModel()
         self._rows = payload
         self._row_lookup = {row_data["rel"]: idx for idx, row_data in enumerate(payload)}
@@ -624,6 +650,17 @@ class AssetModel(QAbstractListModel):
         if suffix in _VIDEO_EXTENSIONS:
             return False, True
         return False, False
+
+    def _filter_rows(self, rows: List[Dict[str, object]]) -> List[Dict[str, object]]:
+        if self._filter_mode is None:
+            return rows
+        if self._filter_mode == "videos":
+            return [row for row in rows if bool(row.get("is_video"))]
+        if self._filter_mode == "live":
+            return [row for row in rows if bool(row.get("is_live"))]
+        if self._filter_mode == "favorites":
+            return [row for row in rows if bool(row.get("featured"))]
+        return rows
 
     # ------------------------------------------------------------------
     # Thumbnail helpers

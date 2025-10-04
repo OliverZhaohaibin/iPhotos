@@ -146,6 +146,7 @@ class AlbumSidebar(QWidget):
 
     albumSelected = Signal(Path)
     allPhotosSelected = Signal()
+    staticNodeSelected = Signal(str)
     bindLibraryRequested = Signal()
 
     ALL_PHOTOS_TITLE = (
@@ -245,8 +246,8 @@ class AlbumSidebar(QWidget):
             self._pending_selection = None
         elif self._current_selection is not None:
             self.select_path(self._current_selection)
-        elif self._current_static_selection == self.ALL_PHOTOS_TITLE:
-            self.select_all_photos()
+        elif self._current_static_selection:
+            self.select_static_node(self._current_static_selection)
 
     def _update_title(self) -> None:
         root = self._library.root()
@@ -264,16 +265,16 @@ class AlbumSidebar(QWidget):
         if node_type == NodeType.ACTION:
             self.bindLibraryRequested.emit()
             return
-        if (
-            node_type == NodeType.STATIC
-            and item.title == self.ALL_PHOTOS_TITLE
-        ):
+        if node_type == NodeType.STATIC:
             if self._library.root() is None:
                 self.bindLibraryRequested.emit()
                 return
             self._current_selection = None
             self._current_static_selection = item.title
-            self.allPhotosSelected.emit()
+            if item.title == self.ALL_PHOTOS_TITLE:
+                self.allPhotosSelected.emit()
+            else:
+                self.staticNodeSelected.emit(item.title)
             return
         self._current_static_selection = None
         album = item.album
@@ -301,11 +302,16 @@ class AlbumSidebar(QWidget):
     def select_all_photos(self) -> None:
         """Select the "All Photos" static node if it is available."""
 
-        index = self._find_static_index(self.ALL_PHOTOS_TITLE)
+        self.select_static_node(self.ALL_PHOTOS_TITLE)
+
+    def select_static_node(self, title: str) -> None:
+        """Select the static node matching *title* when present."""
+
+        index = self._find_static_index(title)
         if not index.isValid():
             return
         self._current_selection = None
-        self._current_static_selection = self.ALL_PHOTOS_TITLE
+        self._current_static_selection = title
         self._tree.setCurrentIndex(index)
         self._tree.scrollTo(index)
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from typing import Optional
 
 from PySide6.QtCore import QEvent, QItemSelectionModel, QRect, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QImage, QImageReader, QPixmap
@@ -258,7 +259,7 @@ class MainWindow(QMainWindow):
         self._asset_model = AssetModel(self._facade)
         self._album_label = QLabel("Open a folder to browse your photos.")
         self._sidebar = AlbumSidebar(context.library, self)
-        self._all_photos_active = False
+        self._static_selection: str | None = None
         self._grid_view = AssetGrid()
         self._list_view = AssetGrid()
         self._status = QStatusBar()
@@ -450,6 +451,7 @@ class MainWindow(QMainWindow):
         self._context.library.errorRaised.connect(self._show_error)
         self._sidebar.albumSelected.connect(self.open_album_from_path)
         self._sidebar.allPhotosSelected.connect(self._open_all_photos)
+        self._sidebar.staticNodeSelected.connect(self._on_static_node_selected)
         self._sidebar.bindLibraryRequested.connect(self._show_bind_library_dialog)
         self._facade.albumOpened.connect(self._on_album_opened)
         self._asset_model.modelReset.connect(self._update_status)
@@ -511,7 +513,8 @@ class MainWindow(QMainWindow):
     def open_album_from_path(self, path: Path) -> None:
         """Open *path* as the active album."""
 
-        self._all_photos_active = False
+        self._static_selection = None
+        self._asset_model.set_filter_mode(None)
         album = self._facade.open_album(path)
         if album is not None:
             self._context.remember_album(album.root)
@@ -521,9 +524,9 @@ class MainWindow(QMainWindow):
 
     def _on_album_opened(self, root: Path) -> None:
         library_root = self._context.library.root()
-        if self._all_photos_active and library_root == root:
-            title = AlbumSidebar.ALL_PHOTOS_TITLE
-            self._sidebar.select_all_photos()
+        if self._static_selection and library_root == root:
+            title = self._static_selection
+            self._sidebar.select_static_node(self._static_selection)
         else:
             title = (
                 self._facade.current_album.manifest.get("title")
@@ -531,7 +534,8 @@ class MainWindow(QMainWindow):
                 else root.name
             )
             self._sidebar.select_path(root)
-            self._all_photos_active = False
+            self._static_selection = None
+            self._asset_model.set_filter_mode(None)
         self._album_label.setText(f"{title} — {root}")
         self._update_status()
         self._show_gallery_view()
@@ -539,16 +543,31 @@ class MainWindow(QMainWindow):
     def _open_all_photos(self) -> None:
         """Open the Basic Library root as an aggregated "All Photos" view."""
 
+        self._open_static_collection(AlbumSidebar.ALL_PHOTOS_TITLE, None)
+
+    def _on_static_node_selected(self, title: str) -> None:
+        mapping = {
+            "videos": "videos",
+            "live photos": "live",
+            "favorites": "favorites",
+        }
+        key = title.casefold()
+        mode = mapping.get(key, None)
+        self._open_static_collection(title, mode)
+
+    def _open_static_collection(self, title: str, filter_mode: Optional[str]) -> None:
         root = self._context.library.root()
         if root is None:
             self._show_bind_library_dialog()
             return
-        self._all_photos_active = True
+        self._asset_model.set_filter_mode(filter_mode)
+        self._static_selection = title
         album = self._facade.open_album(root)
         if album is None:
-            self._all_photos_active = False
+            self._static_selection = None
+            self._asset_model.set_filter_mode(None)
             return
-        album.manifest = {**album.manifest, "title": AlbumSidebar.ALL_PHOTOS_TITLE}
+        album.manifest = {**album.manifest, "title": title}
 
     def _update_status(self) -> None:
         count = self._asset_model.rowCount()

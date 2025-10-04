@@ -84,6 +84,29 @@ def test_asset_model_populates_rows(tmp_path: Path, qapp: QApplication) -> None:
     assert any(thumbs_dir.iterdir())
 
 
+def test_asset_model_filters_videos(tmp_path: Path, qapp: QApplication) -> None:
+    image = tmp_path / "IMG_3001.JPG"
+    video = tmp_path / "CLIP_0001.MP4"
+    _create_image(image)
+    video.write_bytes(b"")
+
+    facade = AppFacade()
+    model = AssetModel(facade)
+    facade.open_album(tmp_path)
+    qapp.processEvents()
+
+    assert model.rowCount() == 2
+    model.set_filter_mode("videos")
+    qapp.processEvents()
+    assert model.rowCount() == 1
+    index = model.index(0, 0)
+    assert bool(model.data(index, Roles.IS_VIDEO))
+
+    model.set_filter_mode(None)
+    qapp.processEvents()
+    assert model.rowCount() == 2
+
+
 def test_thumbnail_job_seek_targets_clamp(tmp_path: Path, qapp: QApplication) -> None:
     dummy_loader = cast(Any, object())
     video_path = tmp_path / "clip.MOV"

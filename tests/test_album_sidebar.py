@@ -55,6 +55,26 @@ def test_all_photos_selection_emits_signal(tmp_path: Path, qapp: QApplication) -
     assert triggered, "Selecting All Photos should emit allPhotosSelected"
 
 
+def test_videos_selection_emits_static_signal(tmp_path: Path, qapp: QApplication) -> None:
+    root = tmp_path / "Library"
+    album_dir = root / "Trip"
+    album_dir.mkdir(parents=True)
+    _write_manifest(album_dir, "Trip")
+    manager = LibraryManager()
+    manager.bind_path(root)
+    qapp.processEvents()
+
+    sidebar = AlbumSidebar(manager)
+    qapp.processEvents()
+
+    triggered: list[str] = []
+    sidebar.staticNodeSelected.connect(lambda title: triggered.append(title))
+    sidebar.select_static_node("Videos")
+    qapp.processEvents()
+
+    assert triggered == ["Videos"], "Videos selection should emit staticNodeSelected"
+
+
 def test_opening_library_root_indexes_nested_assets(tmp_path: Path, qapp: QApplication) -> None:
     root = tmp_path / "Library"
     album_dir = root / "Trip"
