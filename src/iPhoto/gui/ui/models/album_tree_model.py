@@ -83,6 +83,7 @@ class AlbumTreeModel(QAbstractItemModel):
         "Recently Deleted": "trash.svg",
     }
     _STATIC_ICON_COLOR = "#1e73ff"
+    _STATIC_ICON_SIZE: tuple[int, int] = (20, 20)
 
     def __init__(self, library: LibraryManager, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -132,7 +133,11 @@ class AlbumTreeModel(QAbstractItemModel):
             if item.node_type == NodeType.STATIC:
                 icon_name = self._STATIC_ICON_NAMES.get(item.title)
             if icon_name:
-                return load_icon(icon_name, color=self._STATIC_ICON_COLOR)
+                return load_icon(
+                    icon_name,
+                    color=self._STATIC_ICON_COLOR,
+                    size=self._STATIC_ICON_SIZE,
+                )
         if role == AlbumTreeRole.NODE_TYPE:
             return item.node_type
         if role == AlbumTreeRole.ALBUM_NODE:
