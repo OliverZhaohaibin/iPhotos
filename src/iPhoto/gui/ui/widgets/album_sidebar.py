@@ -5,13 +5,18 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QModelIndex, QPoint, Qt, Signal
+from PySide6.QtCore import QModelIndex, QPoint, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QMenu,
     QMessageBox,
+    QFrame,
     QSizePolicy,
+    QStyledItemDelegate,
+    QStyle,
+    QStyleOptionViewItem,
     QTreeView,
     QVBoxLayout,
     QWidget,
@@ -20,7 +25,120 @@ from PySide6.QtWidgets import (
 from ....errors import LibraryError
 from ....library.manager import LibraryManager
 from ....library.tree import AlbumNode
-from ..models.album_tree_model import AlbumTreeItem, AlbumTreeModel, NodeType
+from ..models.album_tree_model import (
+    AlbumTreeItem,
+    AlbumTreeModel,
+    AlbumTreeRole,
+    NodeType,
+)
+
+# ---------------------------------------------------------------------------
+# Sidebar styling helpers
+# ---------------------------------------------------------------------------
+
+BG_COLOR = QColor("#eef3f6")
+TEXT_COLOR = QColor("#2b2b2b")
+ICON_COLOR = QColor("#1e73ff")
+HOVER_BG = QColor(0, 0, 0, 24)
+SELECT_BG = QColor(0, 0, 0, 56)
+DISABLED_TEXT = QColor(0, 0, 0, 90)
+SECTION_TEXT = QColor(0, 0, 0, 160)
+SEPARATOR_COLOR = QColor(0, 0, 0, 40)
+
+ROW_HEIGHT = 36
+ROW_RADIUS = 10
+LEFT_PADDING = 14
+ICON_TEXT_GAP = 10
+
+
+class AlbumSidebarDelegate(QStyledItemDelegate):
+    """Custom delegate painting the sidebar with a macOS inspired style."""
+
+    def sizeHint(  # noqa: D401 - inherited docstring
+        self, option: QStyleOptionViewItem, _index: QModelIndex
+    ) -> QSize:
+        width = option.rect.width()
+        if width <= 0:
+            width = 200
+        return QSize(width, ROW_HEIGHT)
+
+    def paint(
+        self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex
+    ) -> None:
+        painter.save()
+        rect = option.rect
+        node_type = index.data(AlbumTreeRole.NODE_TYPE) or NodeType.ALBUM
+
+        # Draw separator rows as a thin line.
+        if node_type == NodeType.SEPARATOR:
+            pen = QPen(SEPARATOR_COLOR)
+            pen.setWidth(1)
+            painter.setPen(pen)
+            y = rect.center().y()
+            painter.drawLine(rect.left() + LEFT_PADDING, y, rect.right() - LEFT_PADDING, y)
+            painter.restore()
+            return
+
+        is_enabled = bool(option.state & QStyle.StateFlag.State_Enabled)
+        is_selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        is_hover = bool(option.state & QStyle.StateFlag.State_MouseOver)
+
+        highlight = None
+        if is_selected:
+            highlight = SELECT_BG
+        elif is_hover and is_enabled:
+            highlight = HOVER_BG
+
+        if node_type in {NodeType.SECTION, NodeType.SEPARATOR}:
+            highlight = None
+
+        if highlight is not None:
+            background_rect = rect.adjusted(6, 4, -6, -4)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(highlight)
+            painter.drawRoundedRect(background_rect, ROW_RADIUS, ROW_RADIUS)
+
+        text = index.data(Qt.ItemDataRole.DisplayRole) or ""
+        icon = index.data(Qt.ItemDataRole.DecorationRole)
+
+        font = QFont(option.font)
+        if node_type == NodeType.HEADER:
+            font.setPointSizeF(font.pointSizeF() + 1.0)
+            font.setBold(True)
+        elif node_type == NodeType.SECTION:
+            font.setPointSizeF(font.pointSizeF() - 0.5)
+            font.setCapitalization(QFont.Capitalization.SmallCaps)
+        if node_type == NodeType.ACTION:
+            font.setItalic(True)
+        painter.setFont(font)
+
+        color = TEXT_COLOR if is_enabled else DISABLED_TEXT
+        if node_type == NodeType.SECTION:
+            color = SECTION_TEXT
+        elif node_type == NodeType.ACTION:
+            color = ICON_COLOR
+        painter.setPen(color)
+
+        x = rect.left() + LEFT_PADDING
+        icon_size = 18
+        if icon is not None and not icon.isNull():
+            icon_rect = rect.adjusted(0, 0, 0, 0)
+            icon_rect.setLeft(x)
+            icon_rect.setWidth(icon_size)
+            icon.paint(
+                painter,
+                icon_rect,
+                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter,
+            )
+            x += icon_size + ICON_TEXT_GAP
+
+        metrics = QFontMetrics(font)
+        text_rect = rect.adjusted(x - rect.left(), 0, -8, 0)
+        elided = metrics.elidedText(text, Qt.TextElideMode.ElideRight, text_rect.width())
+        painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, elided)
+
+        painter.restore()
 
 
 class AlbumSidebar(QWidget):
@@ -44,16 +162,27 @@ class AlbumSidebar(QWidget):
         self._current_selection: Path | None = None
         self._current_static_selection: str | None = None
 
+        palette = self.palette()
+        palette.setColor(QPalette.ColorRole.Window, BG_COLOR)
+        palette.setColor(QPalette.ColorRole.Base, BG_COLOR)
+        self.setPalette(palette)
+        self.setAutoFillBackground(True)
+
         self._title = QLabel("Basic Library")
         self._title.setObjectName("albumSidebarTitle")
         self._title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self._title.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        title_font = QFont(self._title.font())
+        title_font.setPointSizeF(title_font.pointSizeF() + 0.5)
+        title_font.setBold(True)
+        self._title.setFont(title_font)
+        self._title.setStyleSheet("color: #1b1b1b;")
 
         self._tree = QTreeView()
         self._tree.setObjectName("albumSidebarTree")
         self._tree.setModel(self._model)
         self._tree.setHeaderHidden(True)
-        self._tree.setRootIsDecorated(True)
+        self._tree.setRootIsDecorated(False)
         self._tree.setUniformRowHeights(True)
         self._tree.setEditTriggers(QTreeView.EditTrigger.NoEditTriggers)
         self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -61,10 +190,30 @@ class AlbumSidebar(QWidget):
         self._tree.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self._tree.doubleClicked.connect(self._on_double_clicked)
         self._tree.setMinimumWidth(220)
+        self._tree.setIndentation(18)
+        self._tree.setIconSize(QSize(18, 18))
+        self._tree.setMouseTracking(True)
+        self._tree.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self._tree.setItemDelegate(AlbumSidebarDelegate(self._tree))
+        self._tree.setFrameShape(QFrame.Shape.NoFrame)
+        self._tree.setAlternatingRowColors(False)
+        self._tree.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        tree_palette = self._tree.palette()
+        tree_palette.setColor(QPalette.ColorRole.Base, BG_COLOR)
+        tree_palette.setColor(QPalette.ColorRole.Window, BG_COLOR)
+        self._tree.setPalette(tree_palette)
+        self._tree.setAutoFillBackground(True)
+        self._tree.setStyleSheet(
+            "QTreeView { background: transparent; }"
+            "QTreeView::item { border: 0px; padding: 0px; margin: 0px; }"
+            "QTreeView::item:selected { background: transparent; }"
+            "QTreeView::item:hover { background: transparent; }"
+        )
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
         layout.addWidget(self._title)
         layout.addWidget(self._tree, stretch=1)
 
