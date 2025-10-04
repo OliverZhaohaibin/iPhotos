@@ -56,6 +56,50 @@ else:  # pragma: no cover - requires optional Qt module
             )
 
 
+class PlayerSurface(QWidget):
+    """Container that overlays the control bar on top of the player stack."""
+
+    def __init__(
+        self,
+        content: QWidget,
+        overlay: QWidget,
+        parent: QWidget | None = None,
+        *,
+        margin: int = 48,
+    ) -> None:
+        super().__init__(parent)
+        self._content = content
+        self._overlay = overlay
+        self._margin = margin
+        self._overlay_visible = True
+        self._content.setParent(self)
+        self._overlay.setParent(self)
+        self._overlay.raise_()
+
+    def set_overlay_visible(self, visible: bool) -> None:
+        self._overlay_visible = visible
+        self._overlay.setVisible(visible)
+        if visible:
+            self._overlay.raise_()
+
+    def resizeEvent(self, event) -> None:  # pragma: no cover - GUI behaviour
+        self._content.setGeometry(self.rect())
+        if self._overlay_visible:
+            hint = self._overlay.sizeHint()
+            minimum = self._overlay.minimumSizeHint()
+            height = max(hint.height(), minimum.height())
+            width = max(hint.width(), minimum.width())
+            available_width = max(0, self.width() - (self._margin * 2))
+            width = min(max(width, available_width), self.width())
+            x = max(0, (self.width() - width) // 2)
+            y = self.height() - height - self._margin
+            if y < self._margin:
+                y = self._margin
+            self._overlay.setGeometry(x, y, width, height)
+            self._overlay.raise_()
+        super().resizeEvent(event)
+
+
 class MainWindow(QMainWindow):
     """Primary window for the desktop experience."""
 
@@ -179,8 +223,12 @@ class MainWindow(QMainWindow):
         self._player_stack.addWidget(self._image_viewer)
         self._player_stack.addWidget(self._video_widget)
         self._player_stack.setCurrentWidget(self._player_placeholder)
-        player_layout.addWidget(self._player_stack)
-        player_layout.addWidget(self._player_bar)
+        self._player_surface = PlayerSurface(self._player_stack, self._player_bar)
+        self._player_surface.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self._player_surface.set_overlay_visible(False)
+        player_layout.addWidget(self._player_surface)
         detail_layout.addWidget(player_container)
 
         self._list_view.setModel(self._asset_model)
@@ -450,6 +498,7 @@ class MainWindow(QMainWindow):
         if self._player_stack.currentWidget() is not self._player_placeholder:
             self._player_stack.setCurrentWidget(self._player_placeholder)
         self._image_viewer.clear()
+        self._player_surface.set_overlay_visible(False)
 
     def _show_video_surface(self) -> None:
         """Reveal the video widget inside the stacked player area."""
@@ -457,10 +506,12 @@ class MainWindow(QMainWindow):
         if self._player_stack.currentWidget() is not self._video_widget:
             self._player_stack.setCurrentWidget(self._video_widget)
         self._player_bar.setEnabled(True)
+        self._player_surface.set_overlay_visible(True)
 
     def _show_image_surface(self) -> None:
         if self._player_stack.currentWidget() is not self._image_viewer:
             self._player_stack.setCurrentWidget(self._image_viewer)
+        self._player_surface.set_overlay_visible(False)
 
     def _show_detail_view(self) -> None:
         if self._detail_page is not None and self._view_stack.currentWidget() is not self._detail_page:

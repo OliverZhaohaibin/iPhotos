@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QSizePolicy,
     QSlider,
     QToolButton,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -31,17 +32,10 @@ class PlayerBar(QWidget):
         self._updating_position = False
         self._scrubbing = False
 
-        self._prev_button = QToolButton(self)
-        self._prev_button.setText("⏮")
-        self._prev_button.setToolTip("Previous video")
-
-        self._play_button = QToolButton(self)
-        self._play_button.setText("▶")
-        self._play_button.setToolTip("Play/Pause")
-
-        self._next_button = QToolButton(self)
-        self._next_button.setText("⏭")
-        self._next_button.setToolTip("Next video")
+        self._prev_button = self._create_tool_button("⏮", "Previous video")
+        self._play_button = self._create_tool_button("▶", "Play/Pause")
+        self._play_button.setCheckable(False)
+        self._next_button = self._create_tool_button("⏭", "Next video")
 
         self._position_slider = QSlider(Qt.Orientation.Horizontal, self)
         self._position_slider.setRange(0, 0)
@@ -50,32 +44,46 @@ class PlayerBar(QWidget):
         self._position_slider.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         self._elapsed_label = QLabel("0:00", self)
-        self._elapsed_label.setMinimumWidth(50)
+        self._elapsed_label.setMinimumWidth(48)
         self._duration_label = QLabel("0:00", self)
-        self._duration_label.setMinimumWidth(50)
+        self._duration_label.setMinimumWidth(48)
 
         self._volume_slider = QSlider(Qt.Orientation.Horizontal, self)
         self._volume_slider.setRange(0, 100)
         self._volume_slider.setValue(80)
-        self._volume_slider.setFixedWidth(120)
+        self._volume_slider.setFixedWidth(110)
         self._volume_slider.setToolTip("Volume")
 
-        self._mute_button = QToolButton(self)
-        self._mute_button.setText("🔇")
-        self._mute_button.setCheckable(True)
-        self._mute_button.setToolTip("Mute")
+        self._mute_button = self._create_tool_button("🔇", "Mute", checkable=True)
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-        layout.addWidget(self._prev_button)
-        layout.addWidget(self._play_button)
-        layout.addWidget(self._next_button)
-        layout.addWidget(self._elapsed_label)
-        layout.addWidget(self._position_slider, stretch=1)
-        layout.addWidget(self._duration_label)
-        layout.addWidget(self._mute_button)
-        layout.addWidget(self._volume_slider)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(10)
+
+        slider_row = QHBoxLayout()
+        slider_row.setContentsMargins(0, 0, 0, 0)
+        slider_row.setSpacing(8)
+        slider_row.addWidget(self._elapsed_label)
+        slider_row.addWidget(self._position_slider, stretch=1)
+        slider_row.addWidget(self._duration_label)
+
+        controls_row = QHBoxLayout()
+        controls_row.setContentsMargins(0, 0, 0, 0)
+        controls_row.setSpacing(12)
+        controls_row.addStretch(1)
+        controls_row.addWidget(self._prev_button)
+        controls_row.addWidget(self._play_button)
+        controls_row.addWidget(self._next_button)
+        controls_row.addStretch(1)
+        controls_row.addWidget(self._mute_button)
+        controls_row.addWidget(self._volume_slider)
+        controls_row.addStretch(1)
+
+        layout.addLayout(slider_row)
+        layout.addLayout(controls_row)
+
+        self._apply_palette()
 
         self._prev_button.clicked.connect(self.previousRequested.emit)
         self._play_button.clicked.connect(self.playPauseRequested.emit)
@@ -158,6 +166,10 @@ class PlayerBar(QWidget):
         if not self._scrubbing:
             self.seekRequested.emit(value)
 
+    def sizeHint(self) -> QSize:  # pragma: no cover - Qt sizing
+        base = super().sizeHint()
+        return QSize(max(base.width(), 420), base.height())
+
     # ------------------------------------------------------------------
     # Context managers
     # ------------------------------------------------------------------
@@ -185,3 +197,47 @@ class PlayerBar(QWidget):
         if hours:
             return f"{hours:d}:{minutes:02d}:{seconds:02d}"
         return f"{minutes:d}:{seconds:02d}"
+
+    # ------------------------------------------------------------------
+    # Styling helpers
+    # ------------------------------------------------------------------
+    def _create_tool_button(
+        self, text: str, tooltip: str, *, checkable: bool = False
+    ) -> QToolButton:
+        button = QToolButton(self)
+        button.setText(text)
+        button.setToolTip(tooltip)
+        button.setAutoRaise(True)
+        button.setCheckable(checkable)
+        button.setIconSize(QSize(28, 28))
+        button.setMinimumSize(QSize(36, 36))
+        return button
+
+    def _apply_palette(self) -> None:
+        common_style = (
+            "QToolButton { color: white; font-size: 18px; padding: 6px; }"
+            "QToolButton:pressed { background-color: rgba(255, 255, 255, 40);"
+            " border-radius: 8px; }"
+            "QToolButton:checked { background-color: rgba(255, 255, 255, 64); }"
+        )
+        slider_style = (
+            "QSlider::groove:horizontal { height: 4px;"
+            " background: rgba(255, 255, 255, 96); border-radius: 2px; }"
+            "QSlider::sub-page:horizontal { background: white; border-radius: 2px; }"
+            "QSlider::add-page:horizontal { background: rgba(255, 255, 255, 48);"
+            " border-radius: 2px; }"
+            "QSlider::handle:horizontal { background: white; width: 14px;"
+            " margin: -6px 0; border-radius: 7px; }"
+        )
+        volume_style = slider_style.replace("4px", "3px").replace("14px", "12px")
+        label_style = "color: white; font-size: 12px;"
+
+        self.setStyleSheet(
+            "PlayerBar { background-color: rgba(20, 20, 20, 170);"
+            " border-radius: 14px; color: white; }"
+            + common_style
+        )
+        self._position_slider.setStyleSheet(slider_style)
+        self._volume_slider.setStyleSheet(volume_style)
+        self._elapsed_label.setStyleSheet(label_style)
+        self._duration_label.setStyleSheet(label_style)
