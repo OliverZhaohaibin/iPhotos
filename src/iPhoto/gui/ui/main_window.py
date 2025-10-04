@@ -57,7 +57,7 @@ else:  # pragma: no cover - requires optional Qt module
 
 
 class PlayerSurface(QWidget):
-    """Container that keeps the player controls floating over the viewer."""
+    """Keep the floating player bar anchored over the active viewer widget."""
 
     def __init__(
         self,
@@ -73,68 +73,61 @@ class PlayerSurface(QWidget):
         self._content = content
         self._overlay = overlay
 
-        base_layout = QVBoxLayout(self)
-        base_layout.setContentsMargins(0, 0, 0, 0)
-        base_layout.setSpacing(0)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        content.setParent(self)
+        layout.addWidget(content)
 
-        self._content_container = QWidget(self)
-        content_layout = QVBoxLayout(self._content_container)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(0)
-        content.setParent(self._content_container)
-        content_layout.addWidget(content)
-        base_layout.addWidget(self._content_container)
-
-        self._overlay_container = QWidget(self)
-        self._overlay_container.setAttribute(
-            Qt.WidgetAttribute.WA_TransparentForMouseEvents, True
-        )
-        self._overlay_container.setAttribute(
-            Qt.WidgetAttribute.WA_NoSystemBackground, True
-        )
-        overlay_layout = QVBoxLayout(self._overlay_container)
-        overlay_layout.setContentsMargins(
-            self._margin, self._margin, self._margin, self._margin
-        )
-        overlay_layout.setSpacing(0)
-        overlay_layout.addStretch(1)
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(0)
-        row.addStretch(1)
-        overlay.setParent(self._overlay_container)
+        overlay.setParent(self)
         overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
-        row.addWidget(overlay)
-        row.addStretch(1)
-        overlay_layout.addLayout(row)
-        self._overlay_container.hide()
         overlay.hide()
 
+    # ------------------------------------------------------------------
+    # Overlay visibility management
+    # ------------------------------------------------------------------
     def show_controls(self) -> None:
-        """Display the floating overlay controls."""
+        """Display the floating overlay controls and keep them on top."""
 
         self._controls_visible = True
-        self._overlay_container.setGeometry(self.rect())
-        self._overlay_container.show()
         self._overlay.show()
-        self._overlay_container.raise_()
         self._overlay.raise_()
-        self._overlay.adjustSize()
+        self._reposition_overlay()
+        self._overlay.update()
 
     def hide_controls(self) -> None:
         """Hide the floating overlay controls."""
 
         self._controls_visible = False
         self._overlay.hide()
-        self._overlay_container.hide()
 
+    # ------------------------------------------------------------------
+    # QWidget API
+    # ------------------------------------------------------------------
     def resizeEvent(self, event) -> None:  # pragma: no cover - GUI behaviour
-        self._overlay_container.setGeometry(self.rect())
         super().resizeEvent(event)
+        self._reposition_overlay()
 
     def showEvent(self, event) -> None:  # pragma: no cover - GUI behaviour
-        self._overlay_container.setGeometry(self.rect())
         super().showEvent(event)
+        self._reposition_overlay()
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+    def _reposition_overlay(self) -> None:
+        if not self._controls_visible:
+            return
+        available_width = max(0, self.width() - (2 * self._margin))
+        if available_width == 0:
+            return
+        hint = self._overlay.sizeHint()
+        overlay_width = min(hint.width(), available_width)
+        overlay_height = hint.height()
+        x = (self.width() - overlay_width) // 2
+        y = max(0, self.height() - overlay_height - self._margin)
+        self._overlay.setGeometry(x, y, overlay_width, overlay_height)
+        self._overlay.raise_()
 
 
 class MainWindow(QMainWindow):
