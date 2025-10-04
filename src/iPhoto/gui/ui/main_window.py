@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...appctx import AppContext
+from ...config import VIDEO_COMPLETE_HOLD_BACKSTEP_MS
 from ..facade import AppFacade
 from .models.asset_model import AssetModel, Roles
 from .widgets.asset_delegate import AssetGridDelegate
@@ -431,7 +432,7 @@ class MainWindow(QMainWindow):
         self._list_view.previewCancelled.connect(self._cancel_preview)
         self._playlist.currentChanged.connect(self._on_playlist_current_changed)
         self._playlist.sourceChanged.connect(self._on_playlist_source_changed)
-        self._player_bar.playPauseRequested.connect(self._media.toggle)
+        self._player_bar.playPauseRequested.connect(self._toggle_playback)
         self._player_bar.previousRequested.connect(self._play_previous)
         self._player_bar.nextRequested.connect(self._play_next)
         self._player_bar.volumeChanged.connect(self._media.set_volume)
@@ -597,6 +598,9 @@ class MainWindow(QMainWindow):
         # keep the guard tolerant of unexpected objects to avoid crashes when
         # optional QtMultimedia backends differ.
         name = getattr(status, "name", None)
+        if name == "EndOfMedia":
+            self._freeze_video_final_frame()
+            return
         if name in {"LoadedMedia", "BufferingMedia", "BufferedMedia", "StalledMedia"}:
             self._player_surface.refresh_controls()
             self._player_surface.schedule_refresh(120)
@@ -612,6 +616,18 @@ class MainWindow(QMainWindow):
             self._player_surface.refresh_controls()
             self._player_surface.schedule_refresh(60)
             self._player_overlay_confirmed = True
+
+    def _toggle_playback(self) -> None:
+        """Pause/resume playback, restarting finished videos from the start."""
+
+        state = self._media.playback_state()
+        playing = getattr(state, "name", None) == "PlayingState"
+        if not playing:
+            duration = self._player_bar.duration()
+            if duration > 0 and self._player_bar.position() >= duration:
+                self._media.seek(0)
+                self._player_bar.set_position(0)
+        self._media.toggle()
 
     def _on_scrub_started(self) -> None:
         """Pause playback while the user drags the progress slider."""
@@ -703,6 +719,23 @@ class MainWindow(QMainWindow):
         # started rendering frames.
         self._player_surface.schedule_refresh()
         self._player_surface.schedule_refresh(150)
+
+    def _freeze_video_final_frame(self) -> None:
+        """Hold the last decoded frame on screen when playback completes."""
+
+        if self._player_stack.currentWidget() is not self._video_widget:
+            return
+        duration = self._player_bar.duration()
+        if duration <= 0:
+            return
+        backstep = max(0, VIDEO_COMPLETE_HOLD_BACKSTEP_MS)
+        target = max(0, duration - backstep)
+        self._media.seek(target)
+        self._media.pause()
+        self._player_bar.set_position(duration)
+        self._resume_playback_after_scrub = False
+        self._player_surface.refresh_controls()
+        self._player_surface.schedule_refresh(60)
 
     def _show_image_surface(self) -> None:
         self._player_surface.hide_controls()

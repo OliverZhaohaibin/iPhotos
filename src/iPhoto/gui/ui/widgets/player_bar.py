@@ -109,6 +109,11 @@ class PlayerBar(QWidget):
         if self._duration == 0:
             self.set_position(0)
 
+    def duration(self) -> int:
+        """Return the currently displayed duration in milliseconds."""
+
+        return self._duration
+
     def set_position(self, position_ms: int) -> None:
         """Update the slider and elapsed label to *position_ms*."""
 
@@ -118,6 +123,11 @@ class PlayerBar(QWidget):
         with self._block_position_updates():
             self._position_slider.setValue(position)
         self._elapsed_label.setText(self._format_ms(position))
+
+    def position(self) -> int:
+        """Return the current slider position in milliseconds."""
+
+        return self._position_slider.value()
 
     def set_playback_state(self, state: object) -> None:
         """Switch the play button icon based on *state*."""
