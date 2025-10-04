@@ -12,10 +12,11 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QLabel,
+    QListView,
     QMainWindow,
     QMessageBox,
-    QListView,
     QSizePolicy,
+    QStackedLayout,
     QStackedWidget,
     QStatusBar,
     QToolBar,
@@ -57,7 +58,7 @@ else:  # pragma: no cover - requires optional Qt module
 
 
 class PlayerSurface(QWidget):
-    """Container that overlays the control bar on top of the player stack."""
+    """Container that keeps the player controls floating over the viewer."""
 
     def __init__(
         self,
@@ -68,50 +69,53 @@ class PlayerSurface(QWidget):
         margin: int = 48,
     ) -> None:
         super().__init__(parent)
-        self._content = content
-        self._overlay = overlay
         self._margin = margin
         self._overlay_visible = True
-        self._content.setParent(self)
-        self._overlay.setParent(self)
-        self._overlay.raise_()
+        self._content = content
+        self._overlay = overlay
+
+        self._stack = QStackedLayout(self)
+        self._stack.setContentsMargins(0, 0, 0, 0)
+        self._stack.setStackingMode(QStackedLayout.StackingMode.StackAll)
+
+        self._content_container = QWidget(self)
+        content_layout = QVBoxLayout(self._content_container)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+        content.setParent(self._content_container)
+        content_layout.addWidget(content)
+        self._stack.addWidget(self._content_container)
+
+        self._overlay_container = QWidget(self)
+        self._overlay_container.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents, True
+        )
+        overlay_layout = QVBoxLayout(self._overlay_container)
+        overlay_layout.setContentsMargins(
+            self._margin, self._margin, self._margin, self._margin
+        )
+        overlay_layout.setSpacing(0)
+        overlay_layout.addStretch(1)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+        row.addStretch(1)
+        overlay.setParent(self._overlay_container)
+        row.addWidget(overlay)
+        row.addStretch(1)
+        overlay_layout.addLayout(row)
+        self._stack.addWidget(self._overlay_container)
+        overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
 
     def set_overlay_visible(self, visible: bool) -> None:
         self._overlay_visible = visible
-        self._overlay.setVisible(visible)
+        self._overlay_container.setVisible(visible)
         if visible:
             self._overlay.adjustSize()
-            self._layout_overlay()
-            self._overlay.raise_()
-
-    def showEvent(self, event) -> None:  # pragma: no cover - GUI behaviour
-        if self._overlay_visible:
-            self._overlay.adjustSize()
-            self._layout_overlay()
-        super().showEvent(event)
 
     def resizeEvent(self, event) -> None:  # pragma: no cover - GUI behaviour
-        self._content.setGeometry(self.rect())
-        self._layout_overlay()
+        self._stack.setGeometry(self.rect())
         super().resizeEvent(event)
-
-    def _layout_overlay(self) -> None:
-        """Position the overlay bar relative to the current widget size."""
-
-        if not self._overlay_visible:
-            return
-        hint = self._overlay.sizeHint()
-        minimum = self._overlay.minimumSizeHint()
-        height = max(hint.height(), minimum.height())
-        width = max(hint.width(), minimum.width())
-        available_width = max(0, self.width() - (self._margin * 2))
-        width = min(max(width, available_width), self.width())
-        x = max(0, (self.width() - width) // 2)
-        y = self.height() - height - self._margin
-        if y < self._margin:
-            y = self._margin
-        self._overlay.setGeometry(x, y, width, height)
-        self._overlay.raise_()
 
 
 class MainWindow(QMainWindow):
