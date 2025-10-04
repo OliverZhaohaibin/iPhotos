@@ -5,13 +5,14 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-from PySide6.QtCore import QItemSelectionModel, QRect, QSize
+from PySide6.QtCore import QItemSelectionModel, QRect, QSize, Qt
 from PySide6.QtWidgets import (
     QFileDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
     QSizePolicy,
+    QStackedWidget,
     QStatusBar,
     QToolBar,
     QVBoxLayout,
@@ -51,6 +52,16 @@ class MainWindow(QMainWindow):
         self._list_view = AssetGrid()
         self._status = QStatusBar()
         self._video_widget = QVideoWidget()
+        self._player_placeholder = QLabel("Select a video to start playback.")
+        self._player_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._player_placeholder.setStyleSheet(
+            "background-color: black; color: white; font-size: 16px;"
+        )
+        self._player_placeholder.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
+        self._player_stack = QStackedWidget()
         self._player_bar = PlayerBar()
         self._player_bar.setEnabled(False)
         self._media = MediaController(self)
@@ -93,7 +104,13 @@ class MainWindow(QMainWindow):
         self._video_widget.setMinimumHeight(320)
         self._video_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._video_widget.setStyleSheet("background-color: black;")
-        player_layout.addWidget(self._video_widget)
+        self._player_stack.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self._player_stack.addWidget(self._player_placeholder)
+        self._player_stack.addWidget(self._video_widget)
+        self._player_stack.setCurrentWidget(self._player_placeholder)
+        player_layout.addWidget(self._player_stack)
         player_layout.addWidget(self._player_bar)
         layout.addWidget(player_container)
 
@@ -213,6 +230,8 @@ class MainWindow(QMainWindow):
         if row < 0:
             self._player_bar.reset()
             self._player_bar.setEnabled(False)
+            self._media.stop()
+            self._show_player_placeholder()
             return
         index = self._asset_model.index(row, 0)
         selection_model.select(
@@ -233,6 +252,7 @@ class MainWindow(QMainWindow):
         self._media.load(source)
         self._player_bar.set_position(0)
         self._player_bar.set_duration(0)
+        self._show_video_surface()
         self._media.play()
         self._status.showMessage(f"Playing {source.name}")
 
@@ -255,3 +275,18 @@ class MainWindow(QMainWindow):
             if rel and self._facade.current_album:
                 paths.append((self._facade.current_album.root / rel).resolve())
         return paths
+
+    # ------------------------------------------------------------------
+    # Player presentation helpers
+    # ------------------------------------------------------------------
+    def _show_player_placeholder(self) -> None:
+        """Ensure the placeholder is visible when nothing is selected."""
+
+        if self._player_stack.currentWidget() is not self._player_placeholder:
+            self._player_stack.setCurrentWidget(self._player_placeholder)
+
+    def _show_video_surface(self) -> None:
+        """Reveal the video widget inside the stacked player area."""
+
+        if self._player_stack.currentWidget() is not self._video_widget:
+            self._player_stack.setCurrentWidget(self._video_widget)
