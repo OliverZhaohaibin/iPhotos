@@ -80,8 +80,15 @@ class PlayerSurface(QWidget):
         self._overlay_visible = visible
         self._overlay.setVisible(visible)
         if visible:
+            self._overlay.adjustSize()
             self._layout_overlay()
             self._overlay.raise_()
+
+    def showEvent(self, event) -> None:  # pragma: no cover - GUI behaviour
+        if self._overlay_visible:
+            self._overlay.adjustSize()
+            self._layout_overlay()
+        super().showEvent(event)
 
     def resizeEvent(self, event) -> None:  # pragma: no cover - GUI behaviour
         self._content.setGeometry(self.rect())
