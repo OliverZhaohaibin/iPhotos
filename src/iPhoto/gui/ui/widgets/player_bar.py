@@ -71,8 +71,9 @@ class PlayerBar(QWidget):
 
         self._progress_frame = QWidget(self)
         self._progress_frame.setObjectName("progressFrame")
-        slider_row = QHBoxLayout(self._progress_frame)
-        slider_row.setContentsMargins(16, 10, 16, 10)
+
+        slider_row = QHBoxLayout()
+        slider_row.setContentsMargins(0, 0, 0, 0)
         slider_row.setSpacing(10)
         slider_row.addWidget(self._elapsed_label)
         slider_row.addWidget(self._position_slider, stretch=1)
@@ -88,8 +89,13 @@ class PlayerBar(QWidget):
         controls_row.addWidget(self._volume_slider)
         controls_row.addStretch(1)
 
+        frame_layout = QVBoxLayout(self._progress_frame)
+        frame_layout.setContentsMargins(16, 12, 16, 12)
+        frame_layout.setSpacing(12)
+        frame_layout.addLayout(slider_row)
+        frame_layout.addLayout(controls_row)
+
         layout.addWidget(self._progress_frame)
-        layout.addLayout(controls_row)
 
         self._apply_palette()
 
