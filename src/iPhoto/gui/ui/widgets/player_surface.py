@@ -114,9 +114,17 @@ class PlayerSurface(QWidget):
             QEvent.Type.Move,
             QEvent.Type.Resize,
             QEvent.Type.Show,
+            QEvent.Type.WindowActivate,
+            QEvent.Type.WindowDeactivate,
             QEvent.Type.WindowStateChange,
         }:
-            if self._window_host is not None and self._window_host.isMinimized():
+            if (
+                self._window_host is not None
+                and (
+                    self._window_host.isMinimized()
+                    or event.type() == QEvent.Type.WindowDeactivate
+                )
+            ):
                 self._overlay.hide()
             else:
                 if self._controls_visible:
