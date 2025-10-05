@@ -22,7 +22,7 @@ WORK_DIR_NAME: Final[str] = ".iPhoto"
 # UI interaction constants
 # ---------------------------------------------------------------------------
 
-LONG_PRESS_THRESHOLD_MS: Final[int] = 150
+LONG_PRESS_THRESHOLD_MS: Final[int] = 130
 PREVIEW_WINDOW_DEFAULT_WIDTH: Final[int] = 640
 PREVIEW_WINDOW_MUTED: Final[bool] = True
 PREVIEW_WINDOW_CLOSE_DELAY_MS: Final[int] = 150

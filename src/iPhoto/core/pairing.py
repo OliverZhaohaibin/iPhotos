@@ -22,16 +22,53 @@ def _parse_dt(value: str | None) -> datetime | None:
         return None
 
 
+_IMAGE_EXTENSIONS = {
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".heic",
+    ".heif",
+    ".heifs",
+    ".heicf",
+}
+
+_VIDEO_EXTENSIONS = {
+    ".mov",
+    ".mp4",
+    ".m4v",
+    ".qt",
+}
+
+
+def _is_photo(row: Dict[str, object]) -> bool:
+    mime = row.get("mime")
+    if isinstance(mime, str) and mime.lower().startswith("image/"):
+        return True
+    rel = row.get("rel")
+    if isinstance(rel, str):
+        return Path(rel).suffix.lower() in _IMAGE_EXTENSIONS
+    return False
+
+
+def _is_video(row: Dict[str, object]) -> bool:
+    mime = row.get("mime")
+    if isinstance(mime, str) and mime.lower().startswith("video/"):
+        return True
+    rel = row.get("rel")
+    if isinstance(rel, str):
+        return Path(rel).suffix.lower() in _VIDEO_EXTENSIONS
+    return False
+
+
 def pair_live(index_rows: List[Dict[str, object]]) -> List[LiveGroup]:
     """Pair still and motion assets into :class:`LiveGroup` objects."""
 
     photos: Dict[str, Dict[str, object]] = {}
     videos: Dict[str, Dict[str, object]] = {}
     for row in index_rows:
-        mime = (row.get("mime") or "").lower()
-        if mime.startswith("image/"):
+        if _is_photo(row):
             photos[row["rel"]] = row
-        elif mime.startswith("video/"):
+        elif _is_video(row):
             videos[row["rel"]] = row
 
     matched: Dict[str, LiveGroup] = {}

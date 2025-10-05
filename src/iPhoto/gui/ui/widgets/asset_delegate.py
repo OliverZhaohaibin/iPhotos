@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import QPoint, QRect, Qt
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPalette, QPixmap
+from PySide6.QtCore import QRect, Qt
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPalette, QPixmap
 from PySide6.QtWidgets import QStyle, QStyleOptionViewItem, QStyledItemDelegate
 
 from ..models.asset_model import Roles
+from ..icons import load_icon
 
 
 class AssetGridDelegate(QStyledItemDelegate):
@@ -17,6 +18,7 @@ class AssetGridDelegate(QStyledItemDelegate):
     def __init__(self, parent=None) -> None:  # type: ignore[override]
         super().__init__(parent)
         self._duration_font: Optional[QFont] = None
+        self._live_icon: QIcon = load_icon("livephoto.svg", color="white")
 
     # ------------------------------------------------------------------
     # Painting
@@ -109,23 +111,26 @@ class AssetGridDelegate(QStyledItemDelegate):
         option: QStyleOptionViewItem,
         rect: QRect,
     ) -> None:
-        font = self._duration_font or QFont(option.font)
-        font.setPointSizeF(max(8.0, option.font.pointSizeF() - 2))
-        font.setBold(True)
-        metrics = QFontMetrics(font)
-        label = "LIVE"
-        padding = 5
-        height = metrics.height() + padding
-        width = metrics.horizontalAdvance(label) + padding * 2
-        badge_rect = QRect(rect.left() + 8, rect.top() + 8, width, height)
+        if self._live_icon.isNull():
+            return
+
+        padding = 6
+        icon_size = 18
+        badge_width = icon_size + padding * 2
+        badge_height = icon_size + padding * 2
+        badge_rect = QRect(rect.left() + 8, rect.top() + 8, badge_width, badge_height)
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setPen(Qt.NoPen)
         painter.setBrush(QColor(0, 0, 0, 140))
         painter.drawRoundedRect(badge_rect, 6, 6)
-        painter.setPen(QColor("white"))
-        painter.setFont(font)
-        painter.drawText(badge_rect, Qt.AlignCenter, label)
+        icon_rect = QRect(
+            badge_rect.left() + padding,
+            badge_rect.top() + padding,
+            icon_size,
+            icon_size,
+        )
+        self._live_icon.paint(painter, icon_rect)
         painter.restore()
 
     @staticmethod
