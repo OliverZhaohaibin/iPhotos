@@ -73,32 +73,49 @@ class PlaybackController:
             return
         row = index.row()
         abs_path = Path(str(abs_raw))
-        if bool(index.data(Roles.IS_VIDEO)):
+        is_video = bool(index.data(Roles.IS_VIDEO))
+        is_live = bool(index.data(Roles.IS_LIVE))
+        if is_video or is_live:
+            fallback_live = False
+            if is_live:
+                self._display_image(abs_path, row=row)
+                self._live_preview_active = True
+                self._live_preview_still = abs_path
+                self._live_preview_row = row
             self.show_detail_view()
-            self._playlist.set_current(row)
-            return
-        if bool(index.data(Roles.IS_LIVE)):
-            motion_raw = index.data(Roles.LIVE_MOTION_ABS)
-            motion_path = (
-                Path(str(motion_raw))
-                if isinstance(motion_raw, (str, Path)) and str(motion_raw)
-                else None
-            )
-            self._display_live_photo(abs_path, motion_path, row=row)
+            source = self._playlist.set_current(row)
+            if source is None and is_live:
+                motion_raw = index.data(Roles.LIVE_MOTION_ABS)
+                motion_path = (
+                    Path(str(motion_raw))
+                    if isinstance(motion_raw, (str, Path)) and str(motion_raw)
+                    else None
+                )
+                self._display_live_photo(abs_path, motion_path, row=row)
+                fallback_live = True
+            if source is None and not fallback_live:
+                self._cancel_live_preview()
             return
         self._display_image(abs_path, row=row)
 
     def show_preview_for_index(self, view: AssetGrid, index: QModelIndex) -> None:
         if not index or not index.isValid():
             return
-        if not index.data(Roles.IS_VIDEO):
+        is_video = bool(index.data(Roles.IS_VIDEO))
+        is_live = bool(index.data(Roles.IS_LIVE))
+        if not is_video and not is_live:
             return
-        abs_path = index.data(Roles.ABS)
-        if not abs_path:
+        preview_raw = None
+        if is_live:
+            preview_raw = index.data(Roles.LIVE_MOTION_ABS)
+        else:
+            preview_raw = index.data(Roles.ABS)
+        if not preview_raw:
             return
+        preview_path = Path(str(preview_raw))
         rect = view.visualRect(index)
         global_rect = QRect(view.viewport().mapToGlobal(rect.topLeft()), rect.size())
-        self._preview_window.show_preview(Path(str(abs_path)), global_rect)
+        self._preview_window.show_preview(preview_path, global_rect)
 
     def close_preview_after_release(self) -> None:
         self._preview_window.close_preview()
@@ -136,16 +153,23 @@ class PlaybackController:
         self.show_detail_view()
 
     def handle_playlist_source_changed(self, source: Path) -> None:
-        self._cancel_live_preview()
+        preview_mode = self._live_preview_active
+        if not preview_mode:
+            self._cancel_live_preview()
         self._preview_window.close_preview(False)
         self._media.stop()
         self._media.load(source)
+        if preview_mode:
+            self._player_bar.reset()
         self._player_bar.set_position(0)
         self._player_bar.set_duration(0)
-        self._show_video_surface()
+        self._show_video_surface(interactive=not preview_mode)
         self.show_detail_view()
         self._media.play()
-        self._status.showMessage(f"Playing {source.name}")
+        if preview_mode and self._live_preview_still is not None:
+            self._status.showMessage(f"Playing Live Photo {self._live_preview_still.name}")
+        else:
+            self._status.showMessage(f"Playing {source.name}")
 
     # ------------------------------------------------------------------
     # Media callbacks

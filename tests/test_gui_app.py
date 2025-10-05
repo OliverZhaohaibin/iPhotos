@@ -111,12 +111,17 @@ class _StubMediaController(QObject):
 class _StubPreviewWindow:
     def __init__(self) -> None:
         self.closed: list[tuple[tuple[object, ...], dict[str, object]]] = []
+        self.previewed: list[tuple[object, object]] = []
 
     def close_preview(self, *args, **kwargs) -> None:
         self.closed.append((args, kwargs))
 
     def show_preview(self, *args, **kwargs) -> None:
-        pass
+        if not args:
+            return
+        source = args[0]
+        rect = args[1] if len(args) > 1 else None
+        self.previewed.append((source, rect))
 
 
 class _StubDialog:
@@ -329,7 +334,14 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
         status_bar,
         dialog,  # type: ignore[arg-type]
     )
+    playlist.currentChanged.connect(controller.handle_playlist_current_changed)
+    playlist.sourceChanged.connect(controller.handle_playlist_source_changed)
 
+    controller.show_preview_for_index(grid_view, index)
+    qapp.processEvents()
+    assert preview_window.previewed
+    preview_source, _ = preview_window.previewed[-1]
+    assert Path(str(preview_source)) == motion_abs
     controller.activate_index(index)
     qapp.processEvents()
 

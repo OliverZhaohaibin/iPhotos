@@ -53,6 +53,11 @@ class AssetListModel(QAbstractListModel):
         facade.indexUpdated.connect(self._on_index_updated)
         facade.linksUpdated.connect(self._on_links_updated)
 
+    def album_root(self) -> Optional[Path]:
+        """Return the path of the currently open album, if any."""
+
+        return self._album_root
+
     # ------------------------------------------------------------------
     # Qt model implementation
     # ------------------------------------------------------------------
@@ -131,12 +136,22 @@ class AssetListModel(QAbstractListModel):
         index_rows = list(IndexStore(self._album_root).read_all())
         live_map = self._resolve_live_map(index_rows, load_live_map(self._album_root))
 
+        motion_paths_to_hide: set[str] = set()
+        for info in live_map.values():
+            if not isinstance(info, dict):
+                continue
+            if info.get("role") != "motion":
+                continue
+            motion_rel = info.get("motion")
+            if isinstance(motion_rel, str) and motion_rel:
+                motion_paths_to_hide.add(motion_rel)
+
         payload: List[Dict[str, object]] = []
         for row in index_rows:
             rel = str(row["rel"])
-            live_info = live_map.get(rel)
-            if live_info and live_info.get("role") == "motion" and live_info.get("still"):
+            if rel in motion_paths_to_hide:
                 continue
+            live_info = live_map.get(rel)
 
             abs_path = str((self._album_root / rel).resolve())
             is_image, is_video = self._classify_media(row)
