@@ -94,4 +94,4 @@ class AssetGrid(QListView):
     def _viewport_pos(self, event: QMouseEvent) -> QPoint:
         """Return the event position mapped into viewport coordinates."""
 
-        return self.viewport().mapFromParent(event.pos())
+        return self.viewport().mapFromGlobal(event.globalPosition().toPoint())
