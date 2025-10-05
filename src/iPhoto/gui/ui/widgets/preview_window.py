@@ -6,9 +6,17 @@ import importlib.util
 from pathlib import Path
 from typing import Callable, Optional
 
-from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QRegion, QResizeEvent
-from PySide6.QtWidgets import QGraphicsDropShadowEffect, QVBoxLayout, QWidget, QSizePolicy
+from PySide6.QtCore import QPoint, QRect, QRectF, QSize, QSizeF, Qt, QTimer
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QResizeEvent
+from PySide6.QtWidgets import (
+    QFrame,
+    QGraphicsDropShadowEffect,
+    QGraphicsScene,
+    QGraphicsView,
+    QVBoxLayout,
+    QWidget,
+    QSizePolicy,
+)
 
 from ....config import (
     PREVIEW_WINDOW_CLOSE_DELAY_MS,
@@ -19,31 +27,87 @@ from ....config import (
 from ..media import MediaController, require_multimedia
 
 if importlib.util.find_spec("PySide6.QtMultimediaWidgets") is not None:
-    from PySide6.QtMultimediaWidgets import QVideoWidget
+    from PySide6.QtMultimediaWidgets import QGraphicsVideoItem
 else:  # pragma: no cover - requires optional Qt module
-    QVideoWidget = None  # type: ignore[assignment]
+    QGraphicsVideoItem = None  # type: ignore[assignment]
 
 
-class _VideoWidget(QVideoWidget):
-    """Video surface that notifies the parent when resized."""
+class _RoundedVideoItem(QGraphicsVideoItem):
+    """Graphics video item that clips playback to a rounded rectangle."""
 
-    def __init__(self, on_resize: Callable[[], None], parent: Optional[QWidget] = None) -> None:
-        if QVideoWidget is None:  # pragma: no cover - optional Qt module
+    def __init__(self, corner_radius: int) -> None:
+        if QGraphicsVideoItem is None:  # pragma: no cover - optional Qt module
             raise RuntimeError(
                 "PySide6.QtMultimediaWidgets is unavailable; install PySide6 with "
                 "QtMultimediaWidgets support to enable video previews."
             )
+        super().__init__()
+        self._corner_radius = float(max(0, corner_radius))
+        self.setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
+
+    def set_corner_radius(self, corner_radius: int) -> None:
+        radius = float(max(0, corner_radius))
+        if self._corner_radius == radius:
+            return
+        self._corner_radius = radius
+        self.update()
+
+    def paint(self, painter: QPainter, option, widget=None) -> None:  # type: ignore[override]
+        if self._corner_radius > 0.0:
+            rect = self.boundingRect()
+            radius = min(self._corner_radius, min(rect.width(), rect.height()) / 2.0)
+            path = QPainterPath()
+            path.addRoundedRect(rect, radius, radius)
+            painter.setClipPath(path)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        super().paint(painter, option, widget)
+
+
+class _VideoView(QGraphicsView):
+    """Hosts the rounded video item within a scene."""
+
+    def __init__(
+        self,
+        on_resize: Callable[[], None],
+        corner_radius: int,
+        parent: Optional[QWidget] = None,
+    ) -> None:
         super().__init__(parent)
         self._on_resize = on_resize
+        self._scene = QGraphicsScene(self)
+        self._video_item = _RoundedVideoItem(corner_radius)
+        self._scene.addItem(self._video_item)
+        self.setScene(self._scene)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
-        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.viewport().setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setStyleSheet("background: transparent; border: none;")
 
+    def video_item(self) -> _RoundedVideoItem:
+        return self._video_item
+
     def resizeEvent(self, event: QResizeEvent) -> None:  # type: ignore[override]
         super().resizeEvent(event)
+        self._update_video_geometry()
         self._on_resize()
+
+    def _update_video_geometry(self) -> None:
+        viewport_size = self.viewport().size()
+        rect = QRectF(
+            0.0,
+            0.0,
+            float(max(0, viewport_size.width())),
+            float(max(0, viewport_size.height())),
+        )
+        self._scene.setSceneRect(rect)
+        self._video_item.setSize(rect.size())
+        center = rect.center()
+        self._video_item.setPos(center - self._video_item.boundingRect().center())
 
 
 class _PreviewFrame(QWidget):
@@ -68,13 +132,13 @@ class _PreviewFrame(QWidget):
         )
         layout.setSpacing(0)
 
-        self._video_widget = _VideoWidget(self._update_masks, self)
-        layout.addWidget(self._video_widget)
+        self._video_view = _VideoView(self._update_masks, corner_radius, self)
+        layout.addWidget(self._video_view)
 
         self._update_masks()
 
-    def video_widget(self) -> QVideoWidget:
-        return self._video_widget
+    def video_item(self) -> _RoundedVideoItem:
+        return self._video_view.video_item()
 
     def set_corner_radius(self, corner_radius: int) -> None:
         radius = max(0, corner_radius)
@@ -111,27 +175,9 @@ class _PreviewFrame(QWidget):
         self._update_masks()
 
     def _update_masks(self) -> None:
-        if self.width() <= 0 or self.height() <= 0:
-            self.clearMask()
-            self._video_widget.clearMask()
-            return
-
-        frame_path = QPainterPath()
-        frame_path.addRoundedRect(QRectF(self.rect()), float(self._corner_radius), float(self._corner_radius))
-        frame_region = QRegion(frame_path.toFillPolygon().toPolygon())
-        self.setMask(frame_region)
-
         video_radius = max(0, self._corner_radius - self._border_width)
-        if video_radius == 0:
-            self._video_widget.clearMask()
-            return
-
-        video_path = QPainterPath()
-        video_path.addRoundedRect(
-            QRectF(self._video_widget.rect()), float(video_radius), float(video_radius)
-        )
-        video_region = QRegion(video_path.toFillPolygon().toPolygon())
-        self._video_widget.setMask(video_region)
+        self._video_view.video_item().set_corner_radius(video_radius)
+        self.update()
 
 
 class PreviewWindow(QWidget):
@@ -179,7 +225,7 @@ class PreviewWindow(QWidget):
         )
 
         self._media = MediaController(self)
-        self._media.set_video_output(self._frame.video_widget())
+        self._media.set_video_output(self._frame.video_item())
         self._media.set_muted(PREVIEW_WINDOW_MUTED)
 
         self._close_timer = QTimer(self)
