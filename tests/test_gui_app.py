@@ -56,6 +56,17 @@ def test_facade_open_album_emits_signals(tmp_path: Path, qapp: QApplication) -> 
     assert "opened" in received and "index" in received
 
 
+def test_facade_rescan_emits_links(tmp_path: Path, qapp: QApplication) -> None:
+    asset = tmp_path / "IMG_1101.JPG"
+    _create_image(asset)
+    facade = AppFacade()
+    facade.open_album(tmp_path)
+    spy = QSignalSpy(facade.linksUpdated)
+    facade.rescan_current()
+    qapp.processEvents()
+    assert len(spy) >= 1
+
+
 def test_asset_model_populates_rows(tmp_path: Path, qapp: QApplication) -> None:
     asset = tmp_path / "IMG_2001.JPG"
     _create_image(asset)

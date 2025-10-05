@@ -50,8 +50,13 @@ def _build_row(root: Path, file_path: Path) -> Dict[str, Any]:
         "mime": mimetypes.guess_type(file_path.name)[0],
     }
     lower = file_path.suffix.lower()
+    metadata: Dict[str, Any] = {}
     if lower in {".heic", ".jpg", ".jpeg", ".png"}:
-        base_row.update(read_image_meta(file_path))
+        metadata = read_image_meta(file_path)
     elif lower in {".mov", ".mp4", ".m4v", ".qt"}:
-        base_row.update(read_video_meta(file_path))
+        metadata = read_video_meta(file_path)
+    for key, value in metadata.items():
+        if value is None and key in base_row:
+            continue
+        base_row[key] = value
     return base_row
