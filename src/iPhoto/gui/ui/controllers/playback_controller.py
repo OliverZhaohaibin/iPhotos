@@ -280,12 +280,11 @@ class PlaybackController:
             return
         self._preview_window.close_preview(False)
         self._media.stop()
-        self._playlist.clear()
-        self._player_bar.reset()
-        self._player_bar.setEnabled(False)
         self._image_viewer.set_pixmap(pixmap)
         self._show_image_surface()
         self.show_detail_view()
+        self._player_bar.reset()
+        self._player_bar.setEnabled(False)
         if row is not None:
             self.select_filmstrip_row(row)
         self._status.showMessage(f"Viewing {source.name}")
