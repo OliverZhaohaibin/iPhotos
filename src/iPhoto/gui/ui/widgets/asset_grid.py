@@ -35,20 +35,23 @@ class AssetGrid(QListView):
     # ------------------------------------------------------------------
     def mousePressEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
         if event.button() == Qt.MouseButton.LeftButton:
-            index = self.indexAt(event.pos())
+            viewport_pos = self._viewport_pos(event)
+            index = self.indexAt(viewport_pos)
             if index.isValid():
                 self._pressed_index = index
-                self._press_pos = QPoint(event.pos())
+                self._press_pos = QPoint(viewport_pos)
                 self._long_press_active = False
                 self._press_timer.start(LONG_PRESS_THRESHOLD_MS)
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
         if self._press_pos is not None and not self._long_press_active:
-            if (event.pos() - self._press_pos).manhattanLength() > self._DRAG_CANCEL_THRESHOLD:
+            viewport_pos = self._viewport_pos(event)
+            if (viewport_pos - self._press_pos).manhattanLength() > self._DRAG_CANCEL_THRESHOLD:
                 self._cancel_pending_long_press()
         elif self._long_press_active and self._pressed_index is not None:
-            index = self.indexAt(event.pos())
+            viewport_pos = self._viewport_pos(event)
+            index = self.indexAt(viewport_pos)
             if not index.isValid() or index != self._pressed_index:
                 self.previewCancelled.emit()
                 self._reset_state()
@@ -87,3 +90,8 @@ class AssetGrid(QListView):
         if self._pressed_index is not None and self._pressed_index.isValid():
             self._long_press_active = True
             self.requestPreview.emit(self._pressed_index)
+
+    def _viewport_pos(self, event: QMouseEvent) -> QPoint:
+        """Return the event position mapped into viewport coordinates."""
+
+        return self.viewport().mapFromParent(event.pos())
