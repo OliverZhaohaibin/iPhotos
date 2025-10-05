@@ -6,17 +6,20 @@ import importlib.util
 from pathlib import Path
 from typing import Optional
 
+import sys
+
 from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import (
+    QBitmap,
     QColor,
     QImage,
     QPaintEvent,
     QPainter,
     QPainterPath,
     QPen,
-    QPixmap,
     QRegion,
     QResizeEvent,
+    QShowEvent,
 )
 from PySide6.QtWidgets import (
     QGraphicsDropShadowEffect,
@@ -33,10 +36,10 @@ from ....config import (
 )
 from ..media import MediaController, require_multimedia
 
-if importlib.util.find_spec("PySide6.QtMultimedia") is not None:
-    from PySide6.QtMultimedia import QVideoFrame, QVideoSink
+if importlib.util.find_spec("PySide6.QtMultimediaWidgets") is not None:
+    from PySide6.QtMultimediaWidgets import QVideoWidget
 else:  # pragma: no cover - requires optional Qt module
-    QVideoFrame = QVideoSink = None  # type: ignore[assignment]
+    QVideoWidget = None  # type: ignore[assignment]
 
 
 class _ChromeWidget(QWidget):
@@ -103,30 +106,25 @@ class _ChromeWidget(QWidget):
         self.setMask(region)
 
 
-class _RoundedVideoWidget(QWidget):
-    """Video surface that inherits the preview's rounded silhouette."""
+class _RoundedVideoWidget(QVideoWidget):
+    """``QVideoWidget`` variant that keeps hardware rendering but clips to a rounded mask."""
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent)
         require_multimedia()
-        assert QVideoSink is not None  # for type-checkers
+        if QVideoWidget is None:  # pragma: no cover - depends on optional Qt module
+            raise RuntimeError(
+                "PySide6.QtMultimediaWidgets is unavailable; install PySide6 with "
+                "QtMultimediaWidgets support to enable video previews."
+            )
+        super().__init__(parent)
         self._corner_radius = 0
-        self._sink = QVideoSink(self)
-        self._sink.videoFrameChanged.connect(self._on_frame_changed)
-        self._current_pixmap: Optional[QPixmap] = None
-        self._background = QColor("black")
 
         self.setAttribute(Qt.WidgetAttribute.WA_DontCreateNativeAncestors, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, False)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAutoFillBackground(False)
-
-    def videoSink(self) -> QVideoSink:
-        """Return the sink that receives frames from ``QMediaPlayer``."""
-
-        return self._sink
+        self.setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
 
     def set_corner_radius(self, corner_radius: int) -> None:
         radius = max(0, corner_radius)
@@ -134,62 +132,34 @@ class _RoundedVideoWidget(QWidget):
             return
         self._corner_radius = radius
         self._update_mask()
-        self.update()
 
     def resizeEvent(self, event: QResizeEvent) -> None:  # type: ignore[override]
         super().resizeEvent(event)
         self._update_mask()
 
-    def paintEvent(self, event: QPaintEvent) -> None:  # type: ignore[override]
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-
-        rect = QRectF(self.rect())
-        radius = float(self._corner_radius)
-        clip_path = QPainterPath()
-        clip_path.addRoundedRect(rect, radius, radius)
-
-        painter.setClipPath(clip_path)
-        painter.fillRect(rect, self._background)
-
-        if self._current_pixmap is not None and not self._current_pixmap.isNull():
-            target_size = self._current_pixmap.size().scaled(
-                rect.size().toSize(), Qt.AspectRatioMode.KeepAspectRatio
-            )
-            target_rect = QRect(
-                int(rect.x() + (rect.width() - target_size.width()) / 2),
-                int(rect.y() + (rect.height() - target_size.height()) / 2),
-                target_size.width(),
-                target_size.height(),
-            )
-            painter.drawPixmap(target_rect, self._current_pixmap)
-
     def _update_mask(self) -> None:
-        if self.width() <= 0 or self.height() <= 0:
+        if self.width() <= 0 or self.height() <= 0 or self._corner_radius <= 0:
             self.clearMask()
             return
 
-        path = QPainterPath()
+        dpr = self.devicePixelRatioF()
+        mask_width = max(1, int(round(self.width() * dpr)))
+        mask_height = max(1, int(round(self.height() * dpr)))
+        image = QImage(mask_width, mask_height, QImage.Format_ARGB32)
+        image.fill(Qt.GlobalColor.transparent)
+
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.scale(dpr, dpr)
+        rect = QRectF(0, 0, float(self.width()), float(self.height()))
         radius = float(self._corner_radius)
-        path.addRoundedRect(QRectF(self.rect()), radius, radius)
-        region = QRegion(path.toFillPolygon().toPolygon())
-        self.setMask(region)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(Qt.GlobalColor.white)
+        painter.drawRoundedRect(rect, radius, radius)
+        painter.end()
 
-    def _on_frame_changed(self, frame: QVideoFrame) -> None:
-        if not frame.isValid():
-            self._current_pixmap = None
-            self.update()
-            return
-
-        image = frame.toImage()
-        if image is None or image.isNull():
-            self._current_pixmap = None
-        else:
-            if image.format() != QImage.Format_RGBA8888:
-                image = image.convertToFormat(QImage.Format_RGBA8888)
-            self._current_pixmap = QPixmap.fromImage(image)
-        self.update()
+        alpha_mask = image.createAlphaMask()
+        self.setMask(QRegion(QBitmap.fromImage(alpha_mask)))
 
 
 class PreviewWindow(QWidget):
@@ -307,6 +277,10 @@ class PreviewWindow(QWidget):
         else:
             self._do_close()
 
+    def showEvent(self, event: QShowEvent) -> None:  # type: ignore[override]
+        super().showEvent(event)
+        _apply_system_rounded_corners(self)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -341,3 +315,38 @@ class PreviewWindow(QWidget):
         self._chrome.set_corner_radius(self._corner_radius)
         border_width = self._chrome.border_width()
         self._video_widget.set_corner_radius(max(0, self._corner_radius - border_width))
+
+
+def _apply_system_rounded_corners(widget: QWidget) -> None:
+    """Ask the native window manager for rounded corners when supported."""
+
+    if sys.platform != "win32":  # Only Windows exposes the DWM rounding API we need.
+        return
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except Exception:  # pragma: no cover - optional dependency on Windows runtime
+        return
+
+    DWMWA_WINDOW_CORNER_PREFERENCE = 33
+    DWMWCP_ROUND = 2
+
+    try:
+        hwnd = int(widget.winId())
+    except Exception:  # pragma: no cover - winId may not be ready yet
+        return
+
+    if hwnd == 0:
+        return
+
+    preference = ctypes.c_uint(DWMWCP_ROUND)
+    try:
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(  # type: ignore[attr-defined]
+            wintypes.HWND(hwnd),
+            ctypes.c_uint(DWMWA_WINDOW_CORNER_PREFERENCE),
+            ctypes.byref(preference),
+            ctypes.sizeof(preference),
+        )
+    except Exception:  # pragma: no cover - failures shouldn't break previews
+        return
