@@ -4,13 +4,17 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QMouseEvent, QPixmap
 from PySide6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
+
+from ..icons import load_icon
 
 
 class ImageViewer(QWidget):
     """Simple viewer that centers and scales a ``QPixmap``."""
+
+    replayRequested = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -27,6 +31,15 @@ class ImageViewer(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._label)
 
+        self._live_badge = QLabel(self)
+        self._live_badge.hide()
+        self._live_badge.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        icon = load_icon("livephoto.svg", color="#cccccc")
+        if not icon.isNull():
+            self._live_badge.setPixmap(icon.pixmap(32, 32))
+        self._live_badge.setFixedSize(32, 32)
+        self._live_badge.move(12, 12)
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -42,6 +55,18 @@ class ImageViewer(QWidget):
         self._pixmap = None
         self._label.clear()
 
+    def show_live_badge(self, visible: bool) -> None:
+        """Toggle visibility of the Live Photo indicator."""
+
+        self._live_badge.setVisible(visible)
+        if visible:
+            self._live_badge.raise_()
+
+    def live_badge_visible(self) -> bool:
+        """Return whether the Live Photo indicator is currently visible."""
+
+        return self._live_badge.isVisible()
+
     # ------------------------------------------------------------------
     # QWidget overrides
     # ------------------------------------------------------------------
@@ -49,6 +74,12 @@ class ImageViewer(QWidget):
         super().resizeEvent(event)
         if self._pixmap is not None:
             self._update_pixmap()
+        self._live_badge.move(12, 12)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # pragma: no cover - GUI behaviour
+        if self._live_badge.isVisible() and event.button() == Qt.MouseButton.LeftButton:
+            self.replayRequested.emit()
+        super().mousePressEvent(event)
 
     # ------------------------------------------------------------------
     # Helpers

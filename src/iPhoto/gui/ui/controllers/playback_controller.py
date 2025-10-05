@@ -59,6 +59,13 @@ class PlaybackController:
         self._dialog = dialog
         self._resume_playback_after_scrub = False
         self._pending_live_photo_still: Path | None = None
+        self._original_mute_state = False
+        self._live_mode_active = False
+        self._active_live_motion: Path | None = None
+        self._active_live_still: Path | None = None
+        media.mutedChanged.connect(self._on_media_muted_changed)
+        self._image_viewer.replayRequested.connect(self.replay_live_photo)
+        self._video_area.replayRequested.connect(self.replay_live_photo)
 
     # ------------------------------------------------------------------
     # Selection handling
@@ -135,25 +142,47 @@ class PlaybackController:
 
     def handle_playlist_source_changed(self, source: Path) -> None:
         self._pending_live_photo_still = None
+        self._active_live_motion = None
+        self._active_live_still = None
+        is_live_photo = False
         current_row = self._playlist.current_row()
         if current_row != -1:
             index = self._model.index(current_row, 0)
-            if index.isValid() and bool(index.data(Roles.IS_LIVE)):
-                still_raw = index.data(Roles.ABS)
-                if still_raw:
-                    self._pending_live_photo_still = Path(str(still_raw))
+            if index.isValid():
+                is_live_photo = bool(index.data(Roles.IS_LIVE))
+                if is_live_photo:
+                    still_raw = index.data(Roles.ABS)
+                    if still_raw:
+                        still_path = Path(str(still_raw))
+                        self._pending_live_photo_still = still_path
+                        self._active_live_still = still_path
         self._preview_window.close_preview(False)
         self._media.stop()
         self._media.load(source)
         self._player_bar.reset()
         self._player_bar.set_position(0)
         self._player_bar.set_duration(0)
-        self._show_video_surface(interactive=True)
+        if is_live_photo:
+            if not self._live_mode_active:
+                self._original_mute_state = self._media.is_muted()
+            self._live_mode_active = True
+            self._active_live_motion = source
+            self._media.set_muted(True)
+            self._video_area.show_live_badge(True)
+            self._image_viewer.show_live_badge(True)
+            self._show_video_surface(interactive=False)
+        else:
+            if self._live_mode_active:
+                self._media.set_muted(self._original_mute_state)
+            self._live_mode_active = False
+            self._video_area.show_live_badge(False)
+            self._image_viewer.show_live_badge(False)
+            self._show_video_surface(interactive=True)
         self.show_detail_view()
         self._media.play()
-        if self._pending_live_photo_still is not None:
+        if is_live_photo and self._active_live_still is not None:
             self._status.showMessage(
-                f"Playing Live Photo {self._pending_live_photo_still.name}"
+                f"Playing Live Photo {self._active_live_still.name}"
             )
         else:
             self._status.showMessage(f"Playing {source.name}")
@@ -249,6 +278,8 @@ class PlaybackController:
             return
 
         self._pending_live_photo_still = None
+        self._live_mode_active = True
+        self._active_live_still = still_path
 
         current_row = self._playlist.current_row()
         self._media.stop()
@@ -261,6 +292,8 @@ class PlaybackController:
             return
 
         self._image_viewer.set_pixmap(pixmap)
+        self._image_viewer.show_live_badge(True)
+        self._video_area.show_live_badge(True)
         self._show_image_surface()
         self.show_detail_view()
 
@@ -278,6 +311,14 @@ class PlaybackController:
             self._status.showMessage(f"Unable to display {source.name}")
             self._dialog.show_error(f"Could not load {source}")
             return
+        self._pending_live_photo_still = None
+        if self._live_mode_active:
+            self._media.set_muted(self._original_mute_state)
+        self._live_mode_active = False
+        self._active_live_motion = None
+        self._active_live_still = None
+        self._video_area.show_live_badge(False)
+        self._image_viewer.show_live_badge(False)
         self._preview_window.close_preview(False)
         self._media.stop()
         self._image_viewer.set_pixmap(pixmap)
@@ -291,6 +332,13 @@ class PlaybackController:
 
     def _show_player_placeholder(self) -> None:
         self._pending_live_photo_still = None
+        if self._live_mode_active:
+            self._media.set_muted(self._original_mute_state)
+        self._live_mode_active = False
+        self._active_live_motion = None
+        self._active_live_still = None
+        self._video_area.show_live_badge(False)
+        self._image_viewer.show_live_badge(False)
         self._video_area.hide_controls(animate=False)
         self._resume_playback_after_scrub = False
         if self._player_stack.currentWidget() is not self._player_placeholder:
@@ -301,6 +349,7 @@ class PlaybackController:
         if self._player_stack.currentWidget() is not self._video_area:
             self._player_stack.setCurrentWidget(self._video_area)
         self._resume_playback_after_scrub = False
+        self._video_area.set_controls_enabled(interactive)
         if interactive:
             self._player_bar.setEnabled(True)
             self._video_area.show_controls(animate=False)
@@ -327,4 +376,48 @@ class PlaybackController:
         self._resume_playback_after_scrub = False
         if self._player_stack.currentWidget() is not self._image_viewer:
             self._player_stack.setCurrentWidget(self._image_viewer)
+
+    # ------------------------------------------------------------------
+    # Live Photo controls
+    # ------------------------------------------------------------------
+    def replay_live_photo(self) -> None:
+        if not self._live_mode_active:
+            return
+        motion_source = self._active_live_motion or self._playlist.current_source()
+        if motion_source is None:
+            return
+        still_path = self._active_live_still
+        if still_path is None:
+            current_row = self._playlist.current_row()
+            if current_row != -1:
+                index = self._model.index(current_row, 0)
+                if index.isValid():
+                    still_raw = index.data(Roles.ABS)
+                    if still_raw:
+                        still_path = Path(str(still_raw))
+        if still_path is not None:
+            self._pending_live_photo_still = still_path
+            self._active_live_still = still_path
+        self._active_live_motion = Path(motion_source)
+        self._preview_window.close_preview(False)
+        self._live_mode_active = True
+        self._media.stop()
+        self._media.load(self._active_live_motion)
+        self._player_bar.reset()
+        self._player_bar.set_position(0)
+        self._player_bar.set_duration(0)
+        self._media.set_muted(True)
+        self._show_video_surface(interactive=False)
+        self._video_area.show_live_badge(True)
+        self._image_viewer.show_live_badge(True)
+        self.show_detail_view()
+        self._media.play()
+        if still_path is not None:
+            self._status.showMessage(f"Playing Live Photo {still_path.name}")
+        else:
+            self._status.showMessage(f"Playing {self._active_live_motion.name}")
+
+    def _on_media_muted_changed(self, muted: bool) -> None:
+        if not self._live_mode_active:
+            self._original_mute_state = bool(muted)
 

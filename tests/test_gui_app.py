@@ -94,6 +94,7 @@ class _StubMediaController(QObject):
 
     def set_muted(self, muted: bool) -> None:
         self._muted = muted
+        self.mutedChanged.emit(muted)
 
     def volume(self) -> int:
         return self._volume
@@ -348,6 +349,10 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
     assert media.loaded == motion_abs
     assert media.play_calls == 1
     assert player_stack.currentWidget() is video_area
+    assert media._muted is True
+    assert not player_bar.isEnabled()
+    assert video_area.live_badge_visible()
+    assert not video_area.player_bar.isVisible()
     assert status_bar.currentMessage().startswith("Playing Live Photo")
 
     controller.handle_media_status_changed(SimpleNamespace(name="EndOfMedia"))
@@ -357,6 +362,23 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
     assert player_stack.currentWidget() is image_viewer
     assert status_bar.currentMessage().startswith("Viewing IMG_5001")
     assert not player_bar.isEnabled()
+    assert image_viewer.live_badge_visible()
+
+    controller.replay_live_photo()
+    qapp.processEvents()
+
+    assert media.play_calls == 2
+    assert player_stack.currentWidget() is video_area
+    assert media._muted is True
+    assert video_area.live_badge_visible()
+
+    controller.handle_media_status_changed(SimpleNamespace(name="EndOfMedia"))
+    qapp.processEvents()
+    assert image_viewer.live_badge_visible()
+
+    image_viewer.replayRequested.emit()
+    qapp.processEvents()
+    assert media.play_calls == 3
 
 def test_thumbnail_job_seek_targets_clamp(tmp_path: Path, qapp: QApplication) -> None:
     dummy_loader = cast(Any, object())
