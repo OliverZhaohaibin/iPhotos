@@ -4,15 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QItemSelectionModel, QModelIndex, QRect
+from PySide6.QtCore import QItemSelectionModel, QModelIndex, QRect, Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QStackedWidget, QStatusBar, QWidget
 
 from ....config import VIDEO_COMPLETE_HOLD_BACKSTEP_MS
 from ..media import MediaController, PlaylistController
 from ..models.asset_model import AssetModel, Roles
-from ...utils import image_loader
-from ....utils.ffmpeg import extract_video_frame
 from ..widgets.asset_grid import AssetGrid
 from ..widgets.image_viewer import ImageViewer
 from ..widgets.player_bar import PlayerBar
@@ -99,14 +97,9 @@ class PlaybackController:
         rect = view.visualRect(index)
         global_rect = QRect(view.viewport().mapToGlobal(rect.topLeft()), rect.size())
         poster_pixmap: QPixmap | None = None
-        try:
-            frame_bytes = extract_video_frame(preview_path, at=0.0)
-        except Exception:
-            frame_bytes = None
-        if frame_bytes:
-            image = image_loader.qimage_from_bytes(frame_bytes)
-            if image is not None and not image.isNull():
-                poster_pixmap = QPixmap.fromImage(image)
+        decoration = index.data(Qt.DecorationRole)
+        if isinstance(decoration, QPixmap) and not decoration.isNull():
+            poster_pixmap = decoration
         self._preview_window.show_preview(
             preview_path,
             global_rect,
