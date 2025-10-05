@@ -10,9 +10,7 @@ import sys
 
 from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import (
-    QBitmap,
     QColor,
-    QImage,
     QPaintEvent,
     QPainter,
     QPainterPath,
@@ -49,7 +47,7 @@ class _ChromeWidget(QWidget):
         super().__init__(parent)
         self._corner_radius = max(0, corner_radius)
         self._border_width = 1
-        self._background = QColor(18, 18, 22, 220)
+        self._background = QColor(18, 18, 22, 255)
         self._border = QColor(255, 255, 255, 36)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
@@ -107,7 +105,7 @@ class _ChromeWidget(QWidget):
 
 
 class _RoundedVideoWidget(QVideoWidget):
-    """``QVideoWidget`` variant that keeps hardware rendering but clips to a rounded mask."""
+    """``QVideoWidget`` that integrates with the preview chrome rounding."""
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         require_multimedia()
@@ -131,35 +129,30 @@ class _RoundedVideoWidget(QVideoWidget):
         if radius == self._corner_radius:
             return
         self._corner_radius = radius
-        self._update_mask()
+        self._update_rounding()
 
     def resizeEvent(self, event: QResizeEvent) -> None:  # type: ignore[override]
         super().resizeEvent(event)
-        self._update_mask()
+        self._update_rounding()
 
-    def _update_mask(self) -> None:
+    def showEvent(self, event: QShowEvent) -> None:  # type: ignore[override]
+        super().showEvent(event)
+        self._update_rounding()
+
+    def _update_rounding(self) -> None:
         if self.width() <= 0 or self.height() <= 0 or self._corner_radius <= 0:
+            _clear_native_rounding(self)
             self.clearMask()
             return
 
-        dpr = self.devicePixelRatioF()
-        mask_width = max(1, int(round(self.width() * dpr)))
-        mask_height = max(1, int(round(self.height() * dpr)))
-        image = QImage(mask_width, mask_height, QImage.Format_ARGB32)
-        image.fill(Qt.GlobalColor.transparent)
+        radius = self._corner_radius
+        if _apply_native_rounding(self, radius):
+            self.clearMask()
+            return
 
-        painter = QPainter(image)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.scale(dpr, dpr)
-        rect = QRectF(0, 0, float(self.width()), float(self.height()))
-        radius = float(self._corner_radius)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(Qt.GlobalColor.white)
-        painter.drawRoundedRect(rect, radius, radius)
-        painter.end()
-
-        alpha_mask = image.createAlphaMask()
-        self.setMask(QRegion(QBitmap.fromImage(alpha_mask)))
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(self.rect()), float(radius), float(radius))
+        self.setMask(QRegion(path.toFillPolygon().toPolygon()))
 
 
 class PreviewWindow(QWidget):
@@ -208,9 +201,7 @@ class PreviewWindow(QWidget):
         self._video_widget = _RoundedVideoWidget(self._chrome)
         self._video_widget.setObjectName("previewVideo")
         self._video_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self._video_widget.setStyleSheet(
-            "background-color: black; border: none;"
-        )
+        self._video_widget.setStyleSheet("background: transparent; border: none;")
         chrome_layout.addWidget(self._video_widget)
 
         self._video_widget.set_corner_radius(max(0, self._corner_radius - border_width))
@@ -350,3 +341,42 @@ def _apply_system_rounded_corners(widget: QWidget) -> None:
         )
     except Exception:  # pragma: no cover - failures shouldn't break previews
         return
+
+
+def _apply_native_rounding(widget: QWidget, radius: int) -> bool:
+    """Apply rounded clipping to *widget* using native APIs."""
+
+    if sys.platform == "win32":
+        try:
+            import ctypes
+        except Exception:  # pragma: no cover - optional Windows support
+            return False
+        hwnd = int(widget.winId()) if widget.winId() is not None else 0
+        if hwnd:
+            user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+            gdi32 = ctypes.windll.gdi32  # type: ignore[attr-defined]
+            dpr = widget.devicePixelRatioF()
+            width = max(1, int(round(widget.width() * dpr)))
+            height = max(1, int(round(widget.height() * dpr)))
+            diameter = max(0, int(round(radius * 2 * dpr)))
+            region = gdi32.CreateRoundRectRgn(0, 0, width, height, diameter, diameter)
+            if region:
+                user32.SetWindowRgn(hwnd, region, True)
+                return True
+
+    return False
+
+
+def _clear_native_rounding(widget: QWidget) -> None:
+    """Remove any native clipping previously applied by :func:`_apply_native_rounding`."""
+
+    if sys.platform == "win32":
+        try:
+            import ctypes
+        except Exception:  # pragma: no cover - optional Windows support
+            pass
+        else:
+            hwnd = int(widget.winId()) if widget.winId() is not None else 0
+            if hwnd:
+                user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+                user32.SetWindowRgn(hwnd, 0, True)
