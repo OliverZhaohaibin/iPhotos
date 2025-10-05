@@ -19,20 +19,26 @@ else:  # pragma: no cover - exercised only when Pillow is missing
     Image = None  # type: ignore[assignment]
     UnidentifiedImageError = None  # type: ignore[assignment]
 
+def _empty_image_info() -> Dict[str, Any]:
+    """Return a metadata stub when image inspection fails."""
+
+    return {
+        "w": None,
+        "h": None,
+        "mime": None,
+        "dt": None,
+        "make": None,
+        "model": None,
+        "gps": None,
+        "content_id": None,
+    }
+
+
 def read_image_meta(path: Path) -> Dict[str, Any]:
     """Read metadata for an image file using Pillow."""
 
     if Image is None or UnidentifiedImageError is None:
-        return {
-            "w": None,
-            "h": None,
-            "mime": None,
-            "dt": None,
-            "make": None,
-            "model": None,
-            "gps": None,
-            "content_id": None,
-        }
+        return _empty_image_info()
 
     try:
         with Image.open(path) as img:
@@ -60,6 +66,11 @@ def read_image_meta(path: Path) -> Dict[str, Any]:
             return info
     except UnidentifiedImageError as exc:
         raise ExternalToolError(f"Unable to read image metadata for {path}") from exc
+    except OSError:
+        # ``Image.open`` may raise ``OSError`` for minimal or truncated images such
+        # as the 1x1 PNG fixtures used in sidebar tests. Treat those as missing
+        # metadata instead of aborting the scan so the index can still be built.
+        return _empty_image_info()
 
 
 def read_video_meta(path: Path) -> Dict[str, Any]:
