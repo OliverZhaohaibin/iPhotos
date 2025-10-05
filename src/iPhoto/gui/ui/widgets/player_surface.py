@@ -154,3 +154,17 @@ class PlayerSurface(QWidget):
         self._overlay.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         self._overlay.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self._overlay.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        # When embedded alongside native video widgets we need the overlay to own a
+        # native window so it can reliably stay above the player surface.  Keeping
+        # the widget parented to the main window preserves z-order tracking while
+        # the native handle avoids being obscured by the video renderer.
+        self._overlay.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
+        if hasattr(Qt.WidgetAttribute, "WA_AlwaysStackOnTop"):
+            self._overlay.setAttribute(Qt.WidgetAttribute.WA_AlwaysStackOnTop, True)
+        handle = self._overlay.windowHandle()
+        if handle is None:
+            self._overlay.winId()
+            handle = self._overlay.windowHandle()
+        window_handle = self.window().windowHandle() if self.window() is not None else None
+        if handle is not None and window_handle is not None:
+            handle.setTransientParent(window_handle)
