@@ -8,8 +8,6 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QMouseEvent, QPixmap
 from PySide6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
 
-from .live_badge import LiveBadge
-
 
 class ImageViewer(QWidget):
     """Simple viewer that centers and scales a ``QPixmap``."""
@@ -31,9 +29,7 @@ class ImageViewer(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._label)
 
-        self._live_badge = LiveBadge(self)
-        self._live_badge.hide()
-        self._live_badge.move(15, 15)
+        self._live_replay_enabled = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -50,17 +46,10 @@ class ImageViewer(QWidget):
         self._pixmap = None
         self._label.clear()
 
-    def show_live_badge(self, visible: bool) -> None:
-        """Toggle visibility of the Live Photo indicator."""
+    def set_live_replay_enabled(self, enabled: bool) -> None:
+        """Allow emitting replay requests when the still frame is shown."""
 
-        self._live_badge.setVisible(visible)
-        if visible:
-            self._live_badge.raise_()
-
-    def live_badge_visible(self) -> bool:
-        """Return whether the Live Photo indicator is currently visible."""
-
-        return self._live_badge.isVisible()
+        self._live_replay_enabled = bool(enabled)
 
     # ------------------------------------------------------------------
     # QWidget overrides
@@ -69,10 +58,9 @@ class ImageViewer(QWidget):
         super().resizeEvent(event)
         if self._pixmap is not None:
             self._update_pixmap()
-        self._live_badge.move(15, 15)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # pragma: no cover - GUI behaviour
-        if self._live_badge.isVisible() and event.button() == Qt.MouseButton.LeftButton:
+        if self._live_replay_enabled and event.button() == Qt.MouseButton.LeftButton:
             self.replayRequested.emit()
         super().mousePressEvent(event)
 

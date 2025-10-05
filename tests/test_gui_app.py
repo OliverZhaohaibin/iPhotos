@@ -39,6 +39,7 @@ from iPhotos.src.iPhoto.gui.ui.widgets.filmstrip_view import FilmstripView
 from iPhotos.src.iPhoto.gui.ui.widgets.image_viewer import ImageViewer
 from iPhotos.src.iPhoto.gui.ui.widgets.player_bar import PlayerBar
 from iPhotos.src.iPhoto.gui.ui.widgets.video_area import VideoArea
+from iPhotos.src.iPhoto.gui.ui.widgets.live_badge import LiveBadge
 from iPhotos.src.iPhoto.config import WORK_DIR_NAME
 
 
@@ -308,6 +309,8 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
     player_stack.addWidget(placeholder)
     player_stack.addWidget(image_viewer)
     player_stack.addWidget(video_area)
+    live_badge = LiveBadge(player_stack)
+    live_badge.hide()
     view_stack = QStackedWidget()
     gallery_page = QWidget()
     detail_page = QWidget()
@@ -332,6 +335,7 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
         gallery_page,
         detail_page,
         preview_window,  # type: ignore[arg-type]
+        live_badge,
         status_bar,
         dialog,  # type: ignore[arg-type]
     )
@@ -351,7 +355,7 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
     assert player_stack.currentWidget() is video_area
     assert media._muted is True
     assert not player_bar.isEnabled()
-    assert video_area.live_badge_visible()
+    assert live_badge.isVisible()
     assert not video_area.player_bar.isVisible()
     assert status_bar.currentMessage().startswith("Playing Live Photo")
 
@@ -362,7 +366,7 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
     assert player_stack.currentWidget() is image_viewer
     assert status_bar.currentMessage().startswith("Viewing IMG_5001")
     assert not player_bar.isEnabled()
-    assert image_viewer.live_badge_visible()
+    assert live_badge.isVisible()
 
     controller.replay_live_photo()
     qapp.processEvents()
@@ -370,11 +374,11 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
     assert media.play_calls == 2
     assert player_stack.currentWidget() is video_area
     assert media._muted is True
-    assert video_area.live_badge_visible()
+    assert live_badge.isVisible()
 
     controller.handle_media_status_changed(SimpleNamespace(name="EndOfMedia"))
     qapp.processEvents()
-    assert image_viewer.live_badge_visible()
+    assert live_badge.isVisible()
 
     image_viewer.replayRequested.emit()
     qapp.processEvents()

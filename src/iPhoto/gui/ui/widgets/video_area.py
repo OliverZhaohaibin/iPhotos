@@ -13,7 +13,7 @@ from PySide6.QtCore import (
     Qt,
     Signal,
 )
-from PySide6.QtGui import QCursor, QMouseEvent
+from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import QGraphicsOpacityEffect, QVBoxLayout, QWidget
 
 try:  # pragma: no cover - optional Qt module
@@ -27,7 +27,6 @@ from ....config import (
     PLAYER_FADE_OUT_MS,
 )
 from .player_bar import PlayerBar
-from .live_badge import LiveBadge
 
 
 class VideoArea(QWidget):
@@ -35,7 +34,6 @@ class VideoArea(QWidget):
 
     mouseActive = Signal()
     controlsVisibleChanged = Signal(bool)
-    replayRequested = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -92,10 +90,6 @@ class VideoArea(QWidget):
         self._install_activity_filters()
         self._wire_player_bar()
         self.destroyed.connect(self._overlay.close)
-
-        self._live_badge = LiveBadge(self)
-        self._live_badge.hide()
-        self._live_badge.move(15, 15)
 
     # ------------------------------------------------------------------
     # Public API
@@ -198,11 +192,6 @@ class VideoArea(QWidget):
         self._on_mouse_activity()
         super().mouseMoveEvent(event)
 
-    def mousePressEvent(self, event: QMouseEvent) -> None:  # pragma: no cover - GUI behaviour
-        if self._live_badge.isVisible() and event.button() == Qt.MouseButton.LeftButton:
-            self.replayRequested.emit()
-        super().mousePressEvent(event)
-
     def hideEvent(self, event) -> None:  # pragma: no cover - GUI behaviour
         super().hideEvent(event)
         self._hide_timer.stop()
@@ -214,10 +203,6 @@ class VideoArea(QWidget):
         self._controls_visible = False
         if was_visible:
             self.controlsVisibleChanged.emit(False)
-
-    def resizeEvent(self, event) -> None:  # pragma: no cover - GUI behaviour
-        super().resizeEvent(event)
-        self._live_badge.move(15, 15)
 
     def showEvent(self, event) -> None:  # pragma: no cover - GUI behaviour
         super().showEvent(event)
@@ -449,15 +434,3 @@ class VideoArea(QWidget):
             self._overlay.hide()
             self._player_bar.hide()
 
-    def show_live_badge(self, visible: bool) -> None:
-        """Toggle visibility of the Live Photo badge overlay."""
-
-        self._live_badge.setVisible(visible)
-        if visible:
-            self._live_badge.raise_()
-
-
-    def live_badge_visible(self) -> bool:
-        """Return whether the Live Photo badge overlay is visible."""
-
-        return self._live_badge.isVisible()
