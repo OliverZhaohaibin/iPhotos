@@ -34,7 +34,7 @@ from .player_bar import PlayerBar
 
 
 class VideoArea(QWidget):
-    """Present a video widget with an auto-hiding playback bar overlay."""
+    """Present a video widget with auto-hiding playback controls."""
 
     mouseActive = Signal()
     controlsVisibleChanged = Signal(bool)
@@ -52,26 +52,13 @@ class VideoArea(QWidget):
         layout.setSpacing(0)
         layout.addWidget(self._video_widget)
 
-        self._player_bar = PlayerBar()
-        self._player_bar.hide()
-
-        self._overlay = QWidget()
         self._overlay_margin = 48
-        self._configure_overlay_window()
-
-        overlay_layout = QVBoxLayout(self._overlay)
-        overlay_layout.setContentsMargins(24, 24, 24, 24)
-        overlay_layout.setSpacing(0)
-        overlay_layout.addStretch(1)
-        overlay_layout.addWidget(
-            self._player_bar,
-            alignment=Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom,
-        )
+        self._player_bar = PlayerBar(self)
+        self._player_bar.hide()
+        self._player_bar.setMouseTracking(True)
 
         self._controls_visible = False
         self._target_opacity = 0.0
-        self._host_widget: QWidget | None = self._video_widget
-        self._window_host: QWidget | None = None
 
         effect = QGraphicsOpacityEffect(self._player_bar)
         effect.setOpacity(0.0)
@@ -92,7 +79,6 @@ class VideoArea(QWidget):
 
         self._install_activity_filters()
         self._wire_player_bar()
-        self.destroyed.connect(self._overlay.close)
 
     # ------------------------------------------------------------------
     # Public API
@@ -116,7 +102,7 @@ class VideoArea(QWidget):
         if not self._controls_visible:
             self._controls_visible = True
             self.controlsVisibleChanged.emit(True)
-        self._update_overlay_visibility()
+        self._update_bar_visibility()
         self._ensure_bar_visible()
         duration = PLAYER_FADE_IN_MS if animate else 0
         self._animate_to(1.0, duration)
@@ -140,35 +126,33 @@ class VideoArea(QWidget):
 
         if self._controls_visible:
             self._restart_hide_timer()
-            self._update_overlay_visibility()
+            self._update_bar_visibility()
         else:
             self.show_controls()
 
     def refresh_controls(self) -> None:
-        """Realign the overlay to the video widget when visible."""
+        """Realign the floating player bar when visible."""
 
-        if not self._controls_visible or not self._overlay.isVisible():
+        if not self._controls_visible or not self.isVisible():
             return
-        host = self._host_widget or self._video_widget
-        if host is None or not host.isVisible():
-            return
-        rect = host.rect()
+        rect = self.rect()
         if rect.isEmpty():
             return
-        top_left = host.mapToGlobal(rect.topLeft())
         available_width = max(0, rect.width() - (2 * self._overlay_margin))
         if available_width <= 0 or rect.height() <= 0:
             return
-        hint = self._overlay.sizeHint()
-        overlay_width = min(hint.width(), available_width)
-        overlay_height = hint.height()
-        x = top_left.x() + (rect.width() - overlay_width) // 2
-        y = top_left.y() + max(0, rect.height() - overlay_height - self._overlay_margin)
-        self._overlay.setGeometry(x, y, overlay_width, overlay_height)
-        self._overlay.raise_()
+        bar_hint = self._player_bar.sizeHint()
+        bar_width = min(bar_hint.width(), available_width)
+        bar_height = bar_hint.height()
+        x = self._overlay_margin + (available_width - bar_width) // 2
+        y = rect.height() - bar_height - self._overlay_margin
+        if y < self._overlay_margin:
+            y = max(0, rect.height() - bar_height)
+        self._player_bar.setGeometry(x, y, bar_width, bar_height)
+        self._player_bar.raise_()
 
     def schedule_refresh(self, delay_ms: int = 0) -> None:
-        """Queue a deferred refresh after layout or window changes."""
+        """Queue a deferred geometry refresh for the player bar."""
 
         if not self._controls_visible:
             return
@@ -184,7 +168,7 @@ class VideoArea(QWidget):
 
     def leaveEvent(self, event) -> None:  # pragma: no cover - GUI behaviour
         super().leaveEvent(event)
-        if not self._overlay.underMouse():
+        if not self._player_bar.underMouse():
             self.hide_controls()
 
     def mouseMoveEvent(self, event) -> None:  # pragma: no cover - GUI behaviour
@@ -197,7 +181,6 @@ class VideoArea(QWidget):
         self._fade_anim.stop()
         self._set_opacity(0.0)
         self._player_bar.hide()
-        self._overlay.hide()
         was_visible = self._controls_visible
         self._controls_visible = False
         if was_visible:
@@ -205,8 +188,10 @@ class VideoArea(QWidget):
 
     def showEvent(self, event) -> None:  # pragma: no cover - GUI behaviour
         super().showEvent(event)
-        self._bind_overlay_host()
-        self._ensure_window_filter()
+        self.schedule_refresh()
+
+    def resizeEvent(self, event) -> None:  # pragma: no cover - GUI behaviour
+        super().resizeEvent(event)
         self.schedule_refresh()
 
     def eventFilter(self, watched: QObject, event: QEvent):  # pragma: no cover - GUI behaviour
@@ -218,7 +203,7 @@ class VideoArea(QWidget):
             }:
                 self.schedule_refresh()
             if event.type() == QEvent.Type.Hide:
-                self._overlay.hide()
+                self._player_bar.hide()
             if event.type() in {
                 QEvent.Type.MouseMove,
                 QEvent.Type.HoverMove,
@@ -231,9 +216,9 @@ class VideoArea(QWidget):
                 self._on_mouse_activity()
             if event.type() == QEvent.Type.Enter:
                 self.show_controls()
-            if event.type() == QEvent.Type.Leave and not self._overlay.underMouse():
+            if event.type() == QEvent.Type.Leave and not self._player_bar.underMouse():
                 self.hide_controls()
-        elif watched in {self._overlay, self._player_bar}:
+        elif watched is self._player_bar:
             if event.type() in {
                 QEvent.Type.MouseMove,
                 QEvent.Type.HoverMove,
@@ -250,30 +235,6 @@ class VideoArea(QWidget):
                 cursor_pos = QCursor.pos()
                 if not self.rect().contains(self.mapFromGlobal(cursor_pos)):
                     self.hide_controls()
-        elif watched is self._window_host:
-            if event.type() in {
-                QEvent.Type.Move,
-                QEvent.Type.Resize,
-                QEvent.Type.Show,
-            }:
-                self.schedule_refresh()
-            if event.type() == QEvent.Type.WindowStateChange:
-                if self._window_host is not None and (
-                    self._window_host.windowState() & Qt.WindowState.WindowMinimized
-                ):
-                    self._overlay.hide()
-                else:
-                    self.schedule_refresh()
-            if event.type() == QEvent.Type.WindowActivate:
-                if self._controls_visible:
-                    self._update_overlay_visibility()
-                    self.schedule_refresh()
-            if event.type() in {
-                QEvent.Type.Hide,
-                QEvent.Type.WindowDeactivate,
-            }:
-                self._overlay.hide()
-                self._hide_timer.stop()
         return super().eventFilter(watched, event)
 
     # ------------------------------------------------------------------
@@ -281,9 +242,6 @@ class VideoArea(QWidget):
     # ------------------------------------------------------------------
     def _install_activity_filters(self) -> None:
         self._video_widget.installEventFilter(self)
-        self._overlay.setMouseTracking(True)
-        self._overlay.installEventFilter(self)
-        self._player_bar.setMouseTracking(True)
         self._player_bar.installEventFilter(self)
 
     def _wire_player_bar(self) -> None:
@@ -301,7 +259,7 @@ class VideoArea(QWidget):
         self.mouseActive.emit()
         if self._controls_visible:
             self._restart_hide_timer()
-            self._update_overlay_visibility()
+            self._update_bar_visibility()
         else:
             self.show_controls()
 
@@ -314,11 +272,9 @@ class VideoArea(QWidget):
         self.hide_controls()
 
     def _ensure_bar_visible(self) -> None:
-        self._ensure_overlay_parent()
         if not self._player_bar.isVisible():
             self._player_bar.show()
-        if self._controls_visible and not self._overlay.isVisible():
-            self._overlay.show()
+        self.schedule_refresh()
 
     def _animate_to(self, value: float, duration: int) -> None:
         self._fade_anim.stop()
@@ -327,7 +283,7 @@ class VideoArea(QWidget):
         self._fade_anim.setDuration(max(0, duration))
         self._target_opacity = value
         if value > 0.0:
-            self._update_overlay_visibility()
+            self._update_bar_visibility()
         if duration <= 0:
             self._set_opacity(value)
             self._on_fade_finished()
@@ -348,69 +304,14 @@ class VideoArea(QWidget):
     def _on_fade_finished(self) -> None:
         if self._target_opacity <= 0.0:
             self._player_bar.hide()
-            self._overlay.hide()
+            return
+        self._update_bar_visibility()
 
-    def _configure_overlay_window(self) -> None:
-        flags = (
-            Qt.WindowType.Tool
-            | Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.WindowDoesNotAcceptFocus
-        )
-        self._overlay.setWindowFlags(flags)
-        self._overlay.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        self._overlay.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self._overlay.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._overlay.hide()
-
-    def _bind_overlay_host(self) -> None:
-        host = self._video_widget
-        if self._host_widget is host:
+    def _update_bar_visibility(self) -> None:
+        if not self._controls_visible or not self.isVisible():
+            if self._target_opacity <= 0.0:
+                self._player_bar.hide()
             return
-        if self._host_widget is not None:
-            self._host_widget.removeEventFilter(self)
-        self._host_widget = host
-        if self._host_widget is not None:
-            self._host_widget.installEventFilter(self)
-
-    def _ensure_window_filter(self) -> None:
-        window = self.window()
-        if window is self._window_host:
-            return
-        if self._window_host is not None:
-            self._window_host.removeEventFilter(self)
-        self._window_host = window
-        if self._window_host is not None:
-            self._window_host.installEventFilter(self)
-            self._ensure_overlay_parent()
-
-    def _ensure_overlay_parent(self) -> None:
-        window = self.window()
-        if window is None:
-            return
-        if self._overlay.parent() is window:
-            return
-        was_visible = self._overlay.isVisible()
-        self._overlay.setParent(window)
-        self._configure_overlay_window()
-        if was_visible and self._controls_visible:
-            self._overlay.show()
-            self.schedule_refresh()
-
-    def _update_overlay_visibility(self) -> None:
-        if not self._controls_visible:
-            self._overlay.hide()
-            return
-        window = self.window()
-        if (
-            window is None
-            or not window.isVisible()
-            or bool(window.windowState() & Qt.WindowState.WindowMinimized)
-            or not window.isActiveWindow()
-        ):
-            self._overlay.hide()
-            return
-        self._ensure_overlay_parent()
-        if not self._overlay.isVisible():
-            self._overlay.show()
+        if not self._player_bar.isVisible():
+            self._player_bar.show()
         self.schedule_refresh()
