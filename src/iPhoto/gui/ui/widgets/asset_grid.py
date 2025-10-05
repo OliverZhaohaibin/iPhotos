@@ -94,21 +94,21 @@ class AssetGrid(QListView):
     def _viewport_pos(self, event: QMouseEvent) -> QPoint:
         """Return the event position mapped into viewport coordinates."""
 
+        global_position = getattr(event, "globalPosition", None)
+        if callable(global_position):
+            global_point = global_position().toPoint()
+        elif global_position is not None:
+            global_point = global_position.toPoint()
+        else:
+            global_point = None
+
+        if global_point is not None:
+            return self.viewport().mapFromGlobal(global_point)
+
+        if hasattr(event, "globalPos"):
+            return self.viewport().mapFromGlobal(event.globalPos())
+
         if hasattr(event, "position"):
-            widget_pos = event.position().toPoint()
-        else:  # Qt < 6 fallback, kept for safety in tests
-            widget_pos = event.pos()
+            return event.position().toPoint()
 
-        widget_getter = getattr(event, "widget", None)
-        target = widget_getter() if callable(widget_getter) else None
-
-        if target is self.viewport():
-            return widget_pos
-        if target is self:
-            return self.viewport().mapFromParent(widget_pos)
-
-        # Fall back to global coordinates for synthesised events that do not
-        # report the originating widget (e.g. platform accessibility tools).
-        if hasattr(event, "globalPosition"):
-            return self.viewport().mapFromGlobal(event.globalPosition().toPoint())
-        return self.viewport().mapFromGlobal(event.globalPos())
+        return event.pos()
