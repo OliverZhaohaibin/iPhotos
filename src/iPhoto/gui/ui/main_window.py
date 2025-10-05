@@ -21,7 +21,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...appctx import AppContext
+# ``main_window`` can be imported either via ``iPhoto.gui`` (package execution)
+# or ``iPhotos.src.iPhoto.gui`` (legacy test harness).  The absolute import
+# keeps script-mode launches working where the relative form lacks package
+# context.
+try:  # pragma: no cover - exercised in packaging scenarios
+    from ...appctx import AppContext
+except ImportError:  # pragma: no cover - script execution fallback
+    from iPhoto.appctx import AppContext
 from ..facade import AppFacade
 from .controllers.dialog_controller import DialogController
 from .controllers.navigation_controller import NavigationController

@@ -7,7 +7,12 @@ from typing import Optional
 
 from PySide6.QtWidgets import QLabel, QStatusBar
 
-from ...appctx import AppContext
+# Support both package-style and legacy ``iPhotos.src`` imports during GUI
+# bootstrap.
+try:  # pragma: no cover - path-sensitive import
+    from ...appctx import AppContext
+except ImportError:  # pragma: no cover - executed in script mode
+    from iPhoto.appctx import AppContext
 from ...facade import AppFacade
 from ..models.asset_model import AssetModel
 from ..widgets.album_sidebar import AlbumSidebar
