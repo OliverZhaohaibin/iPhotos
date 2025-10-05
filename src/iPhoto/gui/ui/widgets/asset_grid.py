@@ -99,7 +99,9 @@ class AssetGrid(QListView):
         else:  # Qt < 6 fallback, kept for safety in tests
             widget_pos = event.pos()
 
-        target = event.widget()
+        widget_getter = getattr(event, "widget", None)
+        target = widget_getter() if callable(widget_getter) else None
+
         if target is self.viewport():
             return widget_pos
         if target is self:
