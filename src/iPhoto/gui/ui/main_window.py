@@ -171,6 +171,7 @@ class MainWindow(QMainWindow):
         self._player_stack.setCurrentWidget(self._player_placeholder)
         self._player_surface = PlayerSurface(self._player_stack, self._player_bar)
         self._player_surface.hide_controls()
+        self._media.set_video_output(self._video_widget)
 
     def _build_splitter(self) -> QSplitter:
         right_panel = QWidget()
