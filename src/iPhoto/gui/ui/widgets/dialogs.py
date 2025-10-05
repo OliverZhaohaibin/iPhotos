@@ -12,7 +12,7 @@ def select_directory(parent: QWidget, caption: str, start: Optional[Path] = None
     """Return a directory selected by the user or ``None`` when cancelled."""
 
     directory = str(start) if start is not None else ""
-    path = QFileDialog.getExistingDirectory(parent, caption, directory=directory)
+    path = QFileDialog.getExistingDirectory(parent, caption, directory)
     if not path:
         return None
     return Path(path)
