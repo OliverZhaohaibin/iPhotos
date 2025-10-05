@@ -86,6 +86,8 @@ class AssetListModel(QAbstractListModel):
             return row["live_group_id"]
         if role == Roles.LIVE_MOTION_REL:
             return row["live_motion"]
+        if role == Roles.LIVE_MOTION_ABS:
+            return row["live_motion_abs"]
         if role == Roles.SIZE:
             return row["size"]
         if role == Roles.DT:
@@ -138,11 +140,13 @@ class AssetListModel(QAbstractListModel):
             abs_path = str((self._album_root / rel).resolve())
             is_image, is_video = self._classify_media(row)
             live_motion: Optional[str] = None
+            live_motion_abs: Optional[str] = None
             live_group_id: Optional[str] = None
             if live_info and live_info.get("role") == "still":
                 motion_rel = live_info.get("motion")
                 if isinstance(motion_rel, str) and motion_rel:
                     live_motion = motion_rel
+                    live_motion_abs = str((self._album_root / motion_rel).resolve())
                 group_id = live_info.get("id")
                 if isinstance(group_id, str):
                     live_group_id = group_id
@@ -159,6 +163,7 @@ class AssetListModel(QAbstractListModel):
                 "is_live": bool(live_motion),
                 "live_group_id": live_group_id,
                 "live_motion": live_motion,
+                "live_motion_abs": live_motion_abs,
                 "size": self._determine_size(row, is_image),
                 "dt": row.get("dt"),
                 "featured": self._is_featured(rel, featured),

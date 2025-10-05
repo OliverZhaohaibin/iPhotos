@@ -22,6 +22,7 @@ class Roles(IntEnum):
     DT = Qt.UserRole + 9
     FEATURED = Qt.UserRole + 10
     LIVE_MOTION_REL = Qt.UserRole + 11
+    LIVE_MOTION_ABS = Qt.UserRole + 12
 
 
 def role_names(base: Dict[int, bytes] | None = None) -> Dict[int, bytes]:
@@ -38,6 +39,7 @@ def role_names(base: Dict[int, bytes] | None = None) -> Dict[int, bytes]:
             Roles.IS_LIVE: b"isLive",
             Roles.LIVE_GROUP_ID: b"liveGroupId",
             Roles.LIVE_MOTION_REL: b"liveMotion",
+            Roles.LIVE_MOTION_ABS: b"liveMotionAbs",
             Roles.SIZE: b"size",
             Roles.DT: b"dt",
             Roles.FEATURED: b"featured",
