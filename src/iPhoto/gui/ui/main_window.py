@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 from functools import partial
 from pathlib import Path
 from typing import Optional
@@ -35,21 +34,9 @@ from .widgets import (
     FilmstripView,
     GalleryGridView,
     ImageViewer,
-    PlayerBar,
-    PlayerSurface,
+    VideoArea,
     PreviewWindow,
 )
-
-if importlib.util.find_spec("PySide6.QtMultimediaWidgets") is not None:
-    from PySide6.QtMultimediaWidgets import QVideoWidget
-else:  # pragma: no cover - requires optional Qt module
-    class QVideoWidget(QWidget):  # type: ignore[misc]
-        def __init__(self, *args, **kwargs) -> None:  # pragma: no cover - fallback
-            raise RuntimeError(
-                "PySide6.QtMultimediaWidgets is unavailable. Install PySide6 with "
-                "QtMultimedia support to enable video playback."
-            )
-
 
 class MainWindow(QMainWindow):
     """Primary window for the desktop experience."""
@@ -65,12 +52,13 @@ class MainWindow(QMainWindow):
         self._album_label = QLabel("Open a folder to browse your photos.")
         self._grid_view = GalleryGridView()
         self._filmstrip_view = FilmstripView()
-        self._player_bar = PlayerBar()
+        self._video_area = VideoArea()
+        self._player_bar = self._video_area.player_bar
         self._media = MediaController(self)
         self._playlist = PlaylistController(self)
         self._preview_window = PreviewWindow(self)
         self._image_viewer = ImageViewer()
-        self._video_widget = QVideoWidget()
+        self._video_widget = self._video_area.video_widget
         self._player_placeholder = QLabel("Select a photo or video to preview.")
         self._player_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._player_placeholder.setStyleSheet(
@@ -78,7 +66,6 @@ class MainWindow(QMainWindow):
         )
         self._player_placeholder.setMinimumHeight(320)
         self._player_stack = QStackedWidget()
-        self._player_surface: Optional[PlayerSurface] = None
         self._view_stack = QStackedWidget()
         self._gallery_page = self._detail_page = None
         self._back_button = QToolButton()
@@ -100,11 +87,10 @@ class MainWindow(QMainWindow):
             self._media,
             self._playlist,
             self._player_bar,
-            self._player_surface,
+            self._video_area,
             self._grid_view,
             self._filmstrip_view,
             self._player_stack,
-            self._video_widget,
             self._image_viewer,
             self._player_placeholder,
             self._view_stack,
@@ -167,10 +153,9 @@ class MainWindow(QMainWindow):
 
         self._player_stack.addWidget(self._player_placeholder)
         self._player_stack.addWidget(self._image_viewer)
-        self._player_stack.addWidget(self._video_widget)
+        self._player_stack.addWidget(self._video_area)
         self._player_stack.setCurrentWidget(self._player_placeholder)
-        self._player_surface = PlayerSurface(self._player_stack, self._player_bar)
-        self._player_surface.hide_controls()
+        self._video_area.hide_controls(animate=False)
         self._media.set_video_output(self._video_widget)
 
     def _build_splitter(self) -> QSplitter:
@@ -202,7 +187,7 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(self._back_button)
         header_layout.addStretch(1)
         detail_layout.addWidget(header)
-        detail_layout.addWidget(self._player_surface)
+        detail_layout.addWidget(self._player_stack)
         detail_layout.addWidget(self._filmstrip_view)
         self._detail_page = detail_page
 
@@ -268,10 +253,6 @@ class MainWindow(QMainWindow):
             (self._media.errorOccurred, self._dialog.show_error),
         ):
             signal.connect(slot)
-        self._media.playbackStateChanged.connect(
-            lambda _state: self._player_surface.schedule_refresh()
-        )
-
         self._back_button.clicked.connect(self._playback.show_gallery_view)
 
     # Public API used by sidebar/actions

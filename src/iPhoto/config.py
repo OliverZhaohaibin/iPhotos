@@ -35,3 +35,8 @@ VIDEO_MEMORY_CACHE_MAX_BYTES: Final[int] = 512 * 1024 * 1024
 # When a video finishes playing we step backwards by this many milliseconds and
 # pause so that the last frame remains visible instead of flashing to black.
 VIDEO_COMPLETE_HOLD_BACKSTEP_MS: Final[int] = 80
+
+# Delay/animation timings for the floating playback controls.
+PLAYER_CONTROLS_HIDE_DELAY_MS: Final[int] = 2000
+PLAYER_FADE_IN_MS: Final[int] = 150
+PLAYER_FADE_OUT_MS: Final[int] = 300

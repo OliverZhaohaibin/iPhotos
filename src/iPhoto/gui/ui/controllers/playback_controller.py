@@ -14,7 +14,7 @@ from ..utils import image_loader
 from ..widgets.asset_grid import AssetGrid
 from ..widgets.image_viewer import ImageViewer
 from ..widgets.player_bar import PlayerBar
-from ..widgets.player_surface import PlayerSurface
+from ..widgets.video_area import VideoArea
 from ..widgets.preview_window import PreviewWindow
 from .dialog_controller import DialogController
 
@@ -28,11 +28,10 @@ class PlaybackController:
         media: MediaController,
         playlist: PlaylistController,
         player_bar: PlayerBar,
-        player_surface: PlayerSurface,
+        video_area: VideoArea,
         grid_view: AssetGrid,
         filmstrip_view: AssetGrid,
         player_stack: QStackedWidget,
-        video_widget: QWidget,
         image_viewer: ImageViewer,
         player_placeholder: QWidget,
         view_stack: QStackedWidget,
@@ -46,11 +45,10 @@ class PlaybackController:
         self._media = media
         self._playlist = playlist
         self._player_bar = player_bar
-        self._player_surface = player_surface
+        self._video_area = video_area
         self._grid_view = grid_view
         self._filmstrip_view = filmstrip_view
         self._player_stack = player_stack
-        self._video_widget = video_widget
         self._image_viewer = image_viewer
         self._player_placeholder = player_placeholder
         self._view_stack = view_stack
@@ -60,7 +58,6 @@ class PlaybackController:
         self._status = status_bar
         self._dialog = dialog
         self._resume_playback_after_scrub = False
-        self._player_overlay_confirmed = False
 
     # ------------------------------------------------------------------
     # Selection handling
@@ -145,20 +142,17 @@ class PlaybackController:
             self._freeze_video_final_frame()
             return
         if name in {"LoadedMedia", "BufferingMedia", "BufferedMedia", "StalledMedia"}:
-            self._player_surface.refresh_controls()
-            self._player_surface.schedule_refresh(120)
+            self._video_area.note_activity()
 
     def handle_media_position_changed(self, position_ms: int) -> None:
         self._player_bar.set_position(position_ms)
-        if position_ms > 0 and not self._player_overlay_confirmed:
-            self._player_surface.refresh_controls()
-            self._player_surface.schedule_refresh(60)
-            self._player_overlay_confirmed = True
 
     # ------------------------------------------------------------------
     # Player bar events
     # ------------------------------------------------------------------
     def toggle_playback(self) -> None:
+        if self._player_stack.currentWidget() is self._video_area:
+            self._video_area.note_activity()
         state = self._media.playback_state()
         playing = getattr(state, "name", None) == "PlayingState"
         if not playing:
@@ -238,25 +232,21 @@ class PlaybackController:
         self._status.showMessage(f"Viewing {source.name}")
 
     def _show_player_placeholder(self) -> None:
-        self._player_surface.hide_controls()
-        self._player_overlay_confirmed = False
+        self._video_area.hide_controls(animate=False)
         self._resume_playback_after_scrub = False
         if self._player_stack.currentWidget() is not self._player_placeholder:
             self._player_stack.setCurrentWidget(self._player_placeholder)
         self._image_viewer.clear()
 
     def _show_video_surface(self) -> None:
-        if self._player_stack.currentWidget() is not self._video_widget:
-            self._player_stack.setCurrentWidget(self._video_widget)
+        if self._player_stack.currentWidget() is not self._video_area:
+            self._player_stack.setCurrentWidget(self._video_area)
         self._player_bar.setEnabled(True)
-        self._player_overlay_confirmed = False
         self._resume_playback_after_scrub = False
-        self._player_surface.show_controls()
-        self._player_surface.schedule_refresh()
-        self._player_surface.schedule_refresh(150)
+        self._video_area.show_controls(animate=False)
 
     def _freeze_video_final_frame(self) -> None:
-        if self._player_stack.currentWidget() is not self._video_widget:
+        if self._player_stack.currentWidget() is not self._video_area:
             return
         duration = self._player_bar.duration()
         if duration <= 0:
@@ -267,12 +257,10 @@ class PlaybackController:
         self._media.pause()
         self._player_bar.set_position(duration)
         self._resume_playback_after_scrub = False
-        self._player_surface.refresh_controls()
-        self._player_surface.schedule_refresh(60)
+        self._video_area.note_activity()
 
     def _show_image_surface(self) -> None:
-        self._player_surface.hide_controls()
-        self._player_overlay_confirmed = False
+        self._video_area.hide_controls(animate=False)
         self._resume_playback_after_scrub = False
         if self._player_stack.currentWidget() is not self._image_viewer:
             self._player_stack.setCurrentWidget(self._image_viewer)

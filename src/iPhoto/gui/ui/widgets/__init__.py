@@ -7,7 +7,7 @@ from .gallery_grid_view import GalleryGridView
 from .filmstrip_view import FilmstripView
 from .image_viewer import ImageViewer
 from .player_bar import PlayerBar
-from .player_surface import PlayerSurface
+from .video_area import VideoArea
 from .preview_window import PreviewWindow
 
 __all__ = [
@@ -18,6 +18,6 @@ __all__ = [
     "FilmstripView",
     "ImageViewer",
     "PlayerBar",
-    "PlayerSurface",
+    "VideoArea",
     "PreviewWindow",
 ]
