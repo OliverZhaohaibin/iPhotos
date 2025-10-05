@@ -14,12 +14,7 @@ from PySide6.QtCore import (
     Signal,
 )
 from PySide6.QtGui import QCursor, QMouseEvent
-from PySide6.QtWidgets import (
-    QGraphicsOpacityEffect,
-    QLabel,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtWidgets import QGraphicsOpacityEffect, QVBoxLayout, QWidget
 
 try:  # pragma: no cover - optional Qt module
     from PySide6.QtMultimediaWidgets import QVideoWidget
@@ -32,7 +27,7 @@ from ....config import (
     PLAYER_FADE_OUT_MS,
 )
 from .player_bar import PlayerBar
-from ..icons import load_icon
+from .live_badge import LiveBadge
 
 
 class VideoArea(QWidget):
@@ -98,14 +93,9 @@ class VideoArea(QWidget):
         self._wire_player_bar()
         self.destroyed.connect(self._overlay.close)
 
-        self._live_badge = QLabel(self)
+        self._live_badge = LiveBadge(self)
         self._live_badge.hide()
-        self._live_badge.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        icon = load_icon("livephoto.svg", color="#cccccc")
-        if not icon.isNull():
-            self._live_badge.setPixmap(icon.pixmap(32, 32))
-        self._live_badge.setFixedSize(32, 32)
-        self._live_badge.move(12, 12)
+        self._live_badge.move(15, 15)
 
     # ------------------------------------------------------------------
     # Public API
@@ -227,7 +217,7 @@ class VideoArea(QWidget):
 
     def resizeEvent(self, event) -> None:  # pragma: no cover - GUI behaviour
         super().resizeEvent(event)
-        self._live_badge.move(12, 12)
+        self._live_badge.move(15, 15)
 
     def showEvent(self, event) -> None:  # pragma: no cover - GUI behaviour
         super().showEvent(event)
@@ -465,6 +455,7 @@ class VideoArea(QWidget):
         self._live_badge.setVisible(visible)
         if visible:
             self._live_badge.raise_()
+
 
     def live_badge_visible(self) -> bool:
         """Return whether the Live Photo badge overlay is visible."""

@@ -8,7 +8,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QMouseEvent, QPixmap
 from PySide6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
 
-from ..icons import load_icon
+from .live_badge import LiveBadge
 
 
 class ImageViewer(QWidget):
@@ -31,14 +31,9 @@ class ImageViewer(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._label)
 
-        self._live_badge = QLabel(self)
+        self._live_badge = LiveBadge(self)
         self._live_badge.hide()
-        self._live_badge.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        icon = load_icon("livephoto.svg", color="#cccccc")
-        if not icon.isNull():
-            self._live_badge.setPixmap(icon.pixmap(32, 32))
-        self._live_badge.setFixedSize(32, 32)
-        self._live_badge.move(12, 12)
+        self._live_badge.move(15, 15)
 
     # ------------------------------------------------------------------
     # Public API
@@ -74,7 +69,7 @@ class ImageViewer(QWidget):
         super().resizeEvent(event)
         if self._pixmap is not None:
             self._update_pixmap()
-        self._live_badge.move(12, 12)
+        self._live_badge.move(15, 15)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # pragma: no cover - GUI behaviour
         if self._live_badge.isVisible() and event.button() == Qt.MouseButton.LeftButton:

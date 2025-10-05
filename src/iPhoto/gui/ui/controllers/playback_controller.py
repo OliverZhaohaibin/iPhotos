@@ -383,6 +383,8 @@ class PlaybackController:
     def replay_live_photo(self) -> None:
         if not self._live_mode_active:
             return
+        if self._player_stack.currentWidget() is not self._image_viewer:
+            return
         motion_source = self._active_live_motion or self._playlist.current_source()
         if motion_source is None:
             return
