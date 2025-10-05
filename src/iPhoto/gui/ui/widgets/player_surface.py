@@ -116,7 +116,12 @@ class PlayerSurface(QWidget):
             QEvent.Type.Show,
             QEvent.Type.WindowStateChange,
         }:
-            self.schedule_refresh()
+            if self._window_host is not None and self._window_host.isMinimized():
+                self._overlay.hide()
+            else:
+                if self._controls_visible:
+                    self._overlay.show()
+                self.schedule_refresh()
         if obj is self._window_host and event.type() == QEvent.Type.Hide:
             self._overlay.hide()
         return super().eventFilter(obj, event)
