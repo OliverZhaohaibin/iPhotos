@@ -1,7 +1,5 @@
 """Utilities for extracting representative video frames for thumbnails."""
 
-"""Utilities for extracting representative video frames for thumbnails."""
-
 from __future__ import annotations
 
 from pathlib import Path
