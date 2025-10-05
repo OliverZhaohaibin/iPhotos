@@ -70,6 +70,8 @@ class VideoArea(QWidget):
         layout.setStackingMode(QStackedLayout.StackingMode.StackAll)
         layout.addWidget(self._video_widget)
         layout.addWidget(self._overlay)
+        layout.setCurrentWidget(self._video_widget)
+        self._overlay.raise_()
 
         self._controls_visible = False
         self._target_opacity = 0.0
@@ -164,6 +166,10 @@ class VideoArea(QWidget):
         if was_visible:
             self.controlsVisibleChanged.emit(False)
 
+    def showEvent(self, event) -> None:  # pragma: no cover - GUI behaviour
+        super().showEvent(event)
+        self._overlay.raise_()
+
     def eventFilter(self, watched: QObject, event: QEvent):  # pragma: no cover - GUI behaviour
         if event.type() in {
             QEvent.Type.MouseMove,
@@ -213,6 +219,7 @@ class VideoArea(QWidget):
         self.hide_controls()
 
     def _ensure_bar_visible(self) -> None:
+        self._overlay.raise_()
         if not self._player_bar.isVisible():
             self._player_bar.show()
 
