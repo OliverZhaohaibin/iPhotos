@@ -66,6 +66,9 @@ class PreviewWindow(QWidget):
         self._chrome = QWidget(self)
         self._chrome.setObjectName("previewChrome")
         self._chrome.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._chrome.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self._chrome.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self._chrome.setAutoFillBackground(False)
         self._chrome.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
         chrome_layout = QVBoxLayout(self._chrome)
@@ -73,6 +76,12 @@ class PreviewWindow(QWidget):
 
         self._video_widget = QVideoWidget(self._chrome)
         self._video_widget.setObjectName("previewVideo")
+        self._video_widget.setAttribute(Qt.WidgetAttribute.WA_DontCreateNativeAncestors, True)
+        self._video_widget.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, False)
+        self._video_widget.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self._video_widget.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
+        self._video_widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self._video_widget.setAutoFillBackground(False)
         self._video_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         chrome_layout.addWidget(self._video_widget)
 
