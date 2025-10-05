@@ -40,6 +40,7 @@ class MediaController(QObject):
     durationChanged = Signal(int)
     playbackStateChanged = Signal(object)
     mediaStatusChanged = Signal(object)
+    readyToPlay = Signal()
     mutedChanged = Signal(bool)
     volumeChanged = Signal(int)
 
@@ -55,11 +56,12 @@ class MediaController(QObject):
         self._current_source: Optional[Path] = None
         self._memory_data: Optional[QByteArray] = None
         self._memory_buffer: Optional[QBuffer] = None
+        self._has_emitted_ready = False
 
         self._player.positionChanged.connect(self._on_position_changed)
         self._player.durationChanged.connect(self._on_duration_changed)
         self._player.playbackStateChanged.connect(self.playbackStateChanged.emit)
-        self._player.mediaStatusChanged.connect(self.mediaStatusChanged.emit)
+        self._player.mediaStatusChanged.connect(self._on_media_status_changed)
         self._player.errorOccurred.connect(self._on_error)
         self._audio.mutedChanged.connect(self.mutedChanged.emit)
         self._audio.volumeChanged.connect(self._on_volume_changed)
@@ -84,6 +86,7 @@ class MediaController(QObject):
 
         self._current_source = path
         self._release_memory_buffer()
+        self._has_emitted_ready = False
 
         if VIDEO_MEMORY_CACHE_MAX_BYTES > 0:
             try:
@@ -180,6 +183,29 @@ class MediaController(QObject):
 
     def _on_volume_changed(self, volume: float) -> None:
         self.volumeChanged.emit(int(round(volume * 100)))
+
+    def _on_media_status_changed(self, status: object) -> None:
+        self.mediaStatusChanged.emit(status)
+        if self._has_emitted_ready:
+            return
+        status_name = getattr(status, "name", None)
+        ready_names = {"LoadedMedia", "BufferedMedia", "BufferingMedia"}
+        if status_name in ready_names:
+            self._has_emitted_ready = True
+            self.readyToPlay.emit()
+            return
+        if QMediaPlayer is not None:
+            try:
+                media_status = QMediaPlayer.MediaStatus(status)  # type: ignore[arg-type]
+            except Exception:
+                return
+            if media_status in {
+                QMediaPlayer.MediaStatus.LoadedMedia,
+                QMediaPlayer.MediaStatus.BufferedMedia,
+                QMediaPlayer.MediaStatus.BufferingMedia,
+            }:
+                self._has_emitted_ready = True
+                self.readyToPlay.emit()
 
     def _on_error(self, _error: object, message: str) -> None:
         if message:

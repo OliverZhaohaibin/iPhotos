@@ -7,12 +7,21 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from PySide6.QtCore import QPoint, QRect, QRectF, QSize, QSizeF, Qt, QTimer
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QResizeEvent
+from PySide6.QtGui import (
+    QColor,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+    QResizeEvent,
+)
 from PySide6.QtWidgets import (
     QFrame,
     QGraphicsDropShadowEffect,
     QGraphicsScene,
     QGraphicsView,
+    QLabel,
+    QStackedLayout,
     QVBoxLayout,
     QWidget,
     QSizePolicy,
@@ -123,17 +132,51 @@ class _PreviewFrame(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAutoFillBackground(False)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        self._stack = QStackedLayout(self)
+        self._stack.setContentsMargins(0, 0, 0, 0)
+        self._stack.setSpacing(0)
+
+        self._poster_label = QLabel(self)
+        self._poster_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._poster_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self._poster_label.setStyleSheet("background: transparent;")
+        self._poster_label.setVisible(False)
 
         self._video_view = _VideoView(self._update_masks, corner_radius, self)
-        layout.addWidget(self._video_view)
+
+        self._stack.addWidget(self._poster_label)
+        self._stack.addWidget(self._video_view)
+
+        self._poster_pixmap: Optional[QPixmap] = None
 
         self._update_masks()
 
     def video_item(self) -> _RoundedVideoItem:
         return self._video_view.video_item()
+
+    def set_poster(self, poster: Optional[QPixmap]) -> None:
+        if poster is None or poster.isNull():
+            self._poster_pixmap = None
+            self._poster_label.clear()
+            self._poster_label.setVisible(False)
+            self._stack.setCurrentWidget(self._video_view)
+            return
+        self._poster_pixmap = poster
+        self._poster_label.setVisible(True)
+        self._update_poster_display()
+        self._stack.setCurrentWidget(self._poster_label)
+
+    def clear_poster(self) -> None:
+        self._poster_pixmap = None
+        self._poster_label.clear()
+        self._poster_label.setVisible(False)
+        self._stack.setCurrentWidget(self._video_view)
+
+    def show_video(self) -> None:
+        self._stack.setCurrentWidget(self._video_view)
+        self._poster_label.setVisible(False)
 
     def set_corner_radius(self, corner_radius: int) -> None:
         radius = max(0, corner_radius)
@@ -168,11 +211,26 @@ class _PreviewFrame(QWidget):
     def resizeEvent(self, event: QResizeEvent) -> None:  # type: ignore[override]
         super().resizeEvent(event)
         self._update_masks()
+        self._update_poster_display()
 
     def _update_masks(self) -> None:
         video_radius = max(0, self._corner_radius)
         self._video_view.video_item().set_corner_radius(video_radius)
         self.update()
+
+    def _update_poster_display(self) -> None:
+        if self._poster_pixmap is None or self._poster_pixmap.isNull():
+            return
+        target_size = self._poster_label.size()
+        if not target_size.isValid() or target_size.isEmpty():
+            self._poster_label.setPixmap(self._poster_pixmap)
+            return
+        scaled = self._poster_pixmap.scaled(
+            target_size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self._poster_label.setPixmap(scaled)
 
 
 class PreviewWindow(QWidget):
@@ -222,16 +280,30 @@ class PreviewWindow(QWidget):
         self._media = MediaController(self)
         self._media.set_video_output(self._frame.video_item())
         self._media.set_muted(PREVIEW_WINDOW_MUTED)
+        self._media.readyToPlay.connect(self._handle_media_ready)
+
+        self._poster_active = False
+        self._current_source: Optional[Path] = None
 
         self._close_timer = QTimer(self)
         self._close_timer.setSingleShot(True)
         self._close_timer.timeout.connect(self._do_close)
         self.hide()
 
-    def show_preview(self, source: Path | str, at: Optional[QRect | QPoint] = None) -> None:
-        """Display *source* near *at* and start playback immediately."""
+    def show_preview(
+        self,
+        source: Path | str,
+        at: Optional[QRect | QPoint] = None,
+        *,
+        poster_frame: Optional[QPixmap] = None,
+    ) -> None:
+        """Display *source* near *at* and show ``poster_frame`` until playback is ready."""
 
         path = Path(source)
+        poster = poster_frame if poster_frame is not None and not poster_frame.isNull() else None
+        self._poster_active = poster is not None
+        self._current_source = path
+        self._frame.set_poster(poster)
         self._close_timer.stop()
         self._media.stop()
         self._media.load(path)
@@ -268,6 +340,9 @@ class PreviewWindow(QWidget):
     def _do_close(self) -> None:
         self._close_timer.stop()
         self._media.stop()
+        self._poster_active = False
+        self._current_source = None
+        self._frame.clear_poster()
         self.hide()
 
     def _clamp_to_screen(self, origin: QPoint) -> QPoint:
@@ -294,3 +369,15 @@ class PreviewWindow(QWidget):
         if self.size() != QSize(total_width, total_height):
             self.resize(total_width, total_height)
         self._frame.set_corner_radius(self._corner_radius)
+
+    def _handle_media_ready(self) -> None:
+        if not self._poster_active:
+            return
+        if self._current_source is None:
+            return
+        current = self._media.current_source()
+        if current is None or current != self._current_source:
+            return
+        self._poster_active = False
+        self._frame.clear_poster()
+        self._media.play()
