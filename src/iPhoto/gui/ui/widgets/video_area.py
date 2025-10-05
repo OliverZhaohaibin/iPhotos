@@ -9,20 +9,25 @@ from PySide6.QtCore import (
     QEvent,
     QObject,
     QPropertyAnimation,
+    QPointF,
+    QRectF,
     QTimer,
     Qt,
     Signal,
 )
-from PySide6.QtGui import QCursor, QResizeEvent
+from PySide6.QtGui import QCursor, QPainter, QResizeEvent
 from PySide6.QtWidgets import (
+    QFrame,
     QGraphicsOpacityEffect,
+    QGraphicsScene,
+    QGraphicsView,
     QWidget,
 )
 
 try:  # pragma: no cover - optional Qt module
-    from PySide6.QtMultimediaWidgets import QVideoWidget
-except ModuleNotFoundError:  # pragma: no cover - handled by main window guard
-    from PySide6.QtWidgets import QWidget as QVideoWidget  # type: ignore[misc]
+    from PySide6.QtMultimediaWidgets import QGraphicsVideoItem
+except (ModuleNotFoundError, ImportError):  # pragma: no cover - handled by main window guard
+    QGraphicsVideoItem = None  # type: ignore[assignment, misc]
 
 from ....config import (
     PLAYER_CONTROLS_HIDE_DELAY_MS,
@@ -33,7 +38,7 @@ from .player_bar import PlayerBar
 
 
 class VideoArea(QWidget):
-    """Present a video widget with auto-hiding playback controls."""
+    """Present a video surface with auto-hiding playback controls."""
 
     mouseActive = Signal()
     controlsVisibleChanged = Signal(bool)
@@ -43,8 +48,23 @@ class VideoArea(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setMouseTracking(True)
 
-        self._video_widget = QVideoWidget(self)
-        self._video_widget.setMouseTracking(True)
+        if QGraphicsVideoItem is None:
+            raise RuntimeError("PySide6.QtMultimediaWidgets is required for video playback.")
+
+        # --- Graphics View Setup ---
+        self._video_item = QGraphicsVideoItem()
+        self._video_item.setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
+
+        self._scene = QGraphicsScene(self)
+        self._scene.addItem(self._video_item)
+
+        self._video_view = QGraphicsView(self._scene, self)
+        self._video_view.setFrameShape(QFrame.Shape.NoFrame)
+        self._video_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._video_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._video_view.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        self._video_view.setStyleSheet("background: black; border: none;")
+        # --- End Graphics View Setup ---
 
         self._overlay_margin = 48
         self._player_bar = PlayerBar(self)
@@ -74,10 +94,10 @@ class VideoArea(QWidget):
     # Public API
     # ------------------------------------------------------------------
     @property
-    def video_widget(self) -> QVideoWidget:
-        """Return the embedded :class:`QVideoWidget`."""
+    def video_item(self) -> QGraphicsVideoItem:
+        """Return the embedded :class:`QGraphicsVideoItem` for media output."""
 
-        return self._video_widget
+        return self._video_item
 
     @property
     def player_bar(self) -> PlayerBar:
@@ -129,7 +149,11 @@ class VideoArea(QWidget):
         """Manually layout child widgets."""
 
         super().resizeEvent(event)
-        self._video_widget.setGeometry(self.rect())
+        rect = self.rect()
+        self._video_view.setGeometry(rect)
+        self._scene.setSceneRect(QRectF(rect))
+        self._video_item.setSize(self._scene.sceneRect().size())
+        self._video_item.setPos(QPointF())
         self._update_bar_geometry()
 
     def enterEvent(self, event) -> None:  # pragma: no cover - GUI behaviour
@@ -221,7 +245,7 @@ class VideoArea(QWidget):
             self._player_bar.hide()
 
     def _update_bar_geometry(self) -> None:
-        if not self._player_bar.isVisible():
+        if not self.isVisible():
             return
         rect = self.rect()
         available_width = max(0, rect.width() - (2 * self._overlay_margin))

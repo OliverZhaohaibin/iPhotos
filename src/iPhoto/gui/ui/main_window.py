@@ -65,7 +65,6 @@ class MainWindow(QMainWindow):
         self._playlist = PlaylistController(self)
         self._preview_window = PreviewWindow(self)
         self._image_viewer = ImageViewer()
-        self._video_widget = self._video_area.video_widget
         self._player_placeholder = QLabel("Select a photo or video to preview.")
         self._player_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._player_placeholder.setStyleSheet(
@@ -163,7 +162,7 @@ class MainWindow(QMainWindow):
         self._player_stack.addWidget(self._video_area)
         self._player_stack.setCurrentWidget(self._player_placeholder)
         self._video_area.hide_controls(animate=False)
-        self._media.set_video_output(self._video_widget)
+        self._media.set_video_output(self._video_area.video_item)
 
     def _build_splitter(self) -> QSplitter:
         right_panel = QWidget()
