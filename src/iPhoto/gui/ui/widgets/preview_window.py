@@ -43,7 +43,7 @@ class _RoundedVideoItem(QGraphicsVideoItem):
             )
         super().__init__()
         self._corner_radius = float(max(0, corner_radius))
-        self.setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
+        self.setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatioByExpanding)
 
     def set_corner_radius(self, corner_radius: int) -> None:
         radius = float(max(0, corner_radius))
@@ -116,7 +116,7 @@ class _PreviewFrame(QWidget):
     def __init__(self, corner_radius: int, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._corner_radius = max(0, corner_radius)
-        self._border_width = 2
+        self._border_width = 0
         self._background = QColor(18, 18, 22)
         self._border = QColor(255, 255, 255, 28)
 
@@ -124,12 +124,7 @@ class _PreviewFrame(QWidget):
         self.setAutoFillBackground(False)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(
-            self._border_width,
-            self._border_width,
-            self._border_width,
-            self._border_width,
-        )
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
         self._video_view = _VideoView(self._update_masks, corner_radius, self)
@@ -175,7 +170,7 @@ class _PreviewFrame(QWidget):
         self._update_masks()
 
     def _update_masks(self) -> None:
-        video_radius = max(0, self._corner_radius - self._border_width)
+        video_radius = max(0, self._corner_radius)
         self._video_view.video_item().set_corner_radius(video_radius)
         self.update()
 
