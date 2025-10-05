@@ -279,9 +279,8 @@ class PlayerBar(QWidget):
 
         self.setStyleSheet(
             "PlayerBar {"
-            " background-color: rgba(28, 28, 32, 210);"
-            " border-radius: 20px;"
-            " border: 1px solid rgba(255, 255, 255, 40);"
+            " background-color: transparent;"
+            " border: none;"
             " color: #d7d8da;"
             "}\n"
             "PlayerBar #progressFrame {"
