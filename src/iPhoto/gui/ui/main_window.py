@@ -250,8 +250,6 @@ class MainWindow(QMainWindow):
 
         self._player_bar.playPauseRequested.connect(self._playback.toggle_playback)
         for signal, slot in (
-            (self._player_bar.previousRequested, self._playback.play_previous),
-            (self._player_bar.nextRequested, self._playback.play_next),
             (self._player_bar.volumeChanged, self._media.set_volume),
             (self._player_bar.muteToggled, self._media.set_muted),
             (self._player_bar.seekRequested, self._media.seek),

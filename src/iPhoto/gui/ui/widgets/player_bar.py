@@ -24,8 +24,6 @@ class PlayerBar(QWidget):
     """Present transport controls, a progress slider and volume settings."""
 
     playPauseRequested = Signal()
-    previousRequested = Signal()
-    nextRequested = Signal()
     seekRequested = Signal(int)
     scrubStarted = Signal()
     scrubFinished = Signal()
@@ -38,10 +36,8 @@ class PlayerBar(QWidget):
         self._updating_position = False
         self._scrubbing = False
 
-        self._prev_button = self._create_tool_button("⏮", "Previous video")
         self._play_button = self._create_tool_button("▶", "Play/Pause")
         self._play_button.setCheckable(False)
-        self._next_button = self._create_tool_button("⏭", "Next video")
 
         self._position_slider = QSlider(Qt.Orientation.Horizontal, self)
         self._position_slider.setRange(0, 0)
@@ -84,10 +80,8 @@ class PlayerBar(QWidget):
         controls_row.setContentsMargins(0, 0, 0, 0)
         controls_row.setSpacing(12)
         controls_row.addStretch(1)
-        controls_row.addWidget(self._prev_button)
         controls_row.addWidget(self._play_button)
-        controls_row.addWidget(self._next_button)
-        controls_row.addStretch(1)
+        controls_row.addSpacing(16)
         controls_row.addWidget(self._mute_button)
         controls_row.addWidget(self._volume_slider)
         controls_row.addStretch(1)
@@ -97,9 +91,7 @@ class PlayerBar(QWidget):
 
         self._apply_palette()
 
-        self._prev_button.clicked.connect(self.previousRequested.emit)
         self._play_button.clicked.connect(self.playPauseRequested.emit)
-        self._next_button.clicked.connect(self.nextRequested.emit)
         self._mute_button.toggled.connect(self.muteToggled.emit)
         self._volume_slider.valueChanged.connect(self._on_volume_changed)
         self._position_slider.sliderPressed.connect(self._on_slider_pressed)
@@ -241,7 +233,7 @@ class PlayerBar(QWidget):
         button = QToolButton(self)
         button.setText(text)
         button.setToolTip(tooltip)
-        button.setAutoRaise(True)
+        button.setAutoRaise(False)
         button.setCheckable(checkable)
         button.setIconSize(QSize(28, 28))
         button.setMinimumSize(QSize(36, 36))
@@ -257,28 +249,34 @@ class PlayerBar(QWidget):
             button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
 
     def _apply_palette(self) -> None:
-        common_style = (
-            "QToolButton { color: white; font-size: 18px; padding: 6px; }"
-            "QToolButton:pressed { background-color: rgba(255, 255, 255, 40);"
-            " border-radius: 8px; }"
-            "QToolButton:checked { background-color: rgba(255, 255, 255, 64); }"
+        button_style = (
+            "QToolButton { color: #d7d8da; font-size: 18px; padding: 6px; border-radius: 18px; }\n"
+            "QToolButton:hover { background-color: rgba(255, 255, 255, 26); }\n"
+            "QToolButton:pressed { background-color: rgba(255, 255, 255, 44); }\n"
+            "QToolButton:checked { background-color: rgba(255, 255, 255, 58); }"
         )
         slider_style = (
-            "QSlider::groove:horizontal { height: 4px;"
-            " background: rgba(255, 255, 255, 96); border-radius: 2px; }"
-            "QSlider::sub-page:horizontal { background: white; border-radius: 2px; }"
-            "QSlider::add-page:horizontal { background: rgba(255, 255, 255, 48);"
-            " border-radius: 2px; }"
-            "QSlider::handle:horizontal { background: white; width: 14px;"
-            " margin: -6px 0; border-radius: 7px; }"
+            "QSlider::groove:horizontal { height: 4px; background: rgba(240, 240, 240, 80); border-radius: 2px; }\n"
+            "QSlider::sub-page:horizontal { background: #d7d8da; border-radius: 2px; }\n"
+            "QSlider::add-page:horizontal { background: rgba(255, 255, 255, 24); border-radius: 2px; }\n"
+            "QSlider::handle:horizontal { background: #f5f6f8; width: 14px; margin: -6px 0; border-radius: 7px; }"
         )
-        volume_style = slider_style.replace("4px", "3px").replace("14px", "12px")
-        label_style = "color: white; font-size: 12px;"
+        volume_style = (
+            "QSlider::groove:horizontal { height: 3px; background: rgba(240, 240, 240, 70); border-radius: 2px; }\n"
+            "QSlider::sub-page:horizontal { background: #d7d8da; border-radius: 2px; }\n"
+            "QSlider::add-page:horizontal { background: rgba(255, 255, 255, 18); border-radius: 2px; }\n"
+            "QSlider::handle:horizontal { background: #f5f6f8; width: 12px; margin: -6px 0; border-radius: 6px; }"
+        )
+        label_style = "color: #d7d8da; font-size: 12px;"
 
         self.setStyleSheet(
-            "PlayerBar { background-color: rgba(20, 20, 20, 170);"
-            " border-radius: 14px; color: white; }"
-            + common_style
+            "PlayerBar {"
+            " background-color: rgba(28, 28, 32, 210);"
+            " border-radius: 20px;"
+            " border: 1px solid rgba(255, 255, 255, 40);"
+            " color: #d7d8da;"
+            "}\n"
+            + button_style
         )
         self._position_slider.setStyleSheet(slider_style)
         self._volume_slider.setStyleSheet(volume_style)

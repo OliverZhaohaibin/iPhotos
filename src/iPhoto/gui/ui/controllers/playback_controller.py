@@ -179,12 +179,6 @@ class PlaybackController:
             self._media.play()
         self._resume_playback_after_scrub = False
 
-    def play_previous(self) -> None:
-        self._playlist.previous()
-
-    def play_next(self) -> None:
-        self._playlist.next()
-
     # ------------------------------------------------------------------
     # View helpers
     # ------------------------------------------------------------------
