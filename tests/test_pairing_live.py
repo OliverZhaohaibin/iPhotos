@@ -50,6 +50,29 @@ def test_pairing_prefers_content_id() -> None:
     assert group.content_id == "CID1"
 
 
+def test_pairing_handles_missing_mime() -> None:
+    dt = iso(datetime(2024, 1, 1, 12, 0, 0))
+    rows = [
+        {
+            "rel": "IMG_0002.HEIC",
+            "mime": None,
+            "dt": dt,
+            "id": "still",
+        },
+        {
+            "rel": "IMG_0002.MOV",
+            "mime": None,
+            "dt": dt,
+            "id": "motion",
+        },
+    ]
+    groups = pair_live(rows)
+    assert len(groups) == 1
+    group = groups[0]
+    assert group.still == "IMG_0002.HEIC"
+    assert group.motion == "IMG_0002.MOV"
+
+
 def test_rescan_pairs_new_live_assets(tmp_path: Path) -> None:
     still = tmp_path / "IMG_5001.JPG"
     _create_image(still)
