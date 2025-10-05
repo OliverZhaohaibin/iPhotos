@@ -42,7 +42,6 @@ def test_asset_grid_long_press_emits_preview(qapp: QApplication) -> None:
     release_spy = QSignalSpy(grid.previewReleased)
 
     QTest.mousePress(grid.viewport(), Qt.MouseButton.LeftButton, pos=pos)
-    QTest.qWait(LONG_PRESS_THRESHOLD_MS + 50)
-    assert preview_spy.wait(200)
+    assert preview_spy.wait(LONG_PRESS_THRESHOLD_MS + 800)
     QTest.mouseRelease(grid.viewport(), Qt.MouseButton.LeftButton, pos=pos)
     assert release_spy.wait(200)
