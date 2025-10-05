@@ -9,6 +9,7 @@ from PySide6.QtCore import QAbstractListModel, QModelIndex, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPixmap
 
 from ....cache.index_store import IndexStore
+from ....core.pairing import pair_live
 from ....config import WORK_DIR_NAME
 from ....utils.pathutils import ensure_work_dir
 from ...facade import AppFacade
@@ -128,7 +129,7 @@ class AssetListModel(QAbstractListModel):
         manifest = self._facade.current_album.manifest if self._facade.current_album else {}
         featured: set[str] = set(manifest.get("featured", []))
         index_rows = list(IndexStore(self._album_root).read_all())
-        live_map = load_live_map(self._album_root)
+        live_map = self._resolve_live_map(index_rows, load_live_map(self._album_root))
 
         payload: List[Dict[str, object]] = []
         for row in index_rows:
@@ -215,6 +216,50 @@ class AssetListModel(QAbstractListModel):
         if suffix in _VIDEO_EXTENSIONS:
             return False, True
         return False, False
+
+    def _resolve_live_map(
+        self,
+        index_rows: List[Dict[str, object]],
+        base_map: Dict[str, Dict[str, object]],
+    ) -> Dict[str, Dict[str, object]]:
+        """Return a Live Photo lookup, synthesising pairs when ``links.json`` is stale."""
+
+        mapping = dict(base_map)
+        missing: set[str] = set()
+        for row in index_rows:
+            rel = str(row.get("rel"))
+            if not rel:
+                continue
+            is_image, _ = self._classify_media(row)
+            if not is_image:
+                continue
+            info = mapping.get(rel)
+            motion_ref = info.get("motion") if isinstance(info, dict) else None
+            if isinstance(motion_ref, str) and motion_ref:
+                continue
+            missing.add(rel)
+        if not missing:
+            return mapping
+
+        for group in pair_live(index_rows):
+            still = group.still
+            if still not in missing:
+                continue
+            motion = group.motion
+            record: Dict[str, object] = {
+                "id": group.id,
+                "still": still,
+                "motion": motion,
+                "confidence": group.confidence,
+            }
+            if group.content_id:
+                record["content_id"] = group.content_id
+            if group.still_image_time is not None:
+                record["still_image_time"] = group.still_image_time
+            mapping[still] = {**record, "role": "still"}
+            if motion:
+                mapping[motion] = {**record, "role": "motion"}
+        return mapping
 
     # ------------------------------------------------------------------
     # Thumbnail helpers

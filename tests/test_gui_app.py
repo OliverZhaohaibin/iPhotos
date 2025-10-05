@@ -238,6 +238,32 @@ def test_asset_model_exposes_live_motion_abs(tmp_path: Path, qapp: QApplication)
     assert Path(motion_abs).exists()
 
 
+def test_asset_model_pairs_live_when_links_missing(
+    tmp_path: Path, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    still = tmp_path / "IMG_4101.JPG"
+    video = tmp_path / "IMG_4101.MOV"
+    _create_image(still)
+    video.write_bytes(b"\x00")
+    timestamp = time.time() - 90
+    os.utime(still, (timestamp, timestamp))
+    os.utime(video, (timestamp, timestamp))
+
+    from iPhotos.src.iPhoto.gui.ui.models import asset_list_model as alm
+
+    monkeypatch.setattr(alm, "load_live_map", lambda _: {})
+
+    facade = AppFacade()
+    model = AssetModel(facade)
+    facade.open_album(tmp_path)
+    qapp.processEvents()
+
+    assert model.rowCount() == 1
+    index = model.index(0, 0)
+    assert bool(model.data(index, Roles.IS_LIVE))
+    assert model.data(index, Roles.LIVE_MOTION_REL) == "IMG_4101.MOV"
+
+
 def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplication) -> None:
     still = tmp_path / "IMG_5001.JPG"
     video = tmp_path / "IMG_5001.MOV"
