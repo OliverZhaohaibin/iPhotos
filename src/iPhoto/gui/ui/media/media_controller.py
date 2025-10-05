@@ -172,6 +172,16 @@ class MediaController(QObject):
 
         return self._current_source
 
+    def video_sink(self) -> Optional[object]:
+        """Return the underlying video sink used for rendering, if available."""
+
+        getter = getattr(self._player, "videoSink", None)
+        if callable(getter):
+            sink = getter()
+            if sink is not None:
+                return sink
+        return None
+
     # ------------------------------------------------------------------
     # Slots for internal signal forwarding
     # ------------------------------------------------------------------

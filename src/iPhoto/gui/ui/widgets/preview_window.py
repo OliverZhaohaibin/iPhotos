@@ -290,6 +290,7 @@ class PreviewWindow(QWidget):
 
         self._poster_active = False
         self._current_source: Optional[Path] = None
+        self._is_waiting_for_first_frame = False
 
         self._close_timer = QTimer(self)
         self._close_timer.setSingleShot(True)
@@ -308,10 +309,13 @@ class PreviewWindow(QWidget):
         path = Path(source)
         poster = poster_frame if poster_frame is not None and not poster_frame.isNull() else None
         self._poster_active = poster is not None
+        self._is_waiting_for_first_frame = self._poster_active
         self._current_source = path
         self._frame.set_poster(poster)
         self._close_timer.stop()
         self._media.stop()
+        self._disconnect_video_sink()
+        self._connect_video_sink()
         self._media.load(path)
 
         if isinstance(at, QRect):
@@ -345,7 +349,9 @@ class PreviewWindow(QWidget):
     def _do_close(self) -> None:
         self._close_timer.stop()
         self._media.stop()
+        self._disconnect_video_sink()
         self._poster_active = False
+        self._is_waiting_for_first_frame = False
         self._current_source = None
         self._frame.clear_poster()
         self.hide()
@@ -383,8 +389,54 @@ class PreviewWindow(QWidget):
             return
         self._media.play()
 
+    def _handle_first_frame_painted(self, *_args: object) -> None:
+        if not self._is_waiting_for_first_frame:
+            return
+        current = self._media.current_source()
+        if current is None or current != self._current_source:
+            return
+        self._is_waiting_for_first_frame = False
+        if not self._poster_active:
+            self._disconnect_video_sink()
+            return
+        self._poster_active = False
+        self._frame.show_video()
+        self._disconnect_video_sink()
+
+    def _connect_video_sink(self) -> None:
+        if not self._poster_active:
+            self._is_waiting_for_first_frame = False
+            return
+        sink = self._media.video_sink()
+        if sink is None:
+            self._is_waiting_for_first_frame = False
+            return
+        signal = getattr(sink, "videoFrameChanged", None)
+        if signal is None:
+            self._is_waiting_for_first_frame = False
+            return
+        try:
+            signal.disconnect(self._handle_first_frame_painted)
+        except (RuntimeError, TypeError):
+            pass
+        signal.connect(self._handle_first_frame_painted)
+
+    def _disconnect_video_sink(self) -> None:
+        sink = self._media.video_sink()
+        if sink is None:
+            return
+        signal = getattr(sink, "videoFrameChanged", None)
+        if signal is None:
+            return
+        try:
+            signal.disconnect(self._handle_first_frame_painted)
+        except (RuntimeError, TypeError):
+            pass
+
     def _handle_playback_state_changed(self, state: object) -> None:
         if not self._poster_active:
+            return
+        if self._is_waiting_for_first_frame:
             return
         current = self._media.current_source()
         if current is None or current != self._current_source:
@@ -399,12 +451,13 @@ class PreviewWindow(QWidget):
             else:
                 is_playing = playback_state == QMediaPlayer.PlaybackState.PlayingState
 
-        if not is_playing:
-            if getattr(state, "name", None) == "PlayingState":
-                is_playing = True
+        if not is_playing and getattr(state, "name", None) == "PlayingState":
+            is_playing = True
 
         if not is_playing:
             return
 
+        self._is_waiting_for_first_frame = False
         self._poster_active = False
         self._frame.show_video()
+        self._disconnect_video_sink()
