@@ -8,9 +8,11 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from PySide6.QtCore import QAbstractItemModel, QModelIndex, QObject, Qt
+from PySide6.QtGui import QIcon
 
 from ....library.manager import LibraryManager
 from ....library.tree import AlbumNode
+from ..icon import load_icon
 
 
 class AlbumTreeRole(int, Enum):
@@ -74,6 +76,14 @@ class AlbumTreeModel(QAbstractItemModel):
 
     TRAILING_STATIC_NODES: tuple[str, ...] = ("Recently Deleted",)
 
+    _STATIC_ICON_MAP: dict[str, str] = {
+        "all photos": "photo.on.rectangle",
+        "videos": "video.fill",
+        "live photos": "livephoto",
+        "favorites": "suit.heart.fill",
+        "recently deleted": "trash",
+    }
+
     def __init__(self, library: LibraryManager, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._library = library
@@ -123,6 +133,8 @@ class AlbumTreeModel(QAbstractItemModel):
             return item.album
         if role == AlbumTreeRole.FILE_PATH and item.album is not None:
             return item.album.path
+        if role == Qt.ItemDataRole.DecorationRole:
+            return self._icon_for_item(item)
         return None
 
     def flags(self, index: QModelIndex) -> Qt.ItemFlag:  # noqa: N802
@@ -209,6 +221,19 @@ class AlbumTreeModel(QAbstractItemModel):
         self._path_map[album.path] = item
         self._path_map[album.path.resolve()] = item
         return item
+
+    def _icon_for_item(self, item: AlbumTreeItem) -> QIcon:
+        if item.node_type == NodeType.ACTION:
+            return load_icon("plus.circle")
+        if item.node_type == NodeType.STATIC:
+            icon_name = self._STATIC_ICON_MAP.get(item.title.casefold())
+            if icon_name:
+                return load_icon(icon_name)
+        if item.node_type in {NodeType.ALBUM, NodeType.SUBALBUM}:
+            return load_icon("rectangle.stack")
+        if item.node_type == NodeType.HEADER:
+            return load_icon("photo.on.rectangle")
+        return QIcon()
 
 
 __all__ = ["AlbumTreeModel", "AlbumTreeItem", "NodeType", "AlbumTreeRole"]

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Optional
 
 from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -14,6 +15,9 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+
+from ..icon import load_icon
 
 
 class PlayerBar(QWidget):
@@ -57,6 +61,12 @@ class PlayerBar(QWidget):
         self._volume_slider.setToolTip("Volume")
 
         self._mute_button = self._create_tool_button("🔇", "Mute", checkable=True)
+
+        self._play_icon: QIcon = load_icon("play.fill")
+        self._pause_icon: QIcon = load_icon("pause.fill")
+        self._speaker_icon: QIcon = load_icon("speaker.3.fill")
+        self._apply_icon(self._play_button, self._play_icon)
+        self._apply_icon(self._mute_button, self._speaker_icon)
 
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         layout = QVBoxLayout(self)
@@ -134,8 +144,10 @@ class PlayerBar(QWidget):
 
         name = getattr(state, "name", None)
         if name == "PlayingState":
+            self._apply_icon(self._play_button, self._pause_icon)
             self._play_button.setText("⏸")
         else:
+            self._apply_icon(self._play_button, self._play_icon)
             self._play_button.setText("▶")
 
     def set_volume(self, volume: int) -> None:
@@ -158,6 +170,7 @@ class PlayerBar(QWidget):
 
         self.set_duration(0)
         self.set_position(0)
+        self._apply_icon(self._play_button, self._play_icon)
         self._play_button.setText("▶")
 
     # ------------------------------------------------------------------
@@ -233,6 +246,15 @@ class PlayerBar(QWidget):
         button.setIconSize(QSize(28, 28))
         button.setMinimumSize(QSize(36, 36))
         return button
+
+    @staticmethod
+    def _apply_icon(button: QToolButton, icon: QIcon) -> None:
+        if not icon.isNull():
+            button.setIcon(icon)
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        else:
+            button.setIcon(QIcon())
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
 
     def _apply_palette(self) -> None:
         common_style = (
