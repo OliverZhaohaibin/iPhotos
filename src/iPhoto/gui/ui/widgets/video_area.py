@@ -14,11 +14,7 @@ from PySide6.QtCore import (
     Signal,
 )
 from PySide6.QtGui import QCursor
-from PySide6.QtWidgets import (
-    QGraphicsOpacityEffect,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtWidgets import QGraphicsOpacityEffect, QVBoxLayout, QWidget
 
 try:  # pragma: no cover - optional Qt module
     from PySide6.QtMultimediaWidgets import QVideoWidget
@@ -72,6 +68,7 @@ class VideoArea(QWidget):
         self._target_opacity = 0.0
         self._host_widget: QWidget | None = self._video_widget
         self._window_host: QWidget | None = None
+        self._controls_enabled = True
 
         effect = QGraphicsOpacityEffect(self._player_bar)
         effect.setOpacity(0.0)
@@ -112,6 +109,8 @@ class VideoArea(QWidget):
     def show_controls(self, *, animate: bool = True) -> None:
         """Reveal the playback controls and restart the hide timer."""
 
+        if not self._controls_enabled:
+            return
         self._hide_timer.stop()
         if not self._controls_visible:
             self._controls_visible = True
@@ -138,6 +137,8 @@ class VideoArea(QWidget):
     def note_activity(self) -> None:
         """Treat external events as user activity to keep controls visible."""
 
+        if not self._controls_enabled:
+            return
         if self._controls_visible:
             self._restart_hide_timer()
             self._update_overlay_visibility()
@@ -298,6 +299,8 @@ class VideoArea(QWidget):
         self._player_bar.muteToggled.connect(lambda _state: self._on_mouse_activity())
 
     def _on_mouse_activity(self) -> None:
+        if not self._controls_enabled:
+            return
         self.mouseActive.emit()
         if self._controls_visible:
             self._restart_hide_timer()
@@ -414,3 +417,20 @@ class VideoArea(QWidget):
         if not self._overlay.isVisible():
             self._overlay.show()
         self.schedule_refresh()
+
+    # ------------------------------------------------------------------
+    # Live Photo helpers
+    # ------------------------------------------------------------------
+    def set_controls_enabled(self, enabled: bool) -> None:
+        """Enable or disable the floating playback controls."""
+
+        if self._controls_enabled == enabled:
+            return
+        self._controls_enabled = enabled
+        if not enabled:
+            self.hide_controls(animate=False)
+        else:
+            self._controls_visible = False
+            self._overlay.hide()
+            self._player_bar.hide()
+

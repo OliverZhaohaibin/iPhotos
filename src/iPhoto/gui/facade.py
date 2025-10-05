@@ -59,6 +59,7 @@ class AppFacade(QObject):
             self.errorRaised.emit(str(exc))
             return []
         self.indexUpdated.emit(album.root)
+        self.linksUpdated.emit(album.root)
         return rows
 
     def pair_live_current(self) -> List[dict]:

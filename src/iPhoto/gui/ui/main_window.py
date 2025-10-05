@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from functools import partial
 from pathlib import Path
-from typing import Optional
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
@@ -43,6 +42,7 @@ from .widgets import (
     ImageViewer,
     VideoArea,
     PreviewWindow,
+    LiveBadge,
 )
 
 class MainWindow(QMainWindow):
@@ -76,6 +76,8 @@ class MainWindow(QMainWindow):
         self._view_stack = QStackedWidget()
         self._gallery_page = self._detail_page = None
         self._back_button = QToolButton()
+        self._live_badge = LiveBadge()
+        self._live_badge.hide()
 
         self._dialog = DialogController(self, context, self._status)
 
@@ -104,6 +106,7 @@ class MainWindow(QMainWindow):
             self._gallery_page,
             self._detail_page,
             self._preview_window,
+            self._live_badge,
             self._status,
             self._dialog,
         )
@@ -194,7 +197,17 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(self._back_button)
         header_layout.addStretch(1)
         detail_layout.addWidget(header)
-        detail_layout.addWidget(self._player_stack)
+
+        player_container = QWidget()
+        player_layout = QVBoxLayout(player_container)
+        player_layout.setContentsMargins(0, 0, 0, 0)
+        player_layout.setSpacing(0)
+        player_layout.addWidget(self._player_stack)
+
+        self._live_badge.setParent(player_container)
+        self._live_badge.move(15, 15)
+        self._live_badge.raise_()
+        detail_layout.addWidget(player_container)
         detail_layout.addWidget(self._filmstrip_view)
         self._detail_page = detail_page
 
@@ -211,6 +224,13 @@ class MainWindow(QMainWindow):
         splitter.setCollapsible(0, False)
         splitter.setCollapsible(1, False)
         return splitter
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        parent = self._live_badge.parentWidget()
+        if parent is not None:
+            self._live_badge.move(15, 15)
+            self._live_badge.raise_()
 
     # Signal wiring
     def _connect_signals(self) -> None:

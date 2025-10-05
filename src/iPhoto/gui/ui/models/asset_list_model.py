@@ -9,6 +9,7 @@ from PySide6.QtCore import QAbstractListModel, QModelIndex, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPixmap
 
 from ....cache.index_store import IndexStore
+from ....core.pairing import pair_live
 from ....config import WORK_DIR_NAME
 from ....utils.pathutils import ensure_work_dir
 from ...facade import AppFacade
@@ -52,6 +53,11 @@ class AssetListModel(QAbstractListModel):
         facade.indexUpdated.connect(self._on_index_updated)
         facade.linksUpdated.connect(self._on_links_updated)
 
+    def album_root(self) -> Optional[Path]:
+        """Return the path of the currently open album, if any."""
+
+        return self._album_root
+
     # ------------------------------------------------------------------
     # Qt model implementation
     # ------------------------------------------------------------------
@@ -86,6 +92,8 @@ class AssetListModel(QAbstractListModel):
             return row["live_group_id"]
         if role == Roles.LIVE_MOTION_REL:
             return row["live_motion"]
+        if role == Roles.LIVE_MOTION_ABS:
+            return row["live_motion_abs"]
         if role == Roles.SIZE:
             return row["size"]
         if role == Roles.DT:
@@ -126,23 +134,35 @@ class AssetListModel(QAbstractListModel):
         manifest = self._facade.current_album.manifest if self._facade.current_album else {}
         featured: set[str] = set(manifest.get("featured", []))
         index_rows = list(IndexStore(self._album_root).read_all())
-        live_map = load_live_map(self._album_root)
+        live_map = self._resolve_live_map(index_rows, load_live_map(self._album_root))
+
+        motion_paths_to_hide: set[str] = set()
+        for info in live_map.values():
+            if not isinstance(info, dict):
+                continue
+            if info.get("role") != "motion":
+                continue
+            motion_rel = info.get("motion")
+            if isinstance(motion_rel, str) and motion_rel:
+                motion_paths_to_hide.add(motion_rel)
 
         payload: List[Dict[str, object]] = []
         for row in index_rows:
             rel = str(row["rel"])
-            live_info = live_map.get(rel)
-            if live_info and live_info.get("role") == "motion" and live_info.get("still"):
+            if rel in motion_paths_to_hide:
                 continue
+            live_info = live_map.get(rel)
 
             abs_path = str((self._album_root / rel).resolve())
             is_image, is_video = self._classify_media(row)
             live_motion: Optional[str] = None
+            live_motion_abs: Optional[str] = None
             live_group_id: Optional[str] = None
             if live_info and live_info.get("role") == "still":
                 motion_rel = live_info.get("motion")
                 if isinstance(motion_rel, str) and motion_rel:
                     live_motion = motion_rel
+                    live_motion_abs = str((self._album_root / motion_rel).resolve())
                 group_id = live_info.get("id")
                 if isinstance(group_id, str):
                     live_group_id = group_id
@@ -159,6 +179,7 @@ class AssetListModel(QAbstractListModel):
                 "is_live": bool(live_motion),
                 "live_group_id": live_group_id,
                 "live_motion": live_motion,
+                "live_motion_abs": live_motion_abs,
                 "size": self._determine_size(row, is_image),
                 "dt": row.get("dt"),
                 "featured": self._is_featured(rel, featured),
@@ -210,6 +231,50 @@ class AssetListModel(QAbstractListModel):
         if suffix in _VIDEO_EXTENSIONS:
             return False, True
         return False, False
+
+    def _resolve_live_map(
+        self,
+        index_rows: List[Dict[str, object]],
+        base_map: Dict[str, Dict[str, object]],
+    ) -> Dict[str, Dict[str, object]]:
+        """Return a Live Photo lookup, synthesising pairs when ``links.json`` is stale."""
+
+        mapping = dict(base_map)
+        missing: set[str] = set()
+        for row in index_rows:
+            rel = str(row.get("rel"))
+            if not rel:
+                continue
+            is_image, _ = self._classify_media(row)
+            if not is_image:
+                continue
+            info = mapping.get(rel)
+            motion_ref = info.get("motion") if isinstance(info, dict) else None
+            if isinstance(motion_ref, str) and motion_ref:
+                continue
+            missing.add(rel)
+        if not missing:
+            return mapping
+
+        for group in pair_live(index_rows):
+            still = group.still
+            if still not in missing:
+                continue
+            motion = group.motion
+            record: Dict[str, object] = {
+                "id": group.id,
+                "still": still,
+                "motion": motion,
+                "confidence": group.confidence,
+            }
+            if group.content_id:
+                record["content_id"] = group.content_id
+            if group.still_image_time is not None:
+                record["still_image_time"] = group.still_image_time
+            mapping[still] = {**record, "role": "still"}
+            if motion:
+                mapping[motion] = {**record, "role": "motion"}
+        return mapping
 
     # ------------------------------------------------------------------
     # Thumbnail helpers

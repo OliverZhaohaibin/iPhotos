@@ -130,12 +130,31 @@ class PlaylistController(QObject):
     def _is_playable(self, row: int) -> bool:
         assert self._model is not None
         index = self._model.index(row, 0)
-        return bool(index.data(Roles.IS_VIDEO))
+        if bool(index.data(Roles.IS_VIDEO)):
+            return True
+        if bool(index.data(Roles.IS_LIVE)):
+            motion_abs = index.data(Roles.LIVE_MOTION_ABS)
+            if isinstance(motion_abs, str) and motion_abs:
+                return True
+            motion_rel = index.data(Roles.LIVE_MOTION_REL)
+            return isinstance(motion_rel, str) and bool(motion_rel)
+        return False
 
     def _resolve_source(self, row: int) -> Optional[Path]:
         if self._model is None:
             return None
         index: QModelIndex = self._model.index(row, 0)
+        if bool(index.data(Roles.IS_LIVE)):
+            motion_abs = index.data(Roles.LIVE_MOTION_ABS)
+            if isinstance(motion_abs, str) and motion_abs:
+                return Path(motion_abs)
+            motion_rel = index.data(Roles.LIVE_MOTION_REL)
+            if isinstance(motion_rel, str) and motion_rel:
+                source_model = self._model.source_model()
+                album_root = source_model.album_root()
+                if album_root is not None:
+                    return (album_root / motion_rel).resolve()
+            return None
         raw = index.data(Roles.ABS)
         if isinstance(raw, str) and raw:
             return Path(raw)
