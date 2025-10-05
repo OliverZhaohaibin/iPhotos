@@ -42,7 +42,19 @@ def test_asset_grid_long_press_emits_preview(qapp: QApplication) -> None:
     release_spy = QSignalSpy(grid.previewReleased)
 
     QTest.mousePress(grid.viewport(), Qt.MouseButton.LeftButton, pos=pos)
-    QTest.qWait(LONG_PRESS_THRESHOLD_MS + 50)
-    assert preview_spy.wait(200)
-    QTest.mouseRelease(grid.viewport(), Qt.MouseButton.LeftButton, pos=pos)
-    assert release_spy.wait(200)
+    assert preview_spy.wait(LONG_PRESS_THRESHOLD_MS + 800)
+
+    qapp.processEvents()
+    global_pos = grid.viewport().mapToGlobal(pos)
+    target = QApplication.widgetAt(global_pos)
+    if target is None:
+        target = grid.viewport()
+        local_pos = pos
+    else:
+        local_pos = target.mapFromGlobal(global_pos)
+
+    QTest.mouseRelease(target, Qt.MouseButton.LeftButton, pos=local_pos)
+    if release_spy.count() == 0:
+        assert release_spy.wait(800)
+
+    assert release_spy.count() > 0

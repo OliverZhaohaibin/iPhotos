@@ -70,6 +70,13 @@ class MediaController(QObject):
     def set_video_output(self, widget: object) -> None:
         """Display video frames on *widget*."""
 
+        sink_getter = getattr(widget, "videoSink", None)
+        if callable(sink_getter):
+            sink = sink_getter()
+            if sink is not None:
+                self._player.setVideoOutput(sink)
+                return
+
         self._player.setVideoOutput(widget)
 
     def load(self, path: Path) -> None:

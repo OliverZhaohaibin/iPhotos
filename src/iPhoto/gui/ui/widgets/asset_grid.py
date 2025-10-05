@@ -94,4 +94,43 @@ class AssetGrid(QListView):
     def _viewport_pos(self, event: QMouseEvent) -> QPoint:
         """Return the event position mapped into viewport coordinates."""
 
-        return self.viewport().mapFromGlobal(event.globalPosition().toPoint())
+        viewport = self.viewport()
+
+        def _validated(point: Optional[QPoint]) -> Optional[QPoint]:
+            if point is None:
+                return None
+            if viewport.rect().contains(point):
+                return point
+            return None
+
+        if hasattr(event, "position"):
+            candidate = _validated(event.position().toPoint())
+            if candidate is not None:
+                return candidate
+
+        if hasattr(event, "pos"):
+            candidate = _validated(event.pos())
+            if candidate is not None:
+                return candidate
+
+        global_point: Optional[QPoint] = None
+
+        global_position = getattr(event, "globalPosition", None)
+        if callable(global_position):
+            global_point = global_position().toPoint()
+        elif global_position is not None:
+            global_point = global_position.toPoint()
+
+        if global_point is None and hasattr(event, "globalPos"):
+            global_point = event.globalPos()
+
+        if global_point is not None:
+            mapped = viewport.mapFromGlobal(global_point)
+            candidate = _validated(mapped)
+            if candidate is not None:
+                return candidate
+
+        # Fallback for any other exotic QMouseEvent implementations. At this point
+        # we have no reliable coordinate system information, so best-effort return
+        # of the event's integer components is the safest option.
+        return QPoint(event.x(), event.y())
