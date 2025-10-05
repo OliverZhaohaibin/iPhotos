@@ -13,10 +13,11 @@ _ICON_DIR = Path(__file__).resolve().parent
 def icon_path(name: str) -> Path:
     """Return the absolute path to the SVG asset identified by *name*."""
 
-    candidate = _ICON_DIR / name
-    if candidate.suffix:
-        return candidate
-    return candidate.with_suffix(".svg")
+    if not name:
+        return _ICON_DIR / name
+
+    filename = name if name.casefold().endswith(".svg") else f"{name}.svg"
+    return _ICON_DIR / filename
 
 
 @lru_cache(maxsize=None)
