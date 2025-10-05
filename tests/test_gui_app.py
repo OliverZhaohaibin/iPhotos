@@ -22,7 +22,8 @@ from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QApplication  # type: ignore  # noqa: E402
 
 from iPhotos.src.iPhoto.gui.facade import AppFacade
-from iPhotos.src.iPhoto.gui.ui.models.asset_model import AssetModel, Roles, _ThumbnailJob
+from iPhotos.src.iPhoto.gui.ui.models.asset_model import AssetModel, Roles
+from iPhotos.src.iPhoto.gui.ui.tasks.thumbnail_loader import ThumbnailJob
 from iPhotos.src.iPhoto.config import WORK_DIR_NAME
 
 
@@ -112,7 +113,7 @@ def test_thumbnail_job_seek_targets_clamp(tmp_path: Path, qapp: QApplication) ->
     video_path = tmp_path / "clip.MOV"
     video_path.touch()
     cache_path = tmp_path / "cache.png"
-    job = _ThumbnailJob(
+    job = ThumbnailJob(
         dummy_loader,
         "clip.MOV",
         video_path,
@@ -133,7 +134,7 @@ def test_thumbnail_job_seek_targets_without_hint(tmp_path: Path, qapp: QApplicat
     video_path = tmp_path / "clip.MOV"
     video_path.touch()
     cache_path = tmp_path / "cache.png"
-    job = _ThumbnailJob(
+    job = ThumbnailJob(
         dummy_loader,
         "clip.MOV",
         video_path,
@@ -147,7 +148,7 @@ def test_thumbnail_job_seek_targets_without_hint(tmp_path: Path, qapp: QApplicat
     targets = job._seek_targets()
     assert targets == [None]
 
-    with_duration = _ThumbnailJob(
+    with_duration = ThumbnailJob(
         dummy_loader,
         "clip.MOV",
         video_path,
