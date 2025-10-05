@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 try:  # pragma: no cover - exercised in packaging scenarios
     from ...appctx import AppContext
 except ImportError:  # pragma: no cover - script execution fallback
-    from iPhoto.appctx import AppContext
+    from iPhotos.src.iPhoto.appctx import AppContext
 from ..facade import AppFacade
 from .controllers.dialog_controller import DialogController
 from .controllers.navigation_controller import NavigationController

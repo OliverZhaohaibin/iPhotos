@@ -13,7 +13,7 @@ if importlib.util.find_spec("PySide6.QtMultimedia") is not None:
 else:  # pragma: no cover - requires optional Qt module
     QAudioOutput = QMediaPlayer = None  # type: ignore[assignment]
 
-from iPhoto.config import VIDEO_MEMORY_CACHE_MAX_BYTES
+from iPhotos.src.iPhoto.config import VIDEO_MEMORY_CACHE_MAX_BYTES
 
 
 def is_multimedia_available() -> bool:

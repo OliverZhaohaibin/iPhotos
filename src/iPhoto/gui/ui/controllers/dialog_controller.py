@@ -11,8 +11,8 @@ from PySide6.QtWidgets import QStatusBar, QWidget
 try:  # pragma: no cover - depends on runtime packaging
     from ...appctx import AppContext
 except ImportError:  # pragma: no cover - fallback for script execution
-    from iPhoto.appctx import AppContext
-from ...errors import LibraryError
+    from iPhotos.src.iPhoto.appctx import AppContext
+from ....errors import LibraryError
 from ..widgets import dialogs
 
 

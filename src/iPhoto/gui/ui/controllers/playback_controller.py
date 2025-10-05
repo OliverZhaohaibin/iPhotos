@@ -7,10 +7,10 @@ from pathlib import Path
 from PySide6.QtCore import QItemSelectionModel, QModelIndex, QRect, Qt
 from PySide6.QtWidgets import QStackedWidget, QStatusBar, QWidget
 
-from ...config import VIDEO_COMPLETE_HOLD_BACKSTEP_MS
+from ....config import VIDEO_COMPLETE_HOLD_BACKSTEP_MS
 from ..media import MediaController, PlaylistController
 from ..models.asset_model import AssetModel, Roles
-from ..utils import image_loader
+from ...utils import image_loader
 from ..widgets.asset_grid import AssetGrid
 from ..widgets.image_viewer import ImageViewer
 from ..widgets.player_bar import PlayerBar

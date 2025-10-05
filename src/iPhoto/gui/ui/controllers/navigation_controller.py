@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QLabel, QStatusBar
 try:  # pragma: no cover - path-sensitive import
     from ...appctx import AppContext
 except ImportError:  # pragma: no cover - executed in script mode
-    from iPhoto.appctx import AppContext
+    from iPhotos.src.iPhoto.appctx import AppContext
 from ...facade import AppFacade
 from ..models.asset_model import AssetModel
 from ..widgets.album_sidebar import AlbumSidebar
