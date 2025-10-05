@@ -83,9 +83,9 @@ class MainWindow(QMainWindow):
         self._gallery_page = self._detail_page = None
         self._back_button = QToolButton()
 
-        self._build_ui()
-
         self._dialog = DialogController(self, context, self._status)
+
+        self._build_ui()
         self._navigation = NavigationController(
             context,
             self._facade,
