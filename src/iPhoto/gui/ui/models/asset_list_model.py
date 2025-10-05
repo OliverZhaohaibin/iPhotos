@@ -1,5 +1,4 @@
 """List model combining ``index.jsonl`` and ``links.json`` data."""
-"""List model combining ``index.jsonl`` and ``links.json`` data."""
 
 from __future__ import annotations
 
@@ -133,7 +132,7 @@ class AssetListModel(QAbstractListModel):
         for row in index_rows:
             rel = str(row["rel"])
             live_info = live_map.get(rel)
-            if live_info and live_info.get("role") == "motion" and live_info.get("still")):
+            if live_info and live_info.get("role") == "motion" and live_info.get("still"):
                 continue
 
             abs_path = str((self._album_root / rel).resolve())
