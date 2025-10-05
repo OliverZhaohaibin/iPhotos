@@ -16,15 +16,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..icons import load_icon
+
+from ..icon import load_icon
 
 
 class PlayerBar(QWidget):
     """Present transport controls, a progress slider and volume settings."""
 
     playPauseRequested = Signal()
-    previousRequested = Signal()
-    nextRequested = Signal()
     seekRequested = Signal(int)
     scrubStarted = Signal()
     scrubFinished = Signal()
@@ -37,21 +36,8 @@ class PlayerBar(QWidget):
         self._updating_position = False
         self._scrubbing = False
 
-        icon_color = "#ffffff"
-        muted_color = "#a0a0a0"
-        self._prev_icon = load_icon(
-            "play.fill.svg", color=icon_color, mirror_horizontal=True
-        )
-        self._play_icon = load_icon("play.fill.svg", color=icon_color)
-        self._pause_icon = load_icon("pause.fill.svg", color=icon_color)
-        self._next_icon = load_icon("play.fill.svg", color=icon_color)
-        self._volume_icon = load_icon("speaker.3.fill.svg", color=icon_color)
-        self._muted_icon = load_icon("speaker.3.fill.svg", color=muted_color)
-
-        self._prev_button = self._create_tool_button(self._prev_icon, "Previous video")
-        self._play_button = self._create_tool_button(self._play_icon, "Play")
+        self._play_button = self._create_tool_button("▶", "Play/Pause")
         self._play_button.setCheckable(False)
-        self._next_button = self._create_tool_button(self._next_icon, "Next video")
 
         self._position_slider = QSlider(Qt.Orientation.Horizontal, self)
         self._position_slider.setRange(0, 0)
@@ -70,18 +56,25 @@ class PlayerBar(QWidget):
         self._volume_slider.setFixedWidth(110)
         self._volume_slider.setToolTip("Volume")
 
-        self._mute_button = self._create_tool_button(
-            self._volume_icon, "Mute", checkable=True
-        )
+        self._mute_button = self._create_tool_button("🔇", "Mute", checkable=True)
+
+        self._play_icon: QIcon = load_icon("play.fill")
+        self._pause_icon: QIcon = load_icon("pause.fill")
+        self._speaker_icon: QIcon = load_icon("speaker.3.fill")
+        self._apply_icon(self._play_button, self._play_icon)
+        self._apply_icon(self._mute_button, self._speaker_icon)
 
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(10)
+        layout.setSpacing(12)
+
+        self._progress_frame = QWidget(self)
+        self._progress_frame.setObjectName("progressFrame")
 
         slider_row = QHBoxLayout()
         slider_row.setContentsMargins(0, 0, 0, 0)
-        slider_row.setSpacing(8)
+        slider_row.setSpacing(10)
         slider_row.addWidget(self._elapsed_label)
         slider_row.addWidget(self._position_slider, stretch=1)
         slider_row.addWidget(self._duration_label)
@@ -90,23 +83,24 @@ class PlayerBar(QWidget):
         controls_row.setContentsMargins(0, 0, 0, 0)
         controls_row.setSpacing(12)
         controls_row.addStretch(1)
-        controls_row.addWidget(self._prev_button)
         controls_row.addWidget(self._play_button)
-        controls_row.addWidget(self._next_button)
-        controls_row.addStretch(1)
+        controls_row.addSpacing(16)
         controls_row.addWidget(self._mute_button)
         controls_row.addWidget(self._volume_slider)
         controls_row.addStretch(1)
 
-        layout.addLayout(slider_row)
-        layout.addLayout(controls_row)
+        frame_layout = QVBoxLayout(self._progress_frame)
+        frame_layout.setContentsMargins(16, 12, 16, 12)
+        frame_layout.setSpacing(12)
+        frame_layout.addLayout(slider_row)
+        frame_layout.addLayout(controls_row)
+
+        layout.addWidget(self._progress_frame)
 
         self._apply_palette()
 
-        self._prev_button.clicked.connect(self.previousRequested.emit)
         self._play_button.clicked.connect(self.playPauseRequested.emit)
-        self._next_button.clicked.connect(self.nextRequested.emit)
-        self._mute_button.toggled.connect(self._on_mute_toggled)
+        self._mute_button.toggled.connect(self.muteToggled.emit)
         self._volume_slider.valueChanged.connect(self._on_volume_changed)
         self._position_slider.sliderPressed.connect(self._on_slider_pressed)
         self._position_slider.sliderReleased.connect(self._on_slider_released)
@@ -150,13 +144,11 @@ class PlayerBar(QWidget):
 
         name = getattr(state, "name", None)
         if name == "PlayingState":
-            self._play_button.setIcon(self._pause_icon)
-            self._play_button.setToolTip("Pause")
-            self._play_button.setAccessibleName("Pause")
+            self._apply_icon(self._play_button, self._pause_icon)
+            self._play_button.setText("⏸")
         else:
-            self._play_button.setIcon(self._play_icon)
-            self._play_button.setToolTip("Play")
-            self._play_button.setAccessibleName("Play")
+            self._apply_icon(self._play_button, self._play_icon)
+            self._play_button.setText("▶")
 
     def set_volume(self, volume: int) -> None:
         """Synchronise the volume slider without emitting signals."""
@@ -171,10 +163,6 @@ class PlayerBar(QWidget):
 
         was_blocked = self._mute_button.blockSignals(True)
         self._mute_button.setChecked(muted)
-        self._mute_button.setIcon(self._muted_icon if muted else self._volume_icon)
-        tooltip = "Unmute" if muted else "Mute"
-        self._mute_button.setToolTip(tooltip)
-        self._mute_button.setAccessibleName(tooltip)
         self._mute_button.blockSignals(was_blocked)
 
     def reset(self) -> None:
@@ -182,22 +170,14 @@ class PlayerBar(QWidget):
 
         self.set_duration(0)
         self.set_position(0)
-        self._play_button.setIcon(self._play_icon)
-        self._play_button.setToolTip("Play")
-        self._play_button.setAccessibleName("Play")
+        self._apply_icon(self._play_button, self._play_icon)
+        self._play_button.setText("▶")
 
     # ------------------------------------------------------------------
     # Slots
     # ------------------------------------------------------------------
     def _on_volume_changed(self, value: int) -> None:
         self.volumeChanged.emit(value)
-
-    def _on_mute_toggled(self, muted: bool) -> None:
-        self._mute_button.setIcon(self._muted_icon if muted else self._volume_icon)
-        tooltip = "Unmute" if muted else "Mute"
-        self._mute_button.setToolTip(tooltip)
-        self._mute_button.setAccessibleName(tooltip)
-        self.muteToggled.emit(muted)
 
     def _on_slider_pressed(self) -> None:
         self._scrubbing = True
@@ -256,41 +236,59 @@ class PlayerBar(QWidget):
     # Styling helpers
     # ------------------------------------------------------------------
     def _create_tool_button(
-        self, icon: QIcon, tooltip: str, *, checkable: bool = False
+        self, text: str, tooltip: str, *, checkable: bool = False
     ) -> QToolButton:
         button = QToolButton(self)
-        button.setIcon(icon)
+        button.setText(text)
         button.setToolTip(tooltip)
-        button.setAccessibleName(tooltip)
-        button.setAutoRaise(True)
+        button.setAutoRaise(False)
         button.setCheckable(checkable)
         button.setIconSize(QSize(28, 28))
         button.setMinimumSize(QSize(36, 36))
         return button
 
+    @staticmethod
+    def _apply_icon(button: QToolButton, icon: QIcon) -> None:
+        if not icon.isNull():
+            button.setIcon(icon)
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        else:
+            button.setIcon(QIcon())
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+
     def _apply_palette(self) -> None:
-        common_style = (
-            "QToolButton { color: white; font-size: 18px; padding: 6px; }"
-            "QToolButton:pressed { background-color: rgba(255, 255, 255, 40);"
-            " border-radius: 8px; }"
-            "QToolButton:checked { background-color: rgba(255, 255, 255, 64); }"
+        button_style = (
+            "QToolButton { color: #d7d8da; font-size: 18px; padding: 6px; border-radius: 18px; }\n"
+            "QToolButton:hover { background-color: rgba(255, 255, 255, 26); }\n"
+            "QToolButton:pressed { background-color: rgba(255, 255, 255, 44); }\n"
+            "QToolButton:checked { background-color: rgba(255, 255, 255, 58); }"
         )
         slider_style = (
-            "QSlider::groove:horizontal { height: 4px;"
-            " background: rgba(255, 255, 255, 96); border-radius: 2px; }"
-            "QSlider::sub-page:horizontal { background: white; border-radius: 2px; }"
-            "QSlider::add-page:horizontal { background: rgba(255, 255, 255, 48);"
-            " border-radius: 2px; }"
-            "QSlider::handle:horizontal { background: white; width: 14px;"
-            " margin: -6px 0; border-radius: 7px; }"
+            "QSlider::groove:horizontal { height: 4px; background: rgba(240, 240, 240, 80); border-radius: 2px; }\n"
+            "QSlider::sub-page:horizontal { background: #d7d8da; border-radius: 2px; }\n"
+            "QSlider::add-page:horizontal { background: rgba(255, 255, 255, 24); border-radius: 2px; }\n"
+            "QSlider::handle:horizontal { background: #f5f6f8; width: 14px; margin: -6px 0; border-radius: 7px; }"
         )
-        volume_style = slider_style.replace("4px", "3px").replace("14px", "12px")
-        label_style = "color: white; font-size: 12px;"
+        volume_style = (
+            "QSlider::groove:horizontal { height: 3px; background: rgba(240, 240, 240, 70); border-radius: 2px; }\n"
+            "QSlider::sub-page:horizontal { background: #d7d8da; border-radius: 2px; }\n"
+            "QSlider::add-page:horizontal { background: rgba(255, 255, 255, 18); border-radius: 2px; }\n"
+            "QSlider::handle:horizontal { background: #f5f6f8; width: 12px; margin: -6px 0; border-radius: 6px; }"
+        )
+        label_style = "color: #d7d8da; font-size: 12px;"
 
         self.setStyleSheet(
-            "PlayerBar { background-color: rgba(20, 20, 20, 170);"
-            " border-radius: 14px; color: white; }"
-            + common_style
+            "PlayerBar {"
+            " background-color: transparent;"
+            " border: none;"
+            " color: #d7d8da;"
+            "}\n"
+            "PlayerBar #progressFrame {"
+            " background-color: rgba(18, 18, 22, 190);"
+            " border-radius: 14px;"
+            " border: 1px solid rgba(255, 255, 255, 36);"
+            " }\n"
+            + button_style
         )
         self._position_slider.setStyleSheet(slider_style)
         self._volume_slider.setStyleSheet(volume_style)
