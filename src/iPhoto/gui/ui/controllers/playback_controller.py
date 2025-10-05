@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QItemSelectionModel, QModelIndex, QRect, Qt
+from PySide6.QtCore import QItemSelectionModel, QModelIndex, QRect
 from PySide6.QtWidgets import QStackedWidget, QStatusBar, QWidget
 
 from ....config import VIDEO_COMPLETE_HOLD_BACKSTEP_MS
@@ -58,9 +58,7 @@ class PlaybackController:
         self._status = status_bar
         self._dialog = dialog
         self._resume_playback_after_scrub = False
-        self._live_preview_active = False
-        self._live_preview_still: Path | None = None
-        self._live_preview_row: int | None = None
+        self._pending_live_photo_still: Path | None = None
 
     # ------------------------------------------------------------------
     # Selection handling
@@ -76,25 +74,8 @@ class PlaybackController:
         is_video = bool(index.data(Roles.IS_VIDEO))
         is_live = bool(index.data(Roles.IS_LIVE))
         if is_video or is_live:
-            fallback_live = False
-            if is_live:
-                self._display_image(abs_path, row=row)
-                self._live_preview_active = True
-                self._live_preview_still = abs_path
-                self._live_preview_row = row
             self.show_detail_view()
-            source = self._playlist.set_current(row)
-            if source is None and is_live:
-                motion_raw = index.data(Roles.LIVE_MOTION_ABS)
-                motion_path = (
-                    Path(str(motion_raw))
-                    if isinstance(motion_raw, (str, Path)) and str(motion_raw)
-                    else None
-                )
-                self._display_live_photo(abs_path, motion_path, row=row)
-                fallback_live = True
-            if source is None and not fallback_live:
-                self._cancel_live_preview()
+            self._playlist.set_current(row)
             return
         self._display_image(abs_path, row=row)
 
@@ -153,21 +134,27 @@ class PlaybackController:
         self.show_detail_view()
 
     def handle_playlist_source_changed(self, source: Path) -> None:
-        preview_mode = self._live_preview_active
-        if not preview_mode:
-            self._cancel_live_preview()
+        self._pending_live_photo_still = None
+        current_row = self._playlist.current_row()
+        if current_row != -1:
+            index = self._model.index(current_row, 0)
+            if index.isValid() and bool(index.data(Roles.IS_LIVE)):
+                still_raw = index.data(Roles.ABS)
+                if still_raw:
+                    self._pending_live_photo_still = Path(str(still_raw))
         self._preview_window.close_preview(False)
         self._media.stop()
         self._media.load(source)
-        if preview_mode:
-            self._player_bar.reset()
+        self._player_bar.reset()
         self._player_bar.set_position(0)
         self._player_bar.set_duration(0)
-        self._show_video_surface(interactive=not preview_mode)
+        self._show_video_surface(interactive=True)
         self.show_detail_view()
         self._media.play()
-        if preview_mode and self._live_preview_still is not None:
-            self._status.showMessage(f"Playing Live Photo {self._live_preview_still.name}")
+        if self._pending_live_photo_still is not None:
+            self._status.showMessage(
+                f"Playing Live Photo {self._pending_live_photo_still.name}"
+            )
         else:
             self._status.showMessage(f"Playing {source.name}")
 
@@ -176,14 +163,14 @@ class PlaybackController:
     # ------------------------------------------------------------------
     def handle_media_status_changed(self, status: object) -> None:
         name = getattr(status, "name", None)
-        if self._live_preview_active:
-            if name == "EndOfMedia":
-                self._finish_live_preview()
-            elif name in {"LoadedMedia", "BufferingMedia", "BufferedMedia"}:
-                self._video_area.hide_controls(animate=False)
-            return
         if name == "EndOfMedia":
-            self._freeze_video_final_frame()
+            if self._pending_live_photo_still is not None:
+                still = self._pending_live_photo_still
+                self._pending_live_photo_still = None
+                row = self._playlist.current_row()
+                self._display_image(still, row=row)
+            else:
+                self._freeze_video_final_frame()
             return
         if name in {"LoadedMedia", "BufferingMedia", "BufferedMedia", "StalledMedia"}:
             self._video_area.note_activity()
@@ -221,7 +208,7 @@ class PlaybackController:
     # View helpers
     # ------------------------------------------------------------------
     def show_gallery_view(self) -> None:
-        self._cancel_live_preview()
+        self._pending_live_photo_still = None
         self._preview_window.close_preview(False)
         self._media.stop()
         self._playlist.clear()
@@ -258,28 +245,8 @@ class PlaybackController:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-    def _display_live_photo(self, still: Path, motion: Path | None, row: int) -> None:
-        self._display_image(still, row=row)
-        if motion is None:
-            self._status.showMessage(f"Viewing {still.name}")
-            return
-        if not motion.exists():
-            self._status.showMessage(f"Live video missing for {still.name}")
-            return
-
-        self._live_preview_active = True
-        self._live_preview_still = still
-        self._live_preview_row = row
-        self._player_bar.reset()
-        self._player_bar.setEnabled(False)
-        self._video_area.hide_controls(animate=False)
-        self._media.load(motion)
-        self._show_video_surface(interactive=False)
-        self._media.play()
-        self._status.showMessage(f"Playing Live Photo {still.name}")
-
     def _display_image(self, source: Path, row: int | None = None) -> None:
-        self._cancel_live_preview()
+        self._pending_live_photo_still = None
         pixmap = image_loader.load_qpixmap(source)
         if pixmap is None:
             self._status.showMessage(f"Unable to display {source.name}")
@@ -298,7 +265,7 @@ class PlaybackController:
         self._status.showMessage(f"Viewing {source.name}")
 
     def _show_player_placeholder(self) -> None:
-        self._cancel_live_preview()
+        self._pending_live_photo_still = None
         self._video_area.hide_controls(animate=False)
         self._resume_playback_after_scrub = False
         if self._player_stack.currentWidget() is not self._player_placeholder:
@@ -317,8 +284,6 @@ class PlaybackController:
             self._video_area.hide_controls(animate=False)
 
     def _freeze_video_final_frame(self) -> None:
-        if self._live_preview_active:
-            return
         if self._player_stack.currentWidget() is not self._video_area:
             return
         duration = self._player_bar.duration()
@@ -338,22 +303,3 @@ class PlaybackController:
         if self._player_stack.currentWidget() is not self._image_viewer:
             self._player_stack.setCurrentWidget(self._image_viewer)
 
-    def _cancel_live_preview(self) -> None:
-        self._live_preview_active = False
-        self._live_preview_still = None
-        self._live_preview_row = None
-
-    def _finish_live_preview(self) -> None:
-        if not self._live_preview_active:
-            return
-        still = self._live_preview_still
-        self._live_preview_active = False
-        self._live_preview_still = None
-        self._live_preview_row = None
-        self._media.stop()
-        self._player_bar.reset()
-        self._player_bar.setEnabled(False)
-        self._show_image_surface()
-        self._resume_playback_after_scrub = False
-        if still is not None:
-            self._status.showMessage(f"Viewing {still.name}")
