@@ -67,11 +67,13 @@ class PlayerBar(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(10)
+        layout.setSpacing(12)
 
-        slider_row = QHBoxLayout()
-        slider_row.setContentsMargins(0, 0, 0, 0)
-        slider_row.setSpacing(8)
+        self._progress_frame = QWidget(self)
+        self._progress_frame.setObjectName("progressFrame")
+        slider_row = QHBoxLayout(self._progress_frame)
+        slider_row.setContentsMargins(16, 10, 16, 10)
+        slider_row.setSpacing(10)
         slider_row.addWidget(self._elapsed_label)
         slider_row.addWidget(self._position_slider, stretch=1)
         slider_row.addWidget(self._duration_label)
@@ -86,7 +88,7 @@ class PlayerBar(QWidget):
         controls_row.addWidget(self._volume_slider)
         controls_row.addStretch(1)
 
-        layout.addLayout(slider_row)
+        layout.addWidget(self._progress_frame)
         layout.addLayout(controls_row)
 
         self._apply_palette()
@@ -276,6 +278,11 @@ class PlayerBar(QWidget):
             " border: 1px solid rgba(255, 255, 255, 40);"
             " color: #d7d8da;"
             "}\n"
+            "PlayerBar #progressFrame {"
+            " background-color: rgba(18, 18, 22, 190);"
+            " border-radius: 14px;"
+            " border: 1px solid rgba(255, 255, 255, 36);"
+            " }\n"
             + button_style
         )
         self._position_slider.setStyleSheet(slider_style)
