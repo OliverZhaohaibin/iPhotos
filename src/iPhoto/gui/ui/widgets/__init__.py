@@ -9,6 +9,7 @@ from .image_viewer import ImageViewer
 from .player_bar import PlayerBar
 from .video_area import VideoArea
 from .preview_window import PreviewWindow
+from .live_badge import LiveBadge
 
 __all__ = [
     "AlbumSidebar",
@@ -20,4 +21,5 @@ __all__ = [
     "PlayerBar",
     "VideoArea",
     "PreviewWindow",
+    "LiveBadge",
 ]
