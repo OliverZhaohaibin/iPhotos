@@ -4,27 +4,11 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
-from typing import Optional
-
-import sys
+from typing import Callable, Optional
 
 from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, QTimer
-from PySide6.QtGui import (
-    QColor,
-    QPaintEvent,
-    QPainter,
-    QPainterPath,
-    QPen,
-    QRegion,
-    QResizeEvent,
-    QShowEvent,
-)
-from PySide6.QtWidgets import (
-    QGraphicsDropShadowEffect,
-    QSizePolicy,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QRegion, QResizeEvent
+from PySide6.QtWidgets import QGraphicsDropShadowEffect, QVBoxLayout, QWidget, QSizePolicy
 
 from ....config import (
     PREVIEW_WINDOW_CLOSE_DELAY_MS,
@@ -40,46 +24,76 @@ else:  # pragma: no cover - requires optional Qt module
     QVideoWidget = None  # type: ignore[assignment]
 
 
-class _ChromeWidget(QWidget):
-    """Rounded chrome that paints the preview background and border."""
+class _VideoWidget(QVideoWidget):
+    """Video surface that notifies the parent when resized."""
+
+    def __init__(self, on_resize: Callable[[], None], parent: Optional[QWidget] = None) -> None:
+        if QVideoWidget is None:  # pragma: no cover - optional Qt module
+            raise RuntimeError(
+                "PySide6.QtMultimediaWidgets is unavailable; install PySide6 with "
+                "QtMultimediaWidgets support to enable video previews."
+            )
+        super().__init__(parent)
+        self._on_resize = on_resize
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setStyleSheet("background: transparent; border: none;")
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._on_resize()
+
+
+class _PreviewFrame(QWidget):
+    """Draws rounded chrome around the embedded video widget."""
 
     def __init__(self, corner_radius: int, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._corner_radius = max(0, corner_radius)
-        self._border_width = 1
-        self._background = QColor(18, 18, 22, 255)
-        self._border = QColor(255, 255, 255, 36)
+        self._border_width = 2
+        self._background = QColor(18, 18, 22)
+        self._border = QColor(255, 255, 255, 28)
+
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.setAutoFillBackground(False)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(
+            self._border_width,
+            self._border_width,
+            self._border_width,
+            self._border_width,
+        )
+        layout.setSpacing(0)
+
+        self._video_widget = _VideoWidget(self._update_masks, self)
+        layout.addWidget(self._video_widget)
+
+        self._update_masks()
+
+    def video_widget(self) -> QVideoWidget:
+        return self._video_widget
 
     def set_corner_radius(self, corner_radius: int) -> None:
         radius = max(0, corner_radius)
         if radius == self._corner_radius:
             return
         self._corner_radius = radius
-        self._update_mask()
+        self._update_masks()
         self.update()
 
-    def corner_radius(self) -> int:
-        return self._corner_radius
-
-    def border_width(self) -> int:
-        return self._border_width
-
-    def resizeEvent(self, event: QResizeEvent) -> None:
-        super().resizeEvent(event)
-        self._update_mask()
-
-    def paintEvent(self, event: QPaintEvent) -> None:  # type: ignore[override]
+    def paintEvent(self, event) -> None:  # type: ignore[override]
         del event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-        rect = QRectF(self.rect())
+
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         radius = float(self._corner_radius)
         path = QPainterPath()
-        path.addRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
+        path.addRoundedRect(rect, radius, radius)
 
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(self._background)
@@ -92,67 +106,32 @@ class _ChromeWidget(QWidget):
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawPath(path)
 
-    def _update_mask(self) -> None:
-        if self.width() <= 0 or self.height() <= 0:
-            self.clearMask()
-            return
-
-        radius = float(self._corner_radius)
-        path = QPainterPath()
-        path.addRoundedRect(QRectF(self.rect()), radius, radius)
-        region = QRegion(path.toFillPolygon().toPolygon())
-        self.setMask(region)
-
-
-class _RoundedVideoWidget(QVideoWidget):
-    """``QVideoWidget`` that integrates with the preview chrome rounding."""
-
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
-        require_multimedia()
-        if QVideoWidget is None:  # pragma: no cover - depends on optional Qt module
-            raise RuntimeError(
-                "PySide6.QtMultimediaWidgets is unavailable; install PySide6 with "
-                "QtMultimediaWidgets support to enable video previews."
-            )
-        super().__init__(parent)
-        self._corner_radius = 0
-
-        self.setAttribute(Qt.WidgetAttribute.WA_DontCreateNativeAncestors, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, False)
-        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setAutoFillBackground(False)
-        self.setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
-
-    def set_corner_radius(self, corner_radius: int) -> None:
-        radius = max(0, corner_radius)
-        if radius == self._corner_radius:
-            return
-        self._corner_radius = radius
-        self._update_rounding()
-
     def resizeEvent(self, event: QResizeEvent) -> None:  # type: ignore[override]
         super().resizeEvent(event)
-        self._update_rounding()
+        self._update_masks()
 
-    def showEvent(self, event: QShowEvent) -> None:  # type: ignore[override]
-        super().showEvent(event)
-        self._update_rounding()
-
-    def _update_rounding(self) -> None:
-        if self.width() <= 0 or self.height() <= 0 or self._corner_radius <= 0:
-            _clear_native_rounding(self)
+    def _update_masks(self) -> None:
+        if self.width() <= 0 or self.height() <= 0:
             self.clearMask()
+            self._video_widget.clearMask()
             return
 
-        radius = self._corner_radius
-        if _apply_native_rounding(self, radius):
-            self.clearMask()
+        frame_path = QPainterPath()
+        frame_path.addRoundedRect(QRectF(self.rect()), float(self._corner_radius), float(self._corner_radius))
+        frame_region = QRegion(frame_path.toFillPolygon().toPolygon())
+        self.setMask(frame_region)
+
+        video_radius = max(0, self._corner_radius - self._border_width)
+        if video_radius == 0:
+            self._video_widget.clearMask()
             return
 
-        path = QPainterPath()
-        path.addRoundedRect(QRectF(self.rect()), float(radius), float(radius))
-        self.setMask(QRegion(path.toFillPolygon().toPolygon()))
+        video_path = QPainterPath()
+        video_path.addRoundedRect(
+            QRectF(self._video_widget.rect()), float(video_radius), float(video_radius)
+        )
+        video_region = QRegion(video_path.toFillPolygon().toPolygon())
+        self._video_widget.setMask(video_region)
 
 
 class PreviewWindow(QWidget):
@@ -183,36 +162,16 @@ class PreviewWindow(QWidget):
             self._shadow_padding,
             self._shadow_padding,
         )
+        layout.setSpacing(0)
 
-        self._chrome = _ChromeWidget(self._corner_radius, self)
-        self._chrome.setObjectName("previewChrome")
-        self._chrome.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self._frame = _PreviewFrame(self._corner_radius, self)
+        layout.addWidget(self._frame)
 
-        chrome_layout = QVBoxLayout(self._chrome)
-        border_width = self._chrome.border_width()
-        chrome_layout.setContentsMargins(
-            border_width,
-            border_width,
-            border_width,
-            border_width,
-        )
-        chrome_layout.setSpacing(0)
-
-        self._video_widget = _RoundedVideoWidget(self._chrome)
-        self._video_widget.setObjectName("previewVideo")
-        self._video_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self._video_widget.setStyleSheet("background: transparent; border: none;")
-        chrome_layout.addWidget(self._video_widget)
-
-        self._video_widget.set_corner_radius(max(0, self._corner_radius - border_width))
-
-        layout.addWidget(self._chrome)
-
-        self._shadow_effect = QGraphicsDropShadowEffect(self)
-        self._shadow_effect.setBlurRadius(48.0)
-        self._shadow_effect.setOffset(0, 12)
-        self._shadow_effect.setColor(QColor(0, 0, 0, 120))
-        self._chrome.setGraphicsEffect(self._shadow_effect)
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(48.0)
+        shadow.setOffset(0, 12)
+        shadow.setColor(QColor(0, 0, 0, 120))
+        self._frame.setGraphicsEffect(shadow)
 
         self._apply_content_size(
             self._content_size.width(),
@@ -220,7 +179,7 @@ class PreviewWindow(QWidget):
         )
 
         self._media = MediaController(self)
-        self._media.set_video_output(self._video_widget)
+        self._media.set_video_output(self._frame.video_widget())
         self._media.set_muted(PREVIEW_WINDOW_MUTED)
 
         self._close_timer = QTimer(self)
@@ -228,9 +187,6 @@ class PreviewWindow(QWidget):
         self._close_timer.timeout.connect(self._do_close)
         self.hide()
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
     def show_preview(self, source: Path | str, at: Optional[QRect | QPoint] = None) -> None:
         """Display *source* near *at* and start playback immediately."""
 
@@ -268,13 +224,6 @@ class PreviewWindow(QWidget):
         else:
             self._do_close()
 
-    def showEvent(self, event: QShowEvent) -> None:  # type: ignore[override]
-        super().showEvent(event)
-        _apply_system_rounded_corners(self)
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
     def _do_close(self) -> None:
         self._close_timer.stop()
         self._media.stop()
@@ -298,85 +247,9 @@ class PreviewWindow(QWidget):
         content_width = max(1, content_width)
         content_height = max(1, content_height)
         self._content_size = QSize(content_width, content_height)
-        self._chrome.setFixedSize(self._content_size)
+        self._frame.setFixedSize(self._content_size)
         total_width = self._content_size.width() + 2 * self._shadow_padding
         total_height = self._content_size.height() + 2 * self._shadow_padding
         if self.size() != QSize(total_width, total_height):
             self.resize(total_width, total_height)
-        self._chrome.set_corner_radius(self._corner_radius)
-        border_width = self._chrome.border_width()
-        self._video_widget.set_corner_radius(max(0, self._corner_radius - border_width))
-
-
-def _apply_system_rounded_corners(widget: QWidget) -> None:
-    """Ask the native window manager for rounded corners when supported."""
-
-    if sys.platform != "win32":  # Only Windows exposes the DWM rounding API we need.
-        return
-
-    try:
-        import ctypes
-        from ctypes import wintypes
-    except Exception:  # pragma: no cover - optional dependency on Windows runtime
-        return
-
-    DWMWA_WINDOW_CORNER_PREFERENCE = 33
-    DWMWCP_ROUND = 2
-
-    try:
-        hwnd = int(widget.winId())
-    except Exception:  # pragma: no cover - winId may not be ready yet
-        return
-
-    if hwnd == 0:
-        return
-
-    preference = ctypes.c_uint(DWMWCP_ROUND)
-    try:
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(  # type: ignore[attr-defined]
-            wintypes.HWND(hwnd),
-            ctypes.c_uint(DWMWA_WINDOW_CORNER_PREFERENCE),
-            ctypes.byref(preference),
-            ctypes.sizeof(preference),
-        )
-    except Exception:  # pragma: no cover - failures shouldn't break previews
-        return
-
-
-def _apply_native_rounding(widget: QWidget, radius: int) -> bool:
-    """Apply rounded clipping to *widget* using native APIs."""
-
-    if sys.platform == "win32":
-        try:
-            import ctypes
-        except Exception:  # pragma: no cover - optional Windows support
-            return False
-        hwnd = int(widget.winId()) if widget.winId() is not None else 0
-        if hwnd:
-            user32 = ctypes.windll.user32  # type: ignore[attr-defined]
-            gdi32 = ctypes.windll.gdi32  # type: ignore[attr-defined]
-            dpr = widget.devicePixelRatioF()
-            width = max(1, int(round(widget.width() * dpr)))
-            height = max(1, int(round(widget.height() * dpr)))
-            diameter = max(0, int(round(radius * 2 * dpr)))
-            region = gdi32.CreateRoundRectRgn(0, 0, width, height, diameter, diameter)
-            if region:
-                user32.SetWindowRgn(hwnd, region, True)
-                return True
-
-    return False
-
-
-def _clear_native_rounding(widget: QWidget) -> None:
-    """Remove any native clipping previously applied by :func:`_apply_native_rounding`."""
-
-    if sys.platform == "win32":
-        try:
-            import ctypes
-        except Exception:  # pragma: no cover - optional Windows support
-            pass
-        else:
-            hwnd = int(widget.winId()) if widget.winId() is not None else 0
-            if hwnd:
-                user32 = ctypes.windll.user32  # type: ignore[attr-defined]
-                user32.SetWindowRgn(hwnd, 0, True)
+        self._frame.set_corner_radius(self._corner_radius)
