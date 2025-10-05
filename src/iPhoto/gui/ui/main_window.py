@@ -6,13 +6,14 @@ from functools import partial
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QSplitter,
+    QStackedLayout,
     QStackedWidget,
     QStatusBar,
     QToolBar,
@@ -77,9 +78,8 @@ class MainWindow(QMainWindow):
         self._view_stack = QStackedWidget()
         self._gallery_page = self._detail_page = None
         self._back_button = QToolButton()
-        self._live_badge = LiveBadge(self)
+        self._live_badge = LiveBadge()
         self._live_badge.hide()
-        self._badge_host: QWidget | None = None
 
         self._dialog = DialogController(self, context, self._status)
 
@@ -201,18 +201,26 @@ class MainWindow(QMainWindow):
         detail_layout.addWidget(header)
 
         player_container = QWidget()
-        player_layout = QVBoxLayout(player_container)
+        player_layout = QStackedLayout(player_container)
         player_layout.setContentsMargins(0, 0, 0, 0)
         player_layout.setSpacing(0)
+        player_layout.setStackingMode(QStackedLayout.StackingMode.StackAll)
         player_layout.addWidget(self._player_stack)
+
+        badge_overlay = QWidget(player_container)
+        badge_overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        badge_layout = QHBoxLayout(badge_overlay)
+        badge_layout.setContentsMargins(15, 15, 15, 15)
+        badge_layout.setSpacing(0)
+        badge_layout.addWidget(
+            self._live_badge,
+            alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+        )
+        badge_layout.addStretch(1)
+        player_layout.addWidget(badge_overlay)
         detail_layout.addWidget(player_container)
         detail_layout.addWidget(self._filmstrip_view)
         self._detail_page = detail_page
-
-        self._live_badge.setParent(player_container)
-        self._badge_host = player_container
-        self._position_live_badge()
-        player_container.installEventFilter(self)
 
         self._view_stack.addWidget(gallery_page)
         self._view_stack.addWidget(detail_page)
@@ -227,25 +235,6 @@ class MainWindow(QMainWindow):
         splitter.setCollapsible(0, False)
         splitter.setCollapsible(1, False)
         return splitter
-
-    def resizeEvent(self, event) -> None:  # type: ignore[override]
-        super().resizeEvent(event)
-        self._position_live_badge()
-
-    def eventFilter(self, watched, event):  # type: ignore[override]
-        if watched is self._badge_host and event.type() in {
-            QEvent.Type.Resize,
-            QEvent.Type.Move,
-            QEvent.Type.Show,
-        }:
-            self._position_live_badge()
-        return super().eventFilter(watched, event)
-
-    def _position_live_badge(self) -> None:
-        if self._badge_host is None:
-            return
-        self._live_badge.move(15, 15)
-        self._live_badge.raise_()
 
     # Signal wiring
     def _connect_signals(self) -> None:
