@@ -165,10 +165,7 @@ class PlaybackController:
         name = getattr(status, "name", None)
         if name == "EndOfMedia":
             if self._pending_live_photo_still is not None:
-                still = self._pending_live_photo_still
-                self._pending_live_photo_still = None
-                row = self._playlist.current_row()
-                self._display_image(still, row=row)
+                self._show_still_frame_for_live_photo()
             else:
                 self._freeze_video_final_frame()
             return
@@ -245,8 +242,37 @@ class PlaybackController:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-    def _display_image(self, source: Path, row: int | None = None) -> None:
+    def _show_still_frame_for_live_photo(self) -> None:
+        """Swap the detail view back to the Live Photo still image."""
+        still_path = self._pending_live_photo_still
+        if still_path is None:
+            return
+
         self._pending_live_photo_still = None
+
+        current_row = self._playlist.current_row()
+        self._media.stop()
+
+        pixmap = image_loader.load_qpixmap(still_path)
+        if pixmap is None:
+            self._status.showMessage(f"Unable to display {still_path.name}")
+            self._dialog.show_error(f"Could not load {still_path}")
+            self._show_player_placeholder()
+            return
+
+        self._image_viewer.set_pixmap(pixmap)
+        self._show_image_surface()
+        self.show_detail_view()
+
+        self._player_bar.reset()
+        self._player_bar.setEnabled(False)
+
+        if current_row is not None and current_row >= 0:
+            self.select_filmstrip_row(current_row)
+
+        self._status.showMessage(f"Viewing {still_path.name}")
+
+    def _display_image(self, source: Path, row: int | None = None) -> None:
         pixmap = image_loader.load_qpixmap(source)
         if pixmap is None:
             self._status.showMessage(f"Unable to display {source.name}")
