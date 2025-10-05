@@ -40,6 +40,11 @@ if importlib.util.find_spec("PySide6.QtMultimediaWidgets") is not None:
 else:  # pragma: no cover - requires optional Qt module
     QGraphicsVideoItem = None  # type: ignore[assignment]
 
+if importlib.util.find_spec("PySide6.QtMultimedia") is not None:
+    from PySide6.QtMultimedia import QMediaPlayer
+else:  # pragma: no cover - requires optional Qt module
+    QMediaPlayer = None  # type: ignore[assignment]
+
 
 class _RoundedVideoItem(QGraphicsVideoItem):
     """Graphics video item that clips playback to a rounded rectangle."""
@@ -281,6 +286,7 @@ class PreviewWindow(QWidget):
         self._media.set_video_output(self._frame.video_item())
         self._media.set_muted(PREVIEW_WINDOW_MUTED)
         self._media.readyToPlay.connect(self._handle_media_ready)
+        self._media.playbackStateChanged.connect(self._handle_playback_state_changed)
 
         self._poster_active = False
         self._current_source: Optional[Path] = None
@@ -327,7 +333,6 @@ class PreviewWindow(QWidget):
 
         self.show()
         self.raise_()
-        self._media.play()
 
     def close_preview(self, delayed: bool = True) -> None:
         """Hide the preview window, optionally with a delay."""
@@ -371,13 +376,35 @@ class PreviewWindow(QWidget):
         self._frame.set_corner_radius(self._corner_radius)
 
     def _handle_media_ready(self) -> None:
-        if not self._poster_active:
-            return
         if self._current_source is None:
             return
         current = self._media.current_source()
         if current is None or current != self._current_source:
             return
-        self._poster_active = False
-        self._frame.clear_poster()
         self._media.play()
+
+    def _handle_playback_state_changed(self, state: object) -> None:
+        if not self._poster_active:
+            return
+        current = self._media.current_source()
+        if current is None or current != self._current_source:
+            return
+
+        is_playing = False
+        if QMediaPlayer is not None:
+            try:
+                playback_state = QMediaPlayer.PlaybackState(state)  # type: ignore[arg-type]
+            except Exception:  # pragma: no cover - Qt enum conversion can fail in mocks
+                playback_state = None
+            else:
+                is_playing = playback_state == QMediaPlayer.PlaybackState.PlayingState
+
+        if not is_playing:
+            if getattr(state, "name", None) == "PlayingState":
+                is_playing = True
+
+        if not is_playing:
+            return
+
+        self._poster_active = False
+        self._frame.show_video()
