@@ -20,6 +20,12 @@ SETTINGS_SCHEMA: dict[str, Any] = {
             "properties": {
                 "theme": {"type": "string"},
                 "sidebar_width": {"type": "number", "minimum": 120},
+                "volume": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100,
+                },
+                "is_muted": {"type": "boolean"},
             },
             "additionalProperties": True,
         },
@@ -34,7 +40,12 @@ SETTINGS_SCHEMA: dict[str, Any] = {
 DEFAULT_SETTINGS: dict[str, Any] = {
     "schema": "iPhoto/settings@1",
     "basic_library_path": None,
-    "ui": {"theme": "light", "sidebar_width": 280},
+    "ui": {
+        "theme": "light",
+        "sidebar_width": 280,
+        "volume": 75,
+        "is_muted": False,
+    },
     "last_open_albums": [],
 }
 

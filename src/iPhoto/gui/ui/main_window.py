@@ -67,7 +67,6 @@ class MainWindow(QMainWindow):
         self._playlist = PlaylistController(self)
         self._preview_window = PreviewWindow(self)
         self._image_viewer = ImageViewer()
-        self._video_widget = self._video_area.video_widget
         self._player_placeholder = QLabel("Select a photo or video to preview.")
         self._player_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._player_placeholder.setStyleSheet(
@@ -82,6 +81,20 @@ class MainWindow(QMainWindow):
         self._live_badge.hide()
 
         self._dialog = DialogController(self, context, self._status)
+
+        stored_volume = self._context.settings.get("ui.volume", 75)
+        try:
+            initial_volume = int(round(float(stored_volume)))
+        except (TypeError, ValueError):
+            initial_volume = 75
+        initial_volume = max(0, min(100, initial_volume))
+        stored_muted = self._context.settings.get("ui.is_muted", False)
+        if isinstance(stored_muted, str):
+            initial_muted = stored_muted.strip().lower() in {"1", "true", "yes", "on"}
+        else:
+            initial_muted = bool(stored_muted)
+        self._media.set_volume(initial_volume)
+        self._media.set_muted(initial_muted)
 
         self._build_ui()
         self._navigation = NavigationController(
@@ -168,7 +181,7 @@ class MainWindow(QMainWindow):
         self._player_stack.addWidget(self._video_area)
         self._player_stack.setCurrentWidget(self._player_placeholder)
         self._video_area.hide_controls(animate=False)
-        self._media.set_video_output(self._video_widget)
+        self._media.set_video_output(self._video_area.video_item)
 
     def _build_splitter(self) -> QSplitter:
         right_panel = QWidget()
@@ -265,9 +278,9 @@ class MainWindow(QMainWindow):
         self._playlist.sourceChanged.connect(self._playback.handle_playlist_source_changed)
 
         self._player_bar.playPauseRequested.connect(self._playback.toggle_playback)
+        self._player_bar.volumeChanged.connect(self._media.set_volume)
+        self._player_bar.muteToggled.connect(self._media.set_muted)
         for signal, slot in (
-            (self._player_bar.volumeChanged, self._media.set_volume),
-            (self._player_bar.muteToggled, self._media.set_muted),
             (self._player_bar.seekRequested, self._media.seek),
             (self._player_bar.scrubStarted, self._playback.on_scrub_started),
             (self._player_bar.scrubFinished, self._playback.on_scrub_finished),
@@ -278,8 +291,8 @@ class MainWindow(QMainWindow):
             (self._media.positionChanged, self._playback.handle_media_position_changed),
             (self._media.durationChanged, self._player_bar.set_duration),
             (self._media.playbackStateChanged, self._player_bar.set_playback_state),
-            (self._media.volumeChanged, self._player_bar.set_volume),
-            (self._media.mutedChanged, self._player_bar.set_muted),
+            (self._media.volumeChanged, self._on_volume_changed),
+            (self._media.mutedChanged, self._on_mute_changed),
             (self._media.mediaStatusChanged, self._playback.handle_media_status_changed),
             (self._media.errorOccurred, self._dialog.show_error),
         ):
@@ -299,6 +312,17 @@ class MainWindow(QMainWindow):
     def _handle_album_opened(self, root: Path) -> None:
         self._navigation.handle_album_opened(root)
         self._playback.show_gallery_view()
+
+    def _on_volume_changed(self, volume: int) -> None:
+        clamped = max(0, min(100, int(volume)))
+        self._player_bar.set_volume(clamped)
+        if self._context.settings.get("ui.volume") != clamped:
+            self._context.settings.set("ui.volume", clamped)
+
+    def _on_mute_changed(self, muted: bool) -> None:
+        self._player_bar.set_muted(bool(muted))
+        if self._context.settings.get("ui.is_muted") != bool(muted):
+            self._context.settings.set("ui.is_muted", bool(muted))
 
     # Convenience
     def current_selection(self) -> list[Path]:

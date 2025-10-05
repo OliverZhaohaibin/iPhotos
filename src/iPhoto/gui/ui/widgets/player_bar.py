@@ -60,9 +60,10 @@ class PlayerBar(QWidget):
 
         self._play_icon: QIcon = load_icon("play.fill")
         self._pause_icon: QIcon = load_icon("pause.fill")
-        self._speaker_icon: QIcon = load_icon("speaker.3.fill")
+        self._speaker_unmuted_icon: QIcon = load_icon("speaker.3.fill.svg")
+        self._speaker_muted_icon: QIcon = load_icon("speaker.slash.fill.svg")
         self._apply_icon(self._play_button, self._play_icon)
-        self._apply_icon(self._mute_button, self._speaker_icon)
+        self._update_mute_icon(self._mute_button.isChecked())
 
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         layout = QVBoxLayout(self)
@@ -100,7 +101,7 @@ class PlayerBar(QWidget):
         self._apply_palette()
 
         self._play_button.clicked.connect(self.playPauseRequested.emit)
-        self._mute_button.toggled.connect(self.muteToggled.emit)
+        self._mute_button.toggled.connect(self._on_mute_button_toggled)
         self._volume_slider.valueChanged.connect(self._on_volume_changed)
         self._position_slider.sliderPressed.connect(self._on_slider_pressed)
         self._position_slider.sliderReleased.connect(self._on_slider_released)
@@ -164,6 +165,7 @@ class PlayerBar(QWidget):
         was_blocked = self._mute_button.blockSignals(True)
         self._mute_button.setChecked(muted)
         self._mute_button.blockSignals(was_blocked)
+        self._update_mute_icon(muted)
 
     def reset(self) -> None:
         """Restore the bar to an inactive state."""
@@ -176,6 +178,10 @@ class PlayerBar(QWidget):
     # ------------------------------------------------------------------
     # Slots
     # ------------------------------------------------------------------
+    def _on_mute_button_toggled(self, muted: bool) -> None:
+        self._update_mute_icon(muted)
+        self.muteToggled.emit(muted)
+
     def _on_volume_changed(self, value: int) -> None:
         self.volumeChanged.emit(value)
 
@@ -235,6 +241,12 @@ class PlayerBar(QWidget):
     # ------------------------------------------------------------------
     # Styling helpers
     # ------------------------------------------------------------------
+    def _update_mute_icon(self, muted: bool) -> None:
+        if muted:
+            self._apply_icon(self._mute_button, self._speaker_muted_icon)
+        else:
+            self._apply_icon(self._mute_button, self._speaker_unmuted_icon)
+
     def _create_tool_button(
         self, text: str, tooltip: str, *, checkable: bool = False
     ) -> QToolButton:
