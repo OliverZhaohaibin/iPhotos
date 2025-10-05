@@ -105,6 +105,42 @@ class _ChromeWidget(QWidget):
         self.setMask(region)
 
 
+class _RoundedVideoWidget(QVideoWidget):
+    """Video surface that inherits the preview's rounded silhouette."""
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._corner_radius = 0
+        self.setAttribute(Qt.WidgetAttribute.WA_DontCreateNativeAncestors, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, False)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAutoFillBackground(False)
+
+    def set_corner_radius(self, corner_radius: int) -> None:
+        radius = max(0, corner_radius)
+        if radius == self._corner_radius:
+            return
+        self._corner_radius = radius
+        self._update_mask()
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._update_mask()
+
+    def _update_mask(self) -> None:
+        if self.width() <= 0 or self.height() <= 0:
+            self.clearMask()
+            return
+
+        path = QPainterPath()
+        radius = float(self._corner_radius)
+        path.addRoundedRect(QRectF(self.rect()), radius, radius)
+        region = QRegion(path.toFillPolygon().toPolygon())
+        self.setMask(region)
+
+
 class PreviewWindow(QWidget):
     """Frameless preview surface that reuses the media controller API."""
 
@@ -148,19 +184,15 @@ class PreviewWindow(QWidget):
         )
         chrome_layout.setSpacing(0)
 
-        self._video_widget = QVideoWidget(self._chrome)
+        self._video_widget = _RoundedVideoWidget(self._chrome)
         self._video_widget.setObjectName("previewVideo")
-        self._video_widget.setAttribute(Qt.WidgetAttribute.WA_DontCreateNativeAncestors, True)
-        self._video_widget.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, False)
-        self._video_widget.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
-        self._video_widget.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
-        self._video_widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self._video_widget.setAutoFillBackground(False)
         self._video_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._video_widget.setStyleSheet(
             "background-color: black; border: none;"
         )
         chrome_layout.addWidget(self._video_widget)
+
+        self._video_widget.set_corner_radius(max(0, self._corner_radius - border_width))
 
         layout.addWidget(self._chrome)
 
@@ -256,3 +288,5 @@ class PreviewWindow(QWidget):
         if self.size() != QSize(total_width, total_height):
             self.resize(total_width, total_height)
         self._chrome.set_corner_radius(self._corner_radius)
+        border_width = self._chrome.border_width()
+        self._video_widget.set_corner_radius(max(0, self._corner_radius - border_width))
