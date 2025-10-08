@@ -32,14 +32,6 @@ _IMAGE_EXTENSIONS = {
     ".heicf",
 }
 
-_VIDEO_EXTENSIONS = {
-    ".mov",
-    ".mp4",
-    ".m4v",
-    ".qt",
-}
-
-
 def _is_photo(row: Dict[str, object]) -> bool:
     mime = row.get("mime")
     if isinstance(mime, str) and mime.lower().startswith("image/"):
@@ -51,12 +43,19 @@ def _is_photo(row: Dict[str, object]) -> bool:
 
 
 def _is_video(row: Dict[str, object]) -> bool:
+    """Return True if the row represents a Live Photo motion component."""
+
+    # Restrict Live Photo pairing to QuickTime movie sources. Generic videos like
+    # MP4 clips should remain visible in the main asset list instead of being
+    # paired and hidden behind a still image.
     mime = row.get("mime")
-    if isinstance(mime, str) and mime.lower().startswith("video/"):
+    if isinstance(mime, str) and mime.lower() == "video/quicktime":
         return True
+
     rel = row.get("rel")
     if isinstance(rel, str):
-        return Path(rel).suffix.lower() in _VIDEO_EXTENSIONS
+        return Path(rel).suffix.lower() in {".mov", ".qt"}
+
     return False
 
 
