@@ -67,6 +67,8 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
     ) -> None:
         painter.save()
         rect = option.rect
+        # Wipe any platform-provided highlight before drawing our custom look
+        painter.fillRect(rect, BG_COLOR)
         node_type = index.data(AlbumTreeRole.NODE_TYPE) or NodeType.ALBUM
 
         # Draw separator rows as a thin line.
