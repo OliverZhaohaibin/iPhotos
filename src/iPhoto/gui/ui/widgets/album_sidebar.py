@@ -208,8 +208,8 @@ class AlbumSidebar(QWidget):
         self._tree.setStyleSheet(
             "QTreeView { background: transparent; }"
             "QTreeView::item { border: 0px; padding: 0px; margin: 0px; }"
-            "QTreeView::item:selected { background: transparent; }"
-            "QTreeView::item:hover { background: transparent; }"
+            "QTreeView::item:selected { background-color: transparent; }"
+            "QTreeView::item:hover { background-color: transparent; }"
         )
 
         layout = QVBoxLayout(self)
