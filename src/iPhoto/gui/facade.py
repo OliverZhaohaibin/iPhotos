@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from PySide6.QtCore import QObject, QThread, Signal
 
 from .. import app as backend
 from ..errors import IPhotoError
 from ..models.album import Album
-from .ui.tasks.scanner_worker import ScannerWorker
+
+if TYPE_CHECKING:
+    from .ui.tasks.scanner_worker import ScannerWorker
 
 
 class AppFacade(QObject):
@@ -27,7 +29,7 @@ class AppFacade(QObject):
         super().__init__()
         self._current_album: Optional[Album] = None
         self._scanner_thread: Optional[QThread] = None
-        self._scanner_worker: Optional[ScannerWorker] = None
+        self._scanner_worker: Optional["ScannerWorker"] = None
 
     # ------------------------------------------------------------------
     # Album lifecycle
@@ -69,6 +71,8 @@ class AppFacade(QObject):
 
     def rescan_current_async(self) -> None:
         """Start a background rescan for the active album."""
+
+        from .ui.tasks.scanner_worker import ScannerWorker
 
         album = self._require_album()
         if album is None:
