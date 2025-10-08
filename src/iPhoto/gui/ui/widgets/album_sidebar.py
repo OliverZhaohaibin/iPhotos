@@ -203,6 +203,8 @@ class AlbumSidebar(QWidget):
         tree_palette = self._tree.palette()
         tree_palette.setColor(QPalette.ColorRole.Base, BG_COLOR)
         tree_palette.setColor(QPalette.ColorRole.Window, BG_COLOR)
+        tree_palette.setColor(QPalette.ColorRole.Highlight, QColor(Qt.transparent))
+        tree_palette.setColor(QPalette.ColorRole.HighlightedText, TEXT_COLOR)
         self._tree.setPalette(tree_palette)
         self._tree.setAutoFillBackground(True)
         self._tree.setStyleSheet(
