@@ -64,42 +64,42 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
     def paint(
         self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex
     ) -> None:
-        """Render the sidebar row with a custom background then default foreground."""
+        """Draw the sidebar row background before deferring to Qt's default logic."""
 
         opt = QStyleOptionViewItem(option)
         self.initStyleOption(opt, index)
 
-        painter.save()
-
-        rect = opt.rect
+        is_selected = bool(opt.state & QStyle.StateFlag.State_Selected)
+        is_hover = bool(opt.state & QStyle.StateFlag.State_MouseOver)
+        is_enabled = bool(opt.state & QStyle.StateFlag.State_Enabled)
         node_type = index.data(AlbumTreeRole.NODE_TYPE) or NodeType.ALBUM
 
-        painter.fillRect(rect, BG_COLOR)
+        painter.save()
+        painter.fillRect(opt.rect, BG_COLOR)
 
         if node_type == NodeType.SEPARATOR:
             pen = QPen(SEPARATOR_COLOR)
             pen.setWidth(1)
             painter.setPen(pen)
-            y = rect.center().y()
-            painter.drawLine(rect.left() + LEFT_PADDING, y, rect.right() - LEFT_PADDING, y)
+            y = opt.rect.center().y()
+            painter.drawLine(
+                opt.rect.left() + LEFT_PADDING,
+                y,
+                opt.rect.right() - LEFT_PADDING,
+                y,
+            )
             painter.restore()
             return
 
-        is_enabled = bool(opt.state & QStyle.StateFlag.State_Enabled)
-        is_selected = bool(opt.state & QStyle.StateFlag.State_Selected)
-        is_hover = bool(opt.state & QStyle.StateFlag.State_MouseOver)
-
         highlight_color: Optional[QColor] = None
-        if is_selected:
-            highlight_color = SELECT_BG
-        elif is_hover and is_enabled:
-            highlight_color = HOVER_BG
-
-        if node_type == NodeType.SECTION:
-            highlight_color = None
+        if node_type != NodeType.SECTION:
+            if is_selected:
+                highlight_color = SELECT_BG
+            elif is_hover and is_enabled:
+                highlight_color = HOVER_BG
 
         if highlight_color is not None:
-            background_rect = rect.adjusted(6, 4, -6, -4)
+            background_rect = opt.rect.adjusted(6, 4, -6, -4)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(highlight_color)
@@ -123,13 +123,12 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
             color = SECTION_TEXT
         elif node_type == NodeType.ACTION:
             color = ICON_COLOR
-
         opt.palette.setColor(QPalette.ColorRole.Text, color)
         opt.palette.setColor(QPalette.ColorRole.HighlightedText, color)
 
-        if opt.state & QStyle.StateFlag.State_Selected:
+        if is_selected:
             opt.state &= ~QStyle.StateFlag.State_Selected
-        if opt.state & QStyle.StateFlag.State_MouseOver:
+        if is_hover:
             opt.state &= ~QStyle.StateFlag.State_MouseOver
 
         super().paint(painter, opt, index)
