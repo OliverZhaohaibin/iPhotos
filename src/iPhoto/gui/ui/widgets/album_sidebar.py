@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QModelIndex, QPoint, QSize, Qt, Signal
+from PySide6.QtCore import QModelIndex, QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (
     QInputDialog,
@@ -67,9 +67,10 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
     ) -> None:
         painter.save()
         rect = option.rect
-        # Wipe any platform-provided highlight before drawing our custom look
-        painter.fillRect(rect, BG_COLOR)
         node_type = index.data(AlbumTreeRole.NODE_TYPE) or NodeType.ALBUM
+
+        # Erase the area with the default background color to prevent artifacts
+        painter.fillRect(rect, BG_COLOR)
 
         # Draw separator rows as a thin line.
         if node_type == NodeType.SEPARATOR:
@@ -101,6 +102,20 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
             painter.setBrush(highlight)
             painter.drawRoundedRect(background_rect, ROW_RADIUS, ROW_RADIUS)
 
+        # --- Core Fix: Draw the branch indicator (expand/collapse arrow) ---
+        style = option.widget.style()
+        has_children = self.parent().model().hasChildren(index)
+        x = rect.left() + LEFT_PADDING
+
+        if has_children:
+            branch_opt = QStyleOptionViewItem(option)
+            branch_rect = style.subElementRect(QStyle.SE_TreeViewBranch, option, option.widget)
+            branch_opt.rect = branch_rect
+            style.drawPrimitive(QStyle.PE_Branch, branch_opt, painter, option.widget)
+            # Position content to the right of the branch indicator
+            x = branch_rect.right() + 4
+        # --- End of Core Fix ---
+
         text = index.data(Qt.ItemDataRole.DisplayRole) or ""
         icon = index.data(Qt.ItemDataRole.DecorationRole)
 
@@ -122,12 +137,9 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
             color = ICON_COLOR
         painter.setPen(color)
 
-        x = rect.left() + LEFT_PADDING
         icon_size = 18
         if icon is not None and not icon.isNull():
-            icon_rect = rect.adjusted(0, 0, 0, 0)
-            icon_rect.setLeft(x)
-            icon_rect.setWidth(icon_size)
+            icon_rect = QRect(x, rect.top(), icon_size, rect.height())
             icon.paint(
                 painter,
                 icon_rect,
@@ -136,7 +148,7 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
             x += icon_size + ICON_TEXT_GAP
 
         metrics = QFontMetrics(font)
-        text_rect = rect.adjusted(x - rect.left(), 0, -8, 0)
+        text_rect = rect.adjusted(x - rect.left() + 2, 0, -8, 0)
         elided = metrics.elidedText(text, Qt.TextElideMode.ElideRight, text_rect.width())
         painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, elided)
 
