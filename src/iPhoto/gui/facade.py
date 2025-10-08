@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, List, Optional, Set
 
 from PySide6.QtCore import QObject, QThread, Signal
 
@@ -35,6 +35,7 @@ class AppFacade(QObject):
         self._current_album: Optional[Album] = None
         self._scanner_thread: Optional[QThread] = None
         self._scanner_worker: Optional["ScannerWorker"] = None
+        self._pending_index_announcements: Set[Path] = set()
 
         from .ui.models.asset_list_model import AssetListModel
 
@@ -80,11 +81,8 @@ class AppFacade(QObject):
 
         if not has_index:
             self.rescan_current_async()
-            return album
-
-        self._restart_asset_load(album_root)
-        self.indexUpdated.emit(album_root)
-        self.linksUpdated.emit(album_root)
+        else:
+            self._restart_asset_load(album_root, announce_index=True)
         return album
 
     def rescan_current(self) -> List[dict]:
@@ -148,6 +146,7 @@ class AppFacade(QObject):
             self.errorRaised.emit(str(exc))
             return []
         self.linksUpdated.emit(album.root)
+        self._restart_asset_load(album.root)
         return [group.__dict__ for group in groups]
 
     # ------------------------------------------------------------------
@@ -225,9 +224,11 @@ class AppFacade(QObject):
             self._scanner_thread.deleteLater()
             self._scanner_thread = None
 
-    def _restart_asset_load(self, root: Path) -> None:
+    def _restart_asset_load(self, root: Path, *, announce_index: bool = False) -> None:
         if not (self._current_album and self._current_album.root == root):
             return
+        if announce_index:
+            self._pending_index_announcements.add(root)
         self.loadStarted.emit(root)
         self._asset_list_model.start_load()
 
@@ -236,3 +237,7 @@ class AppFacade(QObject):
 
     def _on_model_load_finished(self, root: Path, success: bool) -> None:
         self.loadFinished.emit(root, success)
+        if root in self._pending_index_announcements:
+            self._pending_index_announcements.discard(root)
+            if success:
+                self.indexUpdated.emit(root)

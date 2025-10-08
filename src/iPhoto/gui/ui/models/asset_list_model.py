@@ -5,7 +5,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Optional, TYPE_CHECKING
 
-from PySide6.QtCore import QAbstractListModel, QModelIndex, QSize, Qt, QThreadPool, Signal
+from PySide6.QtCore import (
+    QAbstractListModel,
+    QModelIndex,
+    QSize,
+    Qt,
+    QThreadPool,
+    Signal,
+    QTimer,
+)
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPixmap
 
 from ..tasks.asset_loader_worker import AssetLoaderWorker
@@ -37,8 +45,6 @@ class AssetListModel(QAbstractListModel):
         self._loader_worker: Optional[AssetLoaderWorker] = None
         self._pending_reload = False
         facade.albumOpened.connect(self._on_album_opened)
-        facade.indexUpdated.connect(self._on_index_updated)
-        facade.linksUpdated.connect(self._on_links_updated)
 
     def album_root(self) -> Optional[Path]:
         """Return the path of the currently open album, if any."""
@@ -109,14 +115,6 @@ class AssetListModel(QAbstractListModel):
         self._thumb_cache.clear()
         self.endResetModel()
 
-    def _on_index_updated(self, root: Path) -> None:
-        if self._album_root and root == self._album_root:
-            self.start_load()
-
-    def _on_links_updated(self, root: Path) -> None:
-        if self._album_root and root == self._album_root:
-            self.start_load()
-
     # ------------------------------------------------------------------
     # Data loading helpers
     # ------------------------------------------------------------------
@@ -157,11 +155,10 @@ class AssetListModel(QAbstractListModel):
         self.endResetModel()
         self.loadFinished.emit(root, True)
         self._teardown_loader()
-        if self._pending_reload and self._album_root and root == self._album_root:
-            self._pending_reload = False
-            self.start_load()
-        else:
-            self._pending_reload = False
+        should_restart = self._pending_reload and self._album_root and root == self._album_root
+        self._pending_reload = False
+        if should_restart:
+            QTimer.singleShot(0, self.start_load)
 
     def _on_loader_error(self, root: Path, message: str) -> None:
         if self.sender() is not self._loader_worker:
