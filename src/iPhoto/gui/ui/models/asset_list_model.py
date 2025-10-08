@@ -11,28 +11,12 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPixmap
 from ....cache.index_store import IndexStore
 from ....core.pairing import pair_live
 from ....config import WORK_DIR_NAME
+from ....media_classifier import classify_media
 from ....utils.pathutils import ensure_work_dir
 from ...facade import AppFacade
 from ..tasks.thumbnail_loader import ThumbnailLoader
 from .live_map import load_live_map
 from .roles import Roles, role_names
-
-_IMAGE_EXTENSIONS = {
-    ".jpg",
-    ".jpeg",
-    ".png",
-    ".heic",
-    ".heif",
-    ".heifs",
-    ".heicf",
-}
-
-_VIDEO_EXTENSIONS = {
-    ".mov",
-    ".mp4",
-    ".m4v",
-    ".qt",
-}
 
 
 class AssetListModel(QAbstractListModel):
@@ -210,27 +194,7 @@ class AssetListModel(QAbstractListModel):
 
     @staticmethod
     def _classify_media(row: Dict[str, object]) -> Tuple[bool, bool]:
-        mime_raw = row.get("mime")
-        mime = mime_raw.lower() if isinstance(mime_raw, str) else ""
-        is_image = mime.startswith("image/")
-        is_video = mime.startswith("video/")
-        if is_image or is_video:
-            return is_image, is_video
-
-        legacy_kind = row.get("type")
-        if isinstance(legacy_kind, str):
-            kind = legacy_kind.lower()
-            if kind == "image":
-                return True, False
-            if kind == "video":
-                return False, True
-
-        suffix = Path(str(row.get("rel", ""))).suffix.lower()
-        if suffix in _IMAGE_EXTENSIONS:
-            return True, False
-        if suffix in _VIDEO_EXTENSIONS:
-            return False, True
-        return False, False
+        return classify_media(row)
 
     def _resolve_live_map(
         self,
