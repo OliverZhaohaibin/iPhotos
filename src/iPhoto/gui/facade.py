@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, List, Optional
 from PySide6.QtCore import QObject, QThread, Signal
 
 from .. import app as backend
+from ..config import WORK_DIR_NAME
 from ..errors import IPhotoError
 from ..models.album import Album
 
@@ -57,19 +58,33 @@ class AppFacade(QObject):
         return self._asset_list_model
 
     def open_album(self, root: Path) -> Optional[Album]:
-        """Open *root* and emit signals for the loaded data."""
+        """Open *root* and trigger background work as needed."""
 
         try:
-            album = backend.open_album(root)
+            album = Album.open(root)
         except IPhotoError as exc:
             self.errorRaised.emit(str(exc))
             return None
+
         self._current_album = album
-        self.loadStarted.emit(album.root)
-        self.albumOpened.emit(album.root)
-        self._asset_list_model.start_load()
-        self.indexUpdated.emit(album.root)
-        self.linksUpdated.emit(album.root)
+        album_root = album.root
+        self.albumOpened.emit(album_root)
+
+        index_path = album_root / WORK_DIR_NAME / "index.jsonl"
+        has_index = False
+        if index_path.exists():
+            try:
+                has_index = index_path.stat().st_size > 0
+            except OSError:
+                has_index = False
+
+        if not has_index:
+            self.rescan_current_async()
+            return album
+
+        self._restart_asset_load(album_root)
+        self.indexUpdated.emit(album_root)
+        self.linksUpdated.emit(album_root)
         return album
 
     def rescan_current(self) -> List[dict]:
@@ -175,9 +190,8 @@ class AppFacade(QObject):
             return False
         # Reload to ensure any concurrent edits are picked up.
         self._current_album = Album.open(album.root)
-        self.loadStarted.emit(album.root)
         self.albumOpened.emit(album.root)
-        self._asset_list_model.start_load()
+        self._restart_asset_load(album.root)
         return True
 
     def _require_album(self) -> Optional[Album]:

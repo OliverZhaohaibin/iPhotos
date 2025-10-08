@@ -31,7 +31,6 @@ try:  # pragma: no cover - exercised in packaging scenarios
 except ImportError:  # pragma: no cover - script execution fallback
     from iPhotos.src.iPhoto.appctx import AppContext
 from ..facade import AppFacade
-from ...config import WORK_DIR_NAME
 from .controllers.dialog_controller import DialogController
 from .controllers.navigation_controller import NavigationController
 from .controllers.playback_controller import PlaybackController
@@ -326,10 +325,7 @@ class MainWindow(QMainWindow):
 
     # Public API used by sidebar/actions
     def open_album_from_path(self, path: Path) -> None:
-        needs_initial_scan = not (path / WORK_DIR_NAME).exists()
         self._navigation.open_album(path)
-        if needs_initial_scan and self._facade.current_album is not None:
-            self._handle_rescan_request()
 
     # Slots
     def _handle_open_album_dialog(self) -> None:
@@ -355,8 +351,12 @@ class MainWindow(QMainWindow):
         self._playback.show_gallery_view()
 
     def _on_scan_progress(self, root: Path, current: int, total: int) -> None:
-        if self._progress_context != "scan":
+        if self._progress_context not in {"scan", None}:
             return
+        if self._progress_context is None:
+            self._progress_context = "scan"
+            self._progress_bar.setValue(0)
+            self._progress_bar.setVisible(True)
         if total <= 0:
             self._progress_bar.setRange(0, 0)
         else:
