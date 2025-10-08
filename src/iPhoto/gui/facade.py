@@ -22,8 +22,8 @@ class AppFacade(QObject):
     indexUpdated = Signal(object)
     linksUpdated = Signal(object)
     errorRaised = Signal(str)
-    scanProgress = Signal(int, int)
-    scanFinished = Signal(bool)
+    scanProgress = Signal(object, int, int)
+    scanFinished = Signal(object, bool)
 
     def __init__(self) -> None:
         super().__init__()
@@ -76,7 +76,7 @@ class AppFacade(QObject):
 
         album = self._require_album()
         if album is None:
-            self.scanFinished.emit(False)
+            self.scanFinished.emit(None, False)
             return
 
         if self._scanner_thread and self._scanner_thread.isRunning():
@@ -165,24 +165,20 @@ class AppFacade(QObject):
             return None
         return self._current_album
 
-    def _on_scan_finished(self, rows: List[dict]) -> None:
-        album = self._require_album()
-        if album is None:
-            self.scanFinished.emit(False)
-            return
+    def _on_scan_finished(self, root: Path, rows: List[dict]) -> None:
         try:
-            backend.IndexStore(album.root).write_rows(rows)
-            backend._ensure_links(album.root, rows)
+            backend.IndexStore(root).write_rows(rows)
+            backend._ensure_links(root, rows)
         except IPhotoError as exc:
             self.errorRaised.emit(str(exc))
         finally:
-            self.indexUpdated.emit(album.root)
-            self.linksUpdated.emit(album.root)
-            self.scanFinished.emit(True)
+            self.indexUpdated.emit(root)
+            self.linksUpdated.emit(root)
+            self.scanFinished.emit(root, True)
 
-    def _on_scan_error(self, message: str) -> None:
+    def _on_scan_error(self, root: Path, message: str) -> None:
         self.errorRaised.emit(message)
-        self.scanFinished.emit(False)
+        self.scanFinished.emit(root, False)
 
     def _cleanup_scan_thread(self) -> None:
         if self._scanner_worker is not None:

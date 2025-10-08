@@ -15,9 +15,9 @@ from ....utils.pathutils import ensure_work_dir, is_excluded, should_include
 class ScannerWorker(QObject):
     """Scan album files in a worker thread and emit progress updates."""
 
-    progressUpdated = Signal(int, int)
-    finished = Signal(list)
-    error = Signal(str)
+    progressUpdated = Signal(object, int, int)
+    finished = Signal(object, list)
+    error = Signal(object, str)
 
     def __init__(
         self,
@@ -40,9 +40,9 @@ class ScannerWorker(QObject):
             all_files = [path for path in self._root.rglob("*") if path.is_file()]
             total_files = len(all_files)
             if total_files == 0:
-                self.progressUpdated.emit(0, 0)
+                self.progressUpdated.emit(self._root, 0, 0)
                 if not self._is_cancelled:
-                    self.finished.emit([])
+                    self.finished.emit(self._root, [])
                 return
 
             rows: List[dict] = []
@@ -52,12 +52,12 @@ class ScannerWorker(QObject):
                 row = self._process_single_file(file_path)
                 if row is not None:
                     rows.append(row)
-                self.progressUpdated.emit(index, total_files)
+                self.progressUpdated.emit(self._root, index, total_files)
 
             if not self._is_cancelled:
-                self.finished.emit(rows)
+                self.finished.emit(self._root, rows)
         except Exception as exc:  # pragma: no cover - best-effort error propagation
-            self.error.emit(str(exc))
+            self.error.emit(self._root, str(exc))
 
     def cancel(self) -> None:
         """Request cancellation of the in-progress scan."""

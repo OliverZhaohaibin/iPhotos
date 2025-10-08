@@ -349,7 +349,7 @@ class MainWindow(QMainWindow):
         self._navigation.handle_album_opened(root)
         self._playback.show_gallery_view()
 
-    def _on_scan_progress(self, current: int, total: int) -> None:
+    def _on_scan_progress(self, root: Path, current: int, total: int) -> None:
         if total <= 0:
             self._progress_bar.setRange(0, 0)
         else:
@@ -359,7 +359,7 @@ class MainWindow(QMainWindow):
         if total > 0:
             self._status.showMessage(f"Scanning… ({current}/{total})")
 
-    def _on_scan_finished(self, success: bool) -> None:
+    def _on_scan_finished(self, root: Path | None, success: bool) -> None:
         self._progress_bar.setVisible(False)
         self._progress_bar.setRange(0, 0)
         if self._rescan_action is not None:
