@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QProgressBar,
     QSplitter,
     QStackedWidget,
     QStatusBar,
@@ -30,6 +31,7 @@ try:  # pragma: no cover - exercised in packaging scenarios
 except ImportError:  # pragma: no cover - script execution fallback
     from iPhotos.src.iPhoto.appctx import AppContext
 from ..facade import AppFacade
+from ...config import WORK_DIR_NAME
 from .controllers.dialog_controller import DialogController
 from .controllers.navigation_controller import NavigationController
 from .controllers.playback_controller import PlaybackController
@@ -81,6 +83,11 @@ class MainWindow(QMainWindow):
         self._badge_host: QWidget | None = None
 
         self._dialog = DialogController(self, context, self._status)
+        self._rescan_action: QAction | None = None
+        self._progress_bar = QProgressBar(self)
+        self._progress_bar.setVisible(False)
+        self._progress_bar.setMinimumWidth(160)
+        self._progress_bar.setTextVisible(False)
 
         stored_volume = self._context.settings.get("ui.volume", 75)
         try:
@@ -131,6 +138,7 @@ class MainWindow(QMainWindow):
         self._player_bar.setEnabled(False)
         self._player_bar.set_volume(self._media.volume())
         self._player_bar.set_muted(self._media.is_muted())
+        self._status.addPermanentWidget(self._progress_bar)
 
     # UI setup helpers
     def _build_ui(self) -> None:
@@ -145,8 +153,8 @@ class MainWindow(QMainWindow):
     def _build_actions(self) -> None:
         open_action = QAction("Open Album Folder…", self)
         open_action.triggered.connect(self._handle_open_album_dialog)
-        rescan_action = QAction("Rescan", self)
-        rescan_action.triggered.connect(lambda: self._facade.rescan_current())
+        self._rescan_action = QAction("Rescan", self)
+        self._rescan_action.triggered.connect(self._handle_rescan_request)
         pair_action = QAction("Rebuild Live Links", self)
         pair_action.triggered.connect(lambda: self._facade.pair_live_current())
         bind_library_action = QAction("Set Basic Library…", self)
@@ -158,14 +166,14 @@ class MainWindow(QMainWindow):
             None,
             bind_library_action,
             None,
-            rescan_action,
+            self._rescan_action,
             pair_action,
         ):
             file_menu.addSeparator() if action is None else file_menu.addAction(action)
 
         toolbar = QToolBar("Main")
         toolbar.setMovable(False)
-        for action in (open_action, rescan_action, pair_action):
+        for action in (open_action, self._rescan_action, pair_action):
             toolbar.addAction(action)
         self.addToolBar(toolbar)
 
@@ -269,6 +277,8 @@ class MainWindow(QMainWindow):
         self._sidebar.staticNodeSelected.connect(self._navigation.open_static_node)
         self._sidebar.bindLibraryRequested.connect(self._dialog.bind_library_dialog)
         self._facade.albumOpened.connect(self._handle_album_opened)
+        self._facade.scanProgress.connect(self._on_scan_progress)
+        self._facade.scanFinished.connect(self._on_scan_finished)
 
         for signal in (
             self._asset_model.modelReset,
@@ -312,7 +322,10 @@ class MainWindow(QMainWindow):
 
     # Public API used by sidebar/actions
     def open_album_from_path(self, path: Path) -> None:
+        needs_initial_scan = not (path / WORK_DIR_NAME).exists()
         self._navigation.open_album(path)
+        if needs_initial_scan and self._facade.current_album is not None:
+            self._handle_rescan_request()
 
     # Slots
     def _handle_open_album_dialog(self) -> None:
@@ -320,9 +333,39 @@ class MainWindow(QMainWindow):
         if path:
             self.open_album_from_path(path)
 
+    def _handle_rescan_request(self) -> None:
+        if self._facade.current_album is None:
+            self._status.showMessage("Open an album before rescanning.", 3000)
+            return
+        if self._rescan_action is not None:
+            self._rescan_action.setEnabled(False)
+        self._progress_bar.setRange(0, 0)
+        self._progress_bar.setValue(0)
+        self._progress_bar.setVisible(True)
+        self._status.showMessage("Starting scan…")
+        self._facade.rescan_current_async()
+
     def _handle_album_opened(self, root: Path) -> None:
         self._navigation.handle_album_opened(root)
         self._playback.show_gallery_view()
+
+    def _on_scan_progress(self, current: int, total: int) -> None:
+        if total <= 0:
+            self._progress_bar.setRange(0, 0)
+        else:
+            self._progress_bar.setRange(0, total)
+            self._progress_bar.setValue(max(0, min(current, total)))
+        self._progress_bar.setVisible(True)
+        if total > 0:
+            self._status.showMessage(f"Scanning… ({current}/{total})")
+
+    def _on_scan_finished(self, success: bool) -> None:
+        self._progress_bar.setVisible(False)
+        self._progress_bar.setRange(0, 0)
+        if self._rescan_action is not None:
+            self._rescan_action.setEnabled(True)
+        message = "Scan complete." if success else "Scan failed."
+        self._status.showMessage(message, 5000)
 
     def _on_volume_changed(self, volume: int) -> None:
         clamped = max(0, min(100, int(volume)))

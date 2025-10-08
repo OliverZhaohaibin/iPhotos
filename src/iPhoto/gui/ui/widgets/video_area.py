@@ -73,7 +73,7 @@ class VideoArea(QWidget):
 
         self._controls_visible = False
         self._target_opacity = 0.0
-        self._host_widget: QWidget | None = self._video_widget
+        self._host_widget: QWidget | None = self._video_view
         self._window_host: QWidget | None = None
         self._controls_enabled = True
 
