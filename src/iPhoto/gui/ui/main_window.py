@@ -88,6 +88,7 @@ class MainWindow(QMainWindow):
         self._progress_bar.setVisible(False)
         self._progress_bar.setMinimumWidth(160)
         self._progress_bar.setTextVisible(False)
+        self._progress_context: Optional[str] = None
 
         stored_volume = self._context.settings.get("ui.volume", 75)
         try:
@@ -279,6 +280,9 @@ class MainWindow(QMainWindow):
         self._facade.albumOpened.connect(self._handle_album_opened)
         self._facade.scanProgress.connect(self._on_scan_progress)
         self._facade.scanFinished.connect(self._on_scan_finished)
+        self._facade.loadStarted.connect(self._on_load_started)
+        self._facade.loadProgress.connect(self._on_load_progress)
+        self._facade.loadFinished.connect(self._on_load_finished)
 
         for signal in (
             self._asset_model.modelReset,
@@ -342,6 +346,7 @@ class MainWindow(QMainWindow):
         self._progress_bar.setRange(0, 0)
         self._progress_bar.setValue(0)
         self._progress_bar.setVisible(True)
+        self._progress_context = "scan"
         self._status.showMessage("Starting scan…")
         self._facade.rescan_current_async()
 
@@ -350,6 +355,8 @@ class MainWindow(QMainWindow):
         self._playback.show_gallery_view()
 
     def _on_scan_progress(self, root: Path, current: int, total: int) -> None:
+        if self._progress_context != "scan":
+            return
         if total <= 0:
             self._progress_bar.setRange(0, 0)
         else:
@@ -360,11 +367,40 @@ class MainWindow(QMainWindow):
             self._status.showMessage(f"Scanning… ({current}/{total})")
 
     def _on_scan_finished(self, root: Path | None, success: bool) -> None:
-        self._progress_bar.setVisible(False)
-        self._progress_bar.setRange(0, 0)
+        if self._progress_context == "scan":
+            self._progress_bar.setVisible(False)
+            self._progress_bar.setRange(0, 0)
+            self._progress_context = None
         if self._rescan_action is not None:
             self._rescan_action.setEnabled(True)
         message = "Scan complete." if success else "Scan failed."
+        self._status.showMessage(message, 5000)
+
+    def _on_load_started(self, root: Path) -> None:
+        self._progress_context = "load"
+        self._progress_bar.setRange(0, 0)
+        self._progress_bar.setValue(0)
+        self._progress_bar.setVisible(True)
+        self._status.showMessage("Loading items…")
+
+    def _on_load_progress(self, root: Path, current: int, total: int) -> None:
+        if self._progress_context != "load":
+            return
+        if total <= 0:
+            self._progress_bar.setRange(0, 0)
+        else:
+            self._progress_bar.setRange(0, total)
+            self._progress_bar.setValue(max(0, min(current, total)))
+        if total > 0:
+            self._status.showMessage(f"Loading items… ({current}/{total})")
+
+    def _on_load_finished(self, root: Path, success: bool) -> None:
+        if self._progress_context != "load":
+            return
+        self._progress_bar.setVisible(False)
+        self._progress_bar.setRange(0, 0)
+        self._progress_context = None
+        message = "Album loaded." if success else "Failed to load album."
         self._status.showMessage(message, 5000)
 
     def _on_volume_changed(self, volume: int) -> None:

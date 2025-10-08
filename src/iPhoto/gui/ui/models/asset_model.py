@@ -18,6 +18,7 @@ class AssetModel(AssetFilterProxyModel):
         super().__init__()
         self._list_model = AssetListModel(facade, self)
         self.setSourceModel(self._list_model)
+        facade.bind_asset_model(self._list_model)
 
     # ------------------------------------------------------------------
     # Convenience accessors

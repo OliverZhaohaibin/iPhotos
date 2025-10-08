@@ -3,24 +3,22 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
-from PySide6.QtCore import QAbstractListModel, QModelIndex, QSize, Qt
+from PySide6.QtCore import QAbstractListModel, QModelIndex, QSize, Qt, QThreadPool, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPixmap
 
-from ....cache.index_store import IndexStore
-from ....core.pairing import pair_live
-from ....config import WORK_DIR_NAME
-from ....media_classifier import classify_media
-from ....utils.pathutils import ensure_work_dir
 from ...facade import AppFacade
+from ..tasks.asset_loader_worker import AssetLoaderWorker
 from ..tasks.thumbnail_loader import ThumbnailLoader
-from .live_map import load_live_map
 from .roles import Roles, role_names
 
 
 class AssetListModel(QAbstractListModel):
     """Expose album assets to Qt views."""
+
+    loadProgress = Signal(object, int, int)
+    loadFinished = Signal(object, bool)
 
     def __init__(self, facade: AppFacade, parent=None) -> None:  # type: ignore[override]
         super().__init__(parent)
@@ -33,6 +31,8 @@ class AssetListModel(QAbstractListModel):
         self._thumb_size = QSize(192, 192)
         self._thumb_loader = ThumbnailLoader(self)
         self._thumb_loader.ready.connect(self._on_thumb_ready)
+        self._loader_pool = QThreadPool.globalInstance()
+        self._loader_worker: Optional[AssetLoaderWorker] = None
         facade.albumOpened.connect(self._on_album_opened)
         facade.indexUpdated.connect(self._on_index_updated)
         facade.linksUpdated.connect(self._on_links_updated)
@@ -98,6 +98,11 @@ class AssetListModel(QAbstractListModel):
     def _on_album_opened(self, root: Path) -> None:
         self._album_root = root
         self._thumb_loader.reset_for_album(root)
+        self.beginResetModel()
+        self._rows = []
+        self._row_lookup = {}
+        self._thumb_cache.clear()
+        self.endResetModel()
         self._reload()
 
     def _on_index_updated(self, root: Path) -> None:
@@ -114,131 +119,52 @@ class AssetListModel(QAbstractListModel):
     def _reload(self) -> None:
         if not self._album_root:
             return
-        ensure_work_dir(self._album_root, WORK_DIR_NAME)
         manifest = self._facade.current_album.manifest if self._facade.current_album else {}
-        featured: set[str] = set(manifest.get("featured", []))
-        index_rows = list(IndexStore(self._album_root).read_all())
-        live_map = self._resolve_live_map(index_rows, load_live_map(self._album_root))
+        featured = manifest.get("featured", []) or []
+        worker = AssetLoaderWorker(self._album_root, featured)
+        worker.progressUpdated.connect(self._on_loader_progress)
+        worker.finished.connect(self._on_loader_finished)
+        worker.error.connect(self._on_loader_error)
+        if self._loader_worker is not None:
+            self._loader_worker.deleteLater()
+        self._loader_worker = worker
+        self._facade.notify_assets_loading(self._album_root)
+        self._loader_pool.start(worker)
 
-        motion_paths_to_hide: set[str] = set()
-        for info in live_map.values():
-            if not isinstance(info, dict):
-                continue
-            if info.get("role") != "motion":
-                continue
-            motion_rel = info.get("motion")
-            if isinstance(motion_rel, str) and motion_rel:
-                motion_paths_to_hide.add(motion_rel)
+    def _on_loader_progress(self, root: Path, current: int, total: int) -> None:
+        if self.sender() is not self._loader_worker:
+            return
+        if not self._album_root or root != self._album_root:
+            return
+        self.loadProgress.emit(root, current, total)
 
-        payload: List[Dict[str, object]] = []
-        for row in index_rows:
-            rel = str(row["rel"])
-            if rel in motion_paths_to_hide:
-                continue
-            live_info = live_map.get(rel)
-
-            abs_path = str((self._album_root / rel).resolve())
-            is_image, is_video = self._classify_media(row)
-            live_motion: Optional[str] = None
-            live_motion_abs: Optional[str] = None
-            live_group_id: Optional[str] = None
-            if live_info and live_info.get("role") == "still":
-                motion_rel = live_info.get("motion")
-                if isinstance(motion_rel, str) and motion_rel:
-                    live_motion = motion_rel
-                    live_motion_abs = str((self._album_root / motion_rel).resolve())
-                group_id = live_info.get("id")
-                if isinstance(group_id, str):
-                    live_group_id = group_id
-            elif live_info and isinstance(live_info.get("id"), str):
-                live_group_id = live_info["id"]  # pragma: no cover - motion branch skipped
-
-            entry: Dict[str, object] = {
-                "rel": rel,
-                "abs": abs_path,
-                "id": row.get("id", rel),
-                "name": Path(rel).name,
-                "is_image": is_image,
-                "is_video": is_video,
-                "is_live": bool(live_motion),
-                "live_group_id": live_group_id,
-                "live_motion": live_motion,
-                "live_motion_abs": live_motion_abs,
-                "size": self._determine_size(row, is_image),
-                "dt": row.get("dt"),
-                "featured": self._is_featured(rel, featured),
-                "still_image_time": row.get("still_image_time"),
-                "dur": row.get("dur"),
-            }
-            payload.append(entry)
-
+    def _on_loader_finished(self, root: Path, payload: List[Dict[str, object]]) -> None:
+        if self.sender() is not self._loader_worker:
+            return
+        if not self._album_root or root != self._album_root:
+            self._teardown_loader()
+            return
         self.beginResetModel()
         self._rows = payload
         self._row_lookup = {row_data["rel"]: idx for idx, row_data in enumerate(payload)}
         active = set(self._row_lookup.keys())
         self._thumb_cache = {rel: pix for rel, pix in self._thumb_cache.items() if rel in active}
         self.endResetModel()
+        self.loadFinished.emit(root, True)
+        self._teardown_loader()
 
-    @staticmethod
-    def _determine_size(row: Dict[str, object], is_image: bool) -> object:
-        if is_image:
-            return (row.get("w"), row.get("h"))
-        return {"bytes": row.get("bytes"), "duration": row.get("dur")}
+    def _on_loader_error(self, root: Path, message: str) -> None:
+        if self.sender() is not self._loader_worker:
+            return
+        if self._album_root and root == self._album_root:
+            self._facade.errorRaised.emit(message)
+            self.loadFinished.emit(root, False)
+        self._teardown_loader()
 
-    @staticmethod
-    def _is_featured(rel: str, featured: set[str]) -> bool:
-        if rel in featured:
-            return True
-        live_ref = f"{rel}#live"
-        return live_ref in featured
-
-    @staticmethod
-    def _classify_media(row: Dict[str, object]) -> Tuple[bool, bool]:
-        return classify_media(row)
-
-    def _resolve_live_map(
-        self,
-        index_rows: List[Dict[str, object]],
-        base_map: Dict[str, Dict[str, object]],
-    ) -> Dict[str, Dict[str, object]]:
-        """Return a Live Photo lookup, synthesising pairs when ``links.json`` is stale."""
-
-        mapping = dict(base_map)
-        missing: set[str] = set()
-        for row in index_rows:
-            rel = str(row.get("rel"))
-            if not rel:
-                continue
-            is_image, _ = self._classify_media(row)
-            if not is_image:
-                continue
-            info = mapping.get(rel)
-            motion_ref = info.get("motion") if isinstance(info, dict) else None
-            if isinstance(motion_ref, str) and motion_ref:
-                continue
-            missing.add(rel)
-        if not missing:
-            return mapping
-
-        for group in pair_live(index_rows):
-            still = group.still
-            if still not in missing:
-                continue
-            motion = group.motion
-            record: Dict[str, object] = {
-                "id": group.id,
-                "still": still,
-                "motion": motion,
-                "confidence": group.confidence,
-            }
-            if group.content_id:
-                record["content_id"] = group.content_id
-            if group.still_image_time is not None:
-                record["still_image_time"] = group.still_image_time
-            mapping[still] = {**record, "role": "still"}
-            if motion:
-                mapping[motion] = {**record, "role": "motion"}
-        return mapping
+    def _teardown_loader(self) -> None:
+        if self._loader_worker is not None:
+            self._loader_worker.deleteLater()
+            self._loader_worker = None
 
     # ------------------------------------------------------------------
     # Thumbnail helpers

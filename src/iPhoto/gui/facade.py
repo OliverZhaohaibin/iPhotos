@@ -13,6 +13,7 @@ from ..models.album import Album
 
 if TYPE_CHECKING:
     from .ui.tasks.scanner_worker import ScannerWorker
+    from .ui.models.asset_list_model import AssetListModel
 
 
 class AppFacade(QObject):
@@ -24,12 +25,16 @@ class AppFacade(QObject):
     errorRaised = Signal(str)
     scanProgress = Signal(object, int, int)
     scanFinished = Signal(object, bool)
+    loadStarted = Signal(object)
+    loadProgress = Signal(object, int, int)
+    loadFinished = Signal(object, bool)
 
     def __init__(self) -> None:
         super().__init__()
         self._current_album: Optional[Album] = None
         self._scanner_thread: Optional[QThread] = None
         self._scanner_worker: Optional["ScannerWorker"] = None
+        self._asset_model: Optional["AssetListModel"] = None
 
     # ------------------------------------------------------------------
     # Album lifecycle
@@ -49,6 +54,7 @@ class AppFacade(QObject):
             self.errorRaised.emit(str(exc))
             return None
         self._current_album = album
+        self.loadStarted.emit(album.root)
         self.albumOpened.emit(album.root)
         self.indexUpdated.emit(album.root)
         self.linksUpdated.emit(album.root)
@@ -156,8 +162,28 @@ class AppFacade(QObject):
             return False
         # Reload to ensure any concurrent edits are picked up.
         self._current_album = Album.open(album.root)
+        self.loadStarted.emit(album.root)
         self.albumOpened.emit(album.root)
         return True
+
+    def bind_asset_model(self, model: "AssetListModel") -> None:
+        if self._asset_model is model:
+            return
+        if self._asset_model is not None:
+            try:
+                self._asset_model.loadProgress.disconnect(self._on_model_load_progress)
+            except TypeError:
+                pass
+            try:
+                self._asset_model.loadFinished.disconnect(self._on_model_load_finished)
+            except TypeError:
+                pass
+        self._asset_model = model
+        model.loadProgress.connect(self._on_model_load_progress)
+        model.loadFinished.connect(self._on_model_load_finished)
+
+    def notify_assets_loading(self, root: Path) -> None:
+        self.loadStarted.emit(root)
 
     def _require_album(self) -> Optional[Album]:
         if self._current_album is None:
@@ -187,3 +213,9 @@ class AppFacade(QObject):
         if self._scanner_thread is not None:
             self._scanner_thread.deleteLater()
             self._scanner_thread = None
+
+    def _on_model_load_progress(self, root: Path, current: int, total: int) -> None:
+        self.loadProgress.emit(root, current, total)
+
+    def _on_model_load_finished(self, root: Path, success: bool) -> None:
+        self.loadFinished.emit(root, success)
