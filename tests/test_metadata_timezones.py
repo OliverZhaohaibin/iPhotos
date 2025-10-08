@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -38,12 +38,8 @@ def test_read_image_meta_falls_back_to_local_time(tmp_path: Path, monkeypatch: p
     photo = tmp_path / "local.jpg"
     _make_exif_image(photo, "2024:06:10 09:30:00")
 
-    class _FakeDt(datetime):
-        @classmethod
-        def now(cls, tz=None):  # type: ignore[override]
-            return super().now(timezone.utc if tz is None else tz)
-
-    monkeypatch.setattr("iPhotos.src.iPhoto.io.metadata.datetime", _FakeDt)
+    fake_tz = timezone(timedelta(hours=2))
+    monkeypatch.setattr("iPhotos.src.iPhoto.io.metadata.gettz", lambda: fake_tz)
 
     info = read_image_meta(photo)
-    assert info["dt"] == "2024-06-10T09:30:00Z"
+    assert info["dt"] == "2024-06-10T07:30:00Z"
