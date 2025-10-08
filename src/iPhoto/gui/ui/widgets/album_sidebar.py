@@ -197,6 +197,10 @@ class AlbumSidebar(QWidget):
         self._tree.setModel(self._model)
         self._tree.setHeaderHidden(True)
         self._tree.setRootIsDecorated(False)
+        # Disable the built-in indentation so the delegate-controlled padding is
+        # the only horizontal offset applied. This prevents double spacing
+        # between levels now that the delegate paints its own indentation.
+        self._tree.setIndentation(0)
         self._tree.setUniformRowHeights(True)
         self._tree.setEditTriggers(QTreeView.EditTrigger.NoEditTriggers)
         self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
