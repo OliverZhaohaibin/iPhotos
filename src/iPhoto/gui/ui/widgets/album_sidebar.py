@@ -109,7 +109,9 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
 
         if has_children:
             branch_opt = QStyleOptionViewItem(option)
-            branch_rect = style.subElementRect(QStyle.SE_TreeViewBranch, option, option.widget)
+            branch_rect = style.subElementRect(
+                QStyle.SubElement.SE_TreeViewBranch, option, option.widget
+            )
             branch_opt.rect = branch_rect
             style.drawPrimitive(QStyle.PE_Branch, branch_opt, painter, option.widget)
             # Position content to the right of the branch indicator
@@ -150,7 +152,9 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         metrics = QFontMetrics(font)
         text_rect = rect.adjusted(x - rect.left() + 2, 0, -8, 0)
         elided = metrics.elidedText(text, Qt.TextElideMode.ElideRight, text_rect.width())
-        painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, elided)
+        painter.drawText(
+            text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, elided
+        )
 
         painter.restore()
 
@@ -217,15 +221,13 @@ class AlbumSidebar(QWidget):
         tree_palette = self._tree.palette()
         tree_palette.setColor(QPalette.ColorRole.Base, BG_COLOR)
         tree_palette.setColor(QPalette.ColorRole.Window, BG_COLOR)
-        tree_palette.setColor(QPalette.ColorRole.Highlight, QColor(Qt.transparent))
-        tree_palette.setColor(QPalette.ColorRole.HighlightedText, TEXT_COLOR)
         self._tree.setPalette(tree_palette)
         self._tree.setAutoFillBackground(True)
         self._tree.setStyleSheet(
             "QTreeView { background: transparent; }"
             "QTreeView::item { border: 0px; padding: 0px; margin: 0px; }"
-            "QTreeView::item:selected { background-color: transparent; }"
-            "QTreeView::item:hover { background-color: transparent; }"
+            "QTreeView::item:selected { background: transparent; }"
+            "QTreeView::item:hover { background: transparent; }"
         )
 
         layout = QVBoxLayout(self)
