@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from dateutil.tz import gettz
+
 from ..errors import ExternalToolError
 from ..utils.ffmpeg import probe_media
 from ..utils.deps import load_pillow
@@ -75,7 +77,10 @@ def _normalise_exif_datetime(dt_value: str, exif: Any) -> Optional[str]:
     except ValueError:
         return None
 
-    local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+    # ``dateutil.tz.gettz`` honours daylight saving transitions for the
+    # current locale, making the behaviour both predictable for callers and
+    # easy to override in tests.
+    local_tz = gettz() or datetime.now().astimezone().tzinfo or timezone.utc
     return _format_result(naive.replace(tzinfo=local_tz))
 
 
