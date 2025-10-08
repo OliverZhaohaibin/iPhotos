@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QModelIndex, QPoint, QSize, Qt, Signal
+from PySide6.QtCore import QModelIndex, QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (
     QInputDialog,
@@ -70,6 +70,14 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         rect = option.rect
         node_type = index.data(AlbumTreeRole.NODE_TYPE) or NodeType.ALBUM
 
+        # Shift the drawing rect left when the view did not draw a branch
+        # indicator. The tree view still reserves indentation space even when
+        # no arrow is shown, so this keeps text aligned with parent rows.
+        has_children = bool(option.state & QStyle.StateFlag.State_HasChildren)
+        draw_rect = QRect(rect)
+        if not has_children:
+            draw_rect.translate(-INDENT_PER_LEVEL, 0)
+
         # Draw separator rows as a thin line.
         if node_type == NodeType.SEPARATOR:
             pen = QPen(SEPARATOR_COLOR)
@@ -94,7 +102,7 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
             highlight = None
 
         if highlight is not None:
-            background_rect = rect.adjusted(6, 4, -6, -4)
+            background_rect = draw_rect.adjusted(6, 4, -6, -4)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(highlight)
@@ -121,18 +129,10 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
             color = ICON_COLOR
         painter.setPen(color)
 
-        # Calculate the item level to control indentation manually.
-        level = 0
-        parent_index = index.parent()
-        while parent_index.isValid():
-            level += 1
-            parent_index = parent_index.parent()
-        indentation = level * INDENT_PER_LEVEL
-
-        x = rect.left() + LEFT_PADDING + indentation
+        x = draw_rect.left() + LEFT_PADDING
         icon_size = 18
         if icon is not None and not icon.isNull():
-            icon_rect = rect.adjusted(0, 0, 0, 0)
+            icon_rect = QRect(draw_rect)
             icon_rect.setLeft(x)
             icon_rect.setWidth(icon_size)
             icon.paint(
@@ -143,7 +143,7 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
             x += icon_size + ICON_TEXT_GAP
 
         metrics = QFontMetrics(font)
-        text_rect = rect.adjusted(x - rect.left(), 0, -8, 0)
+        text_rect = draw_rect.adjusted(x - draw_rect.left(), 0, -8, 0)
         elided = metrics.elidedText(text, Qt.TextElideMode.ElideRight, text_rect.width())
         painter.drawText(
             text_rect,
@@ -197,10 +197,7 @@ class AlbumSidebar(QWidget):
         self._tree.setModel(self._model)
         self._tree.setHeaderHidden(True)
         self._tree.setRootIsDecorated(False)
-        # Disable the built-in indentation so the delegate-controlled padding is
-        # the only horizontal offset applied. This prevents double spacing
-        # between levels now that the delegate paints its own indentation.
-        self._tree.setIndentation(0)
+        self._tree.setIndentation(INDENT_PER_LEVEL)
         self._tree.setUniformRowHeights(True)
         self._tree.setEditTriggers(QTreeView.EditTrigger.NoEditTriggers)
         self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -226,7 +223,6 @@ class AlbumSidebar(QWidget):
             "QTreeView::item { border: 0px; padding: 0px; margin: 0px; }"
             "QTreeView::item:selected { background: transparent; }"
             "QTreeView::item:hover { background: transparent; }"
-            "QTreeView::branch { image: none; }"
         )
 
         layout = QVBoxLayout(self)
