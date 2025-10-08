@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, TYPE_CHECKING
 
 from PySide6.QtCore import QAbstractListModel, QModelIndex, QSize, Qt, QThreadPool, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPixmap
 
-from ...facade import AppFacade
 from ..tasks.asset_loader_worker import AssetLoaderWorker
 from ..tasks.thumbnail_loader import ThumbnailLoader
 from .roles import Roles, role_names
+
+if TYPE_CHECKING:  # pragma: no cover - import only for type checking
+    from ...facade import AppFacade
 
 
 class AssetListModel(QAbstractListModel):
@@ -20,7 +22,7 @@ class AssetListModel(QAbstractListModel):
     loadProgress = Signal(object, int, int)
     loadFinished = Signal(object, bool)
 
-    def __init__(self, facade: AppFacade, parent=None) -> None:  # type: ignore[override]
+    def __init__(self, facade: "AppFacade", parent=None) -> None:  # type: ignore[override]
         super().__init__(parent)
         self._facade = facade
         self._album_root: Optional[Path] = None
@@ -33,6 +35,7 @@ class AssetListModel(QAbstractListModel):
         self._thumb_loader.ready.connect(self._on_thumb_ready)
         self._loader_pool = QThreadPool.globalInstance()
         self._loader_worker: Optional[AssetLoaderWorker] = None
+        self._pending_reload = False
         facade.albumOpened.connect(self._on_album_opened)
         facade.indexUpdated.connect(self._on_index_updated)
         facade.linksUpdated.connect(self._on_links_updated)
@@ -96,6 +99,8 @@ class AssetListModel(QAbstractListModel):
     # Facade callbacks
     # ------------------------------------------------------------------
     def _on_album_opened(self, root: Path) -> None:
+        self._teardown_loader()
+        self._pending_reload = False
         self._album_root = root
         self._thumb_loader.reset_for_album(root)
         self.beginResetModel()
@@ -103,21 +108,23 @@ class AssetListModel(QAbstractListModel):
         self._row_lookup = {}
         self._thumb_cache.clear()
         self.endResetModel()
-        self._reload()
 
     def _on_index_updated(self, root: Path) -> None:
         if self._album_root and root == self._album_root:
-            self._reload()
+            self.start_load()
 
     def _on_links_updated(self, root: Path) -> None:
         if self._album_root and root == self._album_root:
-            self._reload()
+            self.start_load()
 
     # ------------------------------------------------------------------
     # Data loading helpers
     # ------------------------------------------------------------------
-    def _reload(self) -> None:
+    def start_load(self) -> None:
         if not self._album_root:
+            return
+        if self._loader_worker is not None:
+            self._pending_reload = True
             return
         manifest = self._facade.current_album.manifest if self._facade.current_album else {}
         featured = manifest.get("featured", []) or []
@@ -125,10 +132,8 @@ class AssetListModel(QAbstractListModel):
         worker.progressUpdated.connect(self._on_loader_progress)
         worker.finished.connect(self._on_loader_finished)
         worker.error.connect(self._on_loader_error)
-        if self._loader_worker is not None:
-            self._loader_worker.deleteLater()
+        self._pending_reload = False
         self._loader_worker = worker
-        self._facade.notify_assets_loading(self._album_root)
         self._loader_pool.start(worker)
 
     def _on_loader_progress(self, root: Path, current: int, total: int) -> None:
@@ -152,6 +157,11 @@ class AssetListModel(QAbstractListModel):
         self.endResetModel()
         self.loadFinished.emit(root, True)
         self._teardown_loader()
+        if self._pending_reload and self._album_root and root == self._album_root:
+            self._pending_reload = False
+            self.start_load()
+        else:
+            self._pending_reload = False
 
     def _on_loader_error(self, root: Path, message: str) -> None:
         if self.sender() is not self._loader_worker:
@@ -159,6 +169,7 @@ class AssetListModel(QAbstractListModel):
         if self._album_root and root == self._album_root:
             self._facade.errorRaised.emit(message)
             self.loadFinished.emit(root, False)
+        self._pending_reload = False
         self._teardown_loader()
 
     def _teardown_loader(self) -> None:
