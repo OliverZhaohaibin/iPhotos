@@ -102,21 +102,28 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
             painter.setBrush(highlight)
             painter.drawRoundedRect(background_rect, ROW_RADIUS, ROW_RADIUS)
 
-        # --- Core Fix: Draw the branch indicator (expand/collapse arrow) ---
+        # --- Correctly draw the branch indicator (expand/collapse arrow) ---
         style = option.widget.style()
         has_children = self.parent().model().hasChildren(index)
         x = rect.left() + LEFT_PADDING
 
         if has_children:
             branch_opt = QStyleOptionViewItem(option)
-            branch_rect = style.subElementRect(
-                QStyle.SubElement.SE_TreeViewBranch, option, option.widget
+            # Let the style draw the primitive in its default position.
+            style.drawPrimitive(
+                QStyle.PrimitiveElement.PE_IndicatorBranch,
+                branch_opt,
+                painter,
+                option.widget,
             )
-            branch_opt.rect = branch_rect
-            style.drawPrimitive(QStyle.PE_Branch, branch_opt, painter, option.widget)
-            # Position content to the right of the branch indicator
-            x = branch_rect.right() + 4
-        # --- End of Core Fix ---
+            # Use the tree's indentation property to correctly offset our content.
+            indentation = (
+                option.widget.indentation()
+                if hasattr(option.widget, "indentation")
+                else 18
+            )
+            x = rect.left() + indentation
+        # --- End of fix ---
 
         text = index.data(Qt.ItemDataRole.DisplayRole) or ""
         icon = index.data(Qt.ItemDataRole.DecorationRole)
