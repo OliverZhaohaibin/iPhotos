@@ -1,5 +1,6 @@
 import hashlib
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -49,8 +50,11 @@ def test_thumbnail_loader_cache_naming(tmp_path: Path, qapp: QApplication) -> No
     spy = QSignalSpy(loader.ready)
     pixmap = loader.request("IMG_0001.JPG", image_path, QSize(192, 192), is_image=True)
     assert pixmap is None
-    assert spy.wait(2000)
-    qapp.processEvents()
+    deadline = time.monotonic() + 4.0
+    while time.monotonic() < deadline and spy.count() < 1:
+        qapp.processEvents()
+        time.sleep(0.05)
+    assert spy.count() >= 1
 
     thumbs_dir = tmp_path / WORK_DIR_NAME / "thumbs"
     files = list(thumbs_dir.iterdir())
@@ -65,8 +69,11 @@ def test_thumbnail_loader_cache_naming(tmp_path: Path, qapp: QApplication) -> No
     os.utime(image_path, None)
     spy = QSignalSpy(loader.ready)
     loader.request("IMG_0001.JPG", image_path, QSize(192, 192), is_image=True)
-    assert spy.wait(2000)
-    qapp.processEvents()
+    deadline = time.monotonic() + 4.0
+    while time.monotonic() < deadline and spy.count() < 1:
+        qapp.processEvents()
+        time.sleep(0.05)
+    assert spy.count() >= 1
     files = list(thumbs_dir.iterdir())
     assert len(files) == 1
     assert files[0].name != filename

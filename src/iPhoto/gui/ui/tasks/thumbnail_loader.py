@@ -6,11 +6,10 @@ import hashlib
 from pathlib import Path
 from typing import Dict, Optional, Set, Tuple
 
-from PySide6.QtCore import QObject, QRunnable, QSize, QThreadPool, Qt, Signal
+from PySide6.QtCore import QCoreApplication, QObject, QRunnable, QSize, QThreadPool, Qt, Signal
 from PySide6.QtGui import QImage, QPainter, QPixmap
-from shiboken6 import Shiboken
 
-from ....config import WORK_DIR_NAME
+from ....config import THUMBNAIL_SEEK_GUARD_SEC, WORK_DIR_NAME
 from ...utils import image_loader
 from .video_frame_grabber import grab_video_frame
 
@@ -48,11 +47,12 @@ class ThumbnailJob(QRunnable):
         image = self._render_media()
         if image is not None:
             self._write_cache(image)
-        if not Shiboken.isValid(self._loader):  # pragma: no cover - loader destroyed mid-job
+        loader = getattr(self, "_loader", None)
+        if loader is None:
             return
         try:
-            self._loader._delivered.emit(
-                self._loader._make_key(self._rel, self._size, self._stamp),
+            loader._delivered.emit(
+                loader._make_key(self._rel, self._size, self._stamp),
                 image,
                 self._rel,
             )
@@ -82,6 +82,42 @@ class ThumbnailJob(QRunnable):
         if image is None:
             return None
         return self._composite_canvas(image)
+
+    def _seek_targets(self) -> list[Optional[float]]:
+        """Return seek offsets for video thumbnails with guard rails."""
+
+        if not self._is_video:
+            return [None]
+
+        targets: list[Optional[float]] = []
+        seen: set[Optional[float]] = set()
+
+        def add(candidate: Optional[float]) -> None:
+            if candidate is None:
+                key: Optional[float] = None
+                value: Optional[float] = None
+            else:
+                value = max(candidate, 0.0)
+                if self._duration and self._duration > 0:
+                    guard = min(
+                        max(THUMBNAIL_SEEK_GUARD_SEC, self._duration * 0.1),
+                        self._duration / 2.0,
+                    )
+                    max_seek = max(self._duration - guard, 0.0)
+                    if value > max_seek:
+                        value = max_seek
+                key = value
+            if key in seen:
+                return
+            seen.add(key)
+            targets.append(value)
+
+        if self._still_image_time is not None:
+            add(self._still_image_time)
+        elif self._duration is not None and self._duration > 0:
+            add(self._duration / 2.0)
+        add(None)
+        return targets
 
     def _composite_canvas(self, image: QImage) -> QImage:  # pragma: no cover - worker helper
         canvas = QImage(self._size, QImage.Format_ARGB32_Premultiplied)
@@ -132,6 +168,8 @@ class ThumbnailLoader(QObject):
     _delivered = Signal(object, object, str)
 
     def __init__(self, parent: Optional[QObject] = None) -> None:
+        if parent is None:
+            parent = QCoreApplication.instance()
         super().__init__(parent)
         self._pool = QThreadPool.globalInstance()
         self._album_root: Optional[Path] = None
@@ -151,6 +189,10 @@ class ThumbnailLoader(QObject):
         self._pending.clear()
         self._failures.clear()
         self._missing.clear()
+        try:
+            (root / WORK_DIR_NAME / "thumbs").mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
 
     def request(
         self,
@@ -171,10 +213,14 @@ class ThumbnailLoader(QObject):
         if not is_image and not is_video:
             return None
         try:
-            stamp = int(path.stat().st_mtime)
+            stat_result = path.stat()
         except FileNotFoundError:
             self._missing.add(base_key)
             return None
+        stamp_ns = getattr(stat_result, "st_mtime_ns", None)
+        if stamp_ns is None:
+            stamp_ns = int(stat_result.st_mtime * 1_000_000_000)
+        stamp = int(stamp_ns)
         key = self._make_key(rel, size, stamp)
         cached = self._memory.get(key)
         if cached is not None:
@@ -238,6 +284,11 @@ class ThumbnailLoader(QObject):
         obsolete = [existing for existing in self._memory if existing[:-1] == base and existing != key]
         for existing in obsolete:
             self._memory.pop(existing, None)
+            if self._album_root is not None:
+                _, _, width, height, stale_stamp = existing
+                stale_size = QSize(width, height)
+                stale_path = self._cache_path(rel, stale_size, stale_stamp)
+                self._safe_unlink(stale_path)
         self._memory[key] = pixmap
         if self._album_root is not None:
             self.ready.emit(self._album_root, rel, pixmap)

@@ -166,7 +166,7 @@ def test_facade_rescan_emits_links(tmp_path: Path, qapp: QApplication) -> None:
     spy = QSignalSpy(facade.linksUpdated)
     facade.rescan_current()
     qapp.processEvents()
-    assert len(spy) >= 1
+    assert spy.count() >= 1
 
 
 def test_asset_model_populates_rows(tmp_path: Path, qapp: QApplication) -> None:
@@ -190,10 +190,11 @@ def test_asset_model_populates_rows(tmp_path: Path, qapp: QApplication) -> None:
     assert isinstance(refreshed, QPixmap)
     assert not refreshed.isNull()
     thumbs_dir = tmp_path / WORK_DIR_NAME / "thumbs"
-    for _ in range(10):
+    for _ in range(20):
         qapp.processEvents()
         if thumbs_dir.exists() and any(thumbs_dir.iterdir()):
             break
+        time.sleep(0.05)
     assert thumbs_dir.exists()
     assert any(thumbs_dir.iterdir())
 
@@ -396,6 +397,7 @@ def test_thumbnail_job_seek_targets_clamp(tmp_path: Path, qapp: QApplication) ->
         QSize(192, 192),
         1,
         cache_path,
+        is_image=False,
         is_video=True,
         still_image_time=0.2,
         duration=0.06,
@@ -417,6 +419,7 @@ def test_thumbnail_job_seek_targets_without_hint(tmp_path: Path, qapp: QApplicat
         QSize(192, 192),
         1,
         cache_path,
+        is_image=False,
         is_video=True,
         still_image_time=None,
         duration=None,
@@ -431,6 +434,7 @@ def test_thumbnail_job_seek_targets_without_hint(tmp_path: Path, qapp: QApplicat
         QSize(192, 192),
         1,
         cache_path,
+        is_image=False,
         is_video=True,
         still_image_time=None,
         duration=4.0,

@@ -352,6 +352,8 @@ class PlaybackController:
     def _show_video_surface(self, *, interactive: bool = True) -> None:
         if self._player_stack.currentWidget() is not self._video_area:
             self._player_stack.setCurrentWidget(self._video_area)
+        if not self._player_stack.isVisible():
+            self._player_stack.show()
         self._resume_playback_after_scrub = False
         self._video_area.set_controls_enabled(interactive)
         if interactive:
@@ -380,6 +382,8 @@ class PlaybackController:
         self._resume_playback_after_scrub = False
         if self._player_stack.currentWidget() is not self._image_viewer:
             self._player_stack.setCurrentWidget(self._image_viewer)
+        if not self._player_stack.isVisible():
+            self._player_stack.show()
 
     # ------------------------------------------------------------------
     # Live Photo controls
