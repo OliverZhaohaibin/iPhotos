@@ -49,6 +49,7 @@ ROW_HEIGHT = 36
 ROW_RADIUS = 10
 LEFT_PADDING = 14
 ICON_TEXT_GAP = 10
+INDENT_PER_LEVEL = 18
 
 
 class AlbumSidebarDelegate(QStyledItemDelegate):
@@ -120,7 +121,15 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
             color = ICON_COLOR
         painter.setPen(color)
 
-        x = rect.left() + LEFT_PADDING
+        # Calculate the item level to control indentation manually.
+        level = 0
+        parent_index = index.parent()
+        while parent_index.isValid():
+            level += 1
+            parent_index = parent_index.parent()
+        indentation = level * INDENT_PER_LEVEL
+
+        x = rect.left() + LEFT_PADDING + indentation
         icon_size = 18
         if icon is not None and not icon.isNull():
             icon_rect = rect.adjusted(0, 0, 0, 0)
@@ -136,7 +145,11 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         metrics = QFontMetrics(font)
         text_rect = rect.adjusted(x - rect.left(), 0, -8, 0)
         elided = metrics.elidedText(text, Qt.TextElideMode.ElideRight, text_rect.width())
-        painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, elided)
+        painter.drawText(
+            text_rect,
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            elided,
+        )
 
         painter.restore()
 
@@ -191,7 +204,6 @@ class AlbumSidebar(QWidget):
         self._tree.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self._tree.doubleClicked.connect(self._on_double_clicked)
         self._tree.setMinimumWidth(220)
-        self._tree.setIndentation(18)
         self._tree.setIconSize(QSize(18, 18))
         self._tree.setMouseTracking(True)
         self._tree.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
@@ -210,6 +222,7 @@ class AlbumSidebar(QWidget):
             "QTreeView::item { border: 0px; padding: 0px; margin: 0px; }"
             "QTreeView::item:selected { background: transparent; }"
             "QTreeView::item:hover { background: transparent; }"
+            "QTreeView::branch { image: none; }"
         )
 
         layout = QVBoxLayout(self)
