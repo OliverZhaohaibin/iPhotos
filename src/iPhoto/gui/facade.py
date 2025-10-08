@@ -13,7 +13,7 @@ from ..models.album import Album
 
 if TYPE_CHECKING:
     from .ui.tasks.scanner_worker import ScannerWorker
-from .ui.models.asset_list_model import AssetListModel
+    from .ui.models.asset_list_model import AssetListModel
 
 
 class AppFacade(QObject):
@@ -34,6 +34,9 @@ class AppFacade(QObject):
         self._current_album: Optional[Album] = None
         self._scanner_thread: Optional[QThread] = None
         self._scanner_worker: Optional["ScannerWorker"] = None
+
+        from .ui.models.asset_list_model import AssetListModel
+
         self._asset_list_model = AssetListModel(self)
         self._asset_list_model.loadProgress.connect(self._on_model_load_progress)
         self._asset_list_model.loadFinished.connect(self._on_model_load_finished)
@@ -48,7 +51,7 @@ class AppFacade(QObject):
         return self._current_album
 
     @property
-    def asset_list_model(self) -> AssetListModel:
+    def asset_list_model(self) -> "AssetListModel":
         """Return the list model that backs the asset views."""
 
         return self._asset_list_model
