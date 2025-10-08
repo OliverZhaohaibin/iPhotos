@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QModelIndex, QPoint, QRect, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPalette, QPen
+from PySide6.QtCore import QModelIndex, QPoint, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
@@ -48,7 +48,6 @@ SEPARATOR_COLOR = QColor(0, 0, 0, 40)
 ROW_HEIGHT = 36
 ROW_RADIUS = 10
 LEFT_PADDING = 14
-ICON_TEXT_GAP = 10
 
 
 class AlbumSidebarDelegate(QStyledItemDelegate):
@@ -65,14 +64,18 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
     def paint(
         self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex
     ) -> None:
+        """Render the sidebar row with a custom background then default foreground."""
+
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+
         painter.save()
-        rect = option.rect
+
+        rect = opt.rect
         node_type = index.data(AlbumTreeRole.NODE_TYPE) or NodeType.ALBUM
 
-        # Erase the area with the default background color to prevent artifacts
         painter.fillRect(rect, BG_COLOR)
 
-        # Draw separator rows as a thin line.
         if node_type == NodeType.SEPARATOR:
             pen = QPen(SEPARATOR_COLOR)
             pen.setWidth(1)
@@ -82,88 +85,54 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
             painter.restore()
             return
 
-        is_enabled = bool(option.state & QStyle.StateFlag.State_Enabled)
-        is_selected = bool(option.state & QStyle.StateFlag.State_Selected)
-        is_hover = bool(option.state & QStyle.StateFlag.State_MouseOver)
+        is_enabled = bool(opt.state & QStyle.StateFlag.State_Enabled)
+        is_selected = bool(opt.state & QStyle.StateFlag.State_Selected)
+        is_hover = bool(opt.state & QStyle.StateFlag.State_MouseOver)
 
-        highlight = None
+        highlight_color: Optional[QColor] = None
         if is_selected:
-            highlight = SELECT_BG
+            highlight_color = SELECT_BG
         elif is_hover and is_enabled:
-            highlight = HOVER_BG
+            highlight_color = HOVER_BG
 
-        if node_type in {NodeType.SECTION, NodeType.SEPARATOR}:
-            highlight = None
+        if node_type == NodeType.SECTION:
+            highlight_color = None
 
-        if highlight is not None:
+        if highlight_color is not None:
             background_rect = rect.adjusted(6, 4, -6, -4)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(highlight)
+            painter.setBrush(highlight_color)
             painter.drawRoundedRect(background_rect, ROW_RADIUS, ROW_RADIUS)
 
-        # --- Correctly draw the branch indicator (expand/collapse arrow) ---
-        style = option.widget.style()
-        has_children = self.parent().model().hasChildren(index)
-        x = rect.left() + LEFT_PADDING
+        painter.restore()
 
-        if has_children:
-            branch_opt = QStyleOptionViewItem(option)
-            # Let the style draw the primitive in its default position.
-            style.drawPrimitive(
-                QStyle.PrimitiveElement.PE_IndicatorBranch,
-                branch_opt,
-                painter,
-                option.widget,
-            )
-            # Use the tree's indentation property to correctly offset our content.
-            indentation = (
-                option.widget.indentation()
-                if hasattr(option.widget, "indentation")
-                else 18
-            )
-            x = rect.left() + indentation
-        # --- End of fix ---
-
-        text = index.data(Qt.ItemDataRole.DisplayRole) or ""
-        icon = index.data(Qt.ItemDataRole.DecorationRole)
-
-        font = QFont(option.font)
+        font = QFont(opt.font)
         if node_type == NodeType.HEADER:
             font.setPointSizeF(font.pointSizeF() + 1.0)
             font.setBold(True)
         elif node_type == NodeType.SECTION:
             font.setPointSizeF(font.pointSizeF() - 0.5)
             font.setCapitalization(QFont.Capitalization.SmallCaps)
-        if node_type == NodeType.ACTION:
+        elif node_type == NodeType.ACTION:
             font.setItalic(True)
-        painter.setFont(font)
+        opt.font = font
 
         color = TEXT_COLOR if is_enabled else DISABLED_TEXT
         if node_type == NodeType.SECTION:
             color = SECTION_TEXT
         elif node_type == NodeType.ACTION:
             color = ICON_COLOR
-        painter.setPen(color)
 
-        icon_size = 18
-        if icon is not None and not icon.isNull():
-            icon_rect = QRect(x, rect.top(), icon_size, rect.height())
-            icon.paint(
-                painter,
-                icon_rect,
-                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter,
-            )
-            x += icon_size + ICON_TEXT_GAP
+        opt.palette.setColor(QPalette.ColorRole.Text, color)
+        opt.palette.setColor(QPalette.ColorRole.HighlightedText, color)
 
-        metrics = QFontMetrics(font)
-        text_rect = rect.adjusted(x - rect.left() + 2, 0, -8, 0)
-        elided = metrics.elidedText(text, Qt.TextElideMode.ElideRight, text_rect.width())
-        painter.drawText(
-            text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, elided
-        )
+        if opt.state & QStyle.StateFlag.State_Selected:
+            opt.state &= ~QStyle.StateFlag.State_Selected
+        if opt.state & QStyle.StateFlag.State_MouseOver:
+            opt.state &= ~QStyle.StateFlag.State_MouseOver
 
-        painter.restore()
+        super().paint(painter, opt, index)
 
 
 class AlbumSidebar(QWidget):
