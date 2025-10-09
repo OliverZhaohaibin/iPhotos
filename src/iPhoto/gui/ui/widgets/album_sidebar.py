@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QModelIndex, QPoint, QSize, Qt, Signal
+from PySide6.QtCore import QModelIndex, QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (
     QInputDialog,
@@ -149,6 +149,27 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         painter.restore()
 
 
+class AlbumTreeView(QTreeView):
+    """Tree view that suppresses branch highlighting for leaf rows."""
+
+    def drawBranches(self, painter: QPainter, rect: QRect, index: QModelIndex) -> None:
+        model = self.model()
+        has_children = bool(model and model.hasChildren(index))
+
+        if has_children:
+            super().drawBranches(painter, rect, index)
+            return
+
+        palette = self.palette()
+        use_alternate = self.alternatingRowColors() and index.row() % 2
+        base_brush = (
+            palette.brush(QPalette.ColorRole.AlternateBase)
+            if use_alternate
+            else palette.brush(QPalette.ColorRole.Base)
+        )
+        painter.fillRect(rect, base_brush)
+
+
 class AlbumSidebar(QWidget):
     """Composite widget exposing library navigation and actions."""
 
@@ -187,7 +208,7 @@ class AlbumSidebar(QWidget):
         self._title.setFont(title_font)
         self._title.setStyleSheet("color: #1b1b1b;")
 
-        self._tree = QTreeView()
+        self._tree = AlbumTreeView()
         self._tree.setObjectName("albumSidebarTree")
         self._tree.setModel(self._model)
         self._tree.setHeaderHidden(True)
