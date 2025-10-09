@@ -70,16 +70,19 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         rect = option.rect
         node_type = index.data(AlbumTreeRole.NODE_TYPE) or NodeType.ALBUM
 
-        # Shift the drawing rect left when the view did not draw a branch
-        # indicator. The tree view still reserves indentation space even when
-        # no arrow is shown, so this keeps text aligned with parent rows.
+        # Shift the painter left when the view did not draw a branch indicator.
+        # The tree view still reserves indentation space even for leaf rows, so
+        # this translation reclaims the unused gutter while keeping parent rows
+        # unaffected.
         has_children = bool(option.state & QStyle.StateFlag.State_HasChildren)
-        draw_rect = QRect(rect)
         if not has_children:
-            draw_rect.translate(-INDENT_PER_LEVEL, 0)
+            painter.translate(-INDENT_PER_LEVEL, 0)
 
-        # Draw separator rows as a thin line.
+        # Draw separator rows as a thin line. Separators should not inherit the
+        # translation above, so reset the painter before painting the rule.
         if node_type == NodeType.SEPARATOR:
+            painter.restore()
+            painter.save()
             pen = QPen(SEPARATOR_COLOR)
             pen.setWidth(1)
             painter.setPen(pen)
@@ -102,7 +105,7 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
             highlight = None
 
         if highlight is not None:
-            background_rect = draw_rect.adjusted(6, 4, -6, -4)
+            background_rect = rect.adjusted(6, 4, -6, -4)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(highlight)
@@ -129,10 +132,10 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
             color = ICON_COLOR
         painter.setPen(color)
 
-        x = draw_rect.left() + LEFT_PADDING
+        x = rect.left() + LEFT_PADDING
         icon_size = 18
         if icon is not None and not icon.isNull():
-            icon_rect = QRect(draw_rect)
+            icon_rect = QRect(rect)
             icon_rect.setLeft(x)
             icon_rect.setWidth(icon_size)
             icon.paint(
@@ -143,7 +146,7 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
             x += icon_size + ICON_TEXT_GAP
 
         metrics = QFontMetrics(font)
-        text_rect = draw_rect.adjusted(x - draw_rect.left(), 0, -8, 0)
+        text_rect = rect.adjusted(x - rect.left(), 0, -8, 0)
         elided = metrics.elidedText(text, Qt.TextElideMode.ElideRight, text_rect.width())
         painter.drawText(
             text_rect,
