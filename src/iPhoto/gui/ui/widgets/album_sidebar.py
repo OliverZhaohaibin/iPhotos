@@ -94,12 +94,18 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
 
         if highlight is not None:
             indentation_offset = 0
-            if node_type == NodeType.SUBALBUM:
-                tree_view = option.widget
-                if isinstance(tree_view, QTreeView):
-                    indentation_offset = tree_view.indentation()
-                else:
-                    indentation_offset = 18
+            tree_view = option.widget
+            indentation = 18
+            if isinstance(tree_view, QTreeView):
+                indentation = tree_view.indentation()
+
+            if indentation:
+                depth = 0
+                parent_index = index.parent()
+                while parent_index.isValid():
+                    depth += 1
+                    parent_index = parent_index.parent()
+                indentation_offset = depth * indentation
 
             content_rect = rect.adjusted(indentation_offset, 0, 0, 0)
             background_rect = content_rect.adjusted(6, 4, -6, -4)
@@ -215,10 +221,11 @@ class AlbumSidebar(QWidget):
         self._tree.setPalette(tree_palette)
         self._tree.setAutoFillBackground(True)
         self._tree.setStyleSheet(
-            "QTreeView { background: transparent; }"
+            "QTreeView { background: transparent; border: none; }"
             "QTreeView::item { border: 0px; padding: 0px; margin: 0px; }"
             "QTreeView::item:selected { background: transparent; }"
             "QTreeView::item:hover { background: transparent; }"
+            "QTreeView::branch { background: transparent; }"
         )
 
         layout = QVBoxLayout(self)
