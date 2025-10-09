@@ -16,7 +16,7 @@ class AssetModel(AssetFilterProxyModel):
 
     def __init__(self, facade: AppFacade) -> None:
         super().__init__()
-        self._list_model = AssetListModel(facade, self)
+        self._list_model = facade.asset_list_model
         self.setSourceModel(self._list_model)
 
     # ------------------------------------------------------------------
