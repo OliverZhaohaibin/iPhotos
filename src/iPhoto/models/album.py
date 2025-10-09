@@ -12,6 +12,7 @@ from ..config import ALBUM_MANIFEST_NAMES, WORK_DIR_NAME
 from ..errors import AlbumNotFoundError
 from ..schemas import validate_album
 from ..utils.jsonio import read_json, write_json
+from ..utils.pathutils import ensure_work_dir
 
 
 @dataclass(slots=True)
@@ -25,6 +26,7 @@ class Album:
     def open(root: Path) -> "Album":
         if not root.exists():
             raise AlbumNotFoundError(f"Album directory does not exist: {root}")
+        ensure_work_dir(root, WORK_DIR_NAME)
         manifest_path = Album._find_manifest(root)
         if manifest_path:
             manifest = read_json(manifest_path)

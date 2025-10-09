@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Optional, TYPE_CHECKING
+from typing import Dict, List, Optional, Set, TYPE_CHECKING
 
 from PySide6.QtCore import (
     QAbstractListModel,
@@ -16,8 +16,9 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPixmap
 
-from ..tasks.asset_loader_worker import AssetLoaderWorker
+from ..tasks.asset_loader_worker import AssetLoaderSignals, AssetLoaderWorker
 from ..tasks.thumbnail_loader import ThumbnailLoader
+from .live_map import load_live_map
 from .roles import Roles, role_names
 
 if TYPE_CHECKING:  # pragma: no cover - import only for type checking
@@ -44,6 +45,7 @@ class AssetListModel(QAbstractListModel):
         self._loader_pool = QThreadPool.globalInstance()
         self._loader_worker: Optional[AssetLoaderWorker] = None
         self._pending_reload = False
+        self._visible_rows: Set[int] = set()
         facade.albumOpened.connect(self._on_album_opened)
 
     def album_root(self) -> Optional[Path]:
@@ -105,7 +107,8 @@ class AssetListModel(QAbstractListModel):
     # Facade callbacks
     # ------------------------------------------------------------------
     def _on_album_opened(self, root: Path) -> None:
-        self._teardown_loader()
+        if self._loader_worker:
+            self._loader_worker.cancel()
         self._pending_reload = False
         self._album_root = root
         self._thumb_loader.reset_for_album(root)
@@ -122,6 +125,7 @@ class AssetListModel(QAbstractListModel):
         if not self._album_root:
             return
         if self._loader_worker is not None:
+            self._loader_worker.cancel()
             self._pending_reload = True
             return
         self.beginResetModel()
@@ -130,17 +134,21 @@ class AssetListModel(QAbstractListModel):
         self.endResetModel()
         manifest = self._facade.current_album.manifest if self._facade.current_album else {}
         featured = manifest.get("featured", []) or []
-        worker = AssetLoaderWorker(self._album_root, featured)
-        worker.progressUpdated.connect(self._on_loader_progress)
-        worker.chunkReady.connect(self._on_loader_chunk_ready)
-        worker.finished.connect(self._on_loader_finished)
-        worker.error.connect(self._on_loader_error)
-        self._pending_reload = False
+        signals = AssetLoaderSignals(self)
+        signals.progressUpdated.connect(self._on_loader_progress)
+        signals.chunkReady.connect(self._on_loader_chunk_ready)
+        signals.finished.connect(self._on_loader_finished)
+        signals.error.connect(self._on_loader_error)
+
+        live_map = load_live_map(self._album_root)
+
+        worker = AssetLoaderWorker(self._album_root, featured, signals, live_map)
         self._loader_worker = worker
+        self._pending_reload = False
         self._loader_pool.start(worker)
 
     def _on_loader_chunk_ready(self, root: Path, chunk: List[Dict[str, object]]) -> None:
-        if self.sender() is not self._loader_worker:
+        if not self._loader_worker or root != self._loader_worker.root:
             return
         if not self._album_root or root != self._album_root or not chunk:
             return
@@ -153,48 +161,99 @@ class AssetListModel(QAbstractListModel):
         self.endInsertRows()
 
     def _on_loader_progress(self, root: Path, current: int, total: int) -> None:
-        if self.sender() is not self._loader_worker:
+        if not self._loader_worker or root != self._loader_worker.root:
             return
         if not self._album_root or root != self._album_root:
             return
         self.loadProgress.emit(root, current, total)
 
     def _on_loader_finished(self, root: Path, success: bool) -> None:
-        if self.sender() is not self._loader_worker:
+        if not self._loader_worker or root != self._loader_worker.root:
             return
         if not self._album_root or root != self._album_root:
+            should_restart = bool(self._pending_reload and self._album_root)
             self._teardown_loader()
+            if should_restart:
+                QTimer.singleShot(0, self.start_load)
             return
         if success:
             active = set(self._row_lookup.keys())
             self._thumb_cache = {
                 rel: pix for rel, pix in self._thumb_cache.items() if rel in active
             }
-            self.loadFinished.emit(root, True)
-        self._teardown_loader()
-        should_restart = self._pending_reload and self._album_root and root == self._album_root
+        self.loadFinished.emit(root, success)
+        should_restart = bool(self._pending_reload and self._album_root and root == self._album_root)
         self._pending_reload = False
+        self._teardown_loader()
         if should_restart:
             QTimer.singleShot(0, self.start_load)
 
     def _on_loader_error(self, root: Path, message: str) -> None:
-        if self.sender() is not self._loader_worker:
+        if not self._loader_worker or root != self._loader_worker.root:
             return
         if self._album_root and root == self._album_root:
             self._facade.errorRaised.emit(message)
-            self.loadFinished.emit(root, False)
+        should_restart = bool(self._pending_reload and self._album_root)
+        self.loadFinished.emit(root, False)
         self._pending_reload = False
         self._teardown_loader()
+        if should_restart:
+            QTimer.singleShot(0, self.start_load)
 
     def _teardown_loader(self) -> None:
         if self._loader_worker is not None:
-            self._loader_worker.deleteLater()
-            self._loader_worker = None
+            self._loader_worker.signals.deleteLater()
+        self._loader_worker = None
+        self._pending_reload = False
 
     # ------------------------------------------------------------------
     # Thumbnail helpers
     # ------------------------------------------------------------------
-    def _resolve_thumbnail(self, row: Dict[str, object]) -> QPixmap:
+    def prioritize_rows(self, first: int, last: int) -> None:
+        """Request high-priority thumbnails for the inclusive range *first*→*last*."""
+
+        if not self._rows:
+            self._visible_rows.clear()
+            return
+
+        if first > last:
+            first, last = last, first
+
+        first = max(first, 0)
+        last = min(last, len(self._rows) - 1)
+        if first > last:
+            self._visible_rows.clear()
+            return
+
+        requested = set(range(first, last + 1))
+        if not requested:
+            self._visible_rows.clear()
+            return
+
+        uncached = {
+            row
+            for row in requested
+            if str(self._rows[row]["rel"]) not in self._thumb_cache
+        }
+        if not uncached:
+            self._visible_rows = requested
+            return
+        if uncached.issubset(self._visible_rows):
+            self._visible_rows = requested
+            return
+
+        self._visible_rows = requested
+        for row in range(first, last + 1):
+            if row not in uncached:
+                continue
+            row_data = self._rows[row]
+            self._resolve_thumbnail(row_data, ThumbnailLoader.Priority.VISIBLE)
+
+    def _resolve_thumbnail(
+        self,
+        row: Dict[str, object],
+        priority: ThumbnailLoader.Priority = ThumbnailLoader.Priority.NORMAL,
+    ) -> QPixmap:
         rel = str(row["rel"])
         cached = self._thumb_cache.get(rel)
         if cached is not None:
@@ -204,7 +263,13 @@ class AssetListModel(QAbstractListModel):
             return placeholder
         abs_path = Path(str(row["abs"]))
         if bool(row.get("is_image")):
-            pixmap = self._thumb_loader.request(rel, abs_path, self._thumb_size, is_image=True)
+            pixmap = self._thumb_loader.request(
+                rel,
+                abs_path,
+                self._thumb_size,
+                is_image=True,
+                priority=priority,
+            )
             if pixmap is not None:
                 self._thumb_cache[rel] = pixmap
                 return pixmap
@@ -225,6 +290,7 @@ class AssetListModel(QAbstractListModel):
                 is_video=True,
                 still_image_time=still_hint,
                 duration=duration_value,
+                priority=priority,
             )
             if pixmap is not None:
                 self._thumb_cache[rel] = pixmap

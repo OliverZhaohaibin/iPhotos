@@ -2,14 +2,25 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
+from enum import IntEnum
 import hashlib
 from pathlib import Path
 from typing import Dict, Optional, Set, Tuple
 
-from PySide6.QtCore import QCoreApplication, QObject, QRunnable, QSize, QThreadPool, Qt, Signal
+from PySide6.QtCore import (
+    QCoreApplication,
+    QObject,
+    QRunnable,
+    QSize,
+    QThreadPool,
+    Qt,
+    Signal,
+)
 from PySide6.QtGui import QImage, QPainter, QPixmap
 
 from ....config import THUMBNAIL_SEEK_GUARD_SEC, WORK_DIR_NAME
+from ....utils.pathutils import ensure_work_dir
 from ...utils import image_loader
 from .video_frame_grabber import grab_video_frame
 
@@ -167,17 +178,40 @@ class ThumbnailLoader(QObject):
     ready = Signal(object, str, QPixmap)
     _delivered = Signal(object, object, str)
 
+    class Priority(IntEnum):
+        """Simple priority values recognised by the loader."""
+
+        LOW = -1
+        NORMAL = 0
+        VISIBLE = 1
+
     def __init__(self, parent: Optional[QObject] = None) -> None:
         if parent is None:
             parent = QCoreApplication.instance()
         super().__init__(parent)
         self._pool = QThreadPool.globalInstance()
+        self._video_pool = QThreadPool(self)
+        global_max = self._pool.maxThreadCount()
+        if global_max <= 0:
+            global_max = 4
+        video_threads = max(1, min(2, max(global_max // 2, 1)))
+        self._video_pool.setMaxThreadCount(video_threads)
         self._album_root: Optional[Path] = None
         self._album_root_str: Optional[str] = None
         self._memory: Dict[Tuple[str, str, int, int, int], QPixmap] = {}
         self._pending: Set[Tuple[str, str, int, int, int]] = set()
         self._failures: Set[Tuple[str, str, int, int, int]] = set()
         self._missing: Set[Tuple[str, str, int, int]] = set()
+        self._video_queue: Dict[
+            int, OrderedDict[Tuple[str, str, int, int, int], ThumbnailJob]
+        ] = {
+            self.Priority.VISIBLE: OrderedDict(),
+            self.Priority.NORMAL: OrderedDict(),
+            self.Priority.LOW: OrderedDict(),
+        }
+        self._video_queue_lookup: Dict[
+            Tuple[str, str, int, int, int], int
+        ] = {}
         self._delivered.connect(self._handle_result)
 
     def reset_for_album(self, root: Path) -> None:
@@ -189,8 +223,12 @@ class ThumbnailLoader(QObject):
         self._pending.clear()
         self._failures.clear()
         self._missing.clear()
+        for queue in self._video_queue.values():
+            queue.clear()
+        self._video_queue_lookup.clear()
         try:
-            (root / WORK_DIR_NAME / "thumbs").mkdir(parents=True, exist_ok=True)
+            work_dir = ensure_work_dir(root, WORK_DIR_NAME)
+            (work_dir / "thumbs").mkdir(parents=True, exist_ok=True)
         except OSError:
             pass
 
@@ -204,6 +242,7 @@ class ThumbnailLoader(QObject):
         is_video: bool = False,
         still_image_time: Optional[float] = None,
         duration: Optional[float] = None,
+        priority: "ThumbnailLoader.Priority" = Priority.NORMAL,
     ) -> Optional[QPixmap]:
         if self._album_root is None or self._album_root_str is None:
             return None
@@ -248,8 +287,11 @@ class ThumbnailLoader(QObject):
             still_image_time=still_image_time,
             duration=duration,
         )
-        self._pending.add(key)
-        self._pool.start(job)
+        if is_video:
+            self._queue_video_job(key, job, priority)
+            self._drain_video_queue()
+        else:
+            self._start_job(job, key, self._pool)
         return None
 
     def _base_key(self, rel: str, size: QSize) -> Tuple[str, str, int, int]:
@@ -275,10 +317,12 @@ class ThumbnailLoader(QObject):
         self._pending.discard(key)
         if image is None:
             self._failures.add(key)
+            self._drain_video_queue()
             return
         pixmap = QPixmap.fromImage(image)
         if pixmap.isNull():
             self._failures.add(key)
+            self._drain_video_queue()
             return
         base = key[:-1]
         obsolete = [existing for existing in self._memory if existing[:-1] == base and existing != key]
@@ -292,6 +336,7 @@ class ThumbnailLoader(QObject):
         self._memory[key] = pixmap
         if self._album_root is not None:
             self.ready.emit(self._album_root, rel, pixmap)
+        self._drain_video_queue()
 
     @staticmethod
     def _safe_unlink(path: Path) -> None:
@@ -304,3 +349,67 @@ class ThumbnailLoader(QObject):
                 pass
         except OSError:
             pass
+
+    def _queue_video_job(
+        self,
+        key: Tuple[str, str, int, int, int],
+        job: ThumbnailJob,
+        priority: "ThumbnailLoader.Priority",
+    ) -> None:
+        if key in self._pending:
+            return
+        existing_priority = self._video_queue_lookup.get(key)
+        if existing_priority is not None:
+            if priority > existing_priority:
+                queue = self._video_queue[existing_priority]
+                existing_job = queue.pop(key, None)
+                if existing_job is not None:
+                    self._enqueue_video_job(key, existing_job, priority)
+            return
+        self._enqueue_video_job(key, job, priority)
+
+    def _enqueue_video_job(
+        self,
+        key: Tuple[str, str, int, int, int],
+        job: ThumbnailJob,
+        priority: "ThumbnailLoader.Priority",
+    ) -> None:
+        queue = self._video_queue.get(priority)
+        if queue is None:
+            queue = OrderedDict()
+            self._video_queue[priority] = queue
+        queue[key] = job
+        self._video_queue_lookup[key] = priority
+
+    def _start_job(
+        self,
+        job: ThumbnailJob,
+        key: Tuple[str, str, int, int, int],
+        pool: QThreadPool,
+    ) -> None:
+        self._pending.add(key)
+        pool.start(job)
+
+    def _drain_video_queue(self) -> None:
+        if self._video_pool is None:
+            return
+        if self._video_pool.activeThreadCount() >= self._video_pool.maxThreadCount():
+            return
+        while self._video_pool.activeThreadCount() < self._video_pool.maxThreadCount():
+            next_job = self._take_next_video_job()
+            if next_job is None:
+                break
+            key, job = next_job
+            self._start_job(job, key, self._video_pool)
+
+    def _take_next_video_job(
+        self,
+        ) -> Optional[Tuple[Tuple[str, str, int, int, int], ThumbnailJob]]:
+        for priority in (self.Priority.VISIBLE, self.Priority.NORMAL, self.Priority.LOW):
+            queue = self._video_queue.get(priority)
+            if not queue:
+                continue
+            key, job = queue.popitem(last=False)
+            self._video_queue_lookup.pop(key, None)
+            return key, job
+        return None

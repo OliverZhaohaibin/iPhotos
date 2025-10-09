@@ -18,6 +18,7 @@ class AssetGrid(QListView):
     requestPreview = Signal(object)
     previewReleased = Signal()
     previewCancelled = Signal()
+    visibleRowsChanged = Signal(int, int)
 
     _DRAG_CANCEL_THRESHOLD = 6
 
@@ -29,6 +30,12 @@ class AssetGrid(QListView):
         self._pressed_index = None
         self._press_pos: Optional[QPoint] = None
         self._long_press_active = False
+        self._update_timer = QTimer(self)
+        self._update_timer.setSingleShot(True)
+        self._update_timer.setInterval(100)
+        self._update_timer.timeout.connect(self._emit_visible_rows)
+        self._visible_range: Optional[tuple[int, int]] = None
+        self._model = None
 
     # ------------------------------------------------------------------
     # Mouse event handling
@@ -74,6 +81,40 @@ class AssetGrid(QListView):
         self._cancel_pending_long_press()
         super().leaveEvent(event)
 
+    def showEvent(self, event) -> None:  # type: ignore[override]
+        super().showEvent(event)
+        QTimer.singleShot(0, self._schedule_visible_rows_update)
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._schedule_visible_rows_update()
+
+    def scrollContentsBy(self, dx: int, dy: int) -> None:  # type: ignore[override]
+        super().scrollContentsBy(dx, dy)
+        self._schedule_visible_rows_update()
+
+    def setModel(self, model) -> None:  # type: ignore[override]
+        if self._model is not None:
+            try:
+                self._model.modelReset.disconnect(self._schedule_visible_rows_update)
+            except (RuntimeError, TypeError):
+                pass
+            try:
+                self._model.rowsInserted.disconnect(self._schedule_visible_rows_update)
+            except (RuntimeError, TypeError):
+                pass
+            try:
+                self._model.rowsRemoved.disconnect(self._schedule_visible_rows_update)
+            except (RuntimeError, TypeError):
+                pass
+        super().setModel(model)
+        self._model = model
+        if model is not None:
+            model.modelReset.connect(self._schedule_visible_rows_update)
+            model.rowsInserted.connect(self._schedule_visible_rows_update)
+            model.rowsRemoved.connect(self._schedule_visible_rows_update)
+        self._schedule_visible_rows_update()
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
@@ -90,6 +131,9 @@ class AssetGrid(QListView):
         if self._pressed_index is not None and self._pressed_index.isValid():
             self._long_press_active = True
             self.requestPreview.emit(self._pressed_index)
+
+    def _schedule_visible_rows_update(self) -> None:
+        self._update_timer.start()
 
     def _viewport_pos(self, event: QMouseEvent) -> QPoint:
         """Return the event position mapped into viewport coordinates."""
@@ -134,3 +178,42 @@ class AssetGrid(QListView):
         # we have no reliable coordinate system information, so best-effort return
         # of the event's integer components is the safest option.
         return QPoint(event.x(), event.y())
+
+    def _emit_visible_rows(self) -> None:
+        model = self.model()
+        if model is None:
+            return
+        row_count = model.rowCount()
+        if row_count == 0:
+            if self._visible_range is not None:
+                self._visible_range = None
+            return
+        viewport_rect = self.viewport().rect()
+        if viewport_rect.isEmpty():
+            return
+
+        top_index = self.indexAt(viewport_rect.topLeft())
+        bottom_index = self.indexAt(viewport_rect.bottomRight())
+
+        first = top_index.row()
+        last = bottom_index.row()
+
+        if first == -1 and last == -1:
+            return
+        if first == -1:
+            first = 0
+        if last == -1:
+            last = row_count - 1
+
+        buffer = 20
+        first = max(0, first - buffer)
+        last = min(row_count - 1, last + buffer)
+        if first > last:
+            return
+
+        visible_range = (first, last)
+        if self._visible_range == visible_range:
+            return
+
+        self._visible_range = visible_range
+        self.visibleRowsChanged.emit(first, last)

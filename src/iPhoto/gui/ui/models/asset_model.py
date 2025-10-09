@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from ...facade import AppFacade
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover - import for type checking only
+    from ...facade import AppFacade
 from ..tasks.thumbnail_loader import ThumbnailLoader
 from .asset_list_model import AssetListModel
 from .proxy_filter import AssetFilterProxyModel
@@ -14,7 +17,7 @@ __all__ = ["AssetModel", "Roles"]
 class AssetModel(AssetFilterProxyModel):
     """Main entry point for asset data used by the widget views."""
 
-    def __init__(self, facade: AppFacade) -> None:
+    def __init__(self, facade: "AppFacade") -> None:
         super().__init__()
         self._list_model = facade.asset_list_model
         self.setSourceModel(self._list_model)
@@ -27,3 +30,52 @@ class AssetModel(AssetFilterProxyModel):
 
     def thumbnail_loader(self) -> ThumbnailLoader:
         return self._list_model.thumbnail_loader()
+
+    # ------------------------------------------------------------------
+    # Thumbnail prioritisation helpers
+    # ------------------------------------------------------------------
+    def prioritize_rows(self, first: int, last: int) -> None:
+        """Map *first*→*last* proxy rows to the source model and prioritise them."""
+
+        if last < 0 or self.rowCount() == 0:
+            return
+
+        if first > last:
+            first, last = last, first
+
+        first = max(first, 0)
+        last = min(last, self.rowCount() - 1)
+        if first > last:
+            return
+
+        map_to_source = self.mapToSource
+        seen: set[int] = set()
+        runs: list[tuple[int, int]] = []
+        run_start: Optional[int] = None
+        previous: Optional[int] = None
+
+        for proxy_row in range(first, last + 1):
+            proxy_index = self.index(proxy_row, 0)
+            if not proxy_index.isValid():
+                continue
+            source_index = map_to_source(proxy_index)
+            if not source_index.isValid():
+                continue
+            source_row = source_index.row()
+            if source_row in seen:
+                continue
+            seen.add(source_row)
+            if run_start is None:
+                run_start = previous = source_row
+                continue
+            assert previous is not None
+            if source_row == previous + 1:
+                previous = source_row
+            else:
+                runs.append((run_start, previous))
+                run_start = previous = source_row
+        if run_start is not None and previous is not None:
+            runs.append((run_start, previous))
+
+        for start, end in runs:
+            self._list_model.prioritize_rows(start, end)
