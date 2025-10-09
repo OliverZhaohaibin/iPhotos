@@ -23,6 +23,9 @@ class AssetLoaderSignals(QObject):
     finished = Signal(Path, bool)
     error = Signal(Path, str)
 
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+
 
 class AssetLoaderWorker(QRunnable):
     """Load album assets on a background thread."""

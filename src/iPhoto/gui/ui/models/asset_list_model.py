@@ -43,7 +43,6 @@ class AssetListModel(QAbstractListModel):
         self._thumb_loader.ready.connect(self._on_thumb_ready)
         self._loader_pool = QThreadPool.globalInstance()
         self._loader_worker: Optional[AssetLoaderWorker] = None
-        self._loader_signals: Optional[AssetLoaderSignals] = None
         self._pending_reload = False
         self._visible_rows: Set[int] = set()
         facade.albumOpened.connect(self._on_album_opened)
@@ -109,7 +108,6 @@ class AssetListModel(QAbstractListModel):
     def _on_album_opened(self, root: Path) -> None:
         if self._loader_worker:
             self._loader_worker.cancel()
-        self._teardown_loader()
         self._pending_reload = False
         self._album_root = root
         self._thumb_loader.reset_for_album(root)
@@ -142,7 +140,6 @@ class AssetListModel(QAbstractListModel):
         signals.error.connect(self._on_loader_error)
 
         worker = AssetLoaderWorker(self._album_root, featured, signals)
-        self._loader_signals = signals
         self._loader_worker = worker
         self._pending_reload = False
         self._loader_pool.start(worker)
@@ -171,7 +168,10 @@ class AssetListModel(QAbstractListModel):
         if not self._loader_worker or root != self._loader_worker.root:
             return
         if not self._album_root or root != self._album_root:
+            should_restart = bool(self._pending_reload and self._album_root)
             self._teardown_loader()
+            if should_restart:
+                QTimer.singleShot(0, self.start_load)
             return
         if success:
             active = set(self._row_lookup.keys())
@@ -179,7 +179,7 @@ class AssetListModel(QAbstractListModel):
                 rel: pix for rel, pix in self._thumb_cache.items() if rel in active
             }
         self.loadFinished.emit(root, success)
-        should_restart = self._pending_reload and self._album_root and root == self._album_root
+        should_restart = bool(self._pending_reload and self._album_root and root == self._album_root)
         self._pending_reload = False
         self._teardown_loader()
         if should_restart:
@@ -190,25 +190,23 @@ class AssetListModel(QAbstractListModel):
             return
         if self._album_root and root == self._album_root:
             self._facade.errorRaised.emit(message)
+        should_restart = bool(self._pending_reload and self._album_root)
         self.loadFinished.emit(root, False)
-        should_restart = self._pending_reload and self._album_root and root == self._album_root
         self._pending_reload = False
         self._teardown_loader()
         if should_restart:
             QTimer.singleShot(0, self.start_load)
 
     def _teardown_loader(self) -> None:
-        if self._loader_signals is not None:
+        if self._loader_worker is not None:
             try:
-                self._loader_signals.progressUpdated.disconnect(self._on_loader_progress)
-                self._loader_signals.chunkReady.disconnect(self._on_loader_chunk_ready)
-                self._loader_signals.finished.disconnect(self._on_loader_finished)
-                self._loader_signals.error.disconnect(self._on_loader_error)
+                self._loader_worker.signals.progressUpdated.disconnect(self._on_loader_progress)
+                self._loader_worker.signals.chunkReady.disconnect(self._on_loader_chunk_ready)
+                self._loader_worker.signals.finished.disconnect(self._on_loader_finished)
+                self._loader_worker.signals.error.disconnect(self._on_loader_error)
             except (RuntimeError, TypeError):
                 pass
-            self._loader_signals.deleteLater()
-            self._loader_signals = None
-
+            self._loader_worker.signals.deleteLater()
         self._loader_worker = None
         self._pending_reload = False
 
