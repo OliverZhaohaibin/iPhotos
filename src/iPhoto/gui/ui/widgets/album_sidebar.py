@@ -48,8 +48,8 @@ SEPARATOR_COLOR = QColor(0, 0, 0, 40)
 
 ROW_HEIGHT = 36
 ROW_RADIUS = 10
-LEFT_PADDING = 14
-ICON_TEXT_GAP = 10
+LEFT_PADDING = 10
+ICON_TEXT_GAP = 8
 
 
 class AlbumSidebarDelegate(QStyledItemDelegate):
@@ -144,6 +144,8 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
 
         x = content_left + LEFT_PADDING
         icon_size = 18
+        if isinstance(tree_view, QTreeView):
+            icon_size = tree_view.iconSize().width()
         if icon is not None and not icon.isNull():
             icon_rect = QRect(x, rect.top(), icon_size, rect.height())
             icon.paint(
@@ -211,8 +213,8 @@ class AlbumSidebar(QWidget):
         self._tree.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self._tree.doubleClicked.connect(self._on_double_clicked)
         self._tree.setMinimumWidth(220)
-        self._tree.setIndentation(18)
-        self._tree.setIconSize(QSize(18, 18))
+        self._tree.setIndentation(12)
+        self._tree.setIconSize(QSize(16, 16))
         self._tree.setMouseTracking(True)
         self._tree.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         self._tree.setItemDelegate(AlbumSidebarDelegate(self._tree))
@@ -239,7 +241,7 @@ class AlbumSidebar(QWidget):
             "QTreeView::branch:adjoins-item, "
             "QTreeView::branch:selected, "
             "QTreeView::branch:hover { "
-            "  background: transparent; image: none; border: none; }"
+            "  background: transparent; border: none; }"
         )
 
         layout = QVBoxLayout(self)

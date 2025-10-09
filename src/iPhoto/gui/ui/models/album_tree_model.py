@@ -63,6 +63,14 @@ class AlbumTreeItem:
         except ValueError:
             return 0
 
+    def has_expandable_children(self) -> bool:
+        """Return True if the item exposes album entries that can expand."""
+
+        return any(
+            child.node_type in {NodeType.ALBUM, NodeType.SUBALBUM}
+            for child in self.children
+        )
+
 
 class AlbumTreeModel(QAbstractItemModel):
     """Tree model describing the Basic Library hierarchy."""
@@ -144,7 +152,17 @@ class AlbumTreeModel(QAbstractItemModel):
         flags = Qt.ItemFlag.ItemIsEnabled
         if item.node_type not in {NodeType.SECTION, NodeType.SEPARATOR}:
             flags |= Qt.ItemFlag.ItemIsSelectable
-        if not item.children or item.node_type in {NodeType.ACTION, NodeType.STATIC}:
+        if item.node_type in {
+            NodeType.HEADER,
+            NodeType.SECTION,
+            NodeType.STATIC,
+            NodeType.ACTION,
+        }:
+            flags |= Qt.ItemFlag.ItemNeverHasChildren
+        elif item.node_type in {NodeType.ALBUM, NodeType.SUBALBUM}:
+            if not item.has_expandable_children():
+                flags |= Qt.ItemFlag.ItemNeverHasChildren
+        elif not item.children:
             flags |= Qt.ItemFlag.ItemNeverHasChildren
         return flags
 
