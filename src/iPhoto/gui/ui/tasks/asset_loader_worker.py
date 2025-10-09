@@ -25,7 +25,6 @@ class AssetLoaderWorker(QObject, QRunnable):
 
     def __init__(self, root: Path, featured: Iterable[str]) -> None:
         QObject.__init__(self)
-        QRunnable.__init__(self)
         self.setAutoDelete(False)
         self._root = root
         self._featured: Set[str] = {str(entry) for entry in featured}
