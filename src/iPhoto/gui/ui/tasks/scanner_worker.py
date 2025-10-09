@@ -40,13 +40,11 @@ class ScannerWorker(QObject):
 
             # Report that we are determining the total number of files before scanning.
             self.progressUpdated.emit(self._root, 0, -1)
-            all_files: List[Path] = []
             counted = 0
             for candidate in self._root.rglob("*"):
                 if self._is_cancelled:
-                    break
+                    return
                 if candidate.is_file():
-                    all_files.append(candidate)
                     counted += 1
                     if counted % 1000 == 0:
                         self.progressUpdated.emit(self._root, counted, -1)
@@ -54,7 +52,7 @@ class ScannerWorker(QObject):
             if self._is_cancelled:
                 return
 
-            total_files = len(all_files)
+            total_files = counted
             if counted and counted % 1000 != 0:
                 self.progressUpdated.emit(self._root, counted, -1)
             if total_files == 0:
@@ -66,14 +64,18 @@ class ScannerWorker(QObject):
             self.progressUpdated.emit(self._root, 0, total_files)
 
             rows: List[dict] = []
-            for index, file_path in enumerate(all_files, start=1):
+            processed = 0
+            for candidate in self._root.rglob("*"):
                 if self._is_cancelled:
                     break
-                row = self._process_single_file(file_path)
+                if not candidate.is_file():
+                    continue
+                processed += 1
+                row = self._process_single_file(candidate)
                 if row is not None:
                     rows.append(row)
-                if index == total_files or index % 50 == 0:
-                    self.progressUpdated.emit(self._root, index, total_files)
+                if processed == total_files or processed % 50 == 0:
+                    self.progressUpdated.emit(self._root, processed, total_files)
 
             if not self._is_cancelled:
                 self.finished.emit(self._root, rows)
