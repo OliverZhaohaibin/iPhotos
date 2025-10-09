@@ -12,7 +12,6 @@ from ....config import WORK_DIR_NAME
 from ....core.pairing import pair_live
 from ....media_classifier import classify_media
 from ....utils.pathutils import ensure_work_dir
-from ..models.live_map import load_live_map
 
 
 class AssetLoaderSignals(QObject):
@@ -30,12 +29,19 @@ class AssetLoaderSignals(QObject):
 class AssetLoaderWorker(QRunnable):
     """Load album assets on a background thread."""
 
-    def __init__(self, root: Path, featured: Iterable[str], signals: AssetLoaderSignals) -> None:
+    def __init__(
+        self,
+        root: Path,
+        featured: Iterable[str],
+        signals: AssetLoaderSignals,
+        live_map: Dict[str, Dict[str, object]],
+    ) -> None:
         super().__init__()
         self.setAutoDelete(False)
         self._root = root
         self._featured: Set[str] = {str(entry) for entry in featured}
         self._signals = signals
+        self._live_map = live_map
         self._is_cancelled = False
 
     @property
@@ -76,7 +82,7 @@ class AssetLoaderWorker(QRunnable):
     def _build_payload_chunks(self) -> Iterable[List[Dict[str, object]]]:
         ensure_work_dir(self._root, WORK_DIR_NAME)
         index_rows = list(IndexStore(self._root).read_all())
-        live_map = self._resolve_live_map(index_rows, load_live_map(self._root))
+        live_map = self._resolve_live_map(index_rows, self._live_map)
         motion_paths_to_hide = self._motion_paths_to_hide(live_map)
 
         total = len(index_rows)

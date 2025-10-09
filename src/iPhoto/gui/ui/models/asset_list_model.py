@@ -18,6 +18,7 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPixmap
 
 from ..tasks.asset_loader_worker import AssetLoaderSignals, AssetLoaderWorker
 from ..tasks.thumbnail_loader import ThumbnailLoader
+from .live_map import load_live_map
 from .roles import Roles, role_names
 
 if TYPE_CHECKING:  # pragma: no cover - import only for type checking
@@ -139,7 +140,9 @@ class AssetListModel(QAbstractListModel):
         signals.finished.connect(self._on_loader_finished)
         signals.error.connect(self._on_loader_error)
 
-        worker = AssetLoaderWorker(self._album_root, featured, signals)
+        live_map = load_live_map(self._album_root)
+
+        worker = AssetLoaderWorker(self._album_root, featured, signals, live_map)
         self._loader_worker = worker
         self._pending_reload = False
         self._loader_pool.start(worker)
