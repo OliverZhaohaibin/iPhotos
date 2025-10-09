@@ -16,7 +16,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPixmap
 
-from ..tasks.asset_loader_worker import AssetLoaderWorker, WorkerTask
+from ..tasks.asset_loader_worker import AssetLoaderSignals, AssetLoaderWorker
 from ..tasks.thumbnail_loader import ThumbnailLoader
 from .roles import Roles, role_names
 
@@ -43,6 +43,7 @@ class AssetListModel(QAbstractListModel):
         self._thumb_loader.ready.connect(self._on_thumb_ready)
         self._loader_pool = QThreadPool.globalInstance()
         self._loader_worker: Optional[AssetLoaderWorker] = None
+        self._loader_signals: Optional[AssetLoaderSignals] = None
         self._pending_reload = False
         self._visible_rows: Set[int] = set()
         facade.albumOpened.connect(self._on_album_opened)
@@ -106,6 +107,8 @@ class AssetListModel(QAbstractListModel):
     # Facade callbacks
     # ------------------------------------------------------------------
     def _on_album_opened(self, root: Path) -> None:
+        if self._loader_worker:
+            self._loader_worker.cancel()
         self._teardown_loader()
         self._pending_reload = False
         self._album_root = root
@@ -132,18 +135,20 @@ class AssetListModel(QAbstractListModel):
         self.endResetModel()
         manifest = self._facade.current_album.manifest if self._facade.current_album else {}
         featured = manifest.get("featured", []) or []
-        worker = AssetLoaderWorker(self._album_root, featured)
-        worker.progressUpdated.connect(self._on_loader_progress)
-        worker.chunkReady.connect(self._on_loader_chunk_ready)
-        worker.finished.connect(self._on_loader_finished)
-        worker.error.connect(self._on_loader_error)
-        self._pending_reload = False
+        signals = AssetLoaderSignals(self)
+        signals.progressUpdated.connect(self._on_loader_progress)
+        signals.chunkReady.connect(self._on_loader_chunk_ready)
+        signals.finished.connect(self._on_loader_finished)
+        signals.error.connect(self._on_loader_error)
+
+        worker = AssetLoaderWorker(self._album_root, featured, signals)
+        self._loader_signals = signals
         self._loader_worker = worker
-        task = WorkerTask(worker.run)
-        self._loader_pool.start(task)
+        self._pending_reload = False
+        self._loader_pool.start(worker)
 
     def _on_loader_chunk_ready(self, root: Path, chunk: List[Dict[str, object]]) -> None:
-        if self.sender() is not self._loader_worker:
+        if not self._loader_worker or root != self._loader_worker.root:
             return
         if not self._album_root or root != self._album_root or not chunk:
             return
@@ -156,14 +161,14 @@ class AssetListModel(QAbstractListModel):
         self.endInsertRows()
 
     def _on_loader_progress(self, root: Path, current: int, total: int) -> None:
-        if self.sender() is not self._loader_worker:
+        if not self._loader_worker or root != self._loader_worker.root:
             return
         if not self._album_root or root != self._album_root:
             return
         self.loadProgress.emit(root, current, total)
 
     def _on_loader_finished(self, root: Path, success: bool) -> None:
-        if self.sender() is not self._loader_worker:
+        if not self._loader_worker or root != self._loader_worker.root:
             return
         if not self._album_root or root != self._album_root:
             self._teardown_loader()
@@ -181,7 +186,7 @@ class AssetListModel(QAbstractListModel):
             QTimer.singleShot(0, self.start_load)
 
     def _on_loader_error(self, root: Path, message: str) -> None:
-        if self.sender() is not self._loader_worker:
+        if not self._loader_worker or root != self._loader_worker.root:
             return
         if self._album_root and root == self._album_root:
             self._facade.errorRaised.emit(message)
@@ -193,16 +198,19 @@ class AssetListModel(QAbstractListModel):
             QTimer.singleShot(0, self.start_load)
 
     def _teardown_loader(self) -> None:
-        if self._loader_worker is not None:
+        if self._loader_signals is not None:
             try:
-                self._loader_worker.progressUpdated.disconnect(self._on_loader_progress)
-                self._loader_worker.chunkReady.disconnect(self._on_loader_chunk_ready)
-                self._loader_worker.finished.disconnect(self._on_loader_finished)
-                self._loader_worker.error.disconnect(self._on_loader_error)
+                self._loader_signals.progressUpdated.disconnect(self._on_loader_progress)
+                self._loader_signals.chunkReady.disconnect(self._on_loader_chunk_ready)
+                self._loader_signals.finished.disconnect(self._on_loader_finished)
+                self._loader_signals.error.disconnect(self._on_loader_error)
             except (RuntimeError, TypeError):
                 pass
-            self._loader_worker.deleteLater()
-            self._loader_worker = None
+            self._loader_signals.deleteLater()
+            self._loader_signals = None
+
+        self._loader_worker = None
+        self._pending_reload = False
 
     # ------------------------------------------------------------------
     # Thumbnail helpers

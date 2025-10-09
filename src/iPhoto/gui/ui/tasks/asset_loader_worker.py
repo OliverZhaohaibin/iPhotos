@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Set
+from typing import Dict, Iterable, List, Optional, Set
 
 from PySide6.QtCore import QObject, QRunnable, Signal
 
@@ -15,32 +15,37 @@ from ....utils.pathutils import ensure_work_dir
 from ..models.live_map import load_live_map
 
 
-class WorkerTask(QRunnable):
-    """A thin QRunnable wrapper that executes a callable on a worker thread."""
+class AssetLoaderSignals(QObject):
+    """Signal container for :class:`AssetLoaderWorker` events."""
 
-    def __init__(self, target: Callable[[], None]) -> None:
-        super().__init__()
-        self.setAutoDelete(True)
-        self._target = target
-
-    def run(self) -> None:  # pragma: no cover - executed on worker thread
-        if self._target is not None:
-            self._target()
+    progressUpdated = Signal(Path, int, int)
+    chunkReady = Signal(Path, list)
+    finished = Signal(Path, bool)
+    error = Signal(Path, str)
 
 
-class AssetLoaderWorker(QObject):
+class AssetLoaderWorker(QRunnable):
     """Load album assets on a background thread."""
 
-    progressUpdated = Signal(object, int, int)
-    chunkReady = Signal(object, list)
-    finished = Signal(object, bool)
-    error = Signal(object, str)
-
-    def __init__(self, root: Path, featured: Iterable[str]) -> None:
+    def __init__(self, root: Path, featured: Iterable[str], signals: AssetLoaderSignals) -> None:
         super().__init__()
+        self.setAutoDelete(False)
         self._root = root
         self._featured: Set[str] = {str(entry) for entry in featured}
+        self._signals = signals
         self._is_cancelled = False
+
+    @property
+    def root(self) -> Path:
+        """Return the album root handled by this worker."""
+
+        return self._root
+
+    @property
+    def signals(self) -> AssetLoaderSignals:
+        """Expose the worker signals for connection management."""
+
+        return self._signals
 
     def run(self) -> None:  # pragma: no cover - executed on worker thread
         try:
@@ -49,15 +54,15 @@ class AssetLoaderWorker(QObject):
                 if self._is_cancelled:
                     break
                 if chunk:
-                    self.chunkReady.emit(self._root, chunk)
+                    self._signals.chunkReady.emit(self._root, chunk)
             if not self._is_cancelled:
-                self.finished.emit(self._root, True)
+                self._signals.finished.emit(self._root, True)
             else:
-                self.finished.emit(self._root, False)
+                self._signals.finished.emit(self._root, False)
         except Exception as exc:  # pragma: no cover - surfaced via signal
             if not self._is_cancelled:
-                self.error.emit(self._root, str(exc))
-                self.finished.emit(self._root, False)
+                self._signals.error.emit(self._root, str(exc))
+            self._signals.finished.emit(self._root, False)
 
     def cancel(self) -> None:
         """Request cancellation of the current load operation."""
@@ -73,7 +78,7 @@ class AssetLoaderWorker(QObject):
 
         total = len(index_rows)
         if total == 0:
-            self.progressUpdated.emit(self._root, 0, 0)
+            self._signals.progressUpdated.emit(self._root, 0, 0)
             return
 
         chunk_size = 200
@@ -87,7 +92,7 @@ class AssetLoaderWorker(QObject):
             if not rel or rel in motion_paths_to_hide:
                 if should_emit:
                     last_reported = position
-                    self.progressUpdated.emit(self._root, position, total)
+                    self._signals.progressUpdated.emit(self._root, position, total)
                 continue
 
             live_info = live_map.get(rel)
@@ -129,7 +134,7 @@ class AssetLoaderWorker(QObject):
             chunk.append(entry)
             if should_emit:
                 last_reported = position
-                self.progressUpdated.emit(self._root, position, total)
+                self._signals.progressUpdated.emit(self._root, position, total)
 
             if len(chunk) >= chunk_size or position == total:
                 yield chunk
