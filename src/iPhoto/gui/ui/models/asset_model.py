@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
-from ...facade import AppFacade
+if TYPE_CHECKING:  # pragma: no cover - import for type checking only
+    from ...facade import AppFacade
 from ..tasks.thumbnail_loader import ThumbnailLoader
 from .asset_list_model import AssetListModel
 from .proxy_filter import AssetFilterProxyModel
@@ -16,7 +17,7 @@ __all__ = ["AssetModel", "Roles"]
 class AssetModel(AssetFilterProxyModel):
     """Main entry point for asset data used by the widget views."""
 
-    def __init__(self, facade: AppFacade) -> None:
+    def __init__(self, facade: "AppFacade") -> None:
         super().__init__()
         self._list_model = facade.asset_list_model
         self.setSourceModel(self._list_model)
