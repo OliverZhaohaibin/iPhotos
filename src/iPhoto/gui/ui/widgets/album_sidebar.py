@@ -227,8 +227,13 @@ class AlbumSidebar(QWidget):
         self._tree.setStyleSheet(
             "QTreeView { background: transparent; border: none; }"
             "QTreeView::item, QTreeView::item:selected, QTreeView::item:hover { "
-            "background: transparent; border: 0px; padding: 0px; margin: 0px; }"
-            "QTreeView::branch, QTreeView::branch:selected, QTreeView::branch:hover { "
+            "background: transparent; border: 0; padding: 0; margin: 0; }"
+            "/* Keep branch arrows but ensure the gutter stays transparent in every state. */"
+            "QTreeView::branch,"
+            "QTreeView::branch:hover,"
+            "QTreeView::branch:selected,"
+            "QTreeView::branch:has-children,"
+            "QTreeView::branch:!has-children {"
             "background: transparent; }"
         )
 
