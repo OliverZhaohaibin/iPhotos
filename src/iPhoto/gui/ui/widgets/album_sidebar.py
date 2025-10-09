@@ -93,7 +93,16 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
             highlight = None
 
         if highlight is not None:
-            background_rect = rect.adjusted(6, 4, -6, -4)
+            indentation_offset = 0
+            if node_type == NodeType.SUBALBUM:
+                tree_view = option.widget
+                if isinstance(tree_view, QTreeView):
+                    indentation_offset = tree_view.indentation()
+                else:
+                    indentation_offset = 18
+
+            content_rect = rect.adjusted(indentation_offset, 0, 0, 0)
+            background_rect = content_rect.adjusted(6, 4, -6, -4)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(highlight)
