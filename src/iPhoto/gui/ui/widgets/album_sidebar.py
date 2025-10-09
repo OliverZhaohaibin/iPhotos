@@ -155,20 +155,6 @@ class AlbumTreeView(QTreeView):
 
         if has_children:
             super().drawBranches(painter, rect, index)
-            return
-
-        palette = self.palette()
-        use_alternate = self.alternatingRowColors() and index.row() % 2
-        base_brush = (
-            palette.brush(QPalette.ColorRole.AlternateBase)
-            if use_alternate
-            else palette.brush(QPalette.ColorRole.Base)
-        )
-        painter.save()
-        try:
-            painter.fillRect(rect, base_brush)
-        finally:
-            painter.restore()
 
 
 class AlbumSidebar(QWidget):
@@ -240,6 +226,9 @@ class AlbumSidebar(QWidget):
             "QTreeView::item { border: 0px; padding: 0px; margin: 0px; }"
             "QTreeView::item:selected { background: transparent; }"
             "QTreeView::item:hover { background: transparent; }"
+            "QTreeView::branch { background: transparent; }"
+            "QTreeView::branch:selected { background: transparent; }"
+            "QTreeView::branch:hover { background: transparent; }"
         )
 
         layout = QVBoxLayout(self)
