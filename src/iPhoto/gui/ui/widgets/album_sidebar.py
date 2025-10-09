@@ -70,8 +70,23 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         rect = option.rect
         node_type = index.data(AlbumTreeRole.NODE_TYPE) or NodeType.ALBUM
 
-        # Always erase the row to avoid hover/selection artifacts in the gutter.
-        painter.fillRect(rect, option.palette.base())
+        tree_view = option.widget
+        indentation = 0
+        if isinstance(tree_view, QTreeView):
+            indentation = tree_view.indentation()
+        else:
+            indentation = 12
+
+        depth = 0
+        parent_index = index.parent()
+        while parent_index.isValid():
+            depth += 1
+            parent_index = parent_index.parent()
+        content_left = rect.left() + depth * indentation
+
+        if content_left < rect.right():
+            content_rect = rect.adjusted(content_left - rect.left(), 0, 0, 0)
+            painter.fillRect(content_rect, option.palette.base())
 
         # Draw separator rows as a thin line.
         if node_type == NodeType.SEPARATOR:
@@ -95,19 +110,6 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
 
         if node_type in {NodeType.SECTION, NodeType.SEPARATOR}:
             highlight = None
-
-        indentation_offset = 0
-        tree_view = option.widget
-        if isinstance(tree_view, QTreeView):
-            depth = 0
-            parent_index = index.parent()
-            while parent_index.isValid():
-                depth += 1
-                parent_index = parent_index.parent()
-            if depth > 0:
-                indentation_offset = depth * tree_view.indentation()
-
-        content_left = rect.left() + indentation_offset
 
         if highlight is not None:
             background_rect = rect.adjusted(
