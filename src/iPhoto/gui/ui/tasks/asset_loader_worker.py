@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Set
+from typing import Callable, Dict, Iterable, List, Optional, Set
 
 from PySide6.QtCore import QObject, QRunnable, Signal
 
@@ -15,7 +15,20 @@ from ....utils.pathutils import ensure_work_dir
 from ..models.live_map import load_live_map
 
 
-class AssetLoaderWorker(QObject, QRunnable):
+class WorkerTask(QRunnable):
+    """A thin QRunnable wrapper that executes a callable on a worker thread."""
+
+    def __init__(self, target: Callable[[], None]) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self._target = target
+
+    def run(self) -> None:  # pragma: no cover - executed on worker thread
+        if self._target is not None:
+            self._target()
+
+
+class AssetLoaderWorker(QObject):
     """Load album assets on a background thread."""
 
     progressUpdated = Signal(object, int, int)
@@ -24,20 +37,32 @@ class AssetLoaderWorker(QObject, QRunnable):
     error = Signal(object, str)
 
     def __init__(self, root: Path, featured: Iterable[str]) -> None:
-        QObject.__init__(self)
-        self.setAutoDelete(False)
+        super().__init__()
         self._root = root
         self._featured: Set[str] = {str(entry) for entry in featured}
+        self._is_cancelled = False
 
     def run(self) -> None:  # pragma: no cover - executed on worker thread
         try:
+            self._is_cancelled = False
             for chunk in self._build_payload_chunks():
+                if self._is_cancelled:
+                    break
                 if chunk:
                     self.chunkReady.emit(self._root, chunk)
-            self.finished.emit(self._root, True)
+            if not self._is_cancelled:
+                self.finished.emit(self._root, True)
+            else:
+                self.finished.emit(self._root, False)
         except Exception as exc:  # pragma: no cover - surfaced via signal
-            self.error.emit(self._root, str(exc))
-            self.finished.emit(self._root, False)
+            if not self._is_cancelled:
+                self.error.emit(self._root, str(exc))
+                self.finished.emit(self._root, False)
+
+    def cancel(self) -> None:
+        """Request cancellation of the current load operation."""
+
+        self._is_cancelled = True
 
     # ------------------------------------------------------------------
     def _build_payload_chunks(self) -> Iterable[List[Dict[str, object]]]:
@@ -55,6 +80,8 @@ class AssetLoaderWorker(QObject, QRunnable):
         chunk: List[Dict[str, object]] = []
         last_reported = 0
         for position, row in enumerate(index_rows, start=1):
+            if self._is_cancelled:
+                return
             should_emit = position == total or position - last_reported >= 50
             rel = str(row.get("rel"))
             if not rel or rel in motion_paths_to_hide:

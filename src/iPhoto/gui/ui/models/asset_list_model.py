@@ -16,7 +16,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPixmap
 
-from ..tasks.asset_loader_worker import AssetLoaderWorker
+from ..tasks.asset_loader_worker import AssetLoaderWorker, WorkerTask
 from ..tasks.thumbnail_loader import ThumbnailLoader
 from .roles import Roles, role_names
 
@@ -123,6 +123,7 @@ class AssetListModel(QAbstractListModel):
         if not self._album_root:
             return
         if self._loader_worker is not None:
+            self._loader_worker.cancel()
             self._pending_reload = True
             return
         self.beginResetModel()
@@ -138,7 +139,8 @@ class AssetListModel(QAbstractListModel):
         worker.error.connect(self._on_loader_error)
         self._pending_reload = False
         self._loader_worker = worker
-        self._loader_pool.start(worker)
+        task = WorkerTask(worker.run)
+        self._loader_pool.start(task)
 
     def _on_loader_chunk_ready(self, root: Path, chunk: List[Dict[str, object]]) -> None:
         if self.sender() is not self._loader_worker:
@@ -171,10 +173,10 @@ class AssetListModel(QAbstractListModel):
             self._thumb_cache = {
                 rel: pix for rel, pix in self._thumb_cache.items() if rel in active
             }
-            self.loadFinished.emit(root, True)
-        self._teardown_loader()
+        self.loadFinished.emit(root, success)
         should_restart = self._pending_reload and self._album_root and root == self._album_root
         self._pending_reload = False
+        self._teardown_loader()
         if should_restart:
             QTimer.singleShot(0, self.start_load)
 
@@ -183,12 +185,22 @@ class AssetListModel(QAbstractListModel):
             return
         if self._album_root and root == self._album_root:
             self._facade.errorRaised.emit(message)
-            self.loadFinished.emit(root, False)
+        self.loadFinished.emit(root, False)
+        should_restart = self._pending_reload and self._album_root and root == self._album_root
         self._pending_reload = False
         self._teardown_loader()
+        if should_restart:
+            QTimer.singleShot(0, self.start_load)
 
     def _teardown_loader(self) -> None:
         if self._loader_worker is not None:
+            try:
+                self._loader_worker.progressUpdated.disconnect(self._on_loader_progress)
+                self._loader_worker.chunkReady.disconnect(self._on_loader_chunk_ready)
+                self._loader_worker.finished.disconnect(self._on_loader_finished)
+                self._loader_worker.error.disconnect(self._on_loader_error)
+            except (RuntimeError, TypeError):
+                pass
             self._loader_worker.deleteLater()
             self._loader_worker = None
 
