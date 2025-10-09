@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QModelIndex, QPoint, QSize, Qt, Signal
+from PySide6.QtCore import QModelIndex, QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (
     QInputDialog,
@@ -69,6 +69,9 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         rect = option.rect
         node_type = index.data(AlbumTreeRole.NODE_TYPE) or NodeType.ALBUM
 
+        # Always erase the row to avoid hover/selection artifacts in the gutter.
+        painter.fillRect(rect, option.palette.base())
+
         # Draw separator rows as a thin line.
         if node_type == NodeType.SEPARATOR:
             pen = QPen(SEPARATOR_COLOR)
@@ -92,23 +95,26 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         if node_type in {NodeType.SECTION, NodeType.SEPARATOR}:
             highlight = None
 
+        indentation_offset = 0
+        tree_view = option.widget
+        if isinstance(tree_view, QTreeView):
+            depth = 0
+            parent_index = index.parent()
+            while parent_index.isValid():
+                depth += 1
+                parent_index = parent_index.parent()
+            if depth > 0:
+                indentation_offset = depth * tree_view.indentation()
+
+        content_left = rect.left() + indentation_offset
+
         if highlight is not None:
-            indentation_offset = 0
-            tree_view = option.widget
-            indentation = 18
-            if isinstance(tree_view, QTreeView):
-                indentation = tree_view.indentation()
-
-            if indentation:
-                depth = 0
-                parent_index = index.parent()
-                while parent_index.isValid():
-                    depth += 1
-                    parent_index = parent_index.parent()
-                indentation_offset = depth * indentation
-
-            content_rect = rect.adjusted(indentation_offset, 0, 0, 0)
-            background_rect = content_rect.adjusted(6, 4, -6, -4)
+            background_rect = rect.adjusted(
+                (content_left - rect.left()) + 6,
+                4,
+                -6,
+                -4,
+            )
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(highlight)
@@ -135,12 +141,10 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
             color = ICON_COLOR
         painter.setPen(color)
 
-        x = rect.left() + LEFT_PADDING
+        x = content_left + LEFT_PADDING
         icon_size = 18
         if icon is not None and not icon.isNull():
-            icon_rect = rect.adjusted(0, 0, 0, 0)
-            icon_rect.setLeft(x)
-            icon_rect.setWidth(icon_size)
+            icon_rect = QRect(x, rect.top(), icon_size, rect.height())
             icon.paint(
                 painter,
                 icon_rect,
@@ -222,10 +226,10 @@ class AlbumSidebar(QWidget):
         self._tree.setAutoFillBackground(True)
         self._tree.setStyleSheet(
             "QTreeView { background: transparent; border: none; }"
-            "QTreeView::item { border: 0px; padding: 0px; margin: 0px; }"
-            "QTreeView::item:selected { background: transparent; }"
-            "QTreeView::item:hover { background: transparent; }"
-            "QTreeView::branch { background: transparent; }"
+            "QTreeView::item, QTreeView::item:selected, QTreeView::item:hover { "
+            "background: transparent; border: 0px; padding: 0px; margin: 0px; }"
+            "QTreeView::branch, QTreeView::branch:selected, QTreeView::branch:hover { "
+            "background: transparent; }"
         )
 
         layout = QVBoxLayout(self)
