@@ -92,10 +92,7 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         if node_type in {NodeType.SECTION, NodeType.SEPARATOR}:
             highlight = None
 
-        model = index.model()
-        has_children = bool(model and model.hasChildren(index))
-
-        if highlight is not None and has_children:
+        if highlight is not None:
             background_rect = rect.adjusted(6, 4, -6, -4)
 
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
