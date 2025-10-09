@@ -41,16 +41,22 @@ class ScannerWorker(QObject):
             # Report that we are determining the total number of files before scanning.
             self.progressUpdated.emit(self._root, 0, -1)
             all_files: List[Path] = []
+            counted = 0
             for candidate in self._root.rglob("*"):
                 if self._is_cancelled:
                     break
                 if candidate.is_file():
                     all_files.append(candidate)
+                    counted += 1
+                    if counted % 1000 == 0:
+                        self.progressUpdated.emit(self._root, counted, -1)
 
             if self._is_cancelled:
                 return
 
             total_files = len(all_files)
+            if counted and counted % 1000 != 0:
+                self.progressUpdated.emit(self._root, counted, -1)
             if total_files == 0:
                 self.progressUpdated.emit(self._root, 0, 0)
                 if not self._is_cancelled:

@@ -26,9 +26,7 @@ class AssetLoaderWorker(QObject, QRunnable):
     CACHE_MISSING_PREFIX = "CACHE_MISSING:"
 
     def __init__(self, root: Path, featured: Iterable[str]) -> None:
-        QObject.__init__(self)
-        QRunnable.__init__(self)
-        self.setAutoDelete(False)
+        super().__init__()
         self._root = root
         self._featured: Set[str] = {str(entry) for entry in featured}
 
