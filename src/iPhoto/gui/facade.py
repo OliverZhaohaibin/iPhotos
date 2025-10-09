@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional, Set
 
-from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtCore import QObject, QThread, QThreadPool, Signal
 
 from .. import app as backend
 from ..config import WORK_DIR_NAME
@@ -15,10 +15,13 @@ from ..models.album import Album
 if TYPE_CHECKING:
     from .ui.tasks.scanner_worker import ScannerWorker
     from .ui.models.asset_list_model import AssetListModel
+    from .ui.tasks.live_pairing_worker import LivePairingWorker
 
 
 class AppFacade(QObject):
     """Expose high-level album operations to the GUI layer."""
+
+    CACHE_MISSING_PREFIX = "CACHE_MISSING:"
 
     albumOpened = Signal(object)
     indexUpdated = Signal(object)
@@ -36,12 +39,17 @@ class AppFacade(QObject):
         self._scanner_thread: Optional[QThread] = None
         self._scanner_worker: Optional["ScannerWorker"] = None
         self._pending_index_announcements: Set[Path] = set()
+        self._pending_pairing: Set[Path] = set()
+        self._auto_rescans: Set[Path] = set()
+        self._pairing_workers: dict[Path, "LivePairingWorker"] = {}
+        self._pairing_pool = QThreadPool.globalInstance()
 
         from .ui.models.asset_list_model import AssetListModel
 
         self._asset_list_model = AssetListModel(self)
         self._asset_list_model.loadProgress.connect(self._on_model_load_progress)
         self._asset_list_model.loadFinished.connect(self._on_model_load_finished)
+        self._asset_list_model.loadStageFinished.connect(self._on_model_stage_finished)
 
     # ------------------------------------------------------------------
     # Album lifecycle
@@ -79,10 +87,18 @@ class AppFacade(QObject):
             except OSError:
                 has_index = False
 
+        links_path = album_root / WORK_DIR_NAME / "links.json"
+        needs_links = not links_path.exists()
+
         if not has_index:
             self.rescan_current_async()
         else:
-            self._restart_asset_load(album_root, announce_index=True)
+            self._restart_asset_load(
+                album_root,
+                announce_index=True,
+                ensure_links=needs_links,
+                mode="baseline",
+            )
         return album
 
     def rescan_current(self) -> List[dict]:
@@ -98,7 +114,7 @@ class AppFacade(QObject):
             return []
         self.indexUpdated.emit(album.root)
         self.linksUpdated.emit(album.root)
-        self._restart_asset_load(album.root)
+        self._restart_asset_load(album.root, ensure_links=True, mode="baseline")
         return rows
 
     def rescan_current_async(self) -> None:
@@ -210,7 +226,7 @@ class AppFacade(QObject):
             self.linksUpdated.emit(root)
             self.scanFinished.emit(root, True)
             if self._current_album and self._current_album.root == root:
-                self._restart_asset_load(root)
+                self._restart_asset_load(root, ensure_links=True, mode="baseline")
 
     def _on_scan_error(self, root: Path, message: str) -> None:
         self.errorRaised.emit(message)
@@ -224,13 +240,22 @@ class AppFacade(QObject):
             self._scanner_thread.deleteLater()
             self._scanner_thread = None
 
-    def _restart_asset_load(self, root: Path, *, announce_index: bool = False) -> None:
+    def _restart_asset_load(
+        self,
+        root: Path,
+        *,
+        announce_index: bool = False,
+        ensure_links: bool = False,
+        mode: str = "baseline",
+    ) -> None:
         if not (self._current_album and self._current_album.root == root):
             return
         if announce_index:
             self._pending_index_announcements.add(root)
+        if ensure_links:
+            self._pending_pairing.add(root)
         self.loadStarted.emit(root)
-        self._asset_list_model.start_load()
+        self._asset_list_model.start_load(mode=mode)
 
     def _on_model_load_progress(self, root: Path, current: int, total: int) -> None:
         self.loadProgress.emit(root, current, total)
@@ -242,3 +267,46 @@ class AppFacade(QObject):
             if success:
                 self.indexUpdated.emit(root)
                 self.linksUpdated.emit(root)
+
+    def _on_model_stage_finished(self, root: Path, stage: str, success: bool) -> None:
+        if stage != "baseline":
+            return
+        if not success:
+            return
+        self._auto_rescans.discard(root)
+        if root in self._pending_pairing:
+            self._start_pairing(root)
+
+    def _start_pairing(self, root: Path) -> None:
+        if root in self._pairing_workers:
+            return
+        self._pending_pairing.discard(root)
+        from .ui.tasks.live_pairing_worker import LivePairingWorker
+
+        worker = LivePairingWorker(root)
+        worker.finished.connect(self._on_pairing_finished)
+        worker.error.connect(self._on_pairing_error)
+        self._pairing_workers[root] = worker
+        self._pairing_pool.start(worker)
+
+    def _on_pairing_finished(self, root: Path, success: bool) -> None:
+        worker = self._pairing_workers.pop(root, None)
+        if worker is not None:
+            worker.deleteLater()
+        if not success:
+            return
+        self.linksUpdated.emit(root)
+        if self._current_album and self._current_album.root == root:
+            self._restart_asset_load(root, mode="paired")
+
+    def _on_pairing_error(self, root: Path, message: str) -> None:
+        self.errorRaised.emit(message)
+
+    def handle_asset_load_error(self, root: Path, message: str) -> None:
+        if message.startswith(self.CACHE_MISSING_PREFIX):
+            if self._current_album and self._current_album.root == root:
+                if root not in self._auto_rescans:
+                    self._auto_rescans.add(root)
+                    self.rescan_current_async()
+            return
+        self.errorRaised.emit(message)

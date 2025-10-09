@@ -29,6 +29,7 @@ class AssetListModel(QAbstractListModel):
 
     loadProgress = Signal(object, int, int)
     loadFinished = Signal(object, bool)
+    loadStageFinished = Signal(object, str, bool)
 
     def __init__(self, facade: "AppFacade", parent=None) -> None:  # type: ignore[override]
         super().__init__(parent)
@@ -44,6 +45,8 @@ class AssetListModel(QAbstractListModel):
         self._loader_pool = QThreadPool.globalInstance()
         self._loader_worker: Optional[AssetLoaderWorker] = None
         self._pending_reload = False
+        self._pending_reload_mode: Optional[str] = None
+        self._current_load_mode: str = "baseline"
         facade.albumOpened.connect(self._on_album_opened)
 
     def album_root(self) -> Optional[Path]:
@@ -118,12 +121,15 @@ class AssetListModel(QAbstractListModel):
     # ------------------------------------------------------------------
     # Data loading helpers
     # ------------------------------------------------------------------
-    def start_load(self) -> None:
+    def start_load(self, *, mode: str = "baseline") -> None:
         if not self._album_root:
             return
         if self._loader_worker is not None:
             self._pending_reload = True
+            self._pending_reload_mode = mode
             return
+        self._current_load_mode = mode
+        self._pending_reload_mode = None
         self.beginResetModel()
         self._rows = []
         self._row_lookup = {}
@@ -171,17 +177,22 @@ class AssetListModel(QAbstractListModel):
                 rel: pix for rel, pix in self._thumb_cache.items() if rel in active
             }
             self.loadFinished.emit(root, True)
+            self.loadStageFinished.emit(root, self._current_load_mode, True)
+        else:
+            self.loadStageFinished.emit(root, self._current_load_mode, False)
         self._teardown_loader()
         should_restart = self._pending_reload and self._album_root and root == self._album_root
+        restart_mode = self._pending_reload_mode or "baseline"
         self._pending_reload = False
+        self._pending_reload_mode = None
         if should_restart:
-            QTimer.singleShot(0, self.start_load)
+            QTimer.singleShot(0, lambda: self.start_load(mode=restart_mode))
 
     def _on_loader_error(self, root: Path, message: str) -> None:
         if self.sender() is not self._loader_worker:
             return
         if self._album_root and root == self._album_root:
-            self._facade.errorRaised.emit(message)
+            self._facade.handle_asset_load_error(root, message)
             self.loadFinished.emit(root, False)
         self._pending_reload = False
         self._teardown_loader()

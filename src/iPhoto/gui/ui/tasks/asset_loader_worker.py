@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Set
+from typing import Dict, Iterable, Iterator, List, Optional, Set
 
 from PySide6.QtCore import QObject, QRunnable, Signal
 
 from ....cache.index_store import IndexStore
 from ....config import WORK_DIR_NAME
-from ....core.pairing import pair_live
+from ....errors import IndexCorruptedError
 from ....media_classifier import classify_media
 from ....utils.pathutils import ensure_work_dir
 from ..models.live_map import load_live_map
@@ -22,6 +22,8 @@ class AssetLoaderWorker(QObject, QRunnable):
     chunkReady = Signal(object, list)
     finished = Signal(object, bool)
     error = Signal(object, str)
+
+    CACHE_MISSING_PREFIX = "CACHE_MISSING:"
 
     def __init__(self, root: Path, featured: Iterable[str]) -> None:
         QObject.__init__(self)
@@ -36,6 +38,15 @@ class AssetLoaderWorker(QObject, QRunnable):
                 if chunk:
                     self.chunkReady.emit(self._root, chunk)
             self.finished.emit(self._root, True)
+        except FileNotFoundError as exc:  # pragma: no cover - surfaced via signal
+            message = (
+                f"{self.CACHE_MISSING_PREFIX}Cache files disappeared during load: {exc}"
+            )
+            self.error.emit(self._root, message)
+            self.finished.emit(self._root, False)
+        except IndexCorruptedError as exc:  # pragma: no cover - surfaced via signal
+            self.error.emit(self._root, str(exc))
+            self.finished.emit(self._root, False)
         except Exception as exc:  # pragma: no cover - surfaced via signal
             self.error.emit(self._root, str(exc))
             self.finished.emit(self._root, False)
@@ -43,25 +54,39 @@ class AssetLoaderWorker(QObject, QRunnable):
     # ------------------------------------------------------------------
     def _build_payload_chunks(self) -> Iterable[List[Dict[str, object]]]:
         ensure_work_dir(self._root, WORK_DIR_NAME)
-        index_rows = list(IndexStore(self._root).read_all())
-        live_map = self._resolve_live_map(index_rows, load_live_map(self._root))
-        motion_paths_to_hide = self._motion_paths_to_hide(live_map)
+        store = IndexStore(self._root)
+        if not store.path.exists():
+            raise FileNotFoundError(store.path)
 
-        total = len(index_rows)
-        if total == 0:
-            self.progressUpdated.emit(self._root, 0, 0)
-            return
+        live_map = self._resolve_live_map(load_live_map(self._root))
+        motion_paths_to_hide = self._motion_paths_to_hide(live_map)
 
         chunk_size = 200
         chunk: List[Dict[str, object]] = []
+        processed = 0
         last_reported = 0
-        for position, row in enumerate(index_rows, start=1):
-            should_emit = position == total or position - last_reported >= 50
+
+        try:
+            rows_iter = store.read_all()
+        except IndexCorruptedError:
+            raise
+
+        def _rows() -> Iterator[Dict[str, object]]:
+            try:
+                yield from rows_iter
+            except FileNotFoundError:
+                raise
+            except OSError as exc:
+                raise FileNotFoundError(store.path) from exc
+
+        for row in _rows():
+            processed += 1
+            should_emit = processed - last_reported >= 50
             rel = str(row.get("rel"))
             if not rel or rel in motion_paths_to_hide:
                 if should_emit:
-                    last_reported = position
-                    self.progressUpdated.emit(self._root, position, total)
+                    last_reported = processed
+                    self.progressUpdated.emit(self._root, processed, -1)
                 continue
 
             live_info = live_map.get(rel)
@@ -102,15 +127,19 @@ class AssetLoaderWorker(QObject, QRunnable):
             }
             chunk.append(entry)
             if should_emit:
-                last_reported = position
-                self.progressUpdated.emit(self._root, position, total)
+                last_reported = processed
+                self.progressUpdated.emit(self._root, processed, -1)
 
-            if len(chunk) >= chunk_size or position == total:
+            if len(chunk) >= chunk_size:
                 yield chunk
                 chunk = []
 
         if chunk:
             yield chunk
+        if processed == 0:
+            self.progressUpdated.emit(self._root, 0, 0)
+        else:
+            self.progressUpdated.emit(self._root, processed, processed)
 
     def _motion_paths_to_hide(self, live_map: Dict[str, Dict[str, object]]) -> Set[str]:
         motion_paths: Set[str] = set()
@@ -136,43 +165,6 @@ class AssetLoaderWorker(QObject, QRunnable):
         return live_ref in self._featured
 
     def _resolve_live_map(
-        self,
-        index_rows: List[Dict[str, object]],
-        base_map: Dict[str, Dict[str, object]],
+        self, base_map: Dict[str, Dict[str, object]]
     ) -> Dict[str, Dict[str, object]]:
-        mapping: Dict[str, Dict[str, object]] = dict(base_map)
-        missing: Set[str] = set()
-        for row in index_rows:
-            rel = str(row.get("rel"))
-            if not rel:
-                continue
-            is_image, _ = classify_media(row)
-            if not is_image:
-                continue
-            info = mapping.get(rel)
-            motion_ref = info.get("motion") if isinstance(info, dict) else None
-            if isinstance(motion_ref, str) and motion_ref:
-                continue
-            missing.add(rel)
-        if not missing:
-            return mapping
-
-        for group in pair_live(index_rows):
-            still = group.still
-            if still not in missing:
-                continue
-            motion = group.motion
-            record: Dict[str, object] = {
-                "id": group.id,
-                "still": still,
-                "motion": motion,
-                "confidence": group.confidence,
-            }
-            if group.content_id:
-                record["content_id"] = group.content_id
-            if group.still_image_time is not None:
-                record["still_image_time"] = group.still_image_time
-            mapping[still] = {**record, "role": "still"}
-            if motion:
-                mapping[motion] = {**record, "role": "motion"}
-        return mapping
+        return dict(base_map)
