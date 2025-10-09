@@ -241,3 +241,4 @@ class AppFacade(QObject):
             self._pending_index_announcements.discard(root)
             if success:
                 self.indexUpdated.emit(root)
+                self.linksUpdated.emit(root)

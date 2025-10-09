@@ -50,10 +50,14 @@ class AssetLoaderWorker(QObject, QRunnable):
             return []
 
         payload: List[Dict[str, object]] = []
+        last_reported = 0
         for position, row in enumerate(index_rows, start=1):
+            should_emit = position == total or position - last_reported >= 50
             rel = str(row.get("rel"))
             if not rel or rel in motion_paths_to_hide:
-                self.progressUpdated.emit(self._root, position, total)
+                if should_emit:
+                    last_reported = position
+                    self.progressUpdated.emit(self._root, position, total)
                 continue
 
             live_info = live_map.get(rel)
@@ -93,7 +97,9 @@ class AssetLoaderWorker(QObject, QRunnable):
                 "dur": row.get("dur"),
             }
             payload.append(entry)
-            self.progressUpdated.emit(self._root, position, total)
+            if should_emit:
+                last_reported = position
+                self.progressUpdated.emit(self._root, position, total)
 
         return payload
 
