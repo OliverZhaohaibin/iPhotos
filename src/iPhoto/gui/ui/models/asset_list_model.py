@@ -124,15 +124,33 @@ class AssetListModel(QAbstractListModel):
         if self._loader_worker is not None:
             self._pending_reload = True
             return
+        self.beginResetModel()
+        self._rows = []
+        self._row_lookup = {}
+        self.endResetModel()
         manifest = self._facade.current_album.manifest if self._facade.current_album else {}
         featured = manifest.get("featured", []) or []
         worker = AssetLoaderWorker(self._album_root, featured)
         worker.progressUpdated.connect(self._on_loader_progress)
+        worker.chunkReady.connect(self._on_loader_chunk_ready)
         worker.finished.connect(self._on_loader_finished)
         worker.error.connect(self._on_loader_error)
         self._pending_reload = False
         self._loader_worker = worker
         self._loader_pool.start(worker)
+
+    def _on_loader_chunk_ready(self, root: Path, chunk: List[Dict[str, object]]) -> None:
+        if self.sender() is not self._loader_worker:
+            return
+        if not self._album_root or root != self._album_root or not chunk:
+            return
+        start_row = len(self._rows)
+        end_row = start_row + len(chunk) - 1
+        self.beginInsertRows(QModelIndex(), start_row, end_row)
+        self._rows.extend(chunk)
+        for offset, row_data in enumerate(chunk):
+            self._row_lookup[row_data["rel"]] = start_row + offset
+        self.endInsertRows()
 
     def _on_loader_progress(self, root: Path, current: int, total: int) -> None:
         if self.sender() is not self._loader_worker:
@@ -141,19 +159,18 @@ class AssetListModel(QAbstractListModel):
             return
         self.loadProgress.emit(root, current, total)
 
-    def _on_loader_finished(self, root: Path, payload: List[Dict[str, object]]) -> None:
+    def _on_loader_finished(self, root: Path, success: bool) -> None:
         if self.sender() is not self._loader_worker:
             return
         if not self._album_root or root != self._album_root:
             self._teardown_loader()
             return
-        self.beginResetModel()
-        self._rows = payload
-        self._row_lookup = {row_data["rel"]: idx for idx, row_data in enumerate(payload)}
-        active = set(self._row_lookup.keys())
-        self._thumb_cache = {rel: pix for rel, pix in self._thumb_cache.items() if rel in active}
-        self.endResetModel()
-        self.loadFinished.emit(root, True)
+        if success:
+            active = set(self._row_lookup.keys())
+            self._thumb_cache = {
+                rel: pix for rel, pix in self._thumb_cache.items() if rel in active
+            }
+            self.loadFinished.emit(root, True)
         self._teardown_loader()
         should_restart = self._pending_reload and self._album_root and root == self._album_root
         self._pending_reload = False

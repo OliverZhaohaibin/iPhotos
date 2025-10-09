@@ -19,7 +19,8 @@ class AssetLoaderWorker(QObject, QRunnable):
     """Load album assets on a background thread."""
 
     progressUpdated = Signal(object, int, int)
-    finished = Signal(object, list)
+    chunkReady = Signal(object, list)
+    finished = Signal(object, bool)
     error = Signal(object, str)
 
     def __init__(self, root: Path, featured: Iterable[str]) -> None:
@@ -31,14 +32,16 @@ class AssetLoaderWorker(QObject, QRunnable):
 
     def run(self) -> None:  # pragma: no cover - executed on worker thread
         try:
-            payload = self._build_payload()
+            for chunk in self._build_payload_chunks():
+                if chunk:
+                    self.chunkReady.emit(self._root, chunk)
+            self.finished.emit(self._root, True)
         except Exception as exc:  # pragma: no cover - surfaced via signal
             self.error.emit(self._root, str(exc))
-            return
-        self.finished.emit(self._root, payload)
+            self.finished.emit(self._root, False)
 
     # ------------------------------------------------------------------
-    def _build_payload(self) -> List[Dict[str, object]]:
+    def _build_payload_chunks(self) -> Iterable[List[Dict[str, object]]]:
         ensure_work_dir(self._root, WORK_DIR_NAME)
         index_rows = list(IndexStore(self._root).read_all())
         live_map = self._resolve_live_map(index_rows, load_live_map(self._root))
@@ -47,9 +50,10 @@ class AssetLoaderWorker(QObject, QRunnable):
         total = len(index_rows)
         if total == 0:
             self.progressUpdated.emit(self._root, 0, 0)
-            return []
+            return
 
-        payload: List[Dict[str, object]] = []
+        chunk_size = 200
+        chunk: List[Dict[str, object]] = []
         last_reported = 0
         for position, row in enumerate(index_rows, start=1):
             should_emit = position == total or position - last_reported >= 50
@@ -96,12 +100,17 @@ class AssetLoaderWorker(QObject, QRunnable):
                 "still_image_time": row.get("still_image_time"),
                 "dur": row.get("dur"),
             }
-            payload.append(entry)
+            chunk.append(entry)
             if should_emit:
                 last_reported = position
                 self.progressUpdated.emit(self._root, position, total)
 
-        return payload
+            if len(chunk) >= chunk_size or position == total:
+                yield chunk
+                chunk = []
+
+        if chunk:
+            yield chunk
 
     def _motion_paths_to_hide(self, live_map: Dict[str, Dict[str, object]]) -> Set[str]:
         motion_paths: Set[str] = set()
