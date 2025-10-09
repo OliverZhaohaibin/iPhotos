@@ -153,6 +153,10 @@ class AlbumTreeView(QTreeView):
     """Tree view that suppresses branch highlighting for leaf rows."""
 
     def drawBranches(self, painter: QPainter, rect: QRect, index: QModelIndex) -> None:
+        if not index.isValid():
+            super().drawBranches(painter, rect, index)
+            return
+
         model = self.model()
         has_children = bool(model and model.hasChildren(index))
 
@@ -167,7 +171,11 @@ class AlbumTreeView(QTreeView):
             if use_alternate
             else palette.brush(QPalette.ColorRole.Base)
         )
-        painter.fillRect(rect, base_brush)
+        painter.save()
+        try:
+            painter.fillRect(rect, base_brush)
+        finally:
+            painter.restore()
 
 
 class AlbumSidebar(QWidget):
