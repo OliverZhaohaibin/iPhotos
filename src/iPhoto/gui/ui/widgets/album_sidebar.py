@@ -95,12 +95,8 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         model = index.model()
         has_children = bool(model and model.hasChildren(index))
 
-        tree = option.widget if isinstance(option.widget, QTreeView) else None
-        branch_width = tree.indentation() if tree is not None else 18
-
-        if highlight is not None:
-            extra_left = 6 + (0 if has_children else branch_width)
-            background_rect = rect.adjusted(extra_left, 4, -6, -4)
+        if highlight is not None and has_children:
+            background_rect = rect.adjusted(6, 4, -6, -4)
 
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             painter.setPen(Qt.PenStyle.NoPen)
