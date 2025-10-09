@@ -20,6 +20,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QImage, QPainter, QPixmap
 
 from ....config import THUMBNAIL_SEEK_GUARD_SEC, WORK_DIR_NAME
+from ....utils.pathutils import ensure_work_dir
 from ...utils import image_loader
 from .video_frame_grabber import grab_video_frame
 
@@ -226,7 +227,8 @@ class ThumbnailLoader(QObject):
             queue.clear()
         self._video_queue_lookup.clear()
         try:
-            (root / WORK_DIR_NAME / "thumbs").mkdir(parents=True, exist_ok=True)
+            work_dir = ensure_work_dir(root, WORK_DIR_NAME)
+            (work_dir / "thumbs").mkdir(parents=True, exist_ok=True)
         except OSError:
             pass
 
