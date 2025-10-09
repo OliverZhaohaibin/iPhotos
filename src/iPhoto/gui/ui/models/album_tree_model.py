@@ -141,13 +141,12 @@ class AlbumTreeModel(QAbstractItemModel):
         if not index.isValid():
             return Qt.ItemFlag.NoItemFlags
         item = self._item_from_index(index)
-        if item.node_type in {NodeType.SECTION, NodeType.SEPARATOR}:
-            return Qt.ItemFlag.ItemIsEnabled
-        if item.node_type == NodeType.HEADER:
-            return Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
-        if item.node_type == NodeType.ACTION:
-            return Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
-        return Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+        flags = Qt.ItemFlag.ItemIsEnabled
+        if item.node_type not in {NodeType.SECTION, NodeType.SEPARATOR}:
+            flags |= Qt.ItemFlag.ItemIsSelectable
+        if not item.children or item.node_type in {NodeType.ACTION, NodeType.STATIC}:
+            flags |= Qt.ItemFlag.ItemNeverHasChildren
+        return flags
 
     # ------------------------------------------------------------------
     # Public helpers

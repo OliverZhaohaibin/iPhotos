@@ -31,6 +31,7 @@ from ..models.album_tree_model import (
     AlbumTreeRole,
     NodeType,
 )
+from .sidebar_style import SidebarStyle
 
 # ---------------------------------------------------------------------------
 # Sidebar styling helpers
@@ -202,7 +203,7 @@ class AlbumSidebar(QWidget):
         self._tree.setObjectName("albumSidebarTree")
         self._tree.setModel(self._model)
         self._tree.setHeaderHidden(True)
-        self._tree.setRootIsDecorated(False)
+        self._tree.setRootIsDecorated(True)
         self._tree.setUniformRowHeights(True)
         self._tree.setEditTriggers(QTreeView.EditTrigger.NoEditTriggers)
         self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -219,6 +220,7 @@ class AlbumSidebar(QWidget):
         self._tree.setAlternatingRowColors(False)
         self._tree.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._tree.setStyle(SidebarStyle(self._tree.style()))
         tree_palette = self._tree.palette()
         tree_palette.setColor(QPalette.ColorRole.Base, BG_COLOR)
         tree_palette.setColor(QPalette.ColorRole.Window, BG_COLOR)
@@ -227,14 +229,17 @@ class AlbumSidebar(QWidget):
         self._tree.setStyleSheet(
             "QTreeView { background: transparent; border: none; }"
             "QTreeView::item, QTreeView::item:selected, QTreeView::item:hover { "
-            "background: transparent; border: 0; padding: 0; margin: 0; }"
-            "/* Keep branch arrows but ensure the gutter stays transparent in every state. */"
-            "QTreeView::branch,"
-            "QTreeView::branch:hover,"
-            "QTreeView::branch:selected,"
-            "QTreeView::branch:has-children,"
-            "QTreeView::branch:!has-children {"
-            "background: transparent; }"
+            "  background: transparent; border: 0; padding: 0; margin: 0; }"
+            "/* Ensure the branch gutter remains transparent across all states. */"
+            "QTreeView::branch, "
+            "QTreeView::branch:has-children, "
+            "QTreeView::branch:has-children:open, "
+            "QTreeView::branch:has-children:closed, "
+            "QTreeView::branch:!has-children, "
+            "QTreeView::branch:adjoins-item, "
+            "QTreeView::branch:selected, "
+            "QTreeView::branch:hover { "
+            "  background: transparent; image: none; border: none; }"
         )
 
         layout = QVBoxLayout(self)
