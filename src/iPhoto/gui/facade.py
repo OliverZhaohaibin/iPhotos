@@ -243,7 +243,6 @@ class AppFacade(QObject):
         worker = self._scanner_worker
         if worker is not None:
             signals = worker.signals
-            signals.disconnect()
             signals.deleteLater()
         self._scanner_worker = None
         self._scan_pending = False

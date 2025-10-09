@@ -202,13 +202,6 @@ class AssetListModel(QAbstractListModel):
 
     def _teardown_loader(self) -> None:
         if self._loader_worker is not None:
-            try:
-                self._loader_worker.signals.progressUpdated.disconnect(self._on_loader_progress)
-                self._loader_worker.signals.chunkReady.disconnect(self._on_loader_chunk_ready)
-                self._loader_worker.signals.finished.disconnect(self._on_loader_finished)
-                self._loader_worker.signals.error.disconnect(self._on_loader_error)
-            except (RuntimeError, TypeError):
-                pass
             self._loader_worker.signals.deleteLater()
         self._loader_worker = None
         self._pending_reload = False
