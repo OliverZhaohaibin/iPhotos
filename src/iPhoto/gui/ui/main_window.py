@@ -357,14 +357,17 @@ class MainWindow(QMainWindow):
             self._progress_context = "scan"
             self._progress_bar.setValue(0)
             self._progress_bar.setVisible(True)
-        if total <= 0:
+        if total < 0:
             self._progress_bar.setRange(0, 0)
+            self._status.showMessage("Scanning… (counting files)")
+        elif total == 0:
+            self._progress_bar.setRange(0, 0)
+            self._status.showMessage("Scanning… (no files found)")
         else:
             self._progress_bar.setRange(0, total)
             self._progress_bar.setValue(max(0, min(current, total)))
-        self._progress_bar.setVisible(True)
-        if total > 0:
             self._status.showMessage(f"Scanning… ({current}/{total})")
+        self._progress_bar.setVisible(True)
 
     def _on_scan_finished(self, root: Path | None, success: bool) -> None:
         if self._progress_context == "scan":

@@ -37,13 +37,27 @@ class ScannerWorker(QObject):
 
         try:
             ensure_work_dir(self._root, WORK_DIR_NAME)
-            all_files = [path for path in self._root.rglob("*") if path.is_file()]
+
+            # Report that we are determining the total number of files before scanning.
+            self.progressUpdated.emit(self._root, 0, -1)
+            all_files: List[Path] = []
+            for candidate in self._root.rglob("*"):
+                if self._is_cancelled:
+                    break
+                if candidate.is_file():
+                    all_files.append(candidate)
+
+            if self._is_cancelled:
+                return
+
             total_files = len(all_files)
             if total_files == 0:
                 self.progressUpdated.emit(self._root, 0, 0)
                 if not self._is_cancelled:
                     self.finished.emit(self._root, [])
                 return
+
+            self.progressUpdated.emit(self._root, 0, total_files)
 
             rows: List[dict] = []
             for index, file_path in enumerate(all_files, start=1):
@@ -52,7 +66,8 @@ class ScannerWorker(QObject):
                 row = self._process_single_file(file_path)
                 if row is not None:
                     rows.append(row)
-                self.progressUpdated.emit(self._root, index, total_files)
+                if index == total_files or index % 50 == 0:
+                    self.progressUpdated.emit(self._root, index, total_files)
 
             if not self._is_cancelled:
                 self.finished.emit(self._root, rows)
