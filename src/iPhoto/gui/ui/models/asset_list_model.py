@@ -195,29 +195,41 @@ class AssetListModel(QAbstractListModel):
     # ------------------------------------------------------------------
     # Thumbnail helpers
     # ------------------------------------------------------------------
-    def prioritize_rows(self, rows: List[int]) -> None:
-        """Request high-priority thumbnails for the given *rows*."""
+    def prioritize_rows(self, first: int, last: int) -> None:
+        """Request high-priority thumbnails for the inclusive range *first*→*last*."""
 
-        if not rows:
+        if not self._rows:
+            self._visible_rows.clear()
             return
-        normalized = [row for row in rows if 0 <= row < len(self._rows)]
-        new_visible = set(normalized)
-        if not normalized:
-            self._visible_rows = new_visible
+
+        if first > last:
+            first, last = last, first
+
+        first = max(first, 0)
+        last = min(last, len(self._rows) - 1)
+        if first > last:
+            self._visible_rows.clear()
             return
+
+        requested = set(range(first, last + 1))
+        if not requested:
+            self._visible_rows.clear()
+            return
+
         uncached = {
             row
-            for row in normalized
+            for row in requested
             if str(self._rows[row]["rel"]) not in self._thumb_cache
         }
         if not uncached:
-            self._visible_rows = new_visible
+            self._visible_rows = requested
             return
         if uncached.issubset(self._visible_rows):
-            self._visible_rows = new_visible
+            self._visible_rows = requested
             return
-        self._visible_rows = new_visible
-        for row in normalized:
+
+        self._visible_rows = requested
+        for row in range(first, last + 1):
             if row not in uncached:
                 continue
             row_data = self._rows[row]

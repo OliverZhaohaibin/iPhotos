@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Optional
 
-from PySide6.QtCore import QAbstractItemModel, QModelIndex, QPoint, QRect, QTimer, Qt, Signal
+from PySide6.QtCore import QPoint, QTimer, Qt, Signal
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QListView
 
@@ -18,7 +18,7 @@ class AssetGrid(QListView):
     requestPreview = Signal(object)
     previewReleased = Signal()
     previewCancelled = Signal()
-    visibleRowsChanged = Signal(list)
+    visibleRowsChanged = Signal(int, int)
 
     _DRAG_CANCEL_THRESHOLD = 6
 
@@ -30,8 +30,12 @@ class AssetGrid(QListView):
         self._pressed_index = None
         self._press_pos: Optional[QPoint] = None
         self._long_press_active = False
-        self._visible_rows: List[int] = []
-        self._model: Optional[QAbstractItemModel] = None
+        self._update_timer = QTimer(self)
+        self._update_timer.setSingleShot(True)
+        self._update_timer.setInterval(100)
+        self._update_timer.timeout.connect(self._emit_visible_rows)
+        self._visible_range: Optional[tuple[int, int]] = None
+        self._model = None
 
     # ------------------------------------------------------------------
     # Mouse event handling
@@ -79,34 +83,37 @@ class AssetGrid(QListView):
 
     def showEvent(self, event) -> None:  # type: ignore[override]
         super().showEvent(event)
-        QTimer.singleShot(0, self._emit_visible_rows)
+        QTimer.singleShot(0, self._schedule_visible_rows_update)
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
-        self._emit_visible_rows()
+        self._schedule_visible_rows_update()
 
     def scrollContentsBy(self, dx: int, dy: int) -> None:  # type: ignore[override]
         super().scrollContentsBy(dx, dy)
-        self._emit_visible_rows()
+        self._schedule_visible_rows_update()
 
     def setModel(self, model) -> None:  # type: ignore[override]
         if self._model is not None:
             try:
-                self._model.modelReset.disconnect(self._on_model_updated)
+                self._model.modelReset.disconnect(self._schedule_visible_rows_update)
             except (RuntimeError, TypeError):
                 pass
-            for signal in (self._model.rowsInserted, self._model.rowsRemoved):
-                try:
-                    signal.disconnect(self._on_model_updated)
-                except (RuntimeError, TypeError):
-                    pass
+            try:
+                self._model.rowsInserted.disconnect(self._schedule_visible_rows_update)
+            except (RuntimeError, TypeError):
+                pass
+            try:
+                self._model.rowsRemoved.disconnect(self._schedule_visible_rows_update)
+            except (RuntimeError, TypeError):
+                pass
         super().setModel(model)
         self._model = model
         if model is not None:
-            model.modelReset.connect(self._on_model_updated)
-            model.rowsInserted.connect(self._on_model_updated)
-            model.rowsRemoved.connect(self._on_model_updated)
-        self._emit_visible_rows()
+            model.modelReset.connect(self._schedule_visible_rows_update)
+            model.rowsInserted.connect(self._schedule_visible_rows_update)
+            model.rowsRemoved.connect(self._schedule_visible_rows_update)
+        self._schedule_visible_rows_update()
 
     # ------------------------------------------------------------------
     # Helpers
@@ -125,8 +132,8 @@ class AssetGrid(QListView):
             self._long_press_active = True
             self.requestPreview.emit(self._pressed_index)
 
-    def _on_model_updated(self, *args) -> None:
-        self._emit_visible_rows()
+    def _schedule_visible_rows_update(self) -> None:
+        self._update_timer.start()
 
     def _viewport_pos(self, event: QMouseEvent) -> QPoint:
         """Return the event position mapped into viewport coordinates."""
@@ -173,71 +180,40 @@ class AssetGrid(QListView):
         return QPoint(event.x(), event.y())
 
     def _emit_visible_rows(self) -> None:
-        rows = self._visible_rows_for_viewport()
-        if rows == self._visible_rows:
-            return
-        self._visible_rows = rows
-        self.visibleRowsChanged.emit(rows)
-
-    def _visible_rows_for_viewport(self) -> List[int]:
         model = self.model()
         if model is None:
-            return []
-        viewport = self.viewport()
-        rect = QRect(viewport.rect())
-        if rect.isEmpty():
-            return []
-        base = self._first_visible_index(rect)
-        if not base.isValid():
-            return []
-        rows: List[int] = []
-        seen = set()
+            return
+        row_count = model.rowCount()
+        if row_count == 0:
+            if self._visible_range is not None:
+                self._visible_range = None
+            return
+        viewport_rect = self.viewport().rect()
+        if viewport_rect.isEmpty():
+            return
 
-        def append_index(index: QModelIndex) -> None:
-            row = index.row()
-            if row not in seen:
-                seen.add(row)
-                rows.append(row)
+        top_index = self.indexAt(viewport_rect.topLeft())
+        bottom_index = self.indexAt(viewport_rect.bottomRight())
 
-        append_index(base)
-        current = base
-        while True:
-            prev = self.indexAbove(current)
-            if not prev.isValid():
-                break
-            area = self.visualRect(prev)
-            if not area.isValid() or area.bottom() < rect.top():
-                break
-            rows.insert(0, prev.row())
-            seen.add(prev.row())
-            current = prev
+        first = top_index.row()
+        last = bottom_index.row()
 
-        current = base
-        while True:
-            nxt = self.indexBelow(current)
-            if not nxt.isValid():
-                break
-            area = self.visualRect(nxt)
-            if not area.isValid() or area.top() > rect.bottom():
-                break
-            append_index(nxt)
-            current = nxt
-        return rows
+        if first == -1 and last == -1:
+            return
+        if first == -1:
+            first = 0
+        if last == -1:
+            last = row_count - 1
 
-    def _first_visible_index(self, rect: QRect) -> QModelIndex:
-        step_y = max(self.fontMetrics().height(), 1)
-        xs = [rect.left() + 1, rect.center().x(), rect.right() - 1]
-        ys = range(rect.top() + 1, rect.bottom(), step_y)
-        for y in ys:
-            for x in xs:
-                point = QPoint(
-                    min(max(x, rect.left()), rect.right()),
-                    min(max(y, rect.top()), rect.bottom()),
-                )
-                index = self.indexAt(point)
-                if index.isValid():
-                    return index
-        model = self.model()
-        if model is not None and model.rowCount() > 0:
-            return model.index(0, 0)
-        return QModelIndex()
+        buffer = 20
+        first = max(0, first - buffer)
+        last = min(row_count - 1, last + buffer)
+        if first > last:
+            return
+
+        visible_range = (first, last)
+        if self._visible_range == visible_range:
+            return
+
+        self._visible_range = visible_range
+        self.visibleRowsChanged.emit(first, last)

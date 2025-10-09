@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable
+from typing import Optional
 
 from ...facade import AppFacade
 from ..tasks.thumbnail_loader import ThumbnailLoader
@@ -33,27 +33,48 @@ class AssetModel(AssetFilterProxyModel):
     # ------------------------------------------------------------------
     # Thumbnail prioritisation helpers
     # ------------------------------------------------------------------
-    def prioritize_rows(self, rows: Iterable[int]) -> None:
-        """Forward *rows* from the proxy space to the source model."""
+    def prioritize_rows(self, first: int, last: int) -> None:
+        """Map *first*→*last* proxy rows to the source model and prioritise them."""
 
-        proxy_rows = list(rows)
-        if not proxy_rows:
+        if last < 0 or self.rowCount() == 0:
             return
 
-        source_rows: list[int] = []
+        if first > last:
+            first, last = last, first
+
+        first = max(first, 0)
+        last = min(last, self.rowCount() - 1)
+        if first > last:
+            return
+
         map_to_source = self.mapToSource
-        for row in proxy_rows:
-            if row < 0:
-                continue
-            proxy_index = self.index(row, 0)
+        seen: set[int] = set()
+        runs: list[tuple[int, int]] = []
+        run_start: Optional[int] = None
+        previous: Optional[int] = None
+
+        for proxy_row in range(first, last + 1):
+            proxy_index = self.index(proxy_row, 0)
             if not proxy_index.isValid():
                 continue
             source_index = map_to_source(proxy_index)
             if not source_index.isValid():
                 continue
-            source_rows.append(source_index.row())
+            source_row = source_index.row()
+            if source_row in seen:
+                continue
+            seen.add(source_row)
+            if run_start is None:
+                run_start = previous = source_row
+                continue
+            assert previous is not None
+            if source_row == previous + 1:
+                previous = source_row
+            else:
+                runs.append((run_start, previous))
+                run_start = previous = source_row
+        if run_start is not None and previous is not None:
+            runs.append((run_start, previous))
 
-        if not source_rows:
-            return
-
-        self._list_model.prioritize_rows(source_rows)
+        for start, end in runs:
+            self._list_model.prioritize_rows(start, end)
