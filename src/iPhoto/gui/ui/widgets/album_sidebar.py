@@ -70,19 +70,8 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         rect = option.rect
         node_type = index.data(AlbumTreeRole.NODE_TYPE) or NodeType.ALBUM
 
-        # Shift the painter left when the view did not draw a branch indicator.
-        # The tree view still reserves indentation space even for leaf rows, so
-        # this translation reclaims the unused gutter while keeping parent rows
-        # unaffected.
-        has_children = bool(option.state & QStyle.StateFlag.State_HasChildren)
-        if not has_children:
-            painter.translate(-INDENT_PER_LEVEL, 0)
-
-        # Draw separator rows as a thin line. Separators should not inherit the
-        # translation above, so reset the painter before painting the rule.
+        # Draw separator rows as a thin line.
         if node_type == NodeType.SEPARATOR:
-            painter.restore()
-            painter.save()
             pen = QPen(SEPARATOR_COLOR)
             pen.setWidth(1)
             painter.setPen(pen)
@@ -226,6 +215,7 @@ class AlbumSidebar(QWidget):
             "QTreeView::item { border: 0px; padding: 0px; margin: 0px; }"
             "QTreeView::item:selected { background: transparent; }"
             "QTreeView::item:hover { background: transparent; }"
+            "QTreeView::branch { background: transparent; }"
         )
 
         layout = QVBoxLayout(self)
