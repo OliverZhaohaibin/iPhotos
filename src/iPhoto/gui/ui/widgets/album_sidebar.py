@@ -94,6 +94,15 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
 
         if highlight is not None:
             background_rect = rect.adjusted(6, 4, -6, -4)
+
+            # Leave room for the expand/collapse arrow so album rows always align
+            # regardless of whether they currently have children. Without this the
+            # rounded highlight would extend all the way to the left edge for
+            # albums without sub-items, covering the space where the disclosure
+            # arrow would normally appear and causing a visible misalignment.
+            if node_type in {NodeType.ALBUM, NodeType.SUBALBUM}:
+                background_rect.setLeft(rect.left() + LEFT_PADDING)
+
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(highlight)
