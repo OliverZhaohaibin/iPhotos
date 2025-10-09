@@ -93,8 +93,16 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         if node_type in {NodeType.SECTION, NodeType.SEPARATOR}:
             highlight = None
 
+        # Determine whether the view is drawing a branch indicator for this item. When
+        # a branch is present we need to leave the indentation gutter untouched so Qt
+        # can render the arrow without being covered by our highlight rectangle.
+        has_children = bool(option.state & QStyle.StateFlag.State_HasChildren)
+        content_rect = QRect(rect)
+        if has_children:
+            content_rect.setLeft(rect.left() + INDENT_PER_LEVEL)
+
         if highlight is not None:
-            background_rect = rect.adjusted(6, 4, -6, -4)
+            background_rect = content_rect.adjusted(6, 4, -6, -4)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(highlight)
@@ -121,10 +129,10 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
             color = ICON_COLOR
         painter.setPen(color)
 
-        x = rect.left() + LEFT_PADDING
+        x = content_rect.left() + LEFT_PADDING
         icon_size = 18
         if icon is not None and not icon.isNull():
-            icon_rect = QRect(rect)
+            icon_rect = QRect(content_rect)
             icon_rect.setLeft(x)
             icon_rect.setWidth(icon_size)
             icon.paint(
@@ -135,7 +143,7 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
             x += icon_size + ICON_TEXT_GAP
 
         metrics = QFontMetrics(font)
-        text_rect = rect.adjusted(x - rect.left(), 0, -8, 0)
+        text_rect = content_rect.adjusted(x - content_rect.left(), 0, -8, 0)
         elided = metrics.elidedText(text, Qt.TextElideMode.ElideRight, text_rect.width())
         painter.drawText(
             text_rect,
