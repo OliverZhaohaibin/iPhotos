@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Optional, TYPE_CHECKING
+from typing import Dict, List, Optional, Set, TYPE_CHECKING
 
 from PySide6.QtCore import (
     QAbstractListModel,
@@ -44,6 +44,7 @@ class AssetListModel(QAbstractListModel):
         self._loader_pool = QThreadPool.globalInstance()
         self._loader_worker: Optional[AssetLoaderWorker] = None
         self._pending_reload = False
+        self._visible_rows: Set[int] = set()
         facade.albumOpened.connect(self._on_album_opened)
 
     def album_root(self) -> Optional[Path]:
@@ -194,7 +195,39 @@ class AssetListModel(QAbstractListModel):
     # ------------------------------------------------------------------
     # Thumbnail helpers
     # ------------------------------------------------------------------
-    def _resolve_thumbnail(self, row: Dict[str, object]) -> QPixmap:
+    def prioritize_rows(self, rows: List[int]) -> None:
+        """Request high-priority thumbnails for the given *rows*."""
+
+        if not rows:
+            return
+        normalized = [row for row in rows if 0 <= row < len(self._rows)]
+        new_visible = set(normalized)
+        if not normalized:
+            self._visible_rows = new_visible
+            return
+        uncached = {
+            row
+            for row in normalized
+            if str(self._rows[row]["rel"]) not in self._thumb_cache
+        }
+        if not uncached:
+            self._visible_rows = new_visible
+            return
+        if uncached.issubset(self._visible_rows):
+            self._visible_rows = new_visible
+            return
+        self._visible_rows = new_visible
+        for row in normalized:
+            if row not in uncached:
+                continue
+            row_data = self._rows[row]
+            self._resolve_thumbnail(row_data, ThumbnailLoader.Priority.VISIBLE)
+
+    def _resolve_thumbnail(
+        self,
+        row: Dict[str, object],
+        priority: ThumbnailLoader.Priority = ThumbnailLoader.Priority.NORMAL,
+    ) -> QPixmap:
         rel = str(row["rel"])
         cached = self._thumb_cache.get(rel)
         if cached is not None:
@@ -204,7 +237,13 @@ class AssetListModel(QAbstractListModel):
             return placeholder
         abs_path = Path(str(row["abs"]))
         if bool(row.get("is_image")):
-            pixmap = self._thumb_loader.request(rel, abs_path, self._thumb_size, is_image=True)
+            pixmap = self._thumb_loader.request(
+                rel,
+                abs_path,
+                self._thumb_size,
+                is_image=True,
+                priority=priority,
+            )
             if pixmap is not None:
                 self._thumb_cache[rel] = pixmap
                 return pixmap
@@ -225,6 +264,7 @@ class AssetListModel(QAbstractListModel):
                 is_video=True,
                 still_image_time=still_hint,
                 duration=duration_value,
+                priority=priority,
             )
             if pixmap is not None:
                 self._thumb_cache[rel] = pixmap
