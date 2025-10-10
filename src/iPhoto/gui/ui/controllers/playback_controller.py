@@ -66,16 +66,19 @@ class PlaybackController:
         self._live_mode_active = False
         self._active_live_motion: Path | None = None
         self._active_live_still: Path | None = None
+        self._is_transitioning = False
         media.mutedChanged.connect(self._on_media_muted_changed)
         self._image_viewer.replayRequested.connect(self.replay_live_photo)
         self._image_viewer.set_live_replay_enabled(False)
-        self._filmstrip_view.nextItemRequested.connect(self._playlist.next)
-        self._filmstrip_view.prevItemRequested.connect(self._playlist.previous)
+        self._filmstrip_view.nextItemRequested.connect(self._request_next_item)
+        self._filmstrip_view.prevItemRequested.connect(self._request_previous_item)
 
     # ------------------------------------------------------------------
     # Selection handling
     # ------------------------------------------------------------------
     def activate_index(self, index: QModelIndex) -> None:
+        if self._is_transitioning:
+            return
         if not index or not index.isValid():
             return
         abs_raw = index.data(Roles.ABS)
@@ -144,6 +147,7 @@ class PlaybackController:
             self._media.stop()
             self._show_player_placeholder()
             selection_model.clearSelection()
+            self._release_transition_lock()
             return
         selection_model.clearSelection()
         index = self._model.index(row, 0)
@@ -162,9 +166,8 @@ class PlaybackController:
         self.show_detail_view()
 
     def handle_playlist_source_changed(self, source: Path) -> None:
-        self._pending_live_photo_still = None
-        self._active_live_motion = None
-        self._active_live_still = None
+        self._is_transitioning = True
+        self._reset_playback_state()
         is_live_photo = False
         current_row = self._playlist.current_row()
         if current_row != -1:
@@ -178,13 +181,7 @@ class PlaybackController:
                         self._pending_live_photo_still = still_path
                         self._active_live_still = still_path
         self._preview_window.close_preview(False)
-        self._media.stop()
         self._media.load(source)
-        self._player_bar.reset()
-        self._player_bar.set_position(0)
-        self._player_bar.set_duration(0)
-        self._image_viewer.set_live_replay_enabled(False)
-        self._live_badge.hide()
         if is_live_photo:
             if not self._live_mode_active:
                 self._original_mute_state = self._media.is_muted()
@@ -214,13 +211,21 @@ class PlaybackController:
     def handle_media_status_changed(self, status: object) -> None:
         name = getattr(status, "name", None)
         if name == "EndOfMedia":
+            self._release_transition_lock()
             if self._pending_live_photo_still is not None:
                 self._show_still_frame_for_live_photo()
             else:
                 self._freeze_video_final_frame()
             return
-        if name in {"LoadedMedia", "BufferingMedia", "BufferedMedia", "StalledMedia"}:
+        if name in {"LoadedMedia", "BufferedMedia"}:
+            self._release_transition_lock()
             self._video_area.note_activity()
+            return
+        if name in {"BufferingMedia", "StalledMedia"}:
+            self._video_area.note_activity()
+            return
+        if name in {"InvalidMedia", "NoMedia"}:
+            self._release_transition_lock()
 
     def handle_media_position_changed(self, position_ms: int) -> None:
         self._player_bar.set_position(position_ms)
@@ -255,6 +260,7 @@ class PlaybackController:
     # View helpers
     # ------------------------------------------------------------------
     def show_gallery_view(self) -> None:
+        self._release_transition_lock()
         self._pending_live_photo_still = None
         self._preview_window.close_preview(False)
         self._media.stop()
@@ -292,6 +298,32 @@ class PlaybackController:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+    def _request_next_item(self) -> None:
+        if self._is_transitioning:
+            return
+        self._playlist.next()
+
+    def _request_previous_item(self) -> None:
+        if self._is_transitioning:
+            return
+        self._playlist.previous()
+
+    def _reset_playback_state(self) -> None:
+        self._media.stop()
+        if self._live_mode_active:
+            self._media.set_muted(self._original_mute_state)
+        self._pending_live_photo_still = None
+        self._active_live_motion = None
+        self._active_live_still = None
+        self._live_mode_active = False
+        self._live_badge.hide()
+        self._image_viewer.set_live_replay_enabled(False)
+        self._player_bar.reset()
+        self._resume_playback_after_scrub = False
+
+    def _release_transition_lock(self) -> None:
+        self._is_transitioning = False
+
     def _show_still_frame_for_live_photo(self) -> None:
         """Swap the detail view back to the Live Photo still image."""
         still_path = self._pending_live_photo_still

@@ -74,23 +74,42 @@ class AssetGridDelegate(QStyledItemDelegate):
         if isinstance(pixmap, QPixmap) and not pixmap.isNull():
             painter.setRenderHint(QPainter.Antialiasing, True)
             painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-            scaled = pixmap.scaled(
-                thumb_rect.size(),
-                Qt.KeepAspectRatioByExpanding,
-                Qt.SmoothTransformation,
-            )
-            source = scaled.rect()
-            if source.width() > thumb_rect.width():
-                diff = source.width() - thumb_rect.width()
-                left = diff // 2
-                right = diff - left
-                source.adjust(left, 0, -right, 0)
-            if source.height() > thumb_rect.height():
-                diff = source.height() - thumb_rect.height()
-                top = diff // 2
-                bottom = diff - top
-                source.adjust(0, top, 0, -bottom)
-            painter.drawPixmap(thumb_rect, scaled, source)
+            if self._filmstrip_mode and not is_current:
+                scaled = pixmap.scaledToHeight(
+                    max(1, thumb_rect.height()), Qt.SmoothTransformation
+                )
+                if scaled.width() >= thumb_rect.width():
+                    diff = scaled.width() - thumb_rect.width()
+                    left = diff // 2
+                    right = diff - left
+                    source = QRect(left, 0, thumb_rect.width(), thumb_rect.height())
+                    painter.drawPixmap(thumb_rect, scaled, source)
+                else:
+                    target = QRect(
+                        thumb_rect.x() + (thumb_rect.width() - scaled.width()) // 2,
+                        thumb_rect.y(),
+                        scaled.width(),
+                        thumb_rect.height(),
+                    )
+                    painter.drawPixmap(target, scaled)
+            else:
+                scaled = pixmap.scaled(
+                    thumb_rect.size(),
+                    Qt.KeepAspectRatioByExpanding,
+                    Qt.SmoothTransformation,
+                )
+                source = scaled.rect()
+                if source.width() > thumb_rect.width():
+                    diff = source.width() - thumb_rect.width()
+                    left = diff // 2
+                    right = diff - left
+                    source.adjust(left, 0, -right, 0)
+                if source.height() > thumb_rect.height():
+                    diff = source.height() - thumb_rect.height()
+                    top = diff // 2
+                    bottom = diff - top
+                    source.adjust(0, top, 0, -bottom)
+                painter.drawPixmap(thumb_rect, scaled, source)
         else:
             painter.fillRect(thumb_rect, QColor("#1b1b1b"))
 
