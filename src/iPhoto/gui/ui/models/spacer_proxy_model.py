@@ -30,9 +30,22 @@ class SpacerProxyModel(QAbstractProxyModel):
         if self._spacer_size.width() == width:
             return
 
-        self.beginResetModel()
         self._spacer_size.setWidth(width)
-        self.endResetModel()
+
+        # The leading and trailing spacer rows are the only items whose
+        # geometry depends on this width. Instead of resetting the entire
+        # model (which would force every view to throw away caches and
+        # re-query all data), emit targeted ``dataChanged`` signals so
+        # views simply refresh the two spacer delegates. This keeps
+        # navigation responsive even for very large albums.
+        if self.rowCount() < 2:
+            return
+
+        first_idx = self.index(0, 0)
+        last_idx = self.index(self.rowCount() - 1, 0)
+        roles = [Qt.ItemDataRole.SizeHintRole]
+        self.dataChanged.emit(first_idx, first_idx, roles)
+        self.dataChanged.emit(last_idx, last_idx, roles)
 
     # ------------------------------------------------------------------
     # QAbstractProxyModel overrides

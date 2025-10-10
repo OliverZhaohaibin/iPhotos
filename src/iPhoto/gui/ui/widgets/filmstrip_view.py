@@ -52,7 +52,7 @@ class FilmstripView(AssetGrid):
         super().resizeEvent(event)
         self.refresh_spacers()
 
-    def refresh_spacers(self) -> None:
+    def refresh_spacers(self, current_proxy_index: QModelIndex | None = None) -> None:
         """Recalculate the spacer width exposed by the proxy model."""
 
         viewport = self.viewport()
@@ -69,30 +69,37 @@ class FilmstripView(AssetGrid):
             setter(0)
             return
 
-        current_width = self._current_item_width()
+        current_width = self._current_item_width(current_proxy_index)
         if current_width <= 0:
             current_width = self._narrow_item_width()
 
         padding = max(0, (viewport_width - current_width) // 2)
         setter(padding)
 
-    def _current_item_width(self) -> int:
+    def _current_item_width(self, current_proxy_index: QModelIndex | None = None) -> int:
         model = self.model()
         delegate = self.itemDelegate()
         if model is None or delegate is None or model.rowCount() == 0:
             return self._narrow_item_width()
 
         current_index = None
-        # Prefer the role flag that the controller keeps in sync with playback
-        for row in range(model.rowCount()):
-            index = model.index(row, 0)
-            if not index.isValid():
-                continue
-            if bool(index.data(Roles.IS_SPACER)):
-                continue
-            if bool(index.data(Roles.IS_CURRENT)):
-                current_index = index
-                break
+        if (
+            current_proxy_index is not None
+            and current_proxy_index.isValid()
+            and not bool(current_proxy_index.data(Roles.IS_SPACER))
+        ):
+            current_index = current_proxy_index
+        else:
+            # Prefer the role flag that the controller keeps in sync with playback
+            for row in range(model.rowCount()):
+                index = model.index(row, 0)
+                if not index.isValid():
+                    continue
+                if bool(index.data(Roles.IS_SPACER)):
+                    continue
+                if bool(index.data(Roles.IS_CURRENT)):
+                    current_index = index
+                    break
 
         # Fallback to the view's selection if the role is not yet updated
         if current_index is None:

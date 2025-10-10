@@ -152,10 +152,18 @@ class PlaybackController:
         _set_is_current(previous_row, False)
         if row >= 0:
             _set_is_current(row, True)
+
+        proxy_index: QModelIndex | None = None
+        if row >= 0:
+            proxy_row = row + 1
+            candidate = filmstrip_model.index(proxy_row, 0)
+            if candidate.isValid():
+                proxy_index = candidate
+
         # Ensure the filmstrip layout responds to width changes from the
         # delegate's dynamic size hints so neighbours slide instead of
         # overlapping the current tile.
-        self._filmstrip_view.refresh_spacers()
+        self._filmstrip_view.refresh_spacers(proxy_index)
         self._filmstrip_view.updateGeometries()
         self._filmstrip_view.doItemsLayout()
         if row < 0:
@@ -167,9 +175,7 @@ class PlaybackController:
             self._release_transition_lock()
             return
         selection_model.clearSelection()
-        proxy_row = row + 1
-        proxy_index = filmstrip_model.index(proxy_row, 0)
-        if not proxy_index.isValid():
+        if proxy_index is None:
             return
         selection_model.select(
             proxy_index,
@@ -180,6 +186,7 @@ class PlaybackController:
             proxy_index,
             QItemSelectionModel.SelectionFlag.NoUpdate,
         )
+        self._filmstrip_view.refresh_spacers(proxy_index)
         QTimer.singleShot(0, lambda idx=proxy_index: self._filmstrip_view.center_on_index(idx))
         self._player_bar.setEnabled(True)
         self.show_detail_view()
@@ -326,6 +333,7 @@ class PlaybackController:
             QItemSelectionModel.SelectionFlag.ClearAndSelect
             | QItemSelectionModel.SelectionFlag.Rows,
         )
+        self._filmstrip_view.refresh_spacers(proxy_index)
         QTimer.singleShot(0, lambda idx=proxy_index: self._filmstrip_view.center_on_index(idx))
 
     # ------------------------------------------------------------------
