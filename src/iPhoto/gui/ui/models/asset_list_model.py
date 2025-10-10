@@ -44,6 +44,7 @@ class AssetListModel(QAbstractListModel):
         self._thumb_loader.ready.connect(self._on_thumb_ready)
         self._loader_pool = QThreadPool.globalInstance()
         self._loader_worker: Optional[AssetLoaderWorker] = None
+        self._loader_signals: Optional[AssetLoaderSignals] = None
         self._pending_reload = False
         self._visible_rows: Set[int] = set()
         facade.albumOpened.connect(self._on_album_opened)
@@ -152,7 +153,7 @@ class AssetListModel(QAbstractListModel):
         self.endResetModel()
         manifest = self._facade.current_album.manifest if self._facade.current_album else {}
         featured = manifest.get("featured", []) or []
-        signals = AssetLoaderSignals(self)
+        signals = AssetLoaderSignals()
         signals.progressUpdated.connect(self._on_loader_progress)
         signals.chunkReady.connect(self._on_loader_chunk_ready)
         signals.finished.connect(self._on_loader_finished)
@@ -162,6 +163,7 @@ class AssetListModel(QAbstractListModel):
 
         worker = AssetLoaderWorker(self._album_root, featured, signals, live_map)
         self._loader_worker = worker
+        self._loader_signals = signals
         self._pending_reload = False
         self._loader_pool.start(worker)
 
@@ -220,8 +222,13 @@ class AssetListModel(QAbstractListModel):
 
     def _teardown_loader(self) -> None:
         if self._loader_worker is not None:
+            # ``deleteLater`` is safe even if the worker has already
+            # completed and the signal object is otherwise parent-less.
             self._loader_worker.signals.deleteLater()
+        elif self._loader_signals is not None:
+            self._loader_signals.deleteLater()
         self._loader_worker = None
+        self._loader_signals = None
         self._pending_reload = False
 
     # ------------------------------------------------------------------
