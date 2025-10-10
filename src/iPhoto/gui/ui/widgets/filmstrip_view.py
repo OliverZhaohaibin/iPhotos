@@ -44,7 +44,7 @@ class FilmstripView(AssetGrid):
         self.setMaximumHeight(strip_height)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setContentsMargins(0, 0, 0, 0)
-        self._update_margins()
+        QTimer.singleShot(0, self._update_margins)
 
     def setModel(self, model) -> None:  # type: ignore[override]
         super().setModel(model)
@@ -52,7 +52,7 @@ class FilmstripView(AssetGrid):
 
     def resizeEvent(self, event: QResizeEvent) -> None:  # type: ignore[override]
         super().resizeEvent(event)
-        self._update_margins()
+        QTimer.singleShot(0, self._update_margins)
 
     def _update_margins(self) -> None:
         viewport = self.viewport()
@@ -61,10 +61,12 @@ class FilmstripView(AssetGrid):
         viewport_width = viewport.width()
         if viewport_width <= 0:
             return
+
         narrow_width = self._narrow_item_width()
-        current_width = self._current_item_width()
-        target_width = current_width or narrow_width
-        target_padding = max(0, (viewport_width - target_width) // 2)
+        if narrow_width <= 0:
+            return
+
+        target_padding = max(0, (viewport_width - narrow_width) // 2)
         margins = self.contentsMargins()
         if margins.left() == target_padding and margins.right() == target_padding:
             return
@@ -111,22 +113,6 @@ class FilmstripView(AssetGrid):
         if isinstance(candidate, (int, float)) and candidate > 0:
             ratio = float(candidate)
         return ratio
-
-    def _current_item_width(self) -> int | None:
-        delegate = self.itemDelegate()
-        model = self.model()
-        if delegate is None or model is None:
-            return None
-        current = self.currentIndex()
-        if not current.isValid():
-            return None
-        option = QStyleOptionViewItem()
-        option.initFrom(self)
-        size = delegate.sizeHint(option, current)
-        width = size.width()
-        if width <= 0:
-            return int(round(self._base_height * self._delegate_ratio(delegate)))
-        return width
 
     # ------------------------------------------------------------------
     # Event handling
