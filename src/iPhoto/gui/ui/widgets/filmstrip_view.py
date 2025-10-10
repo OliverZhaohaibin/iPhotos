@@ -43,38 +43,38 @@ class FilmstripView(AssetGrid):
         self.setMinimumHeight(strip_height)
         self.setMaximumHeight(strip_height)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.setContentsMargins(0, 0, 0, 0)
-        self._update_margins()
 
     def setModel(self, model) -> None:  # type: ignore[override]
         super().setModel(model)
-        self._update_margins()
+        self.refresh_spacers()
 
     def resizeEvent(self, event: QResizeEvent) -> None:  # type: ignore[override]
         super().resizeEvent(event)
-        self._update_margins()
+        self.refresh_spacers()
 
-    def _update_margins(self) -> None:
+    def refresh_spacers(self) -> None:
+        """Recalculate the spacer width exposed by the proxy model."""
+
         viewport = self.viewport()
-        if viewport is None:
+        model = self.model()
+        if viewport is None or model is None:
             return
+
+        setter = getattr(model, "set_spacer_width", None)
+        if setter is None:
+            return
+
         viewport_width = viewport.width()
         if viewport_width <= 0:
+            setter(0)
             return
 
         current_width = self._current_item_width()
         if current_width <= 0:
-            return
+            current_width = self._narrow_item_width()
 
-        target_padding = max(0, (viewport_width - current_width) // 2)
-        margins = self.contentsMargins()
-        if margins.left() == target_padding and margins.right() == target_padding:
-            return
-        self.setContentsMargins(target_padding, margins.top(), target_padding, margins.bottom())
-
-    def refresh_padding(self) -> None:
-        """Public helper so controllers can request a padding recalculation."""
-        self._update_margins()
+        padding = max(0, (viewport_width - current_width) // 2)
+        setter(padding)
 
     def _current_item_width(self) -> int:
         model = self.model()
@@ -86,7 +86,11 @@ class FilmstripView(AssetGrid):
         # Prefer the role flag that the controller keeps in sync with playback
         for row in range(model.rowCount()):
             index = model.index(row, 0)
-            if index.isValid() and bool(index.data(Roles.IS_CURRENT)):
+            if not index.isValid():
+                continue
+            if bool(index.data(Roles.IS_SPACER)):
+                continue
+            if bool(index.data(Roles.IS_CURRENT)):
                 current_index = index
                 break
 
@@ -95,7 +99,7 @@ class FilmstripView(AssetGrid):
             selection_model = self.selectionModel()
             if selection_model is not None:
                 candidate = selection_model.currentIndex()
-                if candidate.isValid():
+                if candidate.isValid() and not bool(candidate.data(Roles.IS_SPACER)):
                     current_index = candidate
 
         if current_index is None or not current_index.isValid():
@@ -126,6 +130,8 @@ class FilmstripView(AssetGrid):
             index = model.index(row, 0)
             if not index.isValid():
                 continue
+            if bool(index.data(Roles.IS_SPACER)):
+                continue
             if bool(index.data(Roles.IS_CURRENT)):
                 continue
             width = self._visual_width(index)
@@ -135,12 +141,19 @@ class FilmstripView(AssetGrid):
             if width > 0:
                 return width
 
-        # Fall back to the first item or the delegate ratio if needed.
-        index = model.index(0, 0)
-        if index.isValid():
-            width = self._visual_width(index)
+        # Fall back to the first real item or the delegate ratio if needed.
+        fallback_index = None
+        for candidate_row in range(model.rowCount()):
+            candidate = model.index(candidate_row, 0)
+            if not candidate.isValid() or bool(candidate.data(Roles.IS_SPACER)):
+                continue
+            fallback_index = candidate
+            break
+
+        if fallback_index is not None and fallback_index.isValid():
+            width = self._visual_width(fallback_index)
             if width <= 0:
-                size = delegate.sizeHint(option, index)
+                size = delegate.sizeHint(option, fallback_index)
                 width = size.width()
             if width > 0:
                 return width

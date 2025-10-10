@@ -40,6 +40,12 @@ class AssetGridDelegate(QStyledItemDelegate):
     # Painting
     # ------------------------------------------------------------------
     def sizeHint(self, option: QStyleOptionViewItem, index) -> QSize:  # type: ignore[override]
+        if bool(index.data(Roles.IS_SPACER)):
+            hint = index.data(Qt.ItemDataRole.SizeHintRole)
+            if isinstance(hint, QSize) and hint.isValid():
+                return QSize(hint.width(), self._filmstrip_height)
+            return QSize(0, self._filmstrip_height)
+
         if not self._filmstrip_mode:
             return QSize(self._base_size, self._base_size)
 
@@ -51,6 +57,9 @@ class AssetGridDelegate(QStyledItemDelegate):
         return QSize(width, height)
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:  # type: ignore[override]
+        if bool(index.data(Roles.IS_SPACER)):
+            return
+
         painter.save()
         cell_rect = option.rect
         is_current = self._filmstrip_mode and bool(index.data(Roles.IS_CURRENT))

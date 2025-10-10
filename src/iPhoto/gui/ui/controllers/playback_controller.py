@@ -81,13 +81,19 @@ class PlaybackController:
             return
         if not index or not index.isValid():
             return
-        abs_raw = index.data(Roles.ABS)
+        filmstrip_model = self._filmstrip_view.model()
+        if filmstrip_model is None:
+            return
+        source_index = filmstrip_model.mapToSource(index)
+        if not source_index.isValid():
+            return
+        abs_raw = source_index.data(Roles.ABS)
         if not abs_raw:
             return
-        row = index.row()
+        row = source_index.row()
         abs_path = Path(str(abs_raw))
-        is_video = bool(index.data(Roles.IS_VIDEO))
-        is_live = bool(index.data(Roles.IS_LIVE))
+        is_video = bool(source_index.data(Roles.IS_VIDEO))
+        is_live = bool(source_index.data(Roles.IS_LIVE))
         if is_video or is_live:
             self.show_detail_view()
             self._playlist.set_current(row)
@@ -127,6 +133,9 @@ class PlaybackController:
         if selection_model is None:
             return
         source_model = self._model.source_model()
+        filmstrip_model = self._filmstrip_view.model()
+        if filmstrip_model is None:
+            return
 
         def _set_is_current(proxy_row: int, value: bool) -> None:
             if proxy_row < 0:
@@ -146,8 +155,8 @@ class PlaybackController:
         # Ensure the filmstrip layout responds to width changes from the
         # delegate's dynamic size hints so neighbours slide instead of
         # overlapping the current tile.
+        self._filmstrip_view.refresh_spacers()
         self._filmstrip_view.updateGeometries()
-        self._filmstrip_view.refresh_padding()
         self._filmstrip_view.doItemsLayout()
         if row < 0:
             self._player_bar.reset()
@@ -158,17 +167,20 @@ class PlaybackController:
             self._release_transition_lock()
             return
         selection_model.clearSelection()
-        index = self._model.index(row, 0)
+        proxy_row = row + 1
+        proxy_index = filmstrip_model.index(proxy_row, 0)
+        if not proxy_index.isValid():
+            return
         selection_model.select(
-            index,
+            proxy_index,
             QItemSelectionModel.SelectionFlag.ClearAndSelect
             | QItemSelectionModel.SelectionFlag.Rows,
         )
         selection_model.setCurrentIndex(
-            index,
+            proxy_index,
             QItemSelectionModel.SelectionFlag.NoUpdate,
         )
-        QTimer.singleShot(0, lambda idx=index: self._filmstrip_view.center_on_index(idx))
+        QTimer.singleShot(0, lambda idx=proxy_index: self._filmstrip_view.center_on_index(idx))
         self._player_bar.setEnabled(True)
         self.show_detail_view()
 
@@ -298,17 +310,23 @@ class PlaybackController:
         selection_model = self._filmstrip_view.selectionModel()
         if selection_model is None or row < 0:
             return
-        index = self._model.index(row, 0)
+        filmstrip_model = self._filmstrip_view.model()
+        if filmstrip_model is None:
+            return
+        proxy_row = row + 1
+        proxy_index = filmstrip_model.index(proxy_row, 0)
+        if not proxy_index.isValid():
+            return
         selection_model.setCurrentIndex(
-            index,
+            proxy_index,
             QItemSelectionModel.SelectionFlag.NoUpdate,
         )
         selection_model.select(
-            index,
+            proxy_index,
             QItemSelectionModel.SelectionFlag.ClearAndSelect
             | QItemSelectionModel.SelectionFlag.Rows,
         )
-        self._filmstrip_view.scrollTo(index)
+        QTimer.singleShot(0, lambda idx=proxy_index: self._filmstrip_view.center_on_index(idx))
 
     # ------------------------------------------------------------------
     # Internal helpers
