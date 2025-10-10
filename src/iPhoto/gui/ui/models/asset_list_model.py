@@ -219,8 +219,6 @@ class AssetListModel(QAbstractListModel):
             QTimer.singleShot(0, self.start_load)
 
     def _teardown_loader(self) -> None:
-        if self._loader_worker is not None:
-            self._loader_worker.signals.deleteLater()
         self._loader_worker = None
         self._pending_reload = False
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,8 @@ def atomic_write_text(path: Path, data: str) -> None:
         handle.write(data)
         handle.flush()
         os.fsync(handle.fileno())
+    if sys.platform == "win32" and path.exists():
+        path.unlink()
     tmp_path.replace(path)
 
 
