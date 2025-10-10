@@ -256,6 +256,8 @@ class AppFacade(QObject):
         if announce_index:
             self._pending_index_announcements.add(root)
         self.loadStarted.emit(root)
+        if self._asset_list_model.populate_from_cache():
+            return
         self._asset_list_model.start_load()
 
     def _on_model_load_progress(self, root: Path, current: int, total: int) -> None:
