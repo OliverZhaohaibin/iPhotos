@@ -3,25 +3,22 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
 from typing import Dict, Optional
 
-try:  # pragma: no cover - optional dependency failures handled at runtime
-    from geopy.geocoders import Nominatim
-except Exception:  # pragma: no cover - geopy missing or broken
-    Nominatim = None  # type: ignore[assignment]
-
-try:  # pragma: no cover - imported lazily when available
-    from geopy.exc import GeopyError  # type: ignore
-except Exception:  # pragma: no cover - geopy missing or broken
-    GeopyError = Exception  # type: ignore[assignment]
+try:  # pragma: no cover - optional dependency handled at runtime
+    import reverse_geocoder as rg
+except ImportError:  # pragma: no cover - dependency missing in environment
+    rg = None  # type: ignore[assignment]
 
 from ..config import WORK_DIR_NAME
 from .jsonio import atomic_write_text
+from .logging import get_logger
 from .pathutils import ensure_work_dir
 
+LOGGER = get_logger()
 CacheKey = str
 
 
@@ -31,44 +28,21 @@ def _normalise_key(lat: float, lon: float, *, precision: int = 4) -> CacheKey:
     return f"{round(lat, precision):.{precision}f},{round(lon, precision):.{precision}f}"
 
 
-def _format_location(raw: object) -> Optional[str]:
-    """Extract a human-friendly location name from a geopy result."""
+def _format_local_location(data: Dict[str, object]) -> Optional[str]:
+    """Extract a human-friendly location name from a reverse_geocoder result."""
 
-    if raw is None:
+    city = data.get("name")
+    admin1 = data.get("admin1")
+    country = data.get("cc")
+
+    if not isinstance(city, str) or not city:
         return None
-    address = getattr(raw, "raw", {}).get("address") if hasattr(raw, "raw") else None
-    if isinstance(address, dict):
-        city = address.get("city") or address.get("town") or address.get("village")
-        if not city:
-            city = address.get("municipality") or address.get("county")
-        district = (
-            address.get("suburb")
-            or address.get("neighbourhood")
-            or address.get("city_district")
-            or address.get("quarter")
-        )
-        state = address.get("state") or address.get("region")
-        country = address.get("country")
 
-        if city and district:
-            return f"{city} - {district}"
-        if city and state:
-            return f"{city}, {state}"
-        if city and country:
-            return f"{city}, {country}"
-        if state and country:
-            return f"{state}, {country}"
-        if city:
-            return str(city)
-        if country:
-            return str(country)
-
-    if hasattr(raw, "address") and isinstance(getattr(raw, "address"), str):
-        return getattr(raw, "address")  # type: ignore[return-value]
-    display = getattr(raw, "raw", {}).get("display_name") if hasattr(raw, "raw") else None
-    if isinstance(display, str):
-        return display
-    return None
+    if isinstance(admin1, str) and admin1 and admin1 != city:
+        return f"{city}, {admin1}"
+    if isinstance(country, str) and country:
+        return f"{city}, {country}"
+    return city
 
 
 @dataclass
@@ -76,28 +50,21 @@ class ReverseGeocoder:
     """Reverse geocoding helper persisting lookups to the album cache."""
 
     cache_path: Path
-    geolocator: Optional[object] = None
-    user_agent: str = "iPhoto/0.1 (reverse-geocoder)"
-    request_timeout: int = 5
+    _warned_missing: bool = field(init=False, default=False)
 
     def __post_init__(self) -> None:
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = Lock()
         self._cache: Dict[CacheKey, str] = {}
         self._load_cache()
-        if self.geolocator is None and Nominatim is not None:
-            try:
-                self.geolocator = Nominatim(user_agent=self.user_agent, timeout=self.request_timeout)
-            except Exception:  # pragma: no cover - runtime failure to init geocoder
-                self.geolocator = None
 
     # ------------------------------------------------------------------
     @classmethod
-    def for_album(cls, album_root: Path, *, geolocator: Optional[object] = None) -> "ReverseGeocoder":
+    def for_album(cls, album_root: Path) -> "ReverseGeocoder":
         """Return a geocoder instance for *album_root* using the shared cache."""
 
         cache_dir = ensure_work_dir(album_root, WORK_DIR_NAME)
-        return cls(cache_dir / "geocache.json", geolocator=geolocator)
+        return cls(cache_dir / "geocache.json")
 
     # ------------------------------------------------------------------
     def lookup(self, latitude: float, longitude: float) -> Optional[str]:
@@ -109,19 +76,24 @@ class ReverseGeocoder:
             if cached:
                 return cached
 
-        if self.geolocator is None:
+        if rg is None:
+            if not self._warned_missing:
+                LOGGER.warning(
+                    "reverse-geocoder dependency is not available; location lookups are disabled."
+                )
+                self._warned_missing = True
             return None
 
         try:
-            result = self.geolocator.reverse(  # type: ignore[call-arg]
-                (latitude, longitude), exactly_one=True, language="en"
-            )
-        except GeopyError:
-            return None
-        except Exception:  # pragma: no cover - unexpected runtime failure
+            results = rg.search([(latitude, longitude)])
+        except Exception as exc:  # pragma: no cover - surfaced in logs
+            LOGGER.error("Offline reverse geocoding failed: %s", exc, exc_info=True)
             return None
 
-        label = _format_location(result)
+        if not results:
+            return None
+
+        label = _format_local_location(results[0])
         if not label:
             return None
 
@@ -141,7 +113,8 @@ class ReverseGeocoder:
         except json.JSONDecodeError:
             self._cache = {}
             return
-        except OSError:
+        except OSError as exc:
+            LOGGER.error("Failed to read geocoding cache: %s", exc)
             self._cache = {}
             return
 
@@ -154,9 +127,8 @@ class ReverseGeocoder:
         try:
             serialised = json.dumps(self._cache, ensure_ascii=False, sort_keys=True)
             atomic_write_text(self.cache_path, serialised + "\n")
-        except OSError:  # pragma: no cover - disk errors surfaced in logs
-            pass
+        except OSError as exc:  # pragma: no cover - disk errors surfaced in logs
+            LOGGER.error("Failed to write geocoding cache: %s", exc)
 
 
 __all__ = ["ReverseGeocoder"]
-
