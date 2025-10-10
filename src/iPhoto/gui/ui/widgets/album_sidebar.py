@@ -179,16 +179,14 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         painter.save()
         rect = option.rect
         node_type = index.data(AlbumTreeRole.NODE_TYPE) or NodeType.ALBUM
+        album_node: AlbumNode | None = index.data(AlbumTreeRole.ALBUM_NODE)
 
-        widget = option.widget
-        if isinstance(widget, QTreeView):
-            tree_view = widget
+        tree_view: QTreeView | None = None
+        if isinstance(option.widget, QTreeView):
+            tree_view = option.widget
         elif isinstance(self.parent(), QTreeView):
             tree_view = self.parent()
-        else:
-            tree_view = None
 
-        # Draw separator rows as a thin line.
         if node_type == NodeType.SEPARATOR:
             pen = QPen(SEPARATOR_COLOR)
             pen.setWidth(1)
@@ -202,24 +200,19 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         is_selected = bool(option.state & QStyle.StateFlag.State_Selected)
         is_hover = bool(option.state & QStyle.StateFlag.State_MouseOver)
 
-        highlight = None
-        if is_selected:
-            highlight = SELECT_BG
-        elif is_hover and is_enabled:
-            highlight = HOVER_BG
+        highlight_color = None
+        if node_type not in {NodeType.SECTION, NodeType.SEPARATOR}:
+            if is_selected:
+                highlight_color = SELECT_BG
+            elif is_hover and is_enabled:
+                highlight_color = HOVER_BG
 
-        if node_type in {NodeType.SECTION, NodeType.SEPARATOR}:
-            highlight = None
-
-        if highlight is not None:
+        if highlight_color is not None:
             background_rect = rect.adjusted(6, 4, -6, -4)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(highlight)
+            painter.setBrush(highlight_color)
             painter.drawRoundedRect(background_rect, ROW_RADIUS, ROW_RADIUS)
-
-        text = index.data(Qt.ItemDataRole.DisplayRole) or ""
-        icon = index.data(Qt.ItemDataRole.DecorationRole)
 
         font = QFont(option.font)
         if node_type == NodeType.HEADER:
@@ -232,35 +225,43 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
             font.setItalic(True)
         painter.setFont(font)
 
-        color = TEXT_COLOR if is_enabled else DISABLED_TEXT
+        text_color = TEXT_COLOR if is_enabled else DISABLED_TEXT
         if node_type == NodeType.SECTION:
-            color = SECTION_TEXT
+            text_color = SECTION_TEXT
         elif node_type == NodeType.ACTION:
-            color = ICON_COLOR
-        painter.setPen(color)
+            text_color = ICON_COLOR
 
-        branch_rect = QRect()
+        text = index.data(Qt.ItemDataRole.DisplayRole) or ""
+        icon = index.data(Qt.ItemDataRole.DecorationRole)
+
+        level = album_node.level if album_node is not None else 1
+        indentation = max(0, level - 1) * 22
+        x = rect.left() + LEFT_PADDING + indentation
+
         model = index.model()
         has_children = bool(model is not None and model.hasChildren(index))
+        indicator_slot = 22
 
         if tree_view is not None and has_children:
             indicator_size = 16
             branch_rect = QRect(
-                rect.left() + 4,
+                x,
                 rect.top() + (rect.height() - indicator_size) // 2,
                 indicator_size,
                 indicator_size,
             )
 
             controller = getattr(tree_view, "branch_indicator_controller", None)
-            if controller is not None:
-                angle = controller.angle_for_index(index)
-            else:
-                angle = 90.0 if tree_view.isExpanded(index) else 0.0
+            angle = (
+                controller.angle_for_index(index)
+                if controller is not None
+                else (90.0 if tree_view.isExpanded(index) else 0.0)
+            )
 
             painter.save()
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-            pen = QPen(color)
+            indicator_color = TEXT_COLOR if is_enabled else DISABLED_TEXT
+            pen = QPen(indicator_color)
             pen.setWidth(2)
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
             painter.setPen(pen)
@@ -276,26 +277,34 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
 
             painter.restore()
 
-        x = rect.left() + LEFT_PADDING
-        if branch_rect.isValid() and has_children:
-            x = max(x, branch_rect.right() + 6)
+            x = branch_rect.right() + 6
+        elif node_type in {NodeType.ALBUM, NodeType.SUBALBUM}:
+            x += indicator_slot
 
-        icon_size = 18
         if icon is not None and not icon.isNull():
-            icon_rect = rect.adjusted(0, 0, 0, 0)
-            icon_rect.setLeft(x)
-            icon_rect.setWidth(icon_size)
+            icon_size = 18
+            icon_rect = QRect(
+                x,
+                rect.top() + (rect.height() - icon_size) // 2,
+                icon_size,
+                icon_size,
+            )
             icon.paint(
                 painter,
                 icon_rect,
-                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter,
+                Qt.AlignmentFlag.AlignCenter,
             )
-            x += icon_size + ICON_TEXT_GAP
+            x = icon_rect.right() + ICON_TEXT_GAP
 
+        painter.setPen(text_color)
         metrics = QFontMetrics(font)
         text_rect = rect.adjusted(x - rect.left(), 0, -8, 0)
         elided = metrics.elidedText(text, Qt.TextElideMode.ElideRight, text_rect.width())
-        painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, elided)
+        painter.drawText(
+            text_rect,
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            elided,
+        )
 
         painter.restore()
 
@@ -350,7 +359,7 @@ class AlbumSidebar(QWidget):
         self._tree.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self._tree.doubleClicked.connect(self._on_double_clicked)
         self._tree.setMinimumWidth(220)
-        self._tree.setIndentation(18)
+        self._tree.setIndentation(0)
         self._tree.setIconSize(QSize(18, 18))
         self._tree.setMouseTracking(True)
         self._tree.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
@@ -371,12 +380,7 @@ class AlbumSidebar(QWidget):
         self._tree.setStyleSheet(
             "QTreeView { background: transparent; border: none; }"
             "QTreeView::item { border: 0px; padding: 0px; margin: 0px; }"
-            "QTreeView::branch { background: transparent; border-image: none; image: none; }"
-            "QTreeView::branch:has-children:!has-siblings:closed,"
-            "QTreeView::branch:has-children:has-siblings:closed,"
-            "QTreeView::branch:closed:has-children:has-siblings { image: none; }"
-            "QTreeView::branch:open:has-children:!has-siblings,"
-            "QTreeView::branch:open:has-children:has-siblings { image: none; }"
+            "QTreeView::branch { image: none; }"
         )
 
         layout = QVBoxLayout(self)
