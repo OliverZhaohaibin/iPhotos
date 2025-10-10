@@ -147,6 +147,7 @@ class PlaybackController:
         # delegate's dynamic size hints so neighbours slide instead of
         # overlapping the current tile.
         self._filmstrip_view.updateGeometries()
+        self._filmstrip_view.refresh_padding()
         if row < 0:
             self._player_bar.reset()
             self._player_bar.setEnabled(False)

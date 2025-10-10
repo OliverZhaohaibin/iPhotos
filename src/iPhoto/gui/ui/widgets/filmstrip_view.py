@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, QSize, Qt, Signal
-from PySide6.QtGui import QWheelEvent
+from PySide6.QtCore import QPoint, QSize, Qt, Signal, QTimer
+from PySide6.QtGui import QResizeEvent, QWheelEvent
 from PySide6.QtWidgets import QListView, QSizePolicy
 
 from .asset_grid import AssetGrid
+from ..models.asset_model import Roles
 
 
 class FilmstripView(AssetGrid):
@@ -17,13 +18,14 @@ class FilmstripView(AssetGrid):
 
     def __init__(self, parent=None) -> None:  # type: ignore[override]
         super().__init__(parent)
-        base_size = 120
-        spacing = 2
-        icon_size = QSize(base_size, base_size)
+        self._base_height = 120
+        self._spacing = 2
+        self._default_ratio = 0.6
+        icon_size = QSize(self._base_height, self._base_height)
         self.setViewMode(QListView.ViewMode.IconMode)
         self.setSelectionMode(QListView.SelectionMode.SingleSelection)
         self.setIconSize(icon_size)
-        self.setSpacing(spacing)
+        self.setSpacing(self._spacing)
         self.setUniformItemSizes(False)
         self.setResizeMode(QListView.ResizeMode.Adjust)
         self.setMovement(QListView.Movement.Static)
@@ -35,12 +37,89 @@ class FilmstripView(AssetGrid):
         self.setWordWrap(False)
         self.setStyleSheet(
             "QListView { border: none; background-color: transparent; }"
-            "QListView::item { border: none; padding: 0px; }"
+            "QListView::item { border: none; padding: 0px; margin: 0px; }"
         )
-        strip_height = base_size + 12
+        strip_height = self._base_height + 12
         self.setMinimumHeight(strip_height)
         self.setMaximumHeight(strip_height)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setContentsMargins(0, 0, 0, 0)
+        self._update_margins()
+
+    def setModel(self, model) -> None:  # type: ignore[override]
+        super().setModel(model)
+        QTimer.singleShot(0, self._update_margins)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._update_margins()
+
+    def _update_margins(self) -> None:
+        viewport = self.viewport()
+        if viewport is None:
+            return
+        viewport_width = viewport.width()
+        if viewport_width <= 0:
+            return
+        narrow_width = self._narrow_item_width()
+        current_width = self._current_item_width()
+        target_width = current_width or narrow_width
+        target_padding = max(0, (viewport_width - target_width) // 2)
+        margins = self.contentsMargins()
+        if margins.left() == target_padding and margins.right() == target_padding:
+            return
+        self.setContentsMargins(target_padding, margins.top(), target_padding, margins.bottom())
+
+    def refresh_padding(self) -> None:
+        """Public helper so controllers can request a padding recalculation."""
+        self._update_margins()
+
+    def _narrow_item_width(self) -> int:
+        delegate = self.itemDelegate()
+        model = self.model()
+        if delegate is None or model is None or model.rowCount() == 0:
+            ratio = self._delegate_ratio(delegate)
+            return max(1, int(round(self._base_height * ratio)))
+
+        option = self.viewOptions()
+        # Prefer any non-current item to approximate the narrow width
+        for row in range(model.rowCount()):
+            index = model.index(row, 0)
+            if not index.isValid():
+                continue
+            if bool(index.data(Roles.IS_CURRENT)):
+                continue
+            size = delegate.sizeHint(option, index)
+            if size.width() > 0:
+                return size.width()
+
+        # Fall back to the first item or the delegate ratio if needed.
+        index = model.index(0, 0)
+        if index.isValid():
+            size = delegate.sizeHint(option, index)
+            if size.width() > 0:
+                return size.width()
+        ratio = self._delegate_ratio(delegate)
+        return max(1, int(round(self._base_height * ratio)))
+
+    def _delegate_ratio(self, delegate) -> float:
+        ratio = self._default_ratio
+        candidate = getattr(delegate, "_FILMSTRIP_RATIO", None)
+        if isinstance(candidate, (int, float)) and candidate > 0:
+            ratio = float(candidate)
+        return ratio
+
+    def _current_item_width(self) -> int | None:
+        delegate = self.itemDelegate()
+        model = self.model()
+        if delegate is None or model is None:
+            return None
+        current = self.currentIndex()
+        if not current.isValid():
+            return None
+        option = self.viewOptions()
+        size = delegate.sizeHint(option, current)
+        return size.width() or None
 
     # ------------------------------------------------------------------
     # Event handling
