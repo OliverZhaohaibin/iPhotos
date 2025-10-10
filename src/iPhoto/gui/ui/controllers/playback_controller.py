@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QItemSelectionModel, QModelIndex, QRect
+from PySide6.QtCore import QItemSelectionModel, QModelIndex, QRect, QTimer
 from PySide6.QtWidgets import QStackedWidget, QStatusBar, QWidget
 
 from ....config import VIDEO_COMPLETE_HOLD_BACKSTEP_MS
@@ -168,7 +168,7 @@ class PlaybackController:
             index,
             QItemSelectionModel.SelectionFlag.NoUpdate,
         )
-        self._filmstrip_view.center_on_index(index)
+        QTimer.singleShot(0, lambda idx=index: self._filmstrip_view.center_on_index(idx))
         self._player_bar.setEnabled(True)
         self.show_detail_view()
 
