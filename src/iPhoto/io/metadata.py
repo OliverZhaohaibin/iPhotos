@@ -130,15 +130,17 @@ def _convert_dms(values: Any) -> Optional[float]:
 def _extract_gps_coordinates(exif: Any) -> Optional[Tuple[float, float]]:
     """Return latitude/longitude from an EXIF GPS IFD mapping."""
 
-    if not hasattr(exif, "items"):
+    if not hasattr(exif, "get"):
         return None
     gps_ifd = exif.get(34853)
-    if not hasattr(gps_ifd, "items"):
+    if not isinstance(gps_ifd, dict):
         return None
 
     tagged: Dict[str, Any] = {}
     for key, value in gps_ifd.items():
-        name = GPS_TAGS.get(key, key)
+        name = GPS_TAGS.get(key)
+        if not name:
+            continue
         tagged[name] = value
 
     lat_values = tagged.get("GPSLatitude")
