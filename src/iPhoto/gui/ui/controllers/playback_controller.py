@@ -115,12 +115,22 @@ class PlaybackController:
                 coords[0],
                 coords[1],
             )
+            print(
+                f"GPS coordinates for {rel if isinstance(rel, str) else '<unknown>'}: "
+                f"{coords[0]:.6f}, {coords[1]:.6f}",
+                flush=True,
+            )
 
         if location_text:
             LOGGER.info(
                 "Resolved location for %s: %s",
                 rel if isinstance(rel, str) else "<unknown>",
                 location_text,
+            )
+            print(
+                f"Resolved location for {rel if isinstance(rel, str) else '<unknown>'}: "
+                f"{location_text}",
+                flush=True,
             )
             self._location_label.setText(location_text)
             self._location_label.show()
