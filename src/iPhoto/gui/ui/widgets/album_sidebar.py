@@ -21,6 +21,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QColor,
+    QCursor,
     QFont,
     QFontMetrics,
     QPainter,
@@ -64,6 +65,9 @@ ROW_HEIGHT = 36
 ROW_RADIUS = 10
 LEFT_PADDING = 14
 ICON_TEXT_GAP = 10
+INDENT_PER_LEVEL = 22
+INDICATOR_SLOT_WIDTH = 22
+INDICATOR_SIZE = 16
 
 @dataclass(slots=True)
 class _IndicatorState:
@@ -179,7 +183,6 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         painter.save()
         rect = option.rect
         node_type = index.data(AlbumTreeRole.NODE_TYPE) or NodeType.ALBUM
-        album_node: AlbumNode | None = index.data(AlbumTreeRole.ALBUM_NODE)
 
         tree_view: QTreeView | None = None
         if isinstance(option.widget, QTreeView):
@@ -234,21 +237,19 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         text = index.data(Qt.ItemDataRole.DisplayRole) or ""
         icon = index.data(Qt.ItemDataRole.DecorationRole)
 
-        level = album_node.level if album_node is not None else 1
-        indentation = max(0, level - 1) * 22
+        depth = self._depth_for_index(index)
+        indentation = depth * INDENT_PER_LEVEL
         x = rect.left() + LEFT_PADDING + indentation
 
         model = index.model()
         has_children = bool(model is not None and model.hasChildren(index))
-        indicator_slot = 22
 
         if tree_view is not None and has_children:
-            indicator_size = 16
             branch_rect = QRect(
                 x,
-                rect.top() + (rect.height() - indicator_size) // 2,
-                indicator_size,
-                indicator_size,
+                rect.top() + (rect.height() - INDICATOR_SIZE) // 2,
+                INDICATOR_SIZE,
+                INDICATOR_SIZE,
             )
 
             controller = getattr(tree_view, "branch_indicator_controller", None)
@@ -278,8 +279,8 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
             painter.restore()
 
             x = branch_rect.right() + 6
-        elif node_type in {NodeType.ALBUM, NodeType.SUBALBUM}:
-            x += indicator_slot
+        elif depth > 0:
+            x += INDICATOR_SLOT_WIDTH
 
         if icon is not None and not icon.isNull():
             icon_size = 18
@@ -307,6 +308,34 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         )
 
         painter.restore()
+
+    def indicator_rect(self, option: QStyleOptionViewItem, index: QModelIndex) -> QRect:
+        """Return the rectangle reserved for the branch indicator."""
+
+        rect = option.rect
+        model = index.model()
+        if model is None or not model.hasChildren(index):
+            return QRect()
+
+        depth = self._depth_for_index(index)
+        indentation = depth * INDENT_PER_LEVEL
+        x = rect.left() + LEFT_PADDING + indentation
+
+        return QRect(
+            x,
+            rect.top() + (rect.height() - INDICATOR_SIZE) // 2,
+            INDICATOR_SIZE,
+            INDICATOR_SIZE,
+        )
+
+    @staticmethod
+    def _depth_for_index(index: QModelIndex) -> int:
+        depth = 0
+        parent = index.parent()
+        while parent.isValid():
+            depth += 1
+            parent = parent.parent()
+        return depth
 
 
 class AlbumSidebar(QWidget):
@@ -358,6 +387,7 @@ class AlbumSidebar(QWidget):
         self._tree.customContextMenuRequested.connect(self._show_context_menu)
         self._tree.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self._tree.doubleClicked.connect(self._on_double_clicked)
+        self._tree.clicked.connect(self._on_clicked)
         self._tree.setMinimumWidth(220)
         self._tree.setIndentation(0)
         self._tree.setIconSize(QSize(18, 18))
@@ -459,6 +489,37 @@ class AlbumSidebar(QWidget):
             return
         if item.node_type == NodeType.ACTION:
             self.bindLibraryRequested.emit()
+
+    def _on_clicked(self, index: QModelIndex) -> None:
+        """Toggle expansion when the branch indicator hot zone is clicked."""
+
+        if not index.isValid() or not self._model.hasChildren(index):
+            return
+
+        delegate = self._tree.itemDelegate()
+        if not isinstance(delegate, AlbumSidebarDelegate):
+            return
+
+        item_rect = self._tree.visualRect(index)
+        if not item_rect.isValid():
+            return
+
+        option = self._tree.viewOptions()
+        option.rect = item_rect
+
+        hot_zone = delegate.indicator_rect(option, index).adjusted(-4, -4, 4, 4)
+        if hot_zone.isNull():
+            return
+
+        cursor_pos = QCursor.pos()
+        viewport_pos = self._tree.viewport().mapFromGlobal(cursor_pos)
+        if not hot_zone.contains(viewport_pos):
+            return
+
+        if self._tree.isExpanded(index):
+            self._tree.collapse(index)
+        else:
+            self._tree.expand(index)
 
     def select_path(self, path: Path) -> None:
         """Select the tree item corresponding to *path* if it exists."""
