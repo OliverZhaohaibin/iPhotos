@@ -17,14 +17,14 @@ class FilmstripView(AssetGrid):
 
     def __init__(self, parent=None) -> None:  # type: ignore[override]
         super().__init__(parent)
-        base_size = 192
+        base_size = 120
         padding = 6
         icon_size = QSize(base_size, base_size)
         self.setViewMode(QListView.ViewMode.IconMode)
         self.setSelectionMode(QListView.SelectionMode.SingleSelection)
         self.setIconSize(icon_size)
-        self.setGridSize(QSize())
-        self.setSpacing(2)
+        self.setGridSize(QSize(0, base_size + padding * 2))
+        self.setSpacing(1)
         self.setUniformItemSizes(False)
         self.setResizeMode(QListView.ResizeMode.Adjust)
         self.setMovement(QListView.Movement.Static)

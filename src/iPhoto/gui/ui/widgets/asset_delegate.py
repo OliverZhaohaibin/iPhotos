@@ -32,6 +32,7 @@ class AssetGridDelegate(QStyledItemDelegate):
         self._live_icon: QIcon = load_icon("livephoto.svg", color="white")
         self._filmstrip_mode = filmstrip_mode
         self._base_size = 192
+        self._filmstrip_height = 120
         self._filmstrip_padding = 6
         self._filmstrip_border_width = 3
 
@@ -41,9 +42,10 @@ class AssetGridDelegate(QStyledItemDelegate):
     def sizeHint(self, option: QStyleOptionViewItem, index) -> QSize:  # type: ignore[override]
         if not self._filmstrip_mode:
             return QSize(self._base_size, self._base_size)
+
         is_current = bool(index.data(Roles.IS_CURRENT))
         padding = self._filmstrip_padding
-        thumb_height = self._base_size
+        thumb_height = self._filmstrip_height
         thumb_width = self._filmstrip_thumb_width(is_current)
         return QSize(thumb_width + padding * 2, thumb_height + padding * 2)
 
@@ -117,14 +119,17 @@ class AssetGridDelegate(QStyledItemDelegate):
     # Helpers
     # ------------------------------------------------------------------
     def _filmstrip_rect(self, rect: QRect, is_current: bool) -> QRect:
-        thumb_height = self._base_size
-        thumb_width = self._filmstrip_thumb_width(is_current)
-        x = rect.x() + (rect.width() - thumb_width) // 2
-        y = rect.y() + (rect.height() - thumb_height) // 2
+        padding = self._filmstrip_padding
+        available = rect.adjusted(padding, padding, -padding, -padding)
+        thumb_height = min(self._filmstrip_height, max(0, available.height()))
+        thumb_width = min(self._filmstrip_thumb_width(is_current), max(0, available.width()))
+        x = available.x() + (available.width() - thumb_width) // 2
+        y = available.y() + (available.height() - thumb_height) // 2
         return QRect(x, y, thumb_width, thumb_height)
 
     def _filmstrip_thumb_width(self, is_current: bool) -> int:
-        width = self._base_size if is_current else int(self._base_size * self._FILMSTRIP_RATIO)
+        height = self._filmstrip_height
+        width = height if is_current else int(height * self._FILMSTRIP_RATIO)
         return max(24, width)
 
     def _draw_duration_badge(
