@@ -128,6 +128,7 @@ class AssetLoaderWorker(QRunnable):
                 "abs": abs_path,
                 "id": row.get("id", rel),
                 "name": Path(rel).name,
+                "is_current": False,
                 "is_image": is_image,
                 "is_video": is_video,
                 "is_live": bool(live_motion),

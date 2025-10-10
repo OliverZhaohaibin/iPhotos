@@ -183,7 +183,9 @@ class MainWindow(QMainWindow):
         self._grid_view.visibleRowsChanged.connect(self._asset_model.prioritize_rows)
 
         self._filmstrip_view.setModel(self._asset_model)
-        self._filmstrip_view.setItemDelegate(AssetGridDelegate(self._filmstrip_view))
+        self._filmstrip_view.setItemDelegate(
+            AssetGridDelegate(self._filmstrip_view, filmstrip_mode=True)
+        )
         self._filmstrip_view.visibleRowsChanged.connect(self._asset_model.prioritize_rows)
 
         self._player_stack.addWidget(self._player_placeholder)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Optional, Set, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
 
 from PySide6.QtCore import (
     QAbstractListModel,
@@ -95,10 +95,28 @@ class AssetListModel(QAbstractListModel):
             return row["dt"]
         if role == Roles.FEATURED:
             return row["featured"]
+        if role == Roles.IS_CURRENT:
+            return bool(row.get("is_current", False))
         return None
 
     def roleNames(self) -> Dict[int, bytes]:  # type: ignore[override]
         return role_names(super().roleNames())
+
+    def setData(
+        self, index: QModelIndex, value: Any, role: int = Qt.EditRole
+    ) -> bool:  # type: ignore[override]
+        if not index.isValid() or not (0 <= index.row() < len(self._rows)):
+            return False
+        if role != Roles.IS_CURRENT:
+            return super().setData(index, value, role)
+
+        normalized = bool(value)
+        row = self._rows[index.row()]
+        if bool(row.get("is_current", False)) == normalized:
+            return True
+        row["is_current"] = normalized
+        self.dataChanged.emit(index, index, [Roles.IS_CURRENT])
+        return True
 
     def thumbnail_loader(self) -> ThumbnailLoader:
         return self._thumb_loader

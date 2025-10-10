@@ -20,6 +20,7 @@ class PlaylistController(QObject):
         super().__init__(parent)
         self._model: Optional[AssetModel] = None
         self._current_row: int = -1
+        self._previous_row: int = -1
 
     # ------------------------------------------------------------------
     # Model wiring
@@ -49,6 +50,13 @@ class PlaylistController(QObject):
             return None
         if not self._is_playable(row):
             return None
+        if row == self._current_row:
+            source = self._resolve_source(row)
+            self.currentChanged.emit(row)
+            if source is not None:
+                self.sourceChanged.emit(source)
+            return source
+        self._previous_row = self._current_row
         self._current_row = row
         source = self._resolve_source(row)
         self.currentChanged.emit(row)
@@ -78,10 +86,16 @@ class PlaylistController(QObject):
             return None
         return self._resolve_source(self._current_row)
 
+    def previous_row(self) -> int:
+        """Return the previously active row, or ``-1`` if unavailable."""
+
+        return self._previous_row
+
     def clear(self) -> None:
         """Reset the controller to an empty state."""
 
         if self._current_row != -1:
+            self._previous_row = self._current_row
             self._current_row = -1
             self.currentChanged.emit(-1)
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QItemSelectionModel, QModelIndex, QRect
-from PySide6.QtWidgets import QStackedWidget, QStatusBar, QWidget
+from PySide6.QtWidgets import QAbstractItemView, QStackedWidget, QStatusBar, QWidget
 
 from ....config import VIDEO_COMPLETE_HOLD_BACKSTEP_MS
 from ..media import MediaController, PlaylistController
@@ -69,6 +69,8 @@ class PlaybackController:
         media.mutedChanged.connect(self._on_media_muted_changed)
         self._image_viewer.replayRequested.connect(self.replay_live_photo)
         self._image_viewer.set_live_replay_enabled(False)
+        self._filmstrip_view.nextItemRequested.connect(self._playlist.next)
+        self._filmstrip_view.prevItemRequested.connect(self._playlist.previous)
 
     # ------------------------------------------------------------------
     # Selection handling
@@ -121,6 +123,21 @@ class PlaybackController:
         selection_model = self._filmstrip_view.selectionModel()
         if selection_model is None:
             return
+        source_model = self._model.source_model()
+
+        def _set_is_current(proxy_row: int, value: bool) -> None:
+            if proxy_row < 0:
+                return
+            proxy_index = self._model.index(proxy_row, 0)
+            if not proxy_index.isValid():
+                return
+            source_index = self._model.mapToSource(proxy_index)
+            if not source_index.isValid():
+                return
+            source_model.setData(source_index, value, Roles.IS_CURRENT)
+
+        previous_row = self._playlist.previous_row()
+        _set_is_current(previous_row, False)
         if row < 0:
             self._player_bar.reset()
             self._player_bar.setEnabled(False)
@@ -139,7 +156,8 @@ class PlaybackController:
             index,
             QItemSelectionModel.SelectionFlag.NoUpdate,
         )
-        self._filmstrip_view.scrollTo(index)
+        _set_is_current(row, True)
+        self._filmstrip_view.scrollTo(index, QAbstractItemView.ScrollHint.PositionAtCenter)
         self._player_bar.setEnabled(True)
         self.show_detail_view()
 
