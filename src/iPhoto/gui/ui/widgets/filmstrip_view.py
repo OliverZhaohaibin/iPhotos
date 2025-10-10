@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QModelIndex, QPoint, QSize, Qt, Signal, QTimer
+from PySide6.QtCore import QModelIndex, QPoint, QSize, Qt, Signal
 from PySide6.QtGui import QResizeEvent, QWheelEvent
 from PySide6.QtWidgets import QListView, QSizePolicy, QStyleOptionViewItem
 
@@ -44,15 +44,15 @@ class FilmstripView(AssetGrid):
         self.setMaximumHeight(strip_height)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setContentsMargins(0, 0, 0, 0)
-        QTimer.singleShot(0, self._update_margins)
+        self._update_margins()
 
     def setModel(self, model) -> None:  # type: ignore[override]
         super().setModel(model)
-        QTimer.singleShot(0, self._update_margins)
+        self._update_margins()
 
     def resizeEvent(self, event: QResizeEvent) -> None:  # type: ignore[override]
         super().resizeEvent(event)
-        QTimer.singleShot(0, self._update_margins)
+        self._update_margins()
 
     def _update_margins(self) -> None:
         viewport = self.viewport()
