@@ -142,17 +142,11 @@ class PlaylistController(QObject):
         return None
 
     def _is_playable(self, row: int) -> bool:
-        assert self._model is not None
-        index = self._model.index(row, 0)
-        if bool(index.data(Roles.IS_VIDEO)):
-            return True
-        if bool(index.data(Roles.IS_LIVE)):
-            motion_abs = index.data(Roles.LIVE_MOTION_ABS)
-            if isinstance(motion_abs, str) and motion_abs:
-                return True
-            motion_rel = index.data(Roles.LIVE_MOTION_REL)
-            return isinstance(motion_rel, str) and bool(motion_rel)
-        return False
+        """Return ``True`` when *row* is within range of the bound model."""
+
+        if self._model is None:
+            return False
+        return 0 <= row < self._model.rowCount()
 
     def _resolve_source(self, row: int) -> Optional[Path]:
         if self._model is None:

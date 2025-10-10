@@ -174,11 +174,13 @@ class PlaybackController:
     def handle_playlist_source_changed(self, source: Path) -> None:
         self._is_transitioning = True
         self._reset_playback_state()
+        is_video = False
         is_live_photo = False
         current_row = self._playlist.current_row()
         if current_row != -1:
             index = self._model.index(current_row, 0)
             if index.isValid():
+                is_video = bool(index.data(Roles.IS_VIDEO))
                 is_live_photo = bool(index.data(Roles.IS_LIVE))
                 if is_live_photo:
                     still_raw = index.data(Roles.ABS)
@@ -187,6 +189,12 @@ class PlaybackController:
                         self._pending_live_photo_still = still_path
                         self._active_live_still = still_path
         self._preview_window.close_preview(False)
+
+        if not is_video and not is_live_photo:
+            self._display_image(source, row=current_row)
+            self._release_transition_lock()
+            return
+
         self._media.load(source)
         if is_live_photo:
             if not self._live_mode_active:
