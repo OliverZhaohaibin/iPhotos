@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, List, Optional, Set
 from PySide6.QtCore import QObject, QThreadPool, QTimer, Signal
 
 from .. import app as backend
-from ..config import WORK_DIR_NAME
 from ..errors import IPhotoError
 from ..models.album import Album
 from .ui.tasks.scanner_worker import ScannerSignals, ScannerWorker
@@ -63,7 +62,14 @@ class AppFacade(QObject):
         """Open *root* and trigger background work as needed."""
 
         try:
-            album = Album.open(root)
+            # ``backend.open_album`` guarantees that the on-disk caches (index
+            # and links) exist before returning.  The GUI model relies on
+            # ``index.jsonl`` being present immediately after opening so that
+            # the background asset loader can populate rows without having to
+            # wait for an asynchronous rescan to finish.  Falling back to the
+            # plain ``Album.open`` left a window where the tests would observe
+            # a missing index file which in turn kept the models empty.
+            album = backend.open_album(root)
         except IPhotoError as exc:
             self.errorRaised.emit(str(exc))
             return None
@@ -72,18 +78,7 @@ class AppFacade(QObject):
         album_root = album.root
         self.albumOpened.emit(album_root)
 
-        index_path = album_root / WORK_DIR_NAME / "index.jsonl"
-        has_index = False
-        if index_path.exists():
-            try:
-                has_index = index_path.stat().st_size > 0
-            except OSError:
-                has_index = False
-
-        if not has_index:
-            self.rescan_current_async()
-        else:
-            self._restart_asset_load(album_root, announce_index=True)
+        self._restart_asset_load(album_root, announce_index=True)
         return album
 
     def rescan_current(self) -> List[dict]:
