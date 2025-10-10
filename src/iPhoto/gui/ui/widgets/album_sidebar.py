@@ -40,13 +40,13 @@ from PySide6.QtWidgets import (
     QStyleOptionViewItem,
     QTreeView,
     QVBoxLayout,
-    QWidget,
+    QWidget, QStyle,
 )
 
 from ....errors import LibraryError
 from ....library.manager import LibraryManager
 from ....library.tree import AlbumNode
-from ..models.album_tree_model import AlbumTreeModel, AlbumTreeRole, NodeType
+from ..models.album_tree_model import AlbumTreeModel, AlbumTreeRole, NodeType, AlbumTreeItem
 
 # ---------------------------------------------------------------------------
 # Sidebar styling helpers
