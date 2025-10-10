@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from threading import Lock
 from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
 
 from PySide6.QtCore import (
@@ -17,11 +18,13 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPixmap
 
 from ....config import WORK_DIR_NAME
+from ....utils.geocoding import ReverseGeocoder
 from ..tasks.asset_loader_worker import (
     AssetLoaderSignals,
     AssetLoaderWorker,
     compute_asset_rows,
 )
+from ..tasks.geocoding_worker import GeocodingWorker, geocoding_pool
 from ..tasks.thumbnail_loader import ThumbnailLoader
 from .live_map import load_live_map
 from .roles import Roles, role_names
@@ -35,6 +38,7 @@ class AssetListModel(QAbstractListModel):
 
     loadProgress = Signal(object, int, int)
     loadFinished = Signal(object, bool)
+    locationDataReady = Signal(str, str)
 
     def __init__(self, facade: "AppFacade", parent=None) -> None:  # type: ignore[override]
         super().__init__(parent)
@@ -52,6 +56,10 @@ class AssetListModel(QAbstractListModel):
         self._loader_signals: Optional[AssetLoaderSignals] = None
         self._pending_reload = False
         self._visible_rows: Set[int] = set()
+        self.locationDataReady.connect(self._on_location_ready)
+        self._geocoder: ReverseGeocoder | None = None
+        self._geocode_lock = Lock()
+        self._scheduled_geocodes: Set[str] = set()
 
     def album_root(self) -> Optional[Path]:
         """Return the path of the currently open album, if any."""
@@ -87,6 +95,8 @@ class AssetListModel(QAbstractListModel):
             return False
 
         self.beginResetModel()
+        with self._geocode_lock:
+            self._scheduled_geocodes.clear()
         self._rows = rows
         self._row_lookup = {row["rel"]: index for index, row in enumerate(rows)}
         active = set(self._row_lookup.keys())
@@ -94,6 +104,7 @@ class AssetListModel(QAbstractListModel):
             rel: pix for rel, pix in self._thumb_cache.items() if rel in active
         }
         self.endResetModel()
+        self._schedule_geocode_for_rows(self._rows)
 
         self._pending_reload = False
         self.loadProgress.emit(root, total, total)
@@ -180,6 +191,9 @@ class AssetListModel(QAbstractListModel):
             self._loader_worker.cancel()
         self._pending_reload = False
         self._album_root = root
+        self._geocoder = ReverseGeocoder.for_album(root)
+        with self._geocode_lock:
+            self._scheduled_geocodes.clear()
         self._thumb_loader.reset_for_album(root)
         self.beginResetModel()
         self._rows = []
@@ -197,6 +211,8 @@ class AssetListModel(QAbstractListModel):
             self._loader_worker.cancel()
             self._pending_reload = True
             return
+        with self._geocode_lock:
+            self._scheduled_geocodes.clear()
         self.beginResetModel()
         self._rows = []
         self._row_lookup = {}
@@ -211,7 +227,13 @@ class AssetListModel(QAbstractListModel):
 
         live_map = load_live_map(self._album_root)
 
-        worker = AssetLoaderWorker(self._album_root, featured, signals, live_map)
+        worker = AssetLoaderWorker(
+            self._album_root,
+            featured,
+            signals,
+            live_map,
+            self._handle_geocode_result,
+        )
         self._loader_worker = worker
         self._loader_signals = signals
         self._pending_reload = False
@@ -280,6 +302,67 @@ class AssetListModel(QAbstractListModel):
         self._loader_worker = None
         self._loader_signals = None
         self._pending_reload = False
+
+    def _ensure_geocoder(self) -> ReverseGeocoder | None:
+        if self._geocoder is not None:
+            return self._geocoder
+        if not self._album_root:
+            return None
+        self._geocoder = ReverseGeocoder.for_album(self._album_root)
+        return self._geocoder
+
+    def _schedule_geocode_for_rows(self, rows: List[Dict[str, object]]) -> None:
+        geocoder = self._ensure_geocoder()
+        if geocoder is None:
+            return
+        for row in rows:
+            self._schedule_geocode(row, geocoder)
+
+    def _schedule_geocode(self, row: Dict[str, object], geocoder: ReverseGeocoder) -> None:
+        if isinstance(row.get("location"), str) and row["location"].strip():
+            return
+        rel = row.get("rel")
+        if not isinstance(rel, str) or not rel:
+            return
+        gps = row.get("gps")
+        if not isinstance(gps, dict):
+            return
+        lat = gps.get("lat")
+        lon = gps.get("lon")
+        if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+            return
+        with self._geocode_lock:
+            if rel in self._scheduled_geocodes:
+                return
+            self._scheduled_geocodes.add(rel)
+        worker = GeocodingWorker(
+            geocoder,
+            rel,
+            float(lat),
+            float(lon),
+            self._handle_geocode_result,
+        )
+        geocoding_pool().start(worker)
+
+    def _handle_geocode_result(self, rel: str, location: Optional[str]) -> None:
+        self.locationDataReady.emit(rel, location or "")
+
+    def _on_location_ready(self, rel: str, location: str) -> None:
+        with self._geocode_lock:
+            self._scheduled_geocodes.discard(rel)
+        if not rel:
+            return
+        index = self._row_lookup.get(rel)
+        if index is None or not (0 <= index < len(self._rows)):
+            return
+        row = self._rows[index]
+        normalized = location.strip()
+        if normalized:
+            row["location"] = normalized
+        else:
+            row.pop("location", None)
+        model_index = self.index(index, 0)
+        self.dataChanged.emit(model_index, model_index, [Roles.LOCATION_INFO])
 
     # ------------------------------------------------------------------
     # Thumbnail helpers

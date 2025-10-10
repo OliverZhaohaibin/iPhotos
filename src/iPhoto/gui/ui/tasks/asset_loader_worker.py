@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from threading import Lock
+from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from PySide6.QtCore import QObject, QRunnable, Signal
 
@@ -13,6 +14,7 @@ from ....core.pairing import pair_live
 from ....media_classifier import classify_media
 from ....utils.geocoding import ReverseGeocoder
 from ....utils.pathutils import ensure_work_dir
+from .geocoding_worker import GeocodingWorker, geocoding_pool
 
 
 def _normalize_featured(featured: Iterable[str]) -> Set[str]:
@@ -93,7 +95,6 @@ def _build_entry(
     featured: Set[str],
     live_map: Dict[str, Dict[str, object]],
     motion_paths_to_hide: Set[str],
-    geocoder: ReverseGeocoder | None,
 ) -> Optional[Dict[str, object]]:
     rel = str(row.get("rel"))
     if not rel or rel in motion_paths_to_hide:
@@ -128,10 +129,6 @@ def _build_entry(
             latitude = float(lat)
             longitude = float(lon)
 
-    location_label: Optional[str] = None
-    if geocoder is not None and latitude is not None and longitude is not None:
-        location_label = geocoder.lookup(latitude, longitude)
-
     entry: Dict[str, object] = {
         "rel": rel,
         "abs": abs_path,
@@ -149,7 +146,7 @@ def _build_entry(
         "featured": _is_featured(rel, featured),
         "still_image_time": row.get("still_image_time"),
         "dur": row.get("dur"),
-        "location": location_label,
+        "location": None,
     }
     if latitude is not None and longitude is not None:
         entry["gps"] = {"lat": latitude, "lon": longitude}
@@ -160,16 +157,12 @@ def compute_asset_rows(
     root: Path,
     featured: Iterable[str],
     live_map: Dict[str, Dict[str, object]],
-    *,
-    geocoder: ReverseGeocoder | None = None,
 ) -> Tuple[List[Dict[str, object]], int]:
     ensure_work_dir(root, WORK_DIR_NAME)
     index_rows = list(IndexStore(root).read_all())
     resolved_map = _resolve_live_map(index_rows, live_map)
     motion_paths = _motion_paths_to_hide(resolved_map)
     featured_set = _normalize_featured(featured)
-    if geocoder is None:
-        geocoder = ReverseGeocoder.for_album(root)
 
     entries: List[Dict[str, object]] = []
     for row in index_rows:
@@ -179,7 +172,6 @@ def compute_asset_rows(
             featured_set,
             resolved_map,
             motion_paths,
-            geocoder,
         )
         if entry is not None:
             entries.append(entry)
@@ -207,6 +199,7 @@ class AssetLoaderWorker(QRunnable):
         featured: Iterable[str],
         signals: AssetLoaderSignals,
         live_map: Dict[str, Dict[str, object]],
+        location_callback: Callable[[str, Optional[str]], None] | None = None,
     ) -> None:
         super().__init__()
         self.setAutoDelete(False)
@@ -215,6 +208,9 @@ class AssetLoaderWorker(QRunnable):
         self._signals = signals
         self._live_map = live_map
         self._is_cancelled = False
+        self._location_callback = location_callback
+        self._pending_geocodes: Set[str] = set()
+        self._geocode_lock = Lock()
 
     @property
     def root(self) -> Path:
@@ -250,6 +246,45 @@ class AssetLoaderWorker(QRunnable):
 
         self._is_cancelled = True
 
+    def _schedule_geocode(
+        self,
+        entry: Dict[str, object],
+        geocoder: ReverseGeocoder | None,
+    ) -> None:
+        if self._location_callback is None or geocoder is None or self._is_cancelled:
+            return
+        rel = entry.get("rel")
+        if not isinstance(rel, str) or not rel:
+            return
+        gps = entry.get("gps")
+        if not isinstance(gps, dict):
+            return
+        lat = gps.get("lat")
+        lon = gps.get("lon")
+        if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+            return
+        latitude = float(lat)
+        longitude = float(lon)
+        with self._geocode_lock:
+            if rel in self._pending_geocodes:
+                return
+            self._pending_geocodes.add(rel)
+        worker = GeocodingWorker(
+            geocoder,
+            rel,
+            latitude,
+            longitude,
+            self._handle_geocode_result,
+        )
+        geocoding_pool().start(worker)
+
+    def _handle_geocode_result(self, rel: str, location: Optional[str]) -> None:
+        with self._geocode_lock:
+            self._pending_geocodes.discard(rel)
+        if self._location_callback is None:
+            return
+        self._location_callback(rel, location)
+
     # ------------------------------------------------------------------
     def _build_payload_chunks(self) -> Iterable[List[Dict[str, object]]]:
         ensure_work_dir(self._root, WORK_DIR_NAME)
@@ -276,10 +311,10 @@ class AssetLoaderWorker(QRunnable):
                 self._featured,
                 live_map,
                 motion_paths_to_hide,
-                geocoder,
             )
             if entry is not None:
                 chunk.append(entry)
+                self._schedule_geocode(entry, geocoder)
             if should_emit:
                 last_reported = position
                 self._signals.progressUpdated.emit(self._root, position, total)

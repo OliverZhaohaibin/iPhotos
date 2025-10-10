@@ -77,6 +77,7 @@ class PlaybackController:
         self._image_viewer.set_live_replay_enabled(False)
         self._filmstrip_view.nextItemRequested.connect(self._request_next_item)
         self._filmstrip_view.prevItemRequested.connect(self._request_previous_item)
+        self._model.dataChanged.connect(self._on_model_data_changed)
 
     # ------------------------------------------------------------------
     # Header context helpers
@@ -141,6 +142,23 @@ class PlaybackController:
             weekday = local_dt.strftime("%A")
             return f"{weekday}, {day}. {month_name}, {time_part}"
         return f"{day}. {month_name} {time_part}"
+
+    def _on_model_data_changed(
+        self,
+        top_left: QModelIndex,
+        bottom_right: QModelIndex,
+        roles: list[int],
+    ) -> None:
+        if not roles or Roles.LOCATION_INFO in roles:
+            current_row = self._playlist.current_row()
+            if current_row < 0:
+                return
+            if top_left.model() is not self._model:
+                return
+            if top_left.row() <= current_row <= bottom_right.row():
+                index = self._model.index(current_row, 0)
+                if index.isValid():
+                    self._update_context_labels_from_index(index)
 
     # ------------------------------------------------------------------
     # Selection handling
