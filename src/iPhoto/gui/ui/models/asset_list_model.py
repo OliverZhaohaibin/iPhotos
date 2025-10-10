@@ -155,6 +155,7 @@ class AssetListModel(QAbstractListModel):
         live_map = load_live_map(self._album_root)
 
         worker = AssetLoaderWorker(self._album_root, featured, live_map)
+        worker.signals.setParent(self)
         worker.signals.progressUpdated.connect(self._on_loader_progress)
         worker.signals.chunkReady.connect(self._on_loader_chunk_ready)
         worker.signals.finished.connect(self._on_loader_finished)

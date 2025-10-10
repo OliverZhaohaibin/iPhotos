@@ -119,6 +119,7 @@ class AppFacade(QObject):
         exclude = album.manifest.get("filters", {}).get("exclude", backend.DEFAULT_EXCLUDE)
 
         worker = ScannerWorker(album.root, include, exclude)
+        worker.signals.setParent(self)
         worker.signals.progressUpdated.connect(self.scanProgress.emit)
         worker.signals.finished.connect(self._on_scan_finished)
         worker.signals.error.connect(self._on_scan_error)

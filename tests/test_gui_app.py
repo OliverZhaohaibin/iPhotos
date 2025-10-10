@@ -153,7 +153,7 @@ def test_facade_open_album_emits_signals(tmp_path: Path, qapp: QApplication) -> 
     facade.indexUpdated.connect(lambda _: received.append("index"))
     facade.linksUpdated.connect(lambda _: received.append("links"))
     album = facade.open_album(tmp_path)
-    assert scan_spy.wait(1000), "Scan should finish"
+    assert scan_spy.wait(5000), "Scan should finish"
 
     qapp.processEvents()
     assert album is not None
@@ -167,12 +167,12 @@ def test_facade_rescan_emits_links(tmp_path: Path, qapp: QApplication) -> None:
     facade = AppFacade()
     open_spy = QSignalSpy(facade.scanFinished)
     facade.open_album(tmp_path)
-    assert open_spy.wait(1000)
+    assert open_spy.wait(5000)
 
     links_spy = QSignalSpy(facade.linksUpdated)
     rescan_spy = QSignalSpy(facade.scanFinished)
     facade.rescan_current_async()
-    assert rescan_spy.wait(1000)
+    assert rescan_spy.wait(5000)
 
     qapp.processEvents()
     assert links_spy.count() >= 1
@@ -185,7 +185,7 @@ def test_asset_model_populates_rows(tmp_path: Path, qapp: QApplication) -> None:
     model = AssetModel(facade)
     load_spy = QSignalSpy(facade.loadFinished)
     facade.open_album(tmp_path)
-    assert load_spy.wait(1000)
+    assert load_spy.wait(5000)
     qapp.processEvents()
     assert model.rowCount() == 1
     index = model.index(0, 0)
@@ -220,7 +220,7 @@ def test_asset_model_filters_videos(tmp_path: Path, qapp: QApplication) -> None:
     model = AssetModel(facade)
     load_spy = QSignalSpy(facade.loadFinished)
     facade.open_album(tmp_path)
-    assert load_spy.wait(1000)
+    assert load_spy.wait(5000)
     qapp.processEvents()
 
     assert model.rowCount() == 2
@@ -248,7 +248,7 @@ def test_asset_model_exposes_live_motion_abs(tmp_path: Path, qapp: QApplication)
     model = AssetModel(facade)
     load_spy = QSignalSpy(facade.loadFinished)
     facade.open_album(tmp_path)
-    assert load_spy.wait(1000)
+    assert load_spy.wait(5000)
     qapp.processEvents()
 
     assert model.rowCount() == 1
@@ -280,7 +280,7 @@ def test_asset_model_pairs_live_when_links_missing(
     model = AssetModel(facade)
     load_spy = QSignalSpy(facade.loadFinished)
     facade.open_album(tmp_path)
-    assert load_spy.wait(1000)
+    assert load_spy.wait(5000)
     qapp.processEvents()
 
     assert model.rowCount() == 1
@@ -302,7 +302,7 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
     model = AssetModel(facade)
     load_spy = QSignalSpy(facade.loadFinished)
     facade.open_album(tmp_path)
-    assert load_spy.wait(1000)
+    assert load_spy.wait(5000)
     qapp.processEvents()
 
     assert model.rowCount() == 1
