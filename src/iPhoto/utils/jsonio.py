@@ -32,7 +32,16 @@ def atomic_write_text(path: Path, data: str) -> None:
         handle.write(data)
         handle.flush()
         os.fsync(handle.fileno())
-    tmp_path.replace(path)
+    try:
+        tmp_path.replace(path)
+    except PermissionError:
+        # Windows can keep the destination file open for a short period of time (e.g.
+        # due to antivirus or indexing hooks) which causes ``Path.replace`` to raise
+        # ``PermissionError``.  Retry the replacement by first removing the destination
+        # file if it exists.
+        if path.exists():
+            path.unlink()
+        tmp_path.replace(path)
 
 
 def _write_backup(path: Path, backup_dir: Path) -> None:

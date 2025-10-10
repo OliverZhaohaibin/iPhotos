@@ -118,7 +118,15 @@ class AppFacade(QObject):
         include = album.manifest.get("filters", {}).get("include", backend.DEFAULT_INCLUDE)
         exclude = album.manifest.get("filters", {}).get("exclude", backend.DEFAULT_EXCLUDE)
 
-        signals = ScannerSignals(self)
+        # The signal container is intentionally created without a Qt parent so that it
+        # outlives the facade instance for the duration of the background task.  Qt will
+        # destroy child ``QObject`` instances as soon as their parent gets deleted, which
+        # can easily happen in the tests where the facade goes out of scope while the
+        # worker thread is still running.  Once that happens emitting any signal would
+        # raise ``RuntimeError: Signal source has been deleted`` and the scan would abort
+        # before writing the index.  By keeping the signals parent-less we control the
+        # lifetime explicitly and dispose of them once the worker finishes.
+        signals = ScannerSignals()
         signals.progressUpdated.connect(self.scanProgress.emit)
         signals.finished.connect(self._on_scan_finished)
         signals.error.connect(self._on_scan_error)
