@@ -36,6 +36,7 @@ from .controllers.navigation_controller import NavigationController
 from .controllers.playback_controller import PlaybackController
 from .media import MediaController, PlaylistController, require_multimedia
 from .models.asset_model import AssetModel, Roles
+from .models.spacer_proxy_model import SpacerProxyModel
 from .widgets import (
     AlbumSidebar,
     AssetGridDelegate,
@@ -56,6 +57,8 @@ class MainWindow(QMainWindow):
         self._context = context
         self._facade: AppFacade = context.facade
         self._asset_model = AssetModel(self._facade)
+        self._filmstrip_model = SpacerProxyModel(self)
+        self._filmstrip_model.setSourceModel(self._asset_model)
         self._status = QStatusBar()
         self._sidebar = AlbumSidebar(context.library, self)
         self._album_label = QLabel("Open a folder to browse your photos.")
@@ -135,6 +138,7 @@ class MainWindow(QMainWindow):
 
         self._connect_signals()
         self._playlist.bind_model(self._asset_model)
+        self._filmstrip_model.modelReset.connect(self._filmstrip_view.refresh_spacers)
         self._player_bar.setEnabled(False)
         self._player_bar.set_volume(self._media.volume())
         self._player_bar.set_muted(self._media.is_muted())
@@ -182,9 +186,11 @@ class MainWindow(QMainWindow):
         self._grid_view.setItemDelegate(AssetGridDelegate(self._grid_view))
         self._grid_view.visibleRowsChanged.connect(self._asset_model.prioritize_rows)
 
-        self._filmstrip_view.setModel(self._asset_model)
-        self._filmstrip_view.setItemDelegate(AssetGridDelegate(self._filmstrip_view))
-        self._filmstrip_view.visibleRowsChanged.connect(self._asset_model.prioritize_rows)
+        self._filmstrip_view.setModel(self._filmstrip_model)
+        self._filmstrip_view.setItemDelegate(
+            AssetGridDelegate(self._filmstrip_view, filmstrip_mode=True)
+        )
+        self._filmstrip_view.visibleRowsChanged.connect(self._prioritize_filmstrip_rows)
 
         self._player_stack.addWidget(self._player_placeholder)
         self._player_stack.addWidget(self._image_viewer)
@@ -250,6 +256,20 @@ class MainWindow(QMainWindow):
         splitter.setCollapsible(0, False)
         splitter.setCollapsible(1, False)
         return splitter
+
+    def _prioritize_filmstrip_rows(self, first: int, last: int) -> None:
+        if self._filmstrip_model.rowCount() == 0:
+            return
+
+        source_row_count = self._asset_model.rowCount()
+        if source_row_count == 0:
+            return
+
+        first_source = max(first - 1, 0)
+        last_source = min(last - 1, source_row_count - 1)
+        if first_source > last_source:
+            return
+        self._asset_model.prioritize_rows(first_source, last_source)
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)

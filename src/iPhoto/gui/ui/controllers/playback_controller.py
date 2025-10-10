@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QItemSelectionModel, QModelIndex, QRect
+from PySide6.QtCore import QItemSelectionModel, QModelIndex, QRect, QTimer
 from PySide6.QtWidgets import QStackedWidget, QStatusBar, QWidget
 
 from ....config import VIDEO_COMPLETE_HOLD_BACKSTEP_MS
@@ -66,28 +66,45 @@ class PlaybackController:
         self._live_mode_active = False
         self._active_live_motion: Path | None = None
         self._active_live_still: Path | None = None
+        self._is_transitioning = False
         media.mutedChanged.connect(self._on_media_muted_changed)
         self._image_viewer.replayRequested.connect(self.replay_live_photo)
         self._image_viewer.set_live_replay_enabled(False)
+        self._filmstrip_view.nextItemRequested.connect(self._request_next_item)
+        self._filmstrip_view.prevItemRequested.connect(self._request_previous_item)
 
     # ------------------------------------------------------------------
     # Selection handling
     # ------------------------------------------------------------------
     def activate_index(self, index: QModelIndex) -> None:
+        """Handle item activation from either the main grid or the filmstrip."""
+
+        if self._is_transitioning:
+            return
         if not index or not index.isValid():
             return
-        abs_raw = index.data(Roles.ABS)
-        if not abs_raw:
+
+        activating_model = index.model()
+        asset_index: QModelIndex | None = None
+
+        # The main gallery grid uses ``self._model`` directly so its indexes
+        # can be consumed without translation.
+        if activating_model is self._model:
+            asset_index = index
+        # The filmstrip wraps the asset model with the spacer proxy. Map the
+        # proxy index back to the proxy's source (the asset model) before we
+        # continue so row calculations remain aligned.
+        elif hasattr(activating_model, "mapToSource"):
+            mapped = activating_model.mapToSource(index)
+            if mapped.isValid():
+                asset_index = mapped
+
+        if asset_index is None or not asset_index.isValid():
             return
-        row = index.row()
-        abs_path = Path(str(abs_raw))
-        is_video = bool(index.data(Roles.IS_VIDEO))
-        is_live = bool(index.data(Roles.IS_LIVE))
-        if is_video or is_live:
-            self.show_detail_view()
-            self._playlist.set_current(row)
-            return
-        self._display_image(abs_path, row=row)
+
+        row = asset_index.row()
+        self.show_detail_view()
+        self._playlist.set_current(row)
 
     def show_preview_for_index(self, view: AssetGrid, index: QModelIndex) -> None:
         if not index or not index.isValid():
@@ -121,37 +138,75 @@ class PlaybackController:
         selection_model = self._filmstrip_view.selectionModel()
         if selection_model is None:
             return
+        source_model = self._model.source_model()
+        filmstrip_model = self._filmstrip_view.model()
+        if filmstrip_model is None:
+            return
+
+        def _set_is_current(proxy_row: int, value: bool) -> None:
+            if proxy_row < 0:
+                return
+            proxy_index = self._model.index(proxy_row, 0)
+            if not proxy_index.isValid():
+                return
+            source_index = self._model.mapToSource(proxy_index)
+            if not source_index.isValid():
+                return
+            source_model.setData(source_index, value, Roles.IS_CURRENT)
+
+        previous_row = self._playlist.previous_row()
+        _set_is_current(previous_row, False)
+        if row >= 0:
+            _set_is_current(row, True)
+
+        proxy_index: QModelIndex | None = None
+        if row >= 0:
+            proxy_row = row + 1
+            candidate = filmstrip_model.index(proxy_row, 0)
+            if candidate.isValid():
+                proxy_index = candidate
+
+        # Ensure the filmstrip layout responds to width changes from the
+        # delegate's dynamic size hints so neighbours slide instead of
+        # overlapping the current tile.
+        self._filmstrip_view.refresh_spacers(proxy_index)
+        self._filmstrip_view.updateGeometries()
+        self._filmstrip_view.doItemsLayout()
         if row < 0:
             self._player_bar.reset()
             self._player_bar.setEnabled(False)
             self._media.stop()
             self._show_player_placeholder()
             selection_model.clearSelection()
+            self._release_transition_lock()
             return
         selection_model.clearSelection()
-        index = self._model.index(row, 0)
+        if proxy_index is None:
+            return
         selection_model.select(
-            index,
+            proxy_index,
             QItemSelectionModel.SelectionFlag.ClearAndSelect
             | QItemSelectionModel.SelectionFlag.Rows,
         )
         selection_model.setCurrentIndex(
-            index,
+            proxy_index,
             QItemSelectionModel.SelectionFlag.NoUpdate,
         )
-        self._filmstrip_view.scrollTo(index)
+        self._filmstrip_view.refresh_spacers(proxy_index)
+        QTimer.singleShot(0, lambda idx=proxy_index: self._filmstrip_view.center_on_index(idx))
         self._player_bar.setEnabled(True)
         self.show_detail_view()
 
     def handle_playlist_source_changed(self, source: Path) -> None:
-        self._pending_live_photo_still = None
-        self._active_live_motion = None
-        self._active_live_still = None
+        self._is_transitioning = True
+        self._reset_playback_state()
+        is_video = False
         is_live_photo = False
         current_row = self._playlist.current_row()
         if current_row != -1:
             index = self._model.index(current_row, 0)
             if index.isValid():
+                is_video = bool(index.data(Roles.IS_VIDEO))
                 is_live_photo = bool(index.data(Roles.IS_LIVE))
                 if is_live_photo:
                     still_raw = index.data(Roles.ABS)
@@ -160,13 +215,13 @@ class PlaybackController:
                         self._pending_live_photo_still = still_path
                         self._active_live_still = still_path
         self._preview_window.close_preview(False)
-        self._media.stop()
+
+        if not is_video and not is_live_photo:
+            self._display_image(source, row=current_row)
+            self._release_transition_lock()
+            return
+
         self._media.load(source)
-        self._player_bar.reset()
-        self._player_bar.set_position(0)
-        self._player_bar.set_duration(0)
-        self._image_viewer.set_live_replay_enabled(False)
-        self._live_badge.hide()
         if is_live_photo:
             if not self._live_mode_active:
                 self._original_mute_state = self._media.is_muted()
@@ -196,13 +251,21 @@ class PlaybackController:
     def handle_media_status_changed(self, status: object) -> None:
         name = getattr(status, "name", None)
         if name == "EndOfMedia":
+            self._release_transition_lock()
             if self._pending_live_photo_still is not None:
                 self._show_still_frame_for_live_photo()
             else:
                 self._freeze_video_final_frame()
             return
-        if name in {"LoadedMedia", "BufferingMedia", "BufferedMedia", "StalledMedia"}:
+        if name in {"LoadedMedia", "BufferedMedia"}:
+            self._release_transition_lock()
             self._video_area.note_activity()
+            return
+        if name in {"BufferingMedia", "StalledMedia"}:
+            self._video_area.note_activity()
+            return
+        if name in {"InvalidMedia", "NoMedia"}:
+            self._release_transition_lock()
 
     def handle_media_position_changed(self, position_ms: int) -> None:
         self._player_bar.set_position(position_ms)
@@ -237,6 +300,7 @@ class PlaybackController:
     # View helpers
     # ------------------------------------------------------------------
     def show_gallery_view(self) -> None:
+        self._release_transition_lock()
         self._pending_live_photo_still = None
         self._preview_window.close_preview(False)
         self._media.stop()
@@ -259,21 +323,54 @@ class PlaybackController:
         selection_model = self._filmstrip_view.selectionModel()
         if selection_model is None or row < 0:
             return
-        index = self._model.index(row, 0)
+        filmstrip_model = self._filmstrip_view.model()
+        if filmstrip_model is None:
+            return
+        proxy_row = row + 1
+        proxy_index = filmstrip_model.index(proxy_row, 0)
+        if not proxy_index.isValid():
+            return
         selection_model.setCurrentIndex(
-            index,
+            proxy_index,
             QItemSelectionModel.SelectionFlag.NoUpdate,
         )
         selection_model.select(
-            index,
+            proxy_index,
             QItemSelectionModel.SelectionFlag.ClearAndSelect
             | QItemSelectionModel.SelectionFlag.Rows,
         )
-        self._filmstrip_view.scrollTo(index)
+        self._filmstrip_view.refresh_spacers(proxy_index)
+        QTimer.singleShot(0, lambda idx=proxy_index: self._filmstrip_view.center_on_index(idx))
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+    def _request_next_item(self) -> None:
+        if self._is_transitioning:
+            return
+        self._playlist.next()
+
+    def _request_previous_item(self) -> None:
+        if self._is_transitioning:
+            return
+        self._playlist.previous()
+
+    def _reset_playback_state(self) -> None:
+        self._media.stop()
+        if self._live_mode_active:
+            self._media.set_muted(self._original_mute_state)
+        self._pending_live_photo_still = None
+        self._active_live_motion = None
+        self._active_live_still = None
+        self._live_mode_active = False
+        self._live_badge.hide()
+        self._image_viewer.set_live_replay_enabled(False)
+        self._player_bar.reset()
+        self._resume_playback_after_scrub = False
+
+    def _release_transition_lock(self) -> None:
+        self._is_transitioning = False
+
     def _show_still_frame_for_live_photo(self) -> None:
         """Swap the detail view back to the Live Photo still image."""
         still_path = self._pending_live_photo_still
@@ -330,8 +427,6 @@ class PlaybackController:
         self.show_detail_view()
         self._player_bar.reset()
         self._player_bar.setEnabled(False)
-        if row is not None:
-            self.select_filmstrip_row(row)
         self._status.showMessage(f"Viewing {source.name}")
 
     def _show_player_placeholder(self) -> None:

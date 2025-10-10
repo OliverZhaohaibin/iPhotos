@@ -4,60 +4,134 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import QRect, Qt
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPalette, QPixmap
+from PySide6.QtCore import QRect, QRectF, QSize, Qt
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontMetrics,
+    QIcon,
+    QPainter,
+    QPainterPath,
+    QPalette,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import QStyle, QStyleOptionViewItem, QStyledItemDelegate
 
-from ..models.asset_model import Roles
 from ..icons import load_icon
+from ..models.asset_model import Roles
 
 
 class AssetGridDelegate(QStyledItemDelegate):
     """Render thumbnails in a tight, borderless grid."""
 
-    def __init__(self, parent=None) -> None:  # type: ignore[override]
+    _FILMSTRIP_RATIO = 0.6
+
+    def __init__(self, parent=None, *, filmstrip_mode: bool = False) -> None:  # type: ignore[override]
         super().__init__(parent)
         self._duration_font: Optional[QFont] = None
         self._live_icon: QIcon = load_icon("livephoto.svg", color="white")
+        self._filmstrip_mode = filmstrip_mode
+        self._base_size = 192
+        self._filmstrip_height = 120
+        self._filmstrip_border_width = 2
 
     # ------------------------------------------------------------------
     # Painting
     # ------------------------------------------------------------------
+    def sizeHint(self, option: QStyleOptionViewItem, index) -> QSize:  # type: ignore[override]
+        if bool(index.data(Roles.IS_SPACER)):
+            hint = index.data(Qt.ItemDataRole.SizeHintRole)
+            if isinstance(hint, QSize) and hint.isValid():
+                return QSize(hint.width(), self._filmstrip_height)
+            return QSize(0, self._filmstrip_height)
+
+        if not self._filmstrip_mode:
+            return QSize(self._base_size, self._base_size)
+
+        is_current = bool(index.data(Roles.IS_CURRENT))
+        height = self._filmstrip_height
+        if is_current:
+            return QSize(height, height)
+        width = int(height * self._FILMSTRIP_RATIO)
+        return QSize(width, height)
+
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:  # type: ignore[override]
+        if bool(index.data(Roles.IS_SPACER)):
+            return
+
         painter.save()
-        rect = option.rect
+        cell_rect = option.rect
+        is_current = self._filmstrip_mode and bool(index.data(Roles.IS_CURRENT))
+        thumb_rect = cell_rect
+        base_color = option.palette.color(QPalette.Base)
+        corner_radius = 8.0 if self._filmstrip_mode else 0.0
+
         pixmap = index.data(Qt.DecorationRole)
+
+        clip_path: QPainterPath | None = None
+        if self._filmstrip_mode and corner_radius > 0.0:
+            clip_path = QPainterPath()
+            clip_path.addRoundedRect(QRectF(thumb_rect), corner_radius, corner_radius)
+            # Fill the rounded bounds first so uncovered corners inherit the
+            # strip background instead of the window behind the transparent view.
+            painter.fillPath(clip_path, base_color)
+            painter.setClipPath(clip_path)
+        elif self._filmstrip_mode:
+            painter.fillRect(thumb_rect, base_color)
 
         if isinstance(pixmap, QPixmap) and not pixmap.isNull():
             painter.setRenderHint(QPainter.Antialiasing, True)
             painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-            scaled = pixmap.scaled(rect.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+            scaled = pixmap.scaled(
+                thumb_rect.size(),
+                Qt.KeepAspectRatioByExpanding,
+                Qt.SmoothTransformation,
+            )
             source = scaled.rect()
-            if source.width() > rect.width():
-                diff = source.width() - rect.width()
+            if source.width() > thumb_rect.width():
+                diff = source.width() - thumb_rect.width()
                 left = diff // 2
                 right = diff - left
                 source.adjust(left, 0, -right, 0)
-            if source.height() > rect.height():
-                diff = source.height() - rect.height()
+            if source.height() > thumb_rect.height():
+                diff = source.height() - thumb_rect.height()
                 top = diff // 2
                 bottom = diff - top
                 source.adjust(0, top, 0, -bottom)
-            painter.drawPixmap(rect, scaled, source)
+            painter.drawPixmap(thumb_rect, scaled, source)
         else:
-            painter.fillRect(rect, QColor("#1b1b1b"))
+            painter.fillRect(thumb_rect, QColor("#1b1b1b"))
 
         if option.state & QStyle.State_Selected:
+            painter.save()
+            if clip_path is not None:
+                painter.setClipPath(clip_path)
             highlight = option.palette.color(QPalette.Highlight)
             overlay = QColor(highlight)
-            overlay.setAlpha(110)
-            painter.fillRect(rect, overlay)
+            overlay.setAlpha(60 if is_current and self._filmstrip_mode else 110)
+            painter.fillRect(thumb_rect, overlay)
+            painter.restore()
+
+        if clip_path is not None:
+            painter.setClipPath(QPainterPath())
+
+        if self._filmstrip_mode and is_current:
+            highlight = option.palette.color(QPalette.Highlight)
+            pen = QPen(highlight, self._filmstrip_border_width)
+            pen.setJoinStyle(Qt.RoundJoin)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+            adjusted = thumb_rect.adjusted(1, 1, -1, -1)
+            radius = max(0.0, corner_radius - 1)
+            painter.drawRoundedRect(QRectF(adjusted), radius, radius)
 
         if index.data(Roles.IS_LIVE):
-            self._draw_live_badge(painter, option, rect)
+            self._draw_live_badge(painter, option, thumb_rect)
 
         if index.data(Roles.IS_VIDEO):
-            self._draw_duration_badge(painter, option, rect, index.data(Roles.SIZE))
+            self._draw_duration_badge(painter, option, thumb_rect, index.data(Roles.SIZE))
 
         painter.restore()
 

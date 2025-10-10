@@ -20,6 +20,7 @@ class PlaylistController(QObject):
         super().__init__(parent)
         self._model: Optional[AssetModel] = None
         self._current_row: int = -1
+        self._previous_row: int = -1
 
     # ------------------------------------------------------------------
     # Model wiring
@@ -49,6 +50,13 @@ class PlaylistController(QObject):
             return None
         if not self._is_playable(row):
             return None
+        if row == self._current_row:
+            source = self._resolve_source(row)
+            self.currentChanged.emit(row)
+            if source is not None:
+                self.sourceChanged.emit(source)
+            return source
+        self._previous_row = self._current_row
         self._current_row = row
         source = self._resolve_source(row)
         self.currentChanged.emit(row)
@@ -78,10 +86,16 @@ class PlaylistController(QObject):
             return None
         return self._resolve_source(self._current_row)
 
+    def previous_row(self) -> int:
+        """Return the previously active row, or ``-1`` if unavailable."""
+
+        return self._previous_row
+
     def clear(self) -> None:
         """Reset the controller to an empty state."""
 
         if self._current_row != -1:
+            self._previous_row = self._current_row
             self._current_row = -1
             self.currentChanged.emit(-1)
 
@@ -128,17 +142,11 @@ class PlaylistController(QObject):
         return None
 
     def _is_playable(self, row: int) -> bool:
-        assert self._model is not None
-        index = self._model.index(row, 0)
-        if bool(index.data(Roles.IS_VIDEO)):
-            return True
-        if bool(index.data(Roles.IS_LIVE)):
-            motion_abs = index.data(Roles.LIVE_MOTION_ABS)
-            if isinstance(motion_abs, str) and motion_abs:
-                return True
-            motion_rel = index.data(Roles.LIVE_MOTION_REL)
-            return isinstance(motion_rel, str) and bool(motion_rel)
-        return False
+        """Return ``True`` when *row* is within range of the bound model."""
+
+        if self._model is None:
+            return False
+        return 0 <= row < self._model.rowCount()
 
     def _resolve_source(self, row: int) -> Optional[Path]:
         if self._model is None:
