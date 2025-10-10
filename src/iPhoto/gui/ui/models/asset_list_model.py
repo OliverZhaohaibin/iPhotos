@@ -142,6 +142,8 @@ class AssetListModel(QAbstractListModel):
             return row["dt"]
         if role == Roles.FEATURED:
             return row["featured"]
+        if role == Roles.LOCATION_INFO:
+            return row.get("location")
         if role == Roles.IS_CURRENT:
             return bool(row.get("is_current", False))
         return None

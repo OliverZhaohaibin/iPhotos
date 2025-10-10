@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from fractions import Fraction
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from dateutil.tz import gettz
 
@@ -17,9 +18,19 @@ _PILLOW = load_pillow()
 if _PILLOW is not None:
     Image = _PILLOW.Image
     UnidentifiedImageError = _PILLOW.UnidentifiedImageError
+    try:
+        from PIL import ExifTags as _ExifTags  # type: ignore
+    except Exception:  # pragma: no cover - optional Pillow modules missing
+        _ExifTags = None  # type: ignore[assignment]
 else:  # pragma: no cover - exercised only when Pillow is missing
     Image = None  # type: ignore[assignment]
     UnidentifiedImageError = None  # type: ignore[assignment]
+    _ExifTags = None
+
+if _ExifTags is not None:
+    GPS_TAGS = getattr(_ExifTags, "GPSTAGS", {})
+else:  # pragma: no cover - Pillow unavailable
+    GPS_TAGS: Dict[int, str] = {}
 
 def _empty_image_info() -> Dict[str, Any]:
     """Return a metadata stub when image inspection fails."""
@@ -84,6 +95,76 @@ def _normalise_exif_datetime(dt_value: str, exif: Any) -> Optional[str]:
     return _format_result(naive.replace(tzinfo=local_tz))
 
 
+def _rational_to_float(value: Any) -> Optional[float]:
+    """Convert an EXIF rational value into a float."""
+
+    if value is None:
+        return None
+    if isinstance(value, Fraction):
+        return float(value)
+    if isinstance(value, tuple) and len(value) == 2:
+        numerator, denominator = value
+        try:
+            return float(numerator) / float(denominator)
+        except (TypeError, ZeroDivisionError):
+            return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _convert_dms(values: Any) -> Optional[float]:
+    """Convert degrees-minutes-seconds tuples into decimal degrees."""
+
+    if not isinstance(values, (list, tuple)) or len(values) != 3:
+        return None
+    degrees = _rational_to_float(values[0])
+    minutes = _rational_to_float(values[1])
+    seconds = _rational_to_float(values[2])
+    if degrees is None or minutes is None or seconds is None:
+        return None
+    return degrees + (minutes / 60.0) + (seconds / 3600.0)
+
+
+def _extract_gps_coordinates(exif: Any) -> Optional[Tuple[float, float]]:
+    """Return latitude/longitude from an EXIF GPS IFD mapping."""
+
+    if not hasattr(exif, "items"):
+        return None
+    gps_ifd = exif.get(34853)
+    if not hasattr(gps_ifd, "items"):
+        return None
+
+    tagged: Dict[str, Any] = {}
+    for key, value in gps_ifd.items():
+        name = GPS_TAGS.get(key, key)
+        tagged[name] = value
+
+    lat_values = tagged.get("GPSLatitude")
+    lat_ref = tagged.get("GPSLatitudeRef")
+    lon_values = tagged.get("GPSLongitude")
+    lon_ref = tagged.get("GPSLongitudeRef")
+    if not lat_values or not lon_values or not lat_ref or not lon_ref:
+        return None
+
+    latitude = _convert_dms(lat_values)
+    longitude = _convert_dms(lon_values)
+    if latitude is None or longitude is None:
+        return None
+
+    if isinstance(lat_ref, bytes):
+        lat_ref = lat_ref.decode("ascii", errors="ignore")
+    if isinstance(lon_ref, bytes):
+        lon_ref = lon_ref.decode("ascii", errors="ignore")
+
+    if isinstance(lat_ref, str) and lat_ref.upper() == "S":
+        latitude = -latitude
+    if isinstance(lon_ref, str) and lon_ref.upper() == "W":
+        longitude = -longitude
+    return latitude, longitude
+
+
 def read_image_meta(path: Path) -> Dict[str, Any]:
     """Read metadata for an image file using Pillow."""
 
@@ -107,6 +188,10 @@ def read_image_meta(path: Path) -> Dict[str, Any]:
                 dt_value = exif.get(36867) or exif.get(306)
                 if isinstance(dt_value, str):
                     info["dt"] = _normalise_exif_datetime(dt_value, exif)
+                coords = _extract_gps_coordinates(exif)
+                if coords is not None:
+                    lat, lon = coords
+                    info["gps"] = {"lat": lat, "lon": lon}
             return info
     except UnidentifiedImageError as exc:
         raise ExternalToolError(f"Unable to read image metadata for {path}") from exc

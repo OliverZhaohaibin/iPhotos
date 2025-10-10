@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QItemSelectionModel, QModelIndex, QRect, QTimer
-from PySide6.QtWidgets import QStackedWidget, QStatusBar, QWidget
+from PySide6.QtWidgets import QLabel, QStackedWidget, QStatusBar, QWidget
 
 from ....config import VIDEO_COMPLETE_HOLD_BACKSTEP_MS
 from ..media import MediaController, PlaylistController
@@ -42,6 +43,8 @@ class PlaybackController:
         live_badge: LiveBadge,
         status_bar: QStatusBar,
         dialog: DialogController,
+        location_label: QLabel,
+        date_label: QLabel,
     ) -> None:
         self._model = model
         self._media = media
@@ -60,6 +63,8 @@ class PlaybackController:
         self._live_badge = live_badge
         self._status = status_bar
         self._dialog = dialog
+        self._location_label = location_label
+        self._date_label = date_label
         self._resume_playback_after_scrub = False
         self._pending_live_photo_still: Path | None = None
         self._original_mute_state = False
@@ -72,6 +77,70 @@ class PlaybackController:
         self._image_viewer.set_live_replay_enabled(False)
         self._filmstrip_view.nextItemRequested.connect(self._request_next_item)
         self._filmstrip_view.prevItemRequested.connect(self._request_previous_item)
+
+    # ------------------------------------------------------------------
+    # Header context helpers
+    # ------------------------------------------------------------------
+    def _update_context_labels_from_index(self, index: QModelIndex | None) -> None:
+        if not self._location_label or not self._date_label:
+            return
+        if index is None or not index.isValid():
+            self._location_label.clear()
+            self._location_label.hide()
+            self._date_label.clear()
+            self._date_label.hide()
+            return
+
+        location_raw = index.data(Roles.LOCATION_INFO)
+        location_text = str(location_raw).strip() if isinstance(location_raw, str) else None
+        dt_raw = index.data(Roles.DT)
+        formatted_with_location = None
+        formatted_without_location = None
+        if isinstance(dt_raw, str) and dt_raw.strip():
+            formatted_with_location = self._format_timestamp(dt_raw, include_weekday=False)
+            formatted_without_location = self._format_timestamp(dt_raw, include_weekday=True)
+
+        if location_text:
+            self._location_label.setText(location_text)
+            self._location_label.show()
+            if formatted_with_location:
+                self._date_label.setText(formatted_with_location)
+                self._date_label.show()
+            else:
+                self._date_label.clear()
+                self._date_label.hide()
+            return
+
+        if formatted_without_location:
+            self._location_label.setText(formatted_without_location)
+            self._location_label.show()
+            self._date_label.clear()
+            self._date_label.hide()
+        else:
+            self._location_label.clear()
+            self._location_label.hide()
+            self._date_label.clear()
+            self._date_label.hide()
+
+    def _format_timestamp(self, raw: str, *, include_weekday: bool) -> str | None:
+        value = raw.strip()
+        if not value:
+            return None
+        try:
+            if value.endswith("Z"):
+                captured = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            else:
+                captured = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        local_dt = captured.astimezone()
+        day = local_dt.day
+        month_name = local_dt.strftime("%B")
+        time_part = local_dt.strftime("%H:%M")
+        if include_weekday:
+            weekday = local_dt.strftime("%A")
+            return f"{weekday}, {day}. {month_name}, {time_part}"
+        return f"{day}. {month_name} {time_part}"
 
     # ------------------------------------------------------------------
     # Selection handling
@@ -196,6 +265,7 @@ class PlaybackController:
         QTimer.singleShot(0, lambda idx=proxy_index: self._filmstrip_view.center_on_index(idx))
         self._player_bar.setEnabled(True)
         self.show_detail_view()
+        self._update_context_labels_from_index(self._index_for_row(row))
 
     def handle_playlist_source_changed(self, source: Path) -> None:
         self._is_transitioning = True
@@ -203,9 +273,11 @@ class PlaybackController:
         is_video = False
         is_live_photo = False
         current_row = self._playlist.current_row()
+        current_index: QModelIndex | None = None
         if current_row != -1:
             index = self._model.index(current_row, 0)
             if index.isValid():
+                current_index = index
                 is_video = bool(index.data(Roles.IS_VIDEO))
                 is_live_photo = bool(index.data(Roles.IS_LIVE))
                 if is_live_photo:
@@ -214,6 +286,7 @@ class PlaybackController:
                         still_path = Path(str(still_raw))
                         self._pending_live_photo_still = still_path
                         self._active_live_still = still_path
+        self._update_context_labels_from_index(current_index)
         self._preview_window.close_preview(False)
 
         if not is_video and not is_live_photo:
@@ -314,6 +387,7 @@ class PlaybackController:
         if self._gallery_page is not None:
             self._view_stack.setCurrentWidget(self._gallery_page)
         self._status.showMessage("Browse your library")
+        self._update_context_labels_from_index(None)
 
     def show_detail_view(self) -> None:
         if self._detail_page is not None and self._view_stack.currentWidget() is not self._detail_page:
@@ -355,6 +429,14 @@ class PlaybackController:
             return
         self._playlist.previous()
 
+    def _index_for_row(self, row: int | None) -> QModelIndex | None:
+        if row is None or row < 0:
+            return None
+        index = self._model.index(row, 0)
+        if not index.isValid():
+            return None
+        return index
+
     def _reset_playback_state(self) -> None:
         self._media.stop()
         if self._live_mode_active:
@@ -382,6 +464,7 @@ class PlaybackController:
         self._active_live_still = still_path
 
         current_row = self._playlist.current_row()
+        self._update_context_labels_from_index(self._index_for_row(current_row))
         self._media.stop()
 
         pixmap = image_loader.load_qpixmap(still_path)
@@ -407,6 +490,8 @@ class PlaybackController:
         self._status.showMessage(f"Viewing {still_path.name}")
 
     def _display_image(self, source: Path, row: int | None = None) -> None:
+        index = self._index_for_row(row)
+        self._update_context_labels_from_index(index)
         pixmap = image_loader.load_qpixmap(source)
         if pixmap is None:
             self._status.showMessage(f"Unable to display {source.name}")
@@ -443,6 +528,7 @@ class PlaybackController:
         if self._player_stack.currentWidget() is not self._player_placeholder:
             self._player_stack.setCurrentWidget(self._player_placeholder)
         self._image_viewer.clear()
+        self._update_context_labels_from_index(None)
 
     def _show_video_surface(self, *, interactive: bool = True) -> None:
         if self._player_stack.currentWidget() is not self._video_area:

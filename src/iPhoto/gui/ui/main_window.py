@@ -80,6 +80,10 @@ class MainWindow(QMainWindow):
         self._view_stack = QStackedWidget()
         self._gallery_page = self._detail_page = None
         self._back_button = QToolButton()
+        self._location_label = QLabel()
+        self._location_label.hide()
+        self._date_label = QLabel()
+        self._date_label.hide()
         self._live_badge = LiveBadge(self)
         self._live_badge.hide()
         self._badge_host: QWidget | None = None
@@ -134,6 +138,8 @@ class MainWindow(QMainWindow):
             self._live_badge,
             self._status,
             self._dialog,
+            self._location_label,
+            self._date_label,
         )
 
         self._connect_signals()
@@ -226,6 +232,23 @@ class MainWindow(QMainWindow):
         self._back_button.setAutoRaise(True)
         self._back_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         header_layout.addWidget(self._back_button)
+        header_layout.addStretch(1)
+
+        self._location_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._location_label.setStyleSheet(
+            "font-size: 18px; font-weight: 600; color: palette(windowText);"
+        )
+        self._date_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._date_label.setStyleSheet("font-size: 14px; color: palette(mid);")
+
+        info_container = QWidget()
+        info_layout = QVBoxLayout(info_container)
+        info_layout.setContentsMargins(0, 0, 0, 0)
+        info_layout.setSpacing(0)
+        info_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        info_layout.addWidget(self._location_label)
+        info_layout.addWidget(self._date_label)
+        header_layout.addWidget(info_container)
         header_layout.addStretch(1)
         detail_layout.addWidget(header)
 

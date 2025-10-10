@@ -11,6 +11,7 @@ from ....cache.index_store import IndexStore
 from ....config import WORK_DIR_NAME
 from ....core.pairing import pair_live
 from ....media_classifier import classify_media
+from ....utils.geocoding import ReverseGeocoder
 from ....utils.pathutils import ensure_work_dir
 
 
@@ -92,6 +93,7 @@ def _build_entry(
     featured: Set[str],
     live_map: Dict[str, Dict[str, object]],
     motion_paths_to_hide: Set[str],
+    geocoder: ReverseGeocoder | None,
 ) -> Optional[Dict[str, object]]:
     rel = str(row.get("rel"))
     if not rel or rel in motion_paths_to_hide:
@@ -116,6 +118,20 @@ def _build_entry(
     elif isinstance(live_info, dict) and isinstance(live_info.get("id"), str):
         live_group_id = str(live_info["id"])
 
+    gps_raw = row.get("gps")
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    if isinstance(gps_raw, dict):
+        lat = gps_raw.get("lat")
+        lon = gps_raw.get("lon")
+        if isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
+            latitude = float(lat)
+            longitude = float(lon)
+
+    location_label: Optional[str] = None
+    if geocoder is not None and latitude is not None and longitude is not None:
+        location_label = geocoder.lookup(latitude, longitude)
+
     entry: Dict[str, object] = {
         "rel": rel,
         "abs": abs_path,
@@ -133,7 +149,10 @@ def _build_entry(
         "featured": _is_featured(rel, featured),
         "still_image_time": row.get("still_image_time"),
         "dur": row.get("dur"),
+        "location": location_label,
     }
+    if latitude is not None and longitude is not None:
+        entry["gps"] = {"lat": latitude, "lon": longitude}
     return entry
 
 
@@ -141,16 +160,27 @@ def compute_asset_rows(
     root: Path,
     featured: Iterable[str],
     live_map: Dict[str, Dict[str, object]],
+    *,
+    geocoder: ReverseGeocoder | None = None,
 ) -> Tuple[List[Dict[str, object]], int]:
     ensure_work_dir(root, WORK_DIR_NAME)
     index_rows = list(IndexStore(root).read_all())
     resolved_map = _resolve_live_map(index_rows, live_map)
     motion_paths = _motion_paths_to_hide(resolved_map)
     featured_set = _normalize_featured(featured)
+    if geocoder is None:
+        geocoder = ReverseGeocoder.for_album(root)
 
     entries: List[Dict[str, object]] = []
     for row in index_rows:
-        entry = _build_entry(root, row, featured_set, resolved_map, motion_paths)
+        entry = _build_entry(
+            root,
+            row,
+            featured_set,
+            resolved_map,
+            motion_paths,
+            geocoder,
+        )
         if entry is not None:
             entries.append(entry)
     return entries, len(index_rows)
@@ -226,6 +256,7 @@ class AssetLoaderWorker(QRunnable):
         index_rows = list(IndexStore(self._root).read_all())
         live_map = _resolve_live_map(index_rows, self._live_map)
         motion_paths_to_hide = _motion_paths_to_hide(live_map)
+        geocoder = ReverseGeocoder.for_album(self._root)
 
         total = len(index_rows)
         if total == 0:
@@ -245,6 +276,7 @@ class AssetLoaderWorker(QRunnable):
                 self._featured,
                 live_map,
                 motion_paths_to_hide,
+                geocoder,
             )
             if entry is not None:
                 chunk.append(entry)

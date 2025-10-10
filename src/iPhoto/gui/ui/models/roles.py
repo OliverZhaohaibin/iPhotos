@@ -25,6 +25,7 @@ class Roles(IntEnum):
     LIVE_MOTION_ABS = Qt.UserRole + 12
     IS_CURRENT = Qt.UserRole + 13
     IS_SPACER = Qt.UserRole + 14
+    LOCATION_INFO = Qt.UserRole + 15
 
 
 def role_names(base: Dict[int, bytes] | None = None) -> Dict[int, bytes]:
@@ -47,6 +48,7 @@ def role_names(base: Dict[int, bytes] | None = None) -> Dict[int, bytes]:
             Roles.FEATURED: b"featured",
             Roles.IS_CURRENT: b"isCurrent",
             Roles.IS_SPACER: b"isSpacer",
+            Roles.LOCATION_INFO: b"location",
         }
     )
     return mapping
