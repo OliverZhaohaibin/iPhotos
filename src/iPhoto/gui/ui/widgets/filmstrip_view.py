@@ -77,32 +77,39 @@ class FilmstripView(AssetGrid):
         self._update_margins()
 
     def _current_item_width(self) -> int:
-        selection_model = self.selectionModel()
         model = self.model()
         delegate = self.itemDelegate()
         if model is None or delegate is None or model.rowCount() == 0:
             return self._narrow_item_width()
 
-        index = None
-        if selection_model is not None:
-            current = selection_model.currentIndex()
-            if current.isValid():
-                index = current
-        if index is None and model is not None:
-            index = model.index(0, 0)
+        current_index = None
+        # Prefer the role flag that the controller keeps in sync with playback
+        for row in range(model.rowCount()):
+            index = model.index(row, 0)
+            if index.isValid() and bool(index.data(Roles.IS_CURRENT)):
+                current_index = index
+                break
 
-        if index is None or not index.isValid():
+        # Fallback to the view's selection if the role is not yet updated
+        if current_index is None:
+            selection_model = self.selectionModel()
+            if selection_model is not None:
+                candidate = selection_model.currentIndex()
+                if candidate.isValid():
+                    current_index = candidate
+
+        if current_index is None or not current_index.isValid():
             return self._narrow_item_width()
-
-        width = self._visual_width(index)
-        if width > 0:
-            return width
 
         option = QStyleOptionViewItem()
         option.initFrom(self)
-        size = delegate.sizeHint(option, index)
+        size = delegate.sizeHint(option, current_index)
         if size.width() > 0:
             return size.width()
+
+        width = self._visual_width(current_index)
+        if width > 0:
+            return width
         return self._narrow_item_width()
 
     def _narrow_item_width(self) -> int:

@@ -148,6 +148,7 @@ class PlaybackController:
         # overlapping the current tile.
         self._filmstrip_view.updateGeometries()
         self._filmstrip_view.refresh_padding()
+        self._filmstrip_view.doItemsLayout()
         if row < 0:
             self._player_bar.reset()
             self._player_bar.setEnabled(False)
