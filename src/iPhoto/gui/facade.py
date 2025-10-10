@@ -119,7 +119,6 @@ class AppFacade(QObject):
         exclude = album.manifest.get("filters", {}).get("exclude", backend.DEFAULT_EXCLUDE)
 
         worker = ScannerWorker(album.root, include, exclude)
-        worker.signals.setParent(self)
         worker.signals.progressUpdated.connect(self.scanProgress.emit)
         worker.signals.finished.connect(self._on_scan_finished)
         worker.signals.error.connect(self._on_scan_error)
@@ -239,9 +238,6 @@ class AppFacade(QObject):
             QTimer.singleShot(0, self.rescan_current_async)
 
     def _cleanup_scan_worker(self) -> None:
-        worker = self._scanner_worker
-        if worker is not None:
-            worker.signals.deleteLater()
         self._scanner_worker = None
         self._scan_pending = False
 

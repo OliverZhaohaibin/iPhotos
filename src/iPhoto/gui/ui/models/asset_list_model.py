@@ -155,7 +155,6 @@ class AssetListModel(QAbstractListModel):
         live_map = load_live_map(self._album_root)
 
         worker = AssetLoaderWorker(self._album_root, featured, live_map)
-        worker.signals.setParent(self)
         worker.signals.progressUpdated.connect(self._on_loader_progress)
         worker.signals.chunkReady.connect(self._on_loader_chunk_ready)
         worker.signals.finished.connect(self._on_loader_finished)
@@ -218,9 +217,6 @@ class AssetListModel(QAbstractListModel):
             QTimer.singleShot(0, self.start_load)
 
     def _teardown_loader(self) -> None:
-        worker = self._loader_worker
-        if worker is not None:
-            worker.signals.deleteLater()
         self._loader_worker = None
         self._pending_reload = False
 
