@@ -16,7 +16,12 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPixmap
 
-from ..tasks.asset_loader_worker import AssetLoaderSignals, AssetLoaderWorker
+from ....config import WORK_DIR_NAME
+from ..tasks.asset_loader_worker import (
+    AssetLoaderSignals,
+    AssetLoaderWorker,
+    compute_asset_rows,
+)
 from ..tasks.thumbnail_loader import ThumbnailLoader
 from .live_map import load_live_map
 from .roles import Roles, role_names
@@ -44,14 +49,56 @@ class AssetListModel(QAbstractListModel):
         self._thumb_loader.ready.connect(self._on_thumb_ready)
         self._loader_pool = QThreadPool.globalInstance()
         self._loader_worker: Optional[AssetLoaderWorker] = None
+        self._loader_signals: Optional[AssetLoaderSignals] = None
         self._pending_reload = False
         self._visible_rows: Set[int] = set()
-        facade.albumOpened.connect(self._on_album_opened)
 
     def album_root(self) -> Optional[Path]:
         """Return the path of the currently open album, if any."""
 
         return self._album_root
+
+    def populate_from_cache(self, *, max_index_bytes: int = 512 * 1024) -> bool:
+        """Synchronously load cached index data when the file is small."""
+
+        if not self._album_root:
+            return False
+        if self._loader_worker is not None:
+            return False
+
+        root = self._album_root
+        index_path = root / WORK_DIR_NAME / "index.jsonl"
+        try:
+            size = index_path.stat().st_size
+        except OSError:
+            size = 0
+        if size > max_index_bytes:
+            return False
+
+        manifest = self._facade.current_album.manifest if self._facade.current_album else {}
+        featured = manifest.get("featured", []) or []
+        live_map = load_live_map(root)
+
+        try:
+            rows, total = compute_asset_rows(root, featured, live_map)
+        except Exception as exc:  # pragma: no cover - surfaced via GUI
+            self._facade.errorRaised.emit(str(exc))
+            self.loadFinished.emit(root, False)
+            return False
+
+        self.beginResetModel()
+        self._rows = rows
+        self._row_lookup = {row["rel"]: index for index, row in enumerate(rows)}
+        active = set(self._row_lookup.keys())
+        self._thumb_cache = {
+            rel: pix for rel, pix in self._thumb_cache.items() if rel in active
+        }
+        self.endResetModel()
+
+        self._pending_reload = False
+        self.loadProgress.emit(root, total, total)
+        self.loadFinished.emit(root, True)
+        return True
 
     # ------------------------------------------------------------------
     # Qt model implementation
@@ -124,7 +171,9 @@ class AssetListModel(QAbstractListModel):
     # ------------------------------------------------------------------
     # Facade callbacks
     # ------------------------------------------------------------------
-    def _on_album_opened(self, root: Path) -> None:
+    def prepare_for_album(self, root: Path) -> None:
+        """Reset internal state so *root* becomes the active album."""
+
         if self._loader_worker:
             self._loader_worker.cancel()
         self._pending_reload = False
@@ -152,7 +201,7 @@ class AssetListModel(QAbstractListModel):
         self.endResetModel()
         manifest = self._facade.current_album.manifest if self._facade.current_album else {}
         featured = manifest.get("featured", []) or []
-        signals = AssetLoaderSignals(self)
+        signals = AssetLoaderSignals()
         signals.progressUpdated.connect(self._on_loader_progress)
         signals.chunkReady.connect(self._on_loader_chunk_ready)
         signals.finished.connect(self._on_loader_finished)
@@ -162,6 +211,7 @@ class AssetListModel(QAbstractListModel):
 
         worker = AssetLoaderWorker(self._album_root, featured, signals, live_map)
         self._loader_worker = worker
+        self._loader_signals = signals
         self._pending_reload = False
         self._loader_pool.start(worker)
 
@@ -220,8 +270,13 @@ class AssetListModel(QAbstractListModel):
 
     def _teardown_loader(self) -> None:
         if self._loader_worker is not None:
+            # ``deleteLater`` is safe even if the worker has already
+            # completed and the signal object is otherwise parent-less.
             self._loader_worker.signals.deleteLater()
+        elif self._loader_signals is not None:
+            self._loader_signals.deleteLater()
         self._loader_worker = None
+        self._loader_signals = None
         self._pending_reload = False
 
     # ------------------------------------------------------------------

@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, List, Optional, Set
 from PySide6.QtCore import QObject, QThreadPool, QTimer, Signal
 
 from .. import app as backend
-from ..config import WORK_DIR_NAME
 from ..errors import IPhotoError
 from ..models.album import Album
 from .ui.tasks.scanner_worker import ScannerSignals, ScannerWorker
@@ -63,27 +62,24 @@ class AppFacade(QObject):
         """Open *root* and trigger background work as needed."""
 
         try:
-            album = Album.open(root)
+            # ``backend.open_album`` guarantees that the on-disk caches (index
+            # and links) exist before returning.  The GUI model relies on
+            # ``index.jsonl`` being present immediately after opening so that
+            # the background asset loader can populate rows without having to
+            # wait for an asynchronous rescan to finish.  Falling back to the
+            # plain ``Album.open`` left a window where the tests would observe
+            # a missing index file which in turn kept the models empty.
+            album = backend.open_album(root)
         except IPhotoError as exc:
             self.errorRaised.emit(str(exc))
             return None
 
         self._current_album = album
         album_root = album.root
+        self._asset_list_model.prepare_for_album(album_root)
         self.albumOpened.emit(album_root)
 
-        index_path = album_root / WORK_DIR_NAME / "index.jsonl"
-        has_index = False
-        if index_path.exists():
-            try:
-                has_index = index_path.stat().st_size > 0
-            except OSError:
-                has_index = False
-
-        if not has_index:
-            self.rescan_current_async()
-        else:
-            self._restart_asset_load(album_root, announce_index=True)
+        self._restart_asset_load(album_root, announce_index=True)
         return album
 
     def rescan_current(self) -> List[dict]:
@@ -118,7 +114,15 @@ class AppFacade(QObject):
         include = album.manifest.get("filters", {}).get("include", backend.DEFAULT_INCLUDE)
         exclude = album.manifest.get("filters", {}).get("exclude", backend.DEFAULT_EXCLUDE)
 
-        signals = ScannerSignals(self)
+        # The signal container is intentionally created without a Qt parent so that it
+        # outlives the facade instance for the duration of the background task.  Qt will
+        # destroy child ``QObject`` instances as soon as their parent gets deleted, which
+        # can easily happen in the tests where the facade goes out of scope while the
+        # worker thread is still running.  Once that happens emitting any signal would
+        # raise ``RuntimeError: Signal source has been deleted`` and the scan would abort
+        # before writing the index.  By keeping the signals parent-less we control the
+        # lifetime explicitly and dispose of them once the worker finishes.
+        signals = ScannerSignals()
         signals.progressUpdated.connect(self.scanProgress.emit)
         signals.finished.connect(self._on_scan_finished)
         signals.error.connect(self._on_scan_error)
@@ -183,8 +187,10 @@ class AppFacade(QObject):
             return False
         # Reload to ensure any concurrent edits are picked up.
         self._current_album = Album.open(album.root)
-        self.albumOpened.emit(album.root)
-        self._restart_asset_load(album.root)
+        refreshed_root = self._current_album.root
+        self._asset_list_model.prepare_for_album(refreshed_root)
+        self.albumOpened.emit(refreshed_root)
+        self._restart_asset_load(refreshed_root)
         return True
 
     def _require_album(self) -> Optional[Album]:
@@ -253,6 +259,8 @@ class AppFacade(QObject):
         if announce_index:
             self._pending_index_announcements.add(root)
         self.loadStarted.emit(root)
+        if self._asset_list_model.populate_from_cache():
+            return
         self._asset_list_model.start_load()
 
     def _on_model_load_progress(self, root: Path, current: int, total: int) -> None:

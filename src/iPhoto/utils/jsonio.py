@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -32,7 +33,32 @@ def atomic_write_text(path: Path, data: str) -> None:
         handle.write(data)
         handle.flush()
         os.fsync(handle.fileno())
-    tmp_path.replace(path)
+    # ``Path.replace`` can intermittently fail on Windows when another process briefly
+    # touches either the destination or the temporary file (for instance antivirus or
+    # indexing services).  Retrying with a short back-off and removing any stale
+    # destination file makes the operation resilient while still providing an atomic
+    # swap when the replacement finally succeeds.
+    last_exc: PermissionError | None = None
+    for attempt in range(5):
+        try:
+            tmp_path.replace(path)
+            break
+        except PermissionError as exc:
+            last_exc = exc
+            if path.exists():
+                try:
+                    path.unlink()
+                except PermissionError:
+                    # If the destination is locked keep retrying – a later attempt
+                    # may succeed once the lock is released.
+                    pass
+            if attempt == 4:
+                tmp_path.unlink(missing_ok=True)
+                raise exc
+            time.sleep(0.05 * (attempt + 1))
+    else:  # pragma: no cover - defensive guard; loop always breaks or raises
+        if last_exc is not None:
+            raise last_exc
 
 
 def _write_backup(path: Path, backup_dir: Path) -> None:
