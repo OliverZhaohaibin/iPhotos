@@ -42,9 +42,10 @@ class AssetGridDelegate(QStyledItemDelegate):
         if not self._filmstrip_mode:
             return QSize(self._base_size, self._base_size)
         is_current = bool(index.data(Roles.IS_CURRENT))
-        height = self._base_size if is_current else int(self._base_size * self._FILMSTRIP_RATIO)
-        height = max(24, height)
-        return QSize(self._base_size, height)
+        padding = self._filmstrip_padding
+        thumb_height = self._base_size
+        thumb_width = self._filmstrip_thumb_width(is_current)
+        return QSize(thumb_width + padding * 2, thumb_height + padding * 2)
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:  # type: ignore[override]
         painter.save()
@@ -52,64 +53,38 @@ class AssetGridDelegate(QStyledItemDelegate):
         is_current = self._filmstrip_mode and bool(index.data(Roles.IS_CURRENT))
         thumb_rect = cell_rect
         frame_rect: Optional[QRect] = None
-
-        if self._filmstrip_mode:
-            thumb_rect = self._filmstrip_rect(cell_rect, is_current)
-            if is_current:
-                frame_rect = thumb_rect.adjusted(
-                    -self._filmstrip_padding,
-                    -self._filmstrip_padding,
-                    self._filmstrip_padding,
-                    self._filmstrip_padding,
-                )
-
-        pixmap = index.data(Qt.DecorationRole)
         base_color = option.palette.color(QPalette.Base)
 
-        if frame_rect is not None:
-            painter.fillRect(frame_rect, base_color)
-        elif self._filmstrip_mode:
-            painter.fillRect(thumb_rect, base_color)
+        if self._filmstrip_mode:
+            padding = self._filmstrip_padding
+            thumb_rect = self._filmstrip_rect(cell_rect, is_current)
+            frame_rect = thumb_rect.adjusted(-padding, -padding, padding, padding)
+            painter.fillRect(cell_rect, base_color)
+        else:
+            frame_rect = None
+
+        pixmap = index.data(Qt.DecorationRole)
 
         if isinstance(pixmap, QPixmap) and not pixmap.isNull():
             painter.setRenderHint(QPainter.Antialiasing, True)
             painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-            if self._filmstrip_mode and not is_current:
-                scaled = pixmap.scaledToHeight(
-                    max(1, thumb_rect.height()), Qt.SmoothTransformation
-                )
-                if scaled.width() >= thumb_rect.width():
-                    diff = scaled.width() - thumb_rect.width()
-                    left = diff // 2
-                    right = diff - left
-                    source = QRect(left, 0, thumb_rect.width(), thumb_rect.height())
-                    painter.drawPixmap(thumb_rect, scaled, source)
-                else:
-                    target = QRect(
-                        thumb_rect.x() + (thumb_rect.width() - scaled.width()) // 2,
-                        thumb_rect.y(),
-                        scaled.width(),
-                        thumb_rect.height(),
-                    )
-                    painter.drawPixmap(target, scaled)
-            else:
-                scaled = pixmap.scaled(
-                    thumb_rect.size(),
-                    Qt.KeepAspectRatioByExpanding,
-                    Qt.SmoothTransformation,
-                )
-                source = scaled.rect()
-                if source.width() > thumb_rect.width():
-                    diff = source.width() - thumb_rect.width()
-                    left = diff // 2
-                    right = diff - left
-                    source.adjust(left, 0, -right, 0)
-                if source.height() > thumb_rect.height():
-                    diff = source.height() - thumb_rect.height()
-                    top = diff // 2
-                    bottom = diff - top
-                    source.adjust(0, top, 0, -bottom)
-                painter.drawPixmap(thumb_rect, scaled, source)
+            scaled = pixmap.scaled(
+                thumb_rect.size(),
+                Qt.KeepAspectRatioByExpanding,
+                Qt.SmoothTransformation,
+            )
+            source = scaled.rect()
+            if source.width() > thumb_rect.width():
+                diff = source.width() - thumb_rect.width()
+                left = diff // 2
+                right = diff - left
+                source.adjust(left, 0, -right, 0)
+            if source.height() > thumb_rect.height():
+                diff = source.height() - thumb_rect.height()
+                top = diff // 2
+                bottom = diff - top
+                source.adjust(0, top, 0, -bottom)
+            painter.drawPixmap(thumb_rect, scaled, source)
         else:
             painter.fillRect(thumb_rect, QColor("#1b1b1b"))
 
@@ -119,7 +94,7 @@ class AssetGridDelegate(QStyledItemDelegate):
             overlay.setAlpha(60 if is_current and self._filmstrip_mode else 110)
             painter.fillRect(thumb_rect, overlay)
 
-        if frame_rect is not None:
+        if frame_rect is not None and is_current:
             highlight = option.palette.color(QPalette.Highlight)
             pen = QPen(highlight, self._filmstrip_border_width)
             pen.setJoinStyle(Qt.RoundJoin)
@@ -142,12 +117,15 @@ class AssetGridDelegate(QStyledItemDelegate):
     # Helpers
     # ------------------------------------------------------------------
     def _filmstrip_rect(self, rect: QRect, is_current: bool) -> QRect:
-        height = self._base_size if is_current else int(self._base_size * self._FILMSTRIP_RATIO)
-        height = max(24, height)
-        width = self._base_size
-        x = rect.x() + (rect.width() - width) // 2
-        y = rect.y() + (rect.height() - height) // 2
-        return QRect(x, y, width, height)
+        thumb_height = self._base_size
+        thumb_width = self._filmstrip_thumb_width(is_current)
+        x = rect.x() + (rect.width() - thumb_width) // 2
+        y = rect.y() + (rect.height() - thumb_height) // 2
+        return QRect(x, y, thumb_width, thumb_height)
+
+    def _filmstrip_thumb_width(self, is_current: bool) -> int:
+        width = self._base_size if is_current else int(self._base_size * self._FILMSTRIP_RATIO)
+        return max(24, width)
 
     def _draw_duration_badge(
         self,
