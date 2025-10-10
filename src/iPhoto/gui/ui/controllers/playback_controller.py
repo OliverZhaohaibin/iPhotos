@@ -141,6 +141,12 @@ class PlaybackController:
 
         previous_row = self._playlist.previous_row()
         _set_is_current(previous_row, False)
+        if row >= 0:
+            _set_is_current(row, True)
+        # Ensure the filmstrip layout responds to width changes from the
+        # delegate's dynamic size hints so neighbours slide instead of
+        # overlapping the current tile.
+        self._filmstrip_view.updateGeometries()
         if row < 0:
             self._player_bar.reset()
             self._player_bar.setEnabled(False)
@@ -160,7 +166,6 @@ class PlaybackController:
             index,
             QItemSelectionModel.SelectionFlag.NoUpdate,
         )
-        _set_is_current(row, True)
         self._filmstrip_view.scrollTo(index, QAbstractItemView.ScrollHint.PositionAtCenter)
         self._player_bar.setEnabled(True)
         self.show_detail_view()

@@ -58,18 +58,18 @@ class AssetGridDelegate(QStyledItemDelegate):
         base_color = option.palette.color(QPalette.Base)
         corner_radius = 8.0 if self._filmstrip_mode else 0.0
 
-        if self._filmstrip_mode:
-            painter.fillRect(cell_rect, base_color)
-
         pixmap = index.data(Qt.DecorationRole)
 
-        # Draw the thumbnail within a rounded clip so every tile keeps soft corners.
-        painter.save()
         clip_path: QPainterPath | None = None
-        if corner_radius > 0.0:
+        if self._filmstrip_mode and corner_radius > 0.0:
             clip_path = QPainterPath()
             clip_path.addRoundedRect(QRectF(thumb_rect), corner_radius, corner_radius)
+            # Fill the rounded bounds first so uncovered corners inherit the
+            # strip background instead of the window behind the transparent view.
+            painter.fillPath(clip_path, base_color)
             painter.setClipPath(clip_path)
+        elif self._filmstrip_mode:
+            painter.fillRect(thumb_rect, base_color)
 
         if isinstance(pixmap, QPixmap) and not pixmap.isNull():
             painter.setRenderHint(QPainter.Antialiasing, True)
@@ -94,8 +94,6 @@ class AssetGridDelegate(QStyledItemDelegate):
         else:
             painter.fillRect(thumb_rect, QColor("#1b1b1b"))
 
-        painter.restore()
-
         if option.state & QStyle.State_Selected:
             painter.save()
             if clip_path is not None:
@@ -105,6 +103,9 @@ class AssetGridDelegate(QStyledItemDelegate):
             overlay.setAlpha(60 if is_current and self._filmstrip_mode else 110)
             painter.fillRect(thumb_rect, overlay)
             painter.restore()
+
+        if clip_path is not None:
+            painter.setClipPath(QPainterPath())
 
         if self._filmstrip_mode and is_current:
             highlight = option.palette.color(QPalette.Highlight)
