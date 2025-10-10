@@ -148,10 +148,13 @@ def test_facade_open_album_emits_signals(tmp_path: Path, qapp: QApplication) -> 
     _create_image(asset)
     facade = AppFacade()
     received: list[str] = []
+    scan_spy = QSignalSpy(facade.scanFinished)
     facade.albumOpened.connect(lambda _: received.append("opened"))
     facade.indexUpdated.connect(lambda _: received.append("index"))
     facade.linksUpdated.connect(lambda _: received.append("links"))
     album = facade.open_album(tmp_path)
+    assert scan_spy.wait(1000), "Scan should finish"
+
     qapp.processEvents()
     assert album is not None
     assert (tmp_path / ".iPhoto" / "index.jsonl").exists()
@@ -162,11 +165,17 @@ def test_facade_rescan_emits_links(tmp_path: Path, qapp: QApplication) -> None:
     asset = tmp_path / "IMG_1101.JPG"
     _create_image(asset)
     facade = AppFacade()
+    open_spy = QSignalSpy(facade.scanFinished)
     facade.open_album(tmp_path)
-    spy = QSignalSpy(facade.linksUpdated)
-    facade.rescan_current()
+    assert open_spy.wait(1000)
+
+    links_spy = QSignalSpy(facade.linksUpdated)
+    rescan_spy = QSignalSpy(facade.scanFinished)
+    facade.rescan_current_async()
+    assert rescan_spy.wait(1000)
+
     qapp.processEvents()
-    assert spy.count() >= 1
+    assert links_spy.count() >= 1
 
 
 def test_asset_model_populates_rows(tmp_path: Path, qapp: QApplication) -> None:
@@ -174,7 +183,9 @@ def test_asset_model_populates_rows(tmp_path: Path, qapp: QApplication) -> None:
     _create_image(asset)
     facade = AppFacade()
     model = AssetModel(facade)
+    load_spy = QSignalSpy(facade.loadFinished)
     facade.open_album(tmp_path)
+    assert load_spy.wait(1000)
     qapp.processEvents()
     assert model.rowCount() == 1
     index = model.index(0, 0)
@@ -207,7 +218,9 @@ def test_asset_model_filters_videos(tmp_path: Path, qapp: QApplication) -> None:
 
     facade = AppFacade()
     model = AssetModel(facade)
+    load_spy = QSignalSpy(facade.loadFinished)
     facade.open_album(tmp_path)
+    assert load_spy.wait(1000)
     qapp.processEvents()
 
     assert model.rowCount() == 2
@@ -233,7 +246,9 @@ def test_asset_model_exposes_live_motion_abs(tmp_path: Path, qapp: QApplication)
 
     facade = AppFacade()
     model = AssetModel(facade)
+    load_spy = QSignalSpy(facade.loadFinished)
     facade.open_album(tmp_path)
+    assert load_spy.wait(1000)
     qapp.processEvents()
 
     assert model.rowCount() == 1
@@ -263,7 +278,9 @@ def test_asset_model_pairs_live_when_links_missing(
 
     facade = AppFacade()
     model = AssetModel(facade)
+    load_spy = QSignalSpy(facade.loadFinished)
     facade.open_album(tmp_path)
+    assert load_spy.wait(1000)
     qapp.processEvents()
 
     assert model.rowCount() == 1
@@ -283,7 +300,9 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
 
     facade = AppFacade()
     model = AssetModel(facade)
+    load_spy = QSignalSpy(facade.loadFinished)
     facade.open_album(tmp_path)
+    assert load_spy.wait(1000)
     qapp.processEvents()
 
     assert model.rowCount() == 1
