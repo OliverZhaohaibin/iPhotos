@@ -364,13 +364,13 @@ class AlbumSidebar(QWidget):
         tree_palette = self._tree.palette()
         tree_palette.setColor(QPalette.ColorRole.Base, BG_COLOR)
         tree_palette.setColor(QPalette.ColorRole.Window, BG_COLOR)
+        tree_palette.setColor(QPalette.ColorRole.Highlight, QColor(Qt.GlobalColor.transparent))
+        tree_palette.setColor(QPalette.ColorRole.HighlightedText, TEXT_COLOR)
         self._tree.setPalette(tree_palette)
         self._tree.setAutoFillBackground(True)
         self._tree.setStyleSheet(
             "QTreeView { background: transparent; border: none; }"
             "QTreeView::item { border: 0px; padding: 0px; margin: 0px; }"
-            "QTreeView::item:selected { background: transparent; }"
-            "QTreeView::item:hover { background: transparent; }"
             "QTreeView::branch { background: transparent; border-image: none; image: none; }"
             "QTreeView::branch:has-children:!has-siblings:closed,"
             "QTreeView::branch:has-children:has-siblings:closed,"
