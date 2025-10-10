@@ -52,7 +52,6 @@ class AssetListModel(QAbstractListModel):
         self._loader_signals: Optional[AssetLoaderSignals] = None
         self._pending_reload = False
         self._visible_rows: Set[int] = set()
-        facade.albumOpened.connect(self._on_album_opened)
 
     def album_root(self) -> Optional[Path]:
         """Return the path of the currently open album, if any."""
@@ -172,7 +171,9 @@ class AssetListModel(QAbstractListModel):
     # ------------------------------------------------------------------
     # Facade callbacks
     # ------------------------------------------------------------------
-    def _on_album_opened(self, root: Path) -> None:
+    def prepare_for_album(self, root: Path) -> None:
+        """Reset internal state so *root* becomes the active album."""
+
         if self._loader_worker:
             self._loader_worker.cancel()
         self._pending_reload = False

@@ -76,6 +76,7 @@ class AppFacade(QObject):
 
         self._current_album = album
         album_root = album.root
+        self._asset_list_model.prepare_for_album(album_root)
         self.albumOpened.emit(album_root)
 
         self._restart_asset_load(album_root, announce_index=True)
@@ -186,8 +187,10 @@ class AppFacade(QObject):
             return False
         # Reload to ensure any concurrent edits are picked up.
         self._current_album = Album.open(album.root)
-        self.albumOpened.emit(album.root)
-        self._restart_asset_load(album.root)
+        refreshed_root = self._current_album.root
+        self._asset_list_model.prepare_for_album(refreshed_root)
+        self.albumOpened.emit(refreshed_root)
+        self._restart_asset_load(refreshed_root)
         return True
 
     def _require_album(self) -> Optional[Album]:
