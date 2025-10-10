@@ -38,11 +38,16 @@ class SpacerProxyModel(QAbstractProxyModel):
         # re-query all data), emit targeted ``dataChanged`` signals so
         # views simply refresh the two spacer delegates. This keeps
         # navigation responsive even for very large albums.
-        if self.rowCount() < 2:
+        source = self.sourceModel()
+        if source is None:
+            return
+
+        source_rows = source.rowCount()
+        if source_rows <= 0:
             return
 
         first_idx = self.index(0, 0)
-        last_idx = self.index(self.rowCount() - 1, 0)
+        last_idx = self.index(source_rows + 1, 0)
         roles = [Qt.ItemDataRole.SizeHintRole]
         self.dataChanged.emit(first_idx, first_idx, roles)
         self.dataChanged.emit(last_idx, last_idx, roles)
