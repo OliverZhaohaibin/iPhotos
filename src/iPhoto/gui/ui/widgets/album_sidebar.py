@@ -309,25 +309,6 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
 
         painter.restore()
 
-    def indicator_rect(self, option: QStyleOptionViewItem, index: QModelIndex) -> QRect:
-        """Return the rectangle reserved for the branch indicator."""
-
-        rect = option.rect
-        model = index.model()
-        if model is None or not model.hasChildren(index):
-            return QRect()
-
-        depth = self._depth_for_index(index)
-        indentation = depth * INDENT_PER_LEVEL
-        x = rect.left() + LEFT_PADDING + indentation
-
-        return QRect(
-            x,
-            rect.top() + (rect.height() - INDICATOR_SIZE) // 2,
-            INDICATOR_SIZE,
-            INDICATOR_SIZE,
-        )
-
     @staticmethod
     def _depth_for_index(index: QModelIndex) -> int:
         depth = 0
@@ -504,13 +485,17 @@ class AlbumSidebar(QWidget):
         if not item_rect.isValid():
             return
 
-        option = self._tree.viewOptions()
-        option.rect = item_rect
+        depth = delegate._depth_for_index(index)
+        indentation = depth * INDENT_PER_LEVEL
+        indicator_left = item_rect.left() + LEFT_PADDING + indentation
+        indicator_rect = QRect(
+            indicator_left,
+            item_rect.top() + (item_rect.height() - INDICATOR_SIZE) // 2,
+            INDICATOR_SIZE,
+            INDICATOR_SIZE,
+        )
 
-        hot_zone = delegate.indicator_rect(option, index).adjusted(-4, -4, 4, 4)
-        if hot_zone.isNull():
-            return
-
+        hot_zone = indicator_rect.adjusted(-4, -4, 4, 4)
         cursor_pos = QCursor.pos()
         viewport_pos = self._tree.viewport().mapFromGlobal(cursor_pos)
         if not hot_zone.contains(viewport_pos):
