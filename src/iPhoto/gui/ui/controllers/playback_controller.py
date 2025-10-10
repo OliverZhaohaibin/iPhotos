@@ -77,7 +77,7 @@ class PlaybackController:
     # Selection handling
     # ------------------------------------------------------------------
     def activate_index(self, index: QModelIndex) -> None:
-        """Handle activation originating from either the grid or filmstrip."""
+        """Handle item activation from either the main grid or the filmstrip."""
 
         if self._is_transitioning:
             return
@@ -102,18 +102,9 @@ class PlaybackController:
         if asset_index is None or not asset_index.isValid():
             return
 
-        abs_raw = asset_index.data(Roles.ABS)
-        if not abs_raw:
-            return
         row = asset_index.row()
-        abs_path = Path(str(abs_raw))
-        is_video = bool(asset_index.data(Roles.IS_VIDEO))
-        is_live = bool(asset_index.data(Roles.IS_LIVE))
-        if is_video or is_live:
-            self.show_detail_view()
-            self._playlist.set_current(row)
-            return
-        self._display_image(abs_path, row=row)
+        self.show_detail_view()
+        self._playlist.set_current(row)
 
     def show_preview_for_index(self, view: AssetGrid, index: QModelIndex) -> None:
         if not index or not index.isValid():
@@ -436,8 +427,6 @@ class PlaybackController:
         self.show_detail_view()
         self._player_bar.reset()
         self._player_bar.setEnabled(False)
-        if row is not None:
-            self.select_filmstrip_row(row)
         self._status.showMessage(f"Viewing {source.name}")
 
     def _show_player_placeholder(self) -> None:
