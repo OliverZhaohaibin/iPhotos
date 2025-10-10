@@ -16,7 +16,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPixmap
 
-from ..tasks.asset_loader_worker import AssetLoaderSignals, AssetLoaderWorker
+from ..tasks.asset_loader_worker import AssetLoaderWorker
 from ..tasks.thumbnail_loader import ThumbnailLoader
 from .live_map import load_live_map
 from .roles import Roles, role_names
@@ -152,15 +152,13 @@ class AssetListModel(QAbstractListModel):
         self.endResetModel()
         manifest = self._facade.current_album.manifest if self._facade.current_album else {}
         featured = manifest.get("featured", []) or []
-        signals = AssetLoaderSignals(self)
-        signals.progressUpdated.connect(self._on_loader_progress)
-        signals.chunkReady.connect(self._on_loader_chunk_ready)
-        signals.finished.connect(self._on_loader_finished)
-        signals.error.connect(self._on_loader_error)
-
         live_map = load_live_map(self._album_root)
 
-        worker = AssetLoaderWorker(self._album_root, featured, signals, live_map)
+        worker = AssetLoaderWorker(self._album_root, featured, live_map)
+        worker.signals.progressUpdated.connect(self._on_loader_progress)
+        worker.signals.chunkReady.connect(self._on_loader_chunk_ready)
+        worker.signals.finished.connect(self._on_loader_finished)
+        worker.signals.error.connect(self._on_loader_error)
         self._loader_worker = worker
         self._pending_reload = False
         self._loader_pool.start(worker)

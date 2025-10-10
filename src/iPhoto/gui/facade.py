@@ -11,7 +11,7 @@ from .. import app as backend
 from ..config import WORK_DIR_NAME
 from ..errors import IPhotoError
 from ..models.album import Album
-from .ui.tasks.scanner_worker import ScannerSignals, ScannerWorker
+from .ui.tasks.scanner_worker import ScannerWorker
 
 if TYPE_CHECKING:
     from .ui.models.asset_list_model import AssetListModel
@@ -118,12 +118,10 @@ class AppFacade(QObject):
         include = album.manifest.get("filters", {}).get("include", backend.DEFAULT_INCLUDE)
         exclude = album.manifest.get("filters", {}).get("exclude", backend.DEFAULT_EXCLUDE)
 
-        signals = ScannerSignals(self)
-        signals.progressUpdated.connect(self.scanProgress.emit)
-        signals.finished.connect(self._on_scan_finished)
-        signals.error.connect(self._on_scan_error)
-
-        worker = ScannerWorker(album.root, include, exclude, signals)
+        worker = ScannerWorker(album.root, include, exclude)
+        worker.signals.progressUpdated.connect(self.scanProgress.emit)
+        worker.signals.finished.connect(self._on_scan_finished)
+        worker.signals.error.connect(self._on_scan_error)
         self._scanner_worker = worker
         self._scan_pending = False
         self._scanner_pool.start(worker)

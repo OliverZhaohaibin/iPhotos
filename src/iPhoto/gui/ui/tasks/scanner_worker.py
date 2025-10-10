@@ -28,14 +28,13 @@ class ScannerWorker(QRunnable):
         root: Path,
         include: Iterable[str],
         exclude: Iterable[str],
-        signals: ScannerSignals,
     ) -> None:
         super().__init__()
         self.setAutoDelete(False)
         self._root = root
         self._include = list(include)
         self._exclude = list(exclude)
-        self._signals = signals
+        self.signals: ScannerSignals = ScannerSignals()
         self._is_cancelled = False
         self._had_error = False
 
@@ -44,12 +43,6 @@ class ScannerWorker(QRunnable):
         """Album directory being scanned."""
 
         return self._root
-
-    @property
-    def signals(self) -> ScannerSignals:
-        """Signal container used by this worker."""
-
-        return self._signals
 
     @property
     def cancelled(self) -> bool:
@@ -70,7 +63,7 @@ class ScannerWorker(QRunnable):
         try:
             ensure_work_dir(self._root, WORK_DIR_NAME)
 
-            self._signals.progressUpdated.emit(self._root, 0, -1)
+            self.signals.progressUpdated.emit(self._root, 0, -1)
             all_files: List[Path] = []
             for candidate in self._root.rglob("*"):
                 if self._is_cancelled:
@@ -83,9 +76,9 @@ class ScannerWorker(QRunnable):
 
             total_files = len(all_files)
             if total_files == 0:
-                self._signals.progressUpdated.emit(self._root, 0, 0)
+                self.signals.progressUpdated.emit(self._root, 0, 0)
             else:
-                self._signals.progressUpdated.emit(self._root, 0, total_files)
+                self.signals.progressUpdated.emit(self._root, 0, total_files)
                 for index, file_path in enumerate(all_files, start=1):
                     if self._is_cancelled:
                         break
@@ -93,14 +86,14 @@ class ScannerWorker(QRunnable):
                     if row is not None:
                         rows.append(row)
                     if index == total_files or index % 50 == 0:
-                        self._signals.progressUpdated.emit(self._root, index, total_files)
+                        self.signals.progressUpdated.emit(self._root, index, total_files)
         except Exception as exc:  # pragma: no cover - best-effort error propagation
             if not self._is_cancelled:
                 self._had_error = True
-                self._signals.error.emit(self._root, str(exc))
+                self.signals.error.emit(self._root, str(exc))
         finally:
             payload = rows if not (self._is_cancelled or self._had_error) else []
-            self._signals.finished.emit(self._root, payload)
+            self.signals.finished.emit(self._root, payload)
 
     def cancel(self) -> None:
         """Request cancellation of the in-progress scan."""

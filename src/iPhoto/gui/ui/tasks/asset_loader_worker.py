@@ -33,14 +33,13 @@ class AssetLoaderWorker(QRunnable):
         self,
         root: Path,
         featured: Iterable[str],
-        signals: AssetLoaderSignals,
         live_map: Dict[str, Dict[str, object]],
     ) -> None:
         super().__init__()
         self.setAutoDelete(False)
         self._root = root
         self._featured: Set[str] = {str(entry) for entry in featured}
-        self._signals = signals
+        self.signals: AssetLoaderSignals = AssetLoaderSignals()
         self._live_map = live_map
         self._is_cancelled = False
 
@@ -50,12 +49,6 @@ class AssetLoaderWorker(QRunnable):
 
         return self._root
 
-    @property
-    def signals(self) -> AssetLoaderSignals:
-        """Expose the worker signals for connection management."""
-
-        return self._signals
-
     def run(self) -> None:  # pragma: no cover - executed on worker thread
         try:
             self._is_cancelled = False
@@ -63,15 +56,15 @@ class AssetLoaderWorker(QRunnable):
                 if self._is_cancelled:
                     break
                 if chunk:
-                    self._signals.chunkReady.emit(self._root, chunk)
+                    self.signals.chunkReady.emit(self._root, chunk)
             if not self._is_cancelled:
-                self._signals.finished.emit(self._root, True)
+                self.signals.finished.emit(self._root, True)
             else:
-                self._signals.finished.emit(self._root, False)
+                self.signals.finished.emit(self._root, False)
         except Exception as exc:  # pragma: no cover - surfaced via signal
             if not self._is_cancelled:
-                self._signals.error.emit(self._root, str(exc))
-            self._signals.finished.emit(self._root, False)
+                self.signals.error.emit(self._root, str(exc))
+            self.signals.finished.emit(self._root, False)
 
     def cancel(self) -> None:
         """Request cancellation of the current load operation."""
@@ -87,7 +80,7 @@ class AssetLoaderWorker(QRunnable):
 
         total = len(index_rows)
         if total == 0:
-            self._signals.progressUpdated.emit(self._root, 0, 0)
+            self.signals.progressUpdated.emit(self._root, 0, 0)
             return
 
         chunk_size = 200
@@ -101,7 +94,7 @@ class AssetLoaderWorker(QRunnable):
             if not rel or rel in motion_paths_to_hide:
                 if should_emit:
                     last_reported = position
-                    self._signals.progressUpdated.emit(self._root, position, total)
+                    self.signals.progressUpdated.emit(self._root, position, total)
                 continue
 
             live_info = live_map.get(rel)
@@ -144,7 +137,7 @@ class AssetLoaderWorker(QRunnable):
             chunk.append(entry)
             if should_emit:
                 last_reported = position
-                self._signals.progressUpdated.emit(self._root, position, total)
+                self.signals.progressUpdated.emit(self._root, position, total)
 
             if len(chunk) >= chunk_size or position == total:
                 yield chunk
