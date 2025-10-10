@@ -18,13 +18,13 @@ class FilmstripView(AssetGrid):
     def __init__(self, parent=None) -> None:  # type: ignore[override]
         super().__init__(parent)
         base_size = 120
-        padding = 6
+        spacing = 2
         icon_size = QSize(base_size, base_size)
         self.setViewMode(QListView.ViewMode.IconMode)
         self.setSelectionMode(QListView.SelectionMode.SingleSelection)
         self.setIconSize(icon_size)
-        self.setGridSize(QSize(0, base_size + padding * 2))
-        self.setSpacing(1)
+        self.setGridSize(QSize(base_size, base_size))
+        self.setSpacing(spacing)
         self.setUniformItemSizes(False)
         self.setResizeMode(QListView.ResizeMode.Adjust)
         self.setMovement(QListView.Movement.Static)
@@ -35,7 +35,7 @@ class FilmstripView(AssetGrid):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.setWordWrap(False)
         self.setStyleSheet("QListView::item { margin: 0px; padding: 0px; }")
-        strip_height = base_size + padding * 2 + self.frameWidth() * 2
+        strip_height = base_size + spacing * 2 + self.frameWidth() * 2
         self.setMinimumHeight(strip_height)
         self.setMaximumHeight(strip_height)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)

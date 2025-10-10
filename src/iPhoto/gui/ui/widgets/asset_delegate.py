@@ -33,8 +33,7 @@ class AssetGridDelegate(QStyledItemDelegate):
         self._filmstrip_mode = filmstrip_mode
         self._base_size = 192
         self._filmstrip_height = 120
-        self._filmstrip_padding = 6
-        self._filmstrip_border_width = 3
+        self._filmstrip_border_width = 2
 
     # ------------------------------------------------------------------
     # Painting
@@ -44,26 +43,21 @@ class AssetGridDelegate(QStyledItemDelegate):
             return QSize(self._base_size, self._base_size)
 
         is_current = bool(index.data(Roles.IS_CURRENT))
-        padding = self._filmstrip_padding
-        thumb_height = self._filmstrip_height
-        thumb_width = self._filmstrip_thumb_width(is_current)
-        return QSize(thumb_width + padding * 2, thumb_height + padding * 2)
+        height = self._filmstrip_height
+        if is_current:
+            return QSize(height, height)
+        width = int(height * self._FILMSTRIP_RATIO)
+        return QSize(width, height)
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:  # type: ignore[override]
         painter.save()
         cell_rect = option.rect
         is_current = self._filmstrip_mode and bool(index.data(Roles.IS_CURRENT))
         thumb_rect = cell_rect
-        frame_rect: Optional[QRect] = None
         base_color = option.palette.color(QPalette.Base)
 
         if self._filmstrip_mode:
-            padding = self._filmstrip_padding
-            thumb_rect = self._filmstrip_rect(cell_rect, is_current)
-            frame_rect = thumb_rect.adjusted(-padding, -padding, padding, padding)
             painter.fillRect(cell_rect, base_color)
-        else:
-            frame_rect = None
 
         pixmap = index.data(Qt.DecorationRole)
 
@@ -96,16 +90,15 @@ class AssetGridDelegate(QStyledItemDelegate):
             overlay.setAlpha(60 if is_current and self._filmstrip_mode else 110)
             painter.fillRect(thumb_rect, overlay)
 
-        if frame_rect is not None and is_current:
+        if self._filmstrip_mode and is_current:
             highlight = option.palette.color(QPalette.Highlight)
             pen = QPen(highlight, self._filmstrip_border_width)
-            pen.setJoinStyle(Qt.RoundJoin)
+            pen.setJoinStyle(Qt.MiterJoin)
             painter.setRenderHint(QPainter.Antialiasing, True)
             painter.setPen(pen)
             painter.setBrush(Qt.NoBrush)
-            inset = self._filmstrip_border_width // 2
-            adjusted = frame_rect.adjusted(inset, inset, -inset, -inset)
-            painter.drawRoundedRect(adjusted, 10, 10)
+            adjusted = thumb_rect.adjusted(1, 1, -1, -1)
+            painter.drawRect(adjusted)
 
         if index.data(Roles.IS_LIVE):
             self._draw_live_badge(painter, option, thumb_rect)
@@ -118,20 +111,6 @@ class AssetGridDelegate(QStyledItemDelegate):
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-    def _filmstrip_rect(self, rect: QRect, is_current: bool) -> QRect:
-        padding = self._filmstrip_padding
-        available = rect.adjusted(padding, padding, -padding, -padding)
-        thumb_height = min(self._filmstrip_height, max(0, available.height()))
-        thumb_width = min(self._filmstrip_thumb_width(is_current), max(0, available.width()))
-        x = available.x() + (available.width() - thumb_width) // 2
-        y = available.y() + (available.height() - thumb_height) // 2
-        return QRect(x, y, thumb_width, thumb_height)
-
-    def _filmstrip_thumb_width(self, is_current: bool) -> int:
-        height = self._filmstrip_height
-        width = height if is_current else int(height * self._FILMSTRIP_RATIO)
-        return max(24, width)
-
     def _draw_duration_badge(
         self,
         painter: QPainter,
