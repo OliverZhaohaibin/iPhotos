@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import QRect, QSize, Qt
+from PySide6.QtCore import QRect, QRectF, QSize, Qt
 from PySide6.QtGui import (
     QColor,
     QFont,
     QFontMetrics,
     QIcon,
     QPainter,
+    QPainterPath,
     QPalette,
     QPen,
     QPixmap,
@@ -55,11 +56,20 @@ class AssetGridDelegate(QStyledItemDelegate):
         is_current = self._filmstrip_mode and bool(index.data(Roles.IS_CURRENT))
         thumb_rect = cell_rect
         base_color = option.palette.color(QPalette.Base)
+        corner_radius = 8.0 if self._filmstrip_mode else 0.0
 
         if self._filmstrip_mode:
             painter.fillRect(cell_rect, base_color)
 
         pixmap = index.data(Qt.DecorationRole)
+
+        # Draw the thumbnail within a rounded clip so every tile keeps soft corners.
+        painter.save()
+        clip_path: QPainterPath | None = None
+        if corner_radius > 0.0:
+            clip_path = QPainterPath()
+            clip_path.addRoundedRect(QRectF(thumb_rect), corner_radius, corner_radius)
+            painter.setClipPath(clip_path)
 
         if isinstance(pixmap, QPixmap) and not pixmap.isNull():
             painter.setRenderHint(QPainter.Antialiasing, True)
@@ -84,21 +94,28 @@ class AssetGridDelegate(QStyledItemDelegate):
         else:
             painter.fillRect(thumb_rect, QColor("#1b1b1b"))
 
+        painter.restore()
+
         if option.state & QStyle.State_Selected:
+            painter.save()
+            if clip_path is not None:
+                painter.setClipPath(clip_path)
             highlight = option.palette.color(QPalette.Highlight)
             overlay = QColor(highlight)
             overlay.setAlpha(60 if is_current and self._filmstrip_mode else 110)
             painter.fillRect(thumb_rect, overlay)
+            painter.restore()
 
         if self._filmstrip_mode and is_current:
             highlight = option.palette.color(QPalette.Highlight)
             pen = QPen(highlight, self._filmstrip_border_width)
-            pen.setJoinStyle(Qt.MiterJoin)
+            pen.setJoinStyle(Qt.RoundJoin)
             painter.setRenderHint(QPainter.Antialiasing, True)
             painter.setPen(pen)
             painter.setBrush(Qt.NoBrush)
             adjusted = thumb_rect.adjusted(1, 1, -1, -1)
-            painter.drawRect(adjusted)
+            radius = max(0.0, corner_radius - 1)
+            painter.drawRoundedRect(QRectF(adjusted), radius, radius)
 
         if index.data(Roles.IS_LIVE):
             self._draw_live_badge(painter, option, thumb_rect)
