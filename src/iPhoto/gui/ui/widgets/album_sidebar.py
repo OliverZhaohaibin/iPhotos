@@ -29,14 +29,13 @@ from PySide6.QtGui import (
     QPen,
 )
 from PySide6.QtWidgets import (
+    QFrame,
     QInputDialog,
     QLabel,
     QMenu,
     QMessageBox,
-    QFrame,
     QSizePolicy,
     QStyledItemDelegate,
-    QStyle,
     QStyleOptionViewItem,
     QTreeView,
     QVBoxLayout,
@@ -241,14 +240,18 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         painter.setPen(color)
 
         branch_rect = QRect()
-        has_children = False
-        if tree_view is not None:
-            branch_rect = tree_view.style().subElementRect(
-                QStyle.SubElement.SE_TreeViewDisclosureItem, option, tree_view
-            )
-            has_children = bool(index.model().hasChildren(index))
+        model = index.model()
+        has_children = bool(model is not None and model.hasChildren(index))
 
-        if tree_view is not None and has_children and branch_rect.isValid():
+        if tree_view is not None and has_children:
+            indicator_size = 16
+            branch_rect = QRect(
+                rect.left() + 4,
+                rect.top() + (rect.height() - indicator_size) // 2,
+                indicator_size,
+                indicator_size,
+            )
+
             controller = getattr(tree_view, "branch_indicator_controller", None)
             if controller is not None:
                 angle = controller.angle_for_index(index)
@@ -266,9 +269,9 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
             painter.rotate(angle)
 
             path = QPainterPath()
-            path.moveTo(-3, -4)
-            path.lineTo(3, 0)
-            path.lineTo(-3, 4)
+            path.moveTo(-2, -4)
+            path.lineTo(2, 0)
+            path.lineTo(-2, 4)
             painter.drawPath(path)
 
             painter.restore()
