@@ -38,7 +38,7 @@ class AssetListModel(QAbstractListModel):
 
     loadProgress = Signal(object, int, int)
     loadFinished = Signal(object, bool)
-    locationDataReady = Signal(str, str)
+    locationDataReady = Signal(str, object)
 
     def __init__(self, facade: "AppFacade", parent=None) -> None:  # type: ignore[override]
         super().__init__(parent)
@@ -345,9 +345,9 @@ class AssetListModel(QAbstractListModel):
         geocoding_pool().start(worker)
 
     def _handle_geocode_result(self, rel: str, location: Optional[str]) -> None:
-        self.locationDataReady.emit(rel, location or "")
+        self.locationDataReady.emit(rel, location)
 
-    def _on_location_ready(self, rel: str, location: str) -> None:
+    def _on_location_ready(self, rel: str, location: Optional[str]) -> None:
         with self._geocode_lock:
             self._scheduled_geocodes.discard(rel)
         if not rel:
@@ -356,11 +356,17 @@ class AssetListModel(QAbstractListModel):
         if index is None or not (0 <= index < len(self._rows)):
             return
         row = self._rows[index]
-        normalized = location.strip()
-        if normalized:
+        if isinstance(location, str) and location.strip():
+            normalized = location.strip()
+            if row.get("location") == normalized:
+                return
             row["location"] = normalized
-        else:
-            row.pop("location", None)
+            model_index = self.index(index, 0)
+            self.dataChanged.emit(model_index, model_index, [Roles.LOCATION_INFO])
+            return
+        if "location" not in row:
+            return
+        row.pop("location", None)
         model_index = self.index(index, 0)
         self.dataChanged.emit(model_index, model_index, [Roles.LOCATION_INFO])
 
