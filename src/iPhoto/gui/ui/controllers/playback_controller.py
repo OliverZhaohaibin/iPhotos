@@ -77,23 +77,38 @@ class PlaybackController:
     # Selection handling
     # ------------------------------------------------------------------
     def activate_index(self, index: QModelIndex) -> None:
+        """Handle activation originating from either the grid or filmstrip."""
+
         if self._is_transitioning:
             return
         if not index or not index.isValid():
             return
-        filmstrip_model = self._filmstrip_view.model()
-        if filmstrip_model is None:
+
+        activating_model = index.model()
+        asset_index: QModelIndex | None = None
+
+        # The main gallery grid uses ``self._model`` directly so its indexes
+        # can be consumed without translation.
+        if activating_model is self._model:
+            asset_index = index
+        # The filmstrip wraps the asset model with the spacer proxy. Map the
+        # proxy index back to the proxy's source (the asset model) before we
+        # continue so row calculations remain aligned.
+        elif hasattr(activating_model, "mapToSource"):
+            mapped = activating_model.mapToSource(index)
+            if mapped.isValid():
+                asset_index = mapped
+
+        if asset_index is None or not asset_index.isValid():
             return
-        source_index = filmstrip_model.mapToSource(index)
-        if not source_index.isValid():
-            return
-        abs_raw = source_index.data(Roles.ABS)
+
+        abs_raw = asset_index.data(Roles.ABS)
         if not abs_raw:
             return
-        row = source_index.row()
+        row = asset_index.row()
         abs_path = Path(str(abs_raw))
-        is_video = bool(source_index.data(Roles.IS_VIDEO))
-        is_live = bool(source_index.data(Roles.IS_LIVE))
+        is_video = bool(asset_index.data(Roles.IS_VIDEO))
+        is_live = bool(asset_index.data(Roles.IS_LIVE))
         if is_video or is_live:
             self.show_detail_view()
             self._playlist.set_current(row)
