@@ -100,3 +100,33 @@ def test_read_image_meta_extracts_gps_coordinates(monkeypatch: pytest.MonkeyPatc
 
     info = read_image_meta(tmp_path / "dummy.jpg")
     assert info["gps"] == pytest.approx({"lat": 51.5078, "lon": -0.1278}, rel=1e-4)
+
+
+def test_read_image_meta_accepts_string_keyed_gps(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    class DummyImage:
+        width = 8
+        height = 8
+        format = "JPEG"
+
+        def __enter__(self) -> "DummyImage":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        def getexif(self) -> dict[int, object]:
+            return {
+                34853: {
+                    "GPSLatitudeRef": b"N",
+                    "GPSLatitude": ((34, 1), (3, 1), (3600, 100)),
+                    "GPSLongitudeRef": "E",
+                    "GPSLongitude": ((118, 1), (15, 1), (0, 1)),
+                }
+            }
+
+    monkeypatch.setattr(
+        "iPhotos.src.iPhoto.io.metadata.Image.open", lambda path: DummyImage()
+    )
+
+    info = read_image_meta(tmp_path / "dummy-string-keys.jpg")
+    assert info["gps"] == pytest.approx({"lat": 34.06, "lon": 118.25}, rel=1e-4)

@@ -138,7 +138,13 @@ def _extract_gps_coordinates(exif: Any) -> Optional[Tuple[float, float]]:
 
     tagged: Dict[str, Any] = {}
     for key, value in gps_ifd.items():
-        name = GPS_TAGS.get(key)
+        name: Optional[str]
+        if isinstance(key, str):
+            name = key
+        elif isinstance(key, bytes):
+            name = key.decode("ascii", errors="ignore") or None
+        else:
+            name = GPS_TAGS.get(key)
         if not name:
             continue
         tagged[name] = value
