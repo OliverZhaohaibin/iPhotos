@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from enum import IntEnum
 import hashlib
+import os
 from pathlib import Path
 from typing import Dict, Optional, Set, Tuple
 
@@ -193,8 +194,8 @@ class ThumbnailLoader(QObject):
         self._video_pool = QThreadPool(self)
         global_max = self._pool.maxThreadCount()
         if global_max <= 0:
-            global_max = 4
-        video_threads = max(1, min(2, max(global_max // 2, 1)))
+            global_max = os.cpu_count() or 4
+        video_threads = max(1, min(max(global_max // 2, 1), 4))
         self._video_pool.setMaxThreadCount(video_threads)
         self._album_root: Optional[Path] = None
         self._album_root_str: Optional[str] = None
