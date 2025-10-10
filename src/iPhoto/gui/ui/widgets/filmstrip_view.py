@@ -62,11 +62,11 @@ class FilmstripView(AssetGrid):
         if viewport_width <= 0:
             return
 
-        narrow_width = self._narrow_item_width()
-        if narrow_width <= 0:
+        current_width = self._current_item_width()
+        if current_width <= 0:
             return
 
-        target_padding = max(0, (viewport_width - narrow_width) // 2)
+        target_padding = max(0, (viewport_width - current_width) // 2)
         margins = self.contentsMargins()
         if margins.left() == target_padding and margins.right() == target_padding:
             return
@@ -75,6 +75,35 @@ class FilmstripView(AssetGrid):
     def refresh_padding(self) -> None:
         """Public helper so controllers can request a padding recalculation."""
         self._update_margins()
+
+    def _current_item_width(self) -> int:
+        selection_model = self.selectionModel()
+        model = self.model()
+        delegate = self.itemDelegate()
+        if model is None or delegate is None or model.rowCount() == 0:
+            return self._narrow_item_width()
+
+        index = None
+        if selection_model is not None:
+            current = selection_model.currentIndex()
+            if current.isValid():
+                index = current
+        if index is None and model is not None:
+            index = model.index(0, 0)
+
+        if index is None or not index.isValid():
+            return self._narrow_item_width()
+
+        width = self._visual_width(index)
+        if width > 0:
+            return width
+
+        option = QStyleOptionViewItem()
+        option.initFrom(self)
+        size = delegate.sizeHint(option, index)
+        if size.width() > 0:
+            return size.width()
+        return self._narrow_item_width()
 
     def _narrow_item_width(self) -> int:
         delegate = self.itemDelegate()
@@ -92,20 +121,29 @@ class FilmstripView(AssetGrid):
                 continue
             if bool(index.data(Roles.IS_CURRENT)):
                 continue
-            size = delegate.sizeHint(option, index)
-            width = size.width()
+            width = self._visual_width(index)
+            if width <= 0:
+                size = delegate.sizeHint(option, index)
+                width = size.width()
             if width > 0:
                 return width
 
         # Fall back to the first item or the delegate ratio if needed.
         index = model.index(0, 0)
         if index.isValid():
-            size = delegate.sizeHint(option, index)
-            width = size.width()
+            width = self._visual_width(index)
+            if width <= 0:
+                size = delegate.sizeHint(option, index)
+                width = size.width()
             if width > 0:
                 return width
         ratio = self._delegate_ratio(delegate)
         return max(1, int(round(self._base_height * ratio)))
+
+    def _visual_width(self, index) -> int:
+        rect = self.visualRect(index)
+        width = rect.width()
+        return int(width)
 
     def _delegate_ratio(self, delegate) -> float:
         ratio = self._default_ratio
