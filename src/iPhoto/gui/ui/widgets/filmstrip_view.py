@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, QSize, Qt, Signal, QTimer
+from PySide6.QtCore import QModelIndex, QPoint, QSize, Qt, Signal, QTimer
 from PySide6.QtGui import QResizeEvent, QWheelEvent
 from PySide6.QtWidgets import QListView, QSizePolicy, QStyleOptionViewItem
 
@@ -203,3 +203,24 @@ class FilmstripView(AssetGrid):
         else:
             self.prevItemRequested.emit()
         event.accept()
+
+    # ------------------------------------------------------------------
+    # Programmatic scrolling helpers
+    # ------------------------------------------------------------------
+    def center_on_index(self, index: QModelIndex) -> None:
+        """Scroll the view so *index* is visually centred in the viewport."""
+        if not index.isValid():
+            return
+
+        item_rect = self.visualRect(index)
+        if not item_rect.isValid():
+            return
+
+        viewport_width = self.viewport().width()
+        if viewport_width <= 0:
+            return
+
+        target_left = (viewport_width - item_rect.width()) / 2.0
+        scroll_delta = item_rect.left() - target_left
+        scrollbar = self.horizontalScrollBar()
+        scrollbar.setValue(scrollbar.value() + int(scroll_delta))

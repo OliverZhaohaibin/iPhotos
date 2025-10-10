@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QItemSelectionModel, QModelIndex, QRect
-from PySide6.QtWidgets import QAbstractItemView, QStackedWidget, QStatusBar, QWidget
+from PySide6.QtWidgets import QStackedWidget, QStatusBar, QWidget
 
 from ....config import VIDEO_COMPLETE_HOLD_BACKSTEP_MS
 from ..media import MediaController, PlaylistController
@@ -168,7 +168,7 @@ class PlaybackController:
             index,
             QItemSelectionModel.SelectionFlag.NoUpdate,
         )
-        self._filmstrip_view.scrollTo(index, QAbstractItemView.ScrollHint.PositionAtCenter)
+        self._filmstrip_view.center_on_index(index)
         self._player_bar.setEnabled(True)
         self.show_detail_view()
 
