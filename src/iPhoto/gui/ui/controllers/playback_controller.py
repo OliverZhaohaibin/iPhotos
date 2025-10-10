@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from typing import Optional, Tuple
 
 from PySide6.QtCore import QItemSelectionModel, QModelIndex, QRect, QTimer
 from PySide6.QtWidgets import QLabel, QStackedWidget, QStatusBar, QWidget
 
 from ....config import VIDEO_COMPLETE_HOLD_BACKSTEP_MS
+from ....utils.logging import get_logger
 from ..media import MediaController, PlaylistController
 from ..models.asset_model import AssetModel, Roles
 from ...utils import image_loader
@@ -19,6 +21,9 @@ from ..widgets.video_area import VideoArea
 from ..widgets.preview_window import PreviewWindow
 from ..widgets.live_badge import LiveBadge
 from .dialog_controller import DialogController
+
+
+LOGGER = get_logger()
 
 
 class PlaybackController:
@@ -92,6 +97,7 @@ class PlaybackController:
             self._date_label.hide()
             return
 
+        rel = index.data(Roles.REL)
         location_raw = index.data(Roles.LOCATION_INFO)
         location_text = str(location_raw).strip() if isinstance(location_raw, str) else None
         dt_raw = index.data(Roles.DT)
@@ -101,7 +107,21 @@ class PlaybackController:
             formatted_with_location = self._format_timestamp(dt_raw, include_weekday=False)
             formatted_without_location = self._format_timestamp(dt_raw, include_weekday=True)
 
+        coords = self._extract_gps_coordinates(index)
+        if coords is not None:
+            LOGGER.info(
+                "GPS coordinates for %s: %.6f, %.6f",
+                rel if isinstance(rel, str) else "<unknown>",
+                coords[0],
+                coords[1],
+            )
+
         if location_text:
+            LOGGER.info(
+                "Resolved location for %s: %s",
+                rel if isinstance(rel, str) else "<unknown>",
+                location_text,
+            )
             self._location_label.setText(location_text)
             self._location_label.show()
             if formatted_with_location:
@@ -122,6 +142,42 @@ class PlaybackController:
             self._location_label.hide()
             self._date_label.clear()
             self._date_label.hide()
+
+    def _extract_gps_coordinates(self, index: QModelIndex) -> Optional[Tuple[float, float]]:
+        model = index.model()
+        row_data = None
+
+        if hasattr(model, "mapToSource"):
+            try:
+                source_index = model.mapToSource(index)  # type: ignore[attr-defined]
+            except Exception:  # pragma: no cover - defensive fallback
+                source_index = QModelIndex()
+            if source_index.isValid():
+                source_model = source_index.model()
+                if hasattr(source_model, "_rows"):
+                    try:
+                        row_data = source_model._rows[source_index.row()]  # type: ignore[attr-defined]
+                    except (AttributeError, IndexError):
+                        row_data = None
+        elif hasattr(model, "_rows"):
+            try:
+                row_data = model._rows[index.row()]  # type: ignore[attr-defined]
+            except (AttributeError, IndexError):
+                row_data = None
+
+        if not isinstance(row_data, dict):
+            return None
+
+        gps = row_data.get("gps")
+        if not isinstance(gps, dict):
+            return None
+
+        lat = gps.get("lat")
+        lon = gps.get("lon")
+        if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+            return None
+
+        return float(lat), float(lon)
 
     def _format_timestamp(self, raw: str, *, include_weekday: bool) -> str | None:
         value = raw.strip()
