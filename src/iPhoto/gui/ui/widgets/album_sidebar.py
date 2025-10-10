@@ -17,7 +17,6 @@ from PySide6.QtCore import (
     Qt,
     Signal,
     QVariantAnimation,
-    QUrl,
     QPersistentModelIndex,
 )
 from PySide6.QtGui import (
@@ -28,9 +27,7 @@ from PySide6.QtGui import (
     QPainterPath,
     QPalette,
     QPen,
-    QPixmap,
 )
-from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
@@ -69,92 +66,12 @@ ROW_RADIUS = 10
 LEFT_PADDING = 14
 ICON_TEXT_GAP = 10
 
-QML_DIR = Path(__file__).resolve().parent.parent / "qml"
-
-
 @dataclass(slots=True)
 class _IndicatorState:
     """Track the rendering state for a branch indicator."""
 
     angle: float = 0.0
     animation: QVariantAnimation | None = None
-
-
-class BranchIndicatorRenderer(QObject):
-    """Render the QML-based branch indicator into a pixmap."""
-
-    def __init__(self, parent: QObject | None = None) -> None:
-        super().__init__(parent)
-        self._widget = QQuickWidget()
-        self._widget.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
-        self._widget.setClearColor(Qt.GlobalColor.transparent)
-        self._widget.setVisible(False)
-
-        source = QUrl.fromLocalFile(str(QML_DIR / "BranchIndicator.qml"))
-        self._widget.setSource(source)
-        self._root = self._widget.rootObject()
-
-        self._size = self._widget.size()
-        if self._root is not None:
-            width = int(self._root.property("width") or 16)
-            height = int(self._root.property("height") or 16)
-            self._size = QSize(width, height)
-            self._widget.resize(self._size)
-        else:
-            self._size = QSize(16, 16)
-
-        self._cache_angle: float | None = None
-        self._cache_color: QColor | None = None
-        self._cache: QPixmap | None = None
-
-    def size(self) -> QSize:
-        return QSize(self._size)
-
-    def render(self, angle: float, color: QColor) -> QPixmap:
-        """Return a pixmap representing *angle* rendered with *color*."""
-
-        if (
-            self._cache is not None
-            and self._cache_color is not None
-            and self._cache_angle is not None
-            and math.isclose(angle, self._cache_angle, abs_tol=0.1)
-            and color == self._cache_color
-        ):
-            return QPixmap(self._cache)
-
-        if self._root is not None and self._widget.status() == QQuickWidget.Status.Ready:
-            self._root.setProperty("angle", angle)
-            self._root.setProperty("indicatorColor", color)
-            self._widget.update()
-            image = self._widget.grabFramebuffer()
-            pixmap = QPixmap.fromImage(image)
-        else:
-            pixmap = self._render_fallback(angle, color)
-
-        self._cache = pixmap
-        self._cache_angle = float(angle)
-        self._cache_color = QColor(color)
-        return QPixmap(self._cache)
-
-    def _render_fallback(self, angle: float, color: QColor) -> QPixmap:
-        pixmap = QPixmap(self._size)
-        pixmap.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        pen = QPen(color)
-        pen.setWidth(2)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        painter.setPen(pen)
-        painter.translate(self._size.width() / 2, self._size.height() / 2)
-        painter.rotate(angle)
-
-        path = QPainterPath()
-        path.moveTo(-3, -4)
-        path.lineTo(3, 0)
-        path.lineTo(-3, 4)
-        painter.drawPath(path)
-        painter.end()
-        return pixmap
 
 
 class BranchIndicatorController(QObject):
@@ -249,10 +166,6 @@ class BranchIndicatorController(QObject):
 class AlbumSidebarDelegate(QStyledItemDelegate):
     """Custom delegate painting the sidebar with a macOS inspired style."""
 
-    def __init__(self, parent: QObject | None = None) -> None:
-        super().__init__(parent)
-        self._indicator_renderer = BranchIndicatorRenderer(self)
-
     def sizeHint(  # noqa: D401 - inherited docstring
         self, option: QStyleOptionViewItem, _index: QModelIndex
     ) -> QSize:
@@ -341,15 +254,27 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
                 angle = controller.angle_for_index(index)
             else:
                 angle = 90.0 if tree_view.isExpanded(index) else 0.0
-            pixmap = self._indicator_renderer.render(angle, color)
-            if not pixmap.isNull():
-                indicator_rect = QRect(branch_rect)
-                indicator_rect.setSize(self._indicator_renderer.size())
-                indicator_rect.moveCenter(branch_rect.center())
-                painter.drawPixmap(indicator_rect, pixmap)
+
+            painter.save()
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            pen = QPen(color)
+            pen.setWidth(2)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(pen)
+
+            painter.translate(branch_rect.center())
+            painter.rotate(angle)
+
+            path = QPainterPath()
+            path.moveTo(-3, -4)
+            path.lineTo(3, 0)
+            path.lineTo(-3, 4)
+            painter.drawPath(path)
+
+            painter.restore()
 
         x = rect.left() + LEFT_PADDING
-        if branch_rect.isValid():
+        if branch_rect.isValid() and has_children:
             x = max(x, branch_rect.right() + 6)
 
         icon_size = 18
@@ -444,6 +369,11 @@ class AlbumSidebar(QWidget):
             "QTreeView::item:selected { background: transparent; }"
             "QTreeView::item:hover { background: transparent; }"
             "QTreeView::branch { background: transparent; border-image: none; image: none; }"
+            "QTreeView::branch:has-children:!has-siblings:closed,"
+            "QTreeView::branch:has-children:has-siblings:closed,"
+            "QTreeView::branch:closed:has-children:has-siblings { image: none; }"
+            "QTreeView::branch:open:has-children:!has-siblings,"
+            "QTreeView::branch:open:has-children:has-siblings { image: none; }"
         )
 
         layout = QVBoxLayout(self)
