@@ -33,9 +33,43 @@ def atomic_write_text(path: Path, data: str) -> None:
         handle.write(data)
         handle.flush()
         os.fsync(handle.fileno())
-    if sys.platform == "win32" and path.exists():
-        path.unlink()
-    tmp_path.replace(path)
+    try:
+        tmp_path.replace(path)
+    except PermissionError as exc:
+        if sys.platform != "win32":
+            raise
+        _replace_file_windows(tmp_path, path, exc)
+
+
+def _replace_file_windows(tmp_path: Path, path: Path, original_error: PermissionError) -> None:
+    """Replace *path* with *tmp_path* using the Windows API."""
+
+    import ctypes
+    from ctypes import wintypes
+
+    replace_file = ctypes.windll.kernel32.ReplaceFileW
+    replace_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.LPVOID,
+    ]
+    replace_file.restype = wintypes.BOOL
+
+    ctypes.set_last_error(0)
+    succeeded = replace_file(
+        wintypes.LPCWSTR(str(path)),
+        wintypes.LPCWSTR(str(tmp_path)),
+        None,
+        wintypes.DWORD(0x00000002),  # REPLACEFILE_WRITE_THROUGH
+        None,
+        None,
+    )
+    if not succeeded:
+        error_code = ctypes.get_last_error()
+        raise PermissionError(error_code, os.strerror(error_code), str(path)) from original_error
 
 
 def _write_backup(path: Path, backup_dir: Path) -> None:
