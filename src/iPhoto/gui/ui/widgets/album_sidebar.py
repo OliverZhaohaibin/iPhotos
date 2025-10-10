@@ -2,20 +2,41 @@
 
 from __future__ import annotations
 
+import math
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QModelIndex, QPoint, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPalette, QPen
+from PySide6.QtCore import (
+    QEasingCurve,
+    QModelIndex,
+    QObject,
+    QPoint,
+    QRect,
+    QSize,
+    Qt,
+    Signal,
+    QVariantAnimation,
+    QPersistentModelIndex,
+)
+from PySide6.QtGui import (
+    QColor,
+    QCursor,
+    QFont,
+    QFontMetrics,
+    QPainter,
+    QPainterPath,
+    QPalette,
+    QPen,
+)
 from PySide6.QtWidgets import (
+    QFrame,
     QInputDialog,
     QLabel,
     QMenu,
     QMessageBox,
-    QFrame,
     QSizePolicy,
     QStyledItemDelegate,
-    QStyle,
     QStyleOptionViewItem,
     QTreeView,
     QVBoxLayout,
@@ -25,12 +46,7 @@ from PySide6.QtWidgets import (
 from ....errors import LibraryError
 from ....library.manager import LibraryManager
 from ....library.tree import AlbumNode
-from ..models.album_tree_model import (
-    AlbumTreeItem,
-    AlbumTreeModel,
-    AlbumTreeRole,
-    NodeType,
-)
+from ..models.album_tree_model import AlbumTreeModel, AlbumTreeRole, NodeType
 
 # ---------------------------------------------------------------------------
 # Sidebar styling helpers
@@ -49,6 +65,105 @@ ROW_HEIGHT = 36
 ROW_RADIUS = 10
 LEFT_PADDING = 14
 ICON_TEXT_GAP = 10
+INDENT_PER_LEVEL = 22
+INDICATOR_SLOT_WIDTH = 22
+INDICATOR_SIZE = 16
+
+@dataclass(slots=True)
+class _IndicatorState:
+    """Track the rendering state for a branch indicator."""
+
+    angle: float = 0.0
+    animation: QVariantAnimation | None = None
+
+
+class BranchIndicatorController(QObject):
+    """Animate branch indicators in sync with the tree view state."""
+
+    def __init__(self, tree: QTreeView) -> None:
+        super().__init__(tree)
+        self._tree = tree
+        self._states: dict[QPersistentModelIndex, _IndicatorState] = {}
+        self._duration = 180
+
+        self._tree.expanded.connect(self._on_expanded)
+        self._tree.collapsed.connect(self._on_collapsed)
+
+        model = tree.model()
+        if model is not None:
+            model.modelAboutToBeReset.connect(self._clear_states)
+
+    def angle_for_index(self, index: QModelIndex) -> float:
+        """Return the current angle associated with *index*."""
+
+        self._cleanup_invalid_states()
+        if not index.isValid():
+            return 0.0
+        key = QPersistentModelIndex(index)
+        state = self._states.get(key)
+        if state is None:
+            angle = 90.0 if self._tree.isExpanded(index) else 0.0
+            state = _IndicatorState(angle=angle)
+            self._states[key] = state
+        return state.angle
+
+    def _start_animation(self, index: QModelIndex, target_angle: float) -> None:
+        self._cleanup_invalid_states()
+        if not index.isValid():
+            return
+        key = QPersistentModelIndex(index)
+        state = self._states.get(key)
+        if state is None:
+            state = _IndicatorState(angle=target_angle)
+            self._states[key] = state
+
+        if math.isclose(state.angle, target_angle, abs_tol=0.5):
+            state.angle = target_angle
+            return
+
+        if state.animation is not None:
+            state.animation.stop()
+
+        animation = QVariantAnimation(self)
+        animation.setStartValue(state.angle)
+        animation.setEndValue(target_angle)
+        animation.setDuration(self._duration)
+        animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
+
+        index_copy = QModelIndex(index)
+
+        def _on_value_changed(value: float) -> None:
+            state.angle = float(value)
+            self._tree.viewport().update(self._tree.visualRect(index_copy))
+
+        def _on_finished() -> None:
+            state.animation = None
+            state.angle = target_angle
+            self._tree.viewport().update(self._tree.visualRect(index_copy))
+
+        animation.valueChanged.connect(_on_value_changed)
+        animation.finished.connect(_on_finished)
+        state.animation = animation
+        animation.start()
+
+    def _on_expanded(self, index: QModelIndex) -> None:
+        self._start_animation(index, 90.0)
+
+    def _on_collapsed(self, index: QModelIndex) -> None:
+        self._start_animation(index, 0.0)
+
+    def _clear_states(self) -> None:
+        for state in self._states.values():
+            if state.animation is not None:
+                state.animation.stop()
+        self._states.clear()
+
+    def _cleanup_invalid_states(self) -> None:
+        invalid = [key for key in self._states.keys() if not key.isValid()]
+        for key in invalid:
+            state = self._states.pop(key)
+            if state.animation is not None:
+                state.animation.stop()
 
 
 class AlbumSidebarDelegate(QStyledItemDelegate):
@@ -69,7 +184,12 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         rect = option.rect
         node_type = index.data(AlbumTreeRole.NODE_TYPE) or NodeType.ALBUM
 
-        # Draw separator rows as a thin line.
+        tree_view: QTreeView | None = None
+        if isinstance(option.widget, QTreeView):
+            tree_view = option.widget
+        elif isinstance(self.parent(), QTreeView):
+            tree_view = self.parent()
+
         if node_type == NodeType.SEPARATOR:
             pen = QPen(SEPARATOR_COLOR)
             pen.setWidth(1)
@@ -83,24 +203,19 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         is_selected = bool(option.state & QStyle.StateFlag.State_Selected)
         is_hover = bool(option.state & QStyle.StateFlag.State_MouseOver)
 
-        highlight = None
-        if is_selected:
-            highlight = SELECT_BG
-        elif is_hover and is_enabled:
-            highlight = HOVER_BG
+        highlight_color = None
+        if node_type not in {NodeType.SECTION, NodeType.SEPARATOR}:
+            if is_selected:
+                highlight_color = SELECT_BG
+            elif is_hover and is_enabled:
+                highlight_color = HOVER_BG
 
-        if node_type in {NodeType.SECTION, NodeType.SEPARATOR}:
-            highlight = None
-
-        if highlight is not None:
+        if highlight_color is not None:
             background_rect = rect.adjusted(6, 4, -6, -4)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(highlight)
+            painter.setBrush(highlight_color)
             painter.drawRoundedRect(background_rect, ROW_RADIUS, ROW_RADIUS)
-
-        text = index.data(Qt.ItemDataRole.DisplayRole) or ""
-        icon = index.data(Qt.ItemDataRole.DecorationRole)
 
         font = QFont(option.font)
         if node_type == NodeType.HEADER:
@@ -113,32 +228,95 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
             font.setItalic(True)
         painter.setFont(font)
 
-        color = TEXT_COLOR if is_enabled else DISABLED_TEXT
+        text_color = TEXT_COLOR if is_enabled else DISABLED_TEXT
         if node_type == NodeType.SECTION:
-            color = SECTION_TEXT
+            text_color = SECTION_TEXT
         elif node_type == NodeType.ACTION:
-            color = ICON_COLOR
-        painter.setPen(color)
+            text_color = ICON_COLOR
 
-        x = rect.left() + LEFT_PADDING
-        icon_size = 18
+        text = index.data(Qt.ItemDataRole.DisplayRole) or ""
+        icon = index.data(Qt.ItemDataRole.DecorationRole)
+
+        depth = self._depth_for_index(index)
+        indentation = depth * INDENT_PER_LEVEL
+        x = rect.left() + LEFT_PADDING + indentation
+
+        model = index.model()
+        has_children = bool(model is not None and model.hasChildren(index))
+
+        if tree_view is not None and has_children:
+            branch_rect = QRect(
+                x,
+                rect.top() + (rect.height() - INDICATOR_SIZE) // 2,
+                INDICATOR_SIZE,
+                INDICATOR_SIZE,
+            )
+
+            controller = getattr(tree_view, "branch_indicator_controller", None)
+            angle = (
+                controller.angle_for_index(index)
+                if controller is not None
+                else (90.0 if tree_view.isExpanded(index) else 0.0)
+            )
+
+            painter.save()
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            indicator_color = TEXT_COLOR if is_enabled else DISABLED_TEXT
+            pen = QPen(indicator_color)
+            pen.setWidth(2)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(pen)
+
+            painter.translate(branch_rect.center())
+            painter.rotate(angle)
+
+            path = QPainterPath()
+            path.moveTo(-2, -4)
+            path.lineTo(2, 0)
+            path.lineTo(-2, 4)
+            painter.drawPath(path)
+
+            painter.restore()
+
+            x = branch_rect.right() + 6
+        elif depth > 0:
+            x += INDICATOR_SLOT_WIDTH
+
         if icon is not None and not icon.isNull():
-            icon_rect = rect.adjusted(0, 0, 0, 0)
-            icon_rect.setLeft(x)
-            icon_rect.setWidth(icon_size)
+            icon_size = 18
+            icon_rect = QRect(
+                x,
+                rect.top() + (rect.height() - icon_size) // 2,
+                icon_size,
+                icon_size,
+            )
             icon.paint(
                 painter,
                 icon_rect,
-                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter,
+                Qt.AlignmentFlag.AlignCenter,
             )
-            x += icon_size + ICON_TEXT_GAP
+            x = icon_rect.right() + ICON_TEXT_GAP
 
+        painter.setPen(text_color)
         metrics = QFontMetrics(font)
         text_rect = rect.adjusted(x - rect.left(), 0, -8, 0)
         elided = metrics.elidedText(text, Qt.TextElideMode.ElideRight, text_rect.width())
-        painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, elided)
+        painter.drawText(
+            text_rect,
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            elided,
+        )
 
         painter.restore()
+
+    @staticmethod
+    def _depth_for_index(index: QModelIndex) -> int:
+        depth = 0
+        parent = index.parent()
+        while parent.isValid():
+            depth += 1
+            parent = parent.parent()
+        return depth
 
 
 class AlbumSidebar(QWidget):
@@ -183,19 +361,22 @@ class AlbumSidebar(QWidget):
         self._tree.setObjectName("albumSidebarTree")
         self._tree.setModel(self._model)
         self._tree.setHeaderHidden(True)
-        self._tree.setRootIsDecorated(False)
+        self._tree.setRootIsDecorated(True)
         self._tree.setUniformRowHeights(True)
         self._tree.setEditTriggers(QTreeView.EditTrigger.NoEditTriggers)
         self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._tree.customContextMenuRequested.connect(self._show_context_menu)
         self._tree.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self._tree.doubleClicked.connect(self._on_double_clicked)
+        self._tree.clicked.connect(self._on_clicked)
         self._tree.setMinimumWidth(220)
-        self._tree.setIndentation(18)
+        self._tree.setIndentation(0)
         self._tree.setIconSize(QSize(18, 18))
         self._tree.setMouseTracking(True)
         self._tree.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         self._tree.setItemDelegate(AlbumSidebarDelegate(self._tree))
+        self._indicator_controller = BranchIndicatorController(self._tree)
+        self._tree.branch_indicator_controller = self._indicator_controller
         self._tree.setFrameShape(QFrame.Shape.NoFrame)
         self._tree.setAlternatingRowColors(False)
         self._tree.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -203,13 +384,14 @@ class AlbumSidebar(QWidget):
         tree_palette = self._tree.palette()
         tree_palette.setColor(QPalette.ColorRole.Base, BG_COLOR)
         tree_palette.setColor(QPalette.ColorRole.Window, BG_COLOR)
+        tree_palette.setColor(QPalette.ColorRole.Highlight, QColor(Qt.GlobalColor.transparent))
+        tree_palette.setColor(QPalette.ColorRole.HighlightedText, TEXT_COLOR)
         self._tree.setPalette(tree_palette)
         self._tree.setAutoFillBackground(True)
         self._tree.setStyleSheet(
-            "QTreeView { background: transparent; }"
+            "QTreeView { background: transparent; border: none; }"
             "QTreeView::item { border: 0px; padding: 0px; margin: 0px; }"
-            "QTreeView::item:selected { background: transparent; }"
-            "QTreeView::item:hover { background: transparent; }"
+            "QTreeView::branch { image: none; }"
         )
 
         layout = QVBoxLayout(self)
@@ -288,6 +470,41 @@ class AlbumSidebar(QWidget):
             return
         if item.node_type == NodeType.ACTION:
             self.bindLibraryRequested.emit()
+
+    def _on_clicked(self, index: QModelIndex) -> None:
+        """Toggle expansion when the branch indicator hot zone is clicked."""
+
+        if not index.isValid() or not self._model.hasChildren(index):
+            return
+
+        delegate = self._tree.itemDelegate()
+        if not isinstance(delegate, AlbumSidebarDelegate):
+            return
+
+        item_rect = self._tree.visualRect(index)
+        if not item_rect.isValid():
+            return
+
+        depth = delegate._depth_for_index(index)
+        indentation = depth * INDENT_PER_LEVEL
+        indicator_left = item_rect.left() + LEFT_PADDING + indentation
+        indicator_rect = QRect(
+            indicator_left,
+            item_rect.top() + (item_rect.height() - INDICATOR_SIZE) // 2,
+            INDICATOR_SIZE,
+            INDICATOR_SIZE,
+        )
+
+        hot_zone = indicator_rect.adjusted(-4, -4, 4, 4)
+        cursor_pos = QCursor.pos()
+        viewport_pos = self._tree.viewport().mapFromGlobal(cursor_pos)
+        if not hot_zone.contains(viewport_pos):
+            return
+
+        if self._tree.isExpanded(index):
+            self._tree.collapse(index)
+        else:
+            self._tree.expand(index)
 
     def select_path(self, path: Path) -> None:
         """Select the tree item corresponding to *path* if it exists."""
