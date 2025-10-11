@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QStackedWidget,
     QStatusBar,
+    QToolButton,
     QWidget,
 )
 
@@ -204,6 +206,41 @@ def test_asset_model_populates_rows(tmp_path: Path, qapp: QApplication) -> None:
     assert any(thumbs_dir.iterdir())
 
 
+def test_facade_toggle_featured_updates_model(tmp_path: Path, qapp: QApplication) -> None:
+    asset = tmp_path / "IMG_2101.JPG"
+    _create_image(asset)
+    facade = AppFacade()
+    model = AssetModel(facade)
+    facade.open_album(tmp_path)
+    qapp.processEvents()
+
+    assert model.rowCount() == 1
+    index = model.index(0, 0)
+    assert not bool(model.data(index, Roles.FEATURED))
+
+    add_spy = QSignalSpy(model.dataChanged)
+    added = facade.toggle_featured("IMG_2101.JPG")
+    qapp.processEvents()
+    assert added is True
+    assert bool(model.data(index, Roles.FEATURED))
+    assert add_spy.count() >= 1
+
+    manifest_path = tmp_path / ".iphoto.album.json"
+    assert manifest_path.exists()
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest.get("featured") == ["IMG_2101.JPG"]
+
+    remove_spy = QSignalSpy(model.dataChanged)
+    removed = facade.toggle_featured("IMG_2101.JPG")
+    qapp.processEvents()
+    assert removed is False
+    assert not bool(model.data(index, Roles.FEATURED))
+    assert remove_spy.count() >= 1
+
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest.get("featured") == []
+
+
 def test_asset_model_filters_videos(tmp_path: Path, qapp: QApplication) -> None:
     image = tmp_path / "IMG_3001.JPG"
     video = tmp_path / "CLIP_0001.MP4"
@@ -327,6 +364,7 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
     dialog = _StubDialog()
     location_label = QLabel()
     timestamp_label = QLabel()
+    favorite_button = QToolButton()
 
     # Construct the layered controllers that ``PlaybackController`` depends on.
     # The widgets built above mirror the real application wiring, so the
@@ -360,6 +398,8 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
         player_view_controller,
         view_controller,
         header_controller,
+        facade,
+        favorite_button,
         status_bar,
         dialog,  # type: ignore[arg-type]
     )

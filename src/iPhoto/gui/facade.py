@@ -163,34 +163,45 @@ class AppFacade(QObject):
         """Toggle *ref* in the album's featured list."""
 
         album = self._require_album()
-        if album is None:
+        if album is None or not ref:
             return False
+
         featured = album.manifest.setdefault("featured", [])
-        if ref in featured:
+        was_featured = ref in featured
+        if was_featured:
             album.remove_featured(ref)
-            changed = False
         else:
             album.add_featured(ref)
-            changed = True
-        if self._save_manifest(album):
-            return changed
-        return False
+        is_featured = not was_featured
+
+        if self._save_manifest(album, reload_view=False):
+            self._asset_list_model.update_featured_status(ref, is_featured)
+            return is_featured
+
+        # Persisting failed; restore the manifest to its previous state so the
+        # in-memory representation stays aligned with the data on disk.
+        if was_featured:
+            album.add_featured(ref)
+        else:
+            album.remove_featured(ref)
+        return was_featured
 
     # ------------------------------------------------------------------
     # Internal utilities
     # ------------------------------------------------------------------
-    def _save_manifest(self, album: Album) -> bool:
+    def _save_manifest(self, album: Album, *, reload_view: bool = True) -> bool:
         try:
             album.save()
         except IPhotoError as exc:
             self.errorRaised.emit(str(exc))
             return False
-        # Reload to ensure any concurrent edits are picked up.
-        self._current_album = Album.open(album.root)
-        refreshed_root = self._current_album.root
-        self._asset_list_model.prepare_for_album(refreshed_root)
-        self.albumOpened.emit(refreshed_root)
-        self._restart_asset_load(refreshed_root)
+        if reload_view:
+            # Reload to ensure any concurrent edits are picked up.
+            self._current_album = Album.open(album.root)
+            refreshed_root = self._current_album.root
+            self._asset_list_model.prepare_for_album(refreshed_root)
+            self.albumOpened.emit(refreshed_root)
+            self._restart_asset_load(refreshed_root)
         return True
 
     def _require_album(self) -> Optional[Album]:

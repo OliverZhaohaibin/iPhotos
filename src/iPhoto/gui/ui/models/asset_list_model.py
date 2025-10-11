@@ -187,6 +187,24 @@ class AssetListModel(QAbstractListModel):
         self._thumb_cache.clear()
         self.endResetModel()
 
+    def update_featured_status(self, rel: str, is_featured: bool) -> None:
+        """Update the cached ``featured`` flag for the asset identified by *rel*."""
+
+        rel_key = str(rel)
+        row_index = self._row_lookup.get(rel_key)
+        if row_index is None or not (0 <= row_index < len(self._rows)):
+            return
+
+        row = self._rows[row_index]
+        current = bool(row.get("featured", False))
+        normalized = bool(is_featured)
+        if current == normalized:
+            return
+
+        row["featured"] = normalized
+        model_index = self.index(row_index, 0)
+        self.dataChanged.emit(model_index, model_index, [Roles.FEATURED])
+
     # ------------------------------------------------------------------
     # Data loading helpers
     # ------------------------------------------------------------------
