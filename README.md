@@ -5,8 +5,12 @@ Bring Mac-style Photos to Windows.
 ## Features
 
 - Folder-native album management with JSON manifest files.
-- Incremental directory scanning that caches metadata in `.iPhoto/index.jsonl`.
-- Automatic Live Photo pairing stored in `.iPhoto/links.json`.
+- Incremental directory scanning that caches metadata in `.iPhoto/index.jsonl`
+  and preserves UI progress feedback while batch-processing metadata.
+- Automatic Live Photo pairing stored in `.iPhoto/links.json`, including robust
+  recovery of Apple `ContentIdentifier` tags for HEIC/MOV companions.
+- macOS-inspired detail headers that surface capture locations (reverse-geocoded
+  from EXIF/QuickTime GPS metadata) and human-friendly timestamps.
 - CLI for initialising albums, rescanning, pairing, managing covers, featured assets, and generating reports.
 
 ## Getting Started
@@ -41,11 +45,20 @@ Video thumbnail generation and duration metadata rely on the `ffmpeg` toolchain.
 Install `ffmpeg`/`ffprobe` and ensure they are on your `PATH` so Windows users
 receive motion previews instead of placeholders.
 
+Rich metadata extraction now depends on two additional components:
+
+- **ExifTool** – install the native executable and ensure it is discoverable on
+  `PATH`. The application shells out to ExifTool in large batches, which keeps
+  scanning fast while providing accurate GPS coordinates, capture timestamps,
+  and Live Photo pairing identifiers.
+- **reverse-geocoder** – a lightweight Python dependency that converts decimal
+  GPS coordinates into human-friendly place names for the detail header.
+
 Image metadata and HEIC decoding fall back to Pillow when available. On some
-Windows Python builds the optional `_ctypes` extension is missing, which prevents
-Pillow from importing. In that case the application skips Pillow-backed features
-and continues with basic placeholders; install a Python distribution that
-includes `_ctypes` to re-enable rich previews.
+Windows Python builds the optional `_ctypes` extension is missing, which
+prevents Pillow from importing. In that case the application skips
+Pillow-backed features and continues with basic placeholders; install a Python
+distribution that includes `_ctypes` to re-enable rich previews.
 
 ### Troubleshooting PyCharm debugging
 
