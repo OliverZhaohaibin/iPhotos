@@ -189,67 +189,76 @@ def _extract_content_id_from_exiftool(meta: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _initialise_image_info(path: Path) -> tuple[Dict[str, Any], Optional[Any]]:
-    """Open ``path`` with Pillow to collect basic geometry and EXIF payload."""
-
-    print(f"Opening image for metadata: {path}")
-    info = _empty_image_info()
-    exif_payload: Optional[Any] = None
-
-    if Image is None or UnidentifiedImageError is None:
-        return info, None
-
-    try:
-        with Image.open(path) as img:
-            info["w"] = img.width
-            info["h"] = img.height
-            info["mime"] = Image.MIME.get(img.format, None)
-            exif_payload = img.getexif() if hasattr(img, "getexif") else None
-    except UnidentifiedImageError as exc:
-        raise ExternalToolError(f"Unable to read image metadata for {path}") from exc
-    except OSError as exc:
-        raise ExternalToolError(f"OS error while reading {path}: {exc}") from exc
-
-    return info, exif_payload
-
-
-def _apply_exiftool_metadata(info: Dict[str, Any], metadata: Optional[Dict[str, Any]]) -> bool:
-    """Populate ``info`` with values extracted from ``metadata``."""
-
-    gps_found = False
-    if not isinstance(metadata, dict):
-        return gps_found
-
-    gps_payload = _extract_gps_from_exiftool(metadata)
-    if gps_payload is not None:
-        info["gps"] = gps_payload
-        gps_found = True
-
-    dt_value = _extract_datetime_from_exiftool(metadata)
-    if dt_value:
-        info["dt"] = dt_value
-
-    content_id = _extract_content_id_from_exiftool(metadata)
-    if content_id:
-        info["content_id"] = content_id
-
-    return gps_found
-
-
 def read_image_meta_with_exiftool(
     path: Path, metadata: Optional[Dict[str, Any]]
 ) -> Dict[str, Any]:
     """Read metadata for ``path`` using a pre-fetched ExifTool payload."""
 
-    info, exif_payload = _initialise_image_info(path)
-    gps_found = _apply_exiftool_metadata(info, metadata)
+    info = _empty_image_info()
+    exif_payload: Optional[Any] = None
+
+    if isinstance(metadata, dict):
+        file_group = _extract_group(metadata, "File")
+        if file_group:
+            # Prefer geometry reported by ExifTool because it is already
+            # available from the batch query and saves us from opening the file
+            # with Pillow on every scan.
+            width = file_group.get("ImageWidth")
+            height = file_group.get("ImageHeight")
+            mime = file_group.get("MIMEType")
+
+            if isinstance(width, (int, float, str)):
+                try:
+                    info["w"] = int(float(width))
+                except (TypeError, ValueError):
+                    info["w"] = None
+            if isinstance(height, (int, float, str)):
+                try:
+                    info["h"] = int(float(height))
+                except (TypeError, ValueError):
+                    info["h"] = None
+            if isinstance(mime, str):
+                info["mime"] = mime or None
+
+        gps_payload = _extract_gps_from_exiftool(metadata)
+        if gps_payload is not None:
+            info["gps"] = gps_payload
+
+        dt_value = _extract_datetime_from_exiftool(metadata)
+        if dt_value:
+            info["dt"] = dt_value
+
+        content_id = _extract_content_id_from_exiftool(metadata)
+        if content_id:
+            info["content_id"] = content_id
+
+    geometry_missing = info["w"] is None or info["h"] is None
+    need_dt_fallback = info["dt"] is None
+
+    if (geometry_missing or need_dt_fallback) and Image is not None and UnidentifiedImageError is not None:
+        print(f"Opening image for metadata: {path}")
+        try:
+            with Image.open(path) as img:
+                if geometry_missing:
+                    # Only fall back to Pillow when ExifTool could not supply
+                    # the dimensions, keeping the happy-path fast.
+                    info["w"] = img.width
+                    info["h"] = img.height
+                    if info["mime"] is None:
+                        info["mime"] = Image.MIME.get(img.format, None)
+                if need_dt_fallback:
+                    exif_payload = img.getexif() if hasattr(img, "getexif") else None
+        except UnidentifiedImageError as exc:
+            raise ExternalToolError(f"Unable to read image metadata for {path}") from exc
+        except OSError as exc:
+            raise ExternalToolError(f"OS error while reading {path}: {exc}") from exc
 
     if info["dt"] is None and exif_payload:
         fallback_dt = exif_payload.get(36867) or exif_payload.get(306)
         if isinstance(fallback_dt, str):
             info["dt"] = _normalise_exif_datetime(fallback_dt, exif_payload)
 
-    if gps_found and info["gps"]:
+    if info["gps"]:
         gps = info["gps"]
         print(
             "Extracted GPS coordinates via ExifTool: "
