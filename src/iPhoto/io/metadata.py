@@ -158,6 +158,7 @@ def read_image_meta(path: Path) -> Dict[str, Any]:
         return _empty_image_info()
 
     try:
+        print(f"Opening image for metadata inspection: {path}")
         with Image.open(path) as img:
             exif = img.getexif() if hasattr(img, "getexif") else None
             info: Dict[str, Any] = {
@@ -176,7 +177,12 @@ def read_image_meta(path: Path) -> Dict[str, Any]:
                     info["dt"] = _normalise_exif_datetime(dt_value, exif)
                 gps_info = _extract_gps_coordinates(exif)
                 if gps_info is not None:
+                    # Emit a debug line so users can observe captured GPS coordinates.
+                    print(f"Extracted GPS coordinates: {gps_info}")
                     info["gps"] = gps_info
+                else:
+                    # Provide feedback when no coordinates are present in the EXIF payload.
+                    print("No GPS coordinates found in image metadata.")
             return info
     except UnidentifiedImageError as exc:
         raise ExternalToolError(f"Unable to read image metadata for {path}") from exc

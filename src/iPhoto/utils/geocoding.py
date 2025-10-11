@@ -63,8 +63,10 @@ def resolve_location_name(gps: Optional[Dict[str, float]]) -> Optional[str]:
     components = [component for component in (city, admin) if component]
     if not components:
         return None
+    location_name = " — ".join(components)
     # Use an en dash to match macOS Photos' layout conventions.
-    return " — ".join(components)
+    print(f"Resolved location name: {location_name}")
+    return location_name
 
 
 __all__ = ["resolve_location_name"]
