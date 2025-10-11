@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import Enum, auto
 from pathlib import Path
 
 from PySide6.QtCore import QItemSelectionModel, QModelIndex, QRect, QTimer
@@ -17,6 +18,18 @@ from .dialog_controller import DialogController
 from .header_controller import HeaderController
 from .player_view_controller import PlayerViewController
 from .view_controller import ViewController
+
+
+class PlayerState(Enum):
+    """Describe the high-level presentation state for the playback surface."""
+
+    IDLE = auto()
+    TRANSITIONING = auto()
+    SHOWING_IMAGE = auto()
+    SHOWING_LIVE_STILL = auto()
+    PLAYING_LIVE_MOTION = auto()
+    PLAYING_VIDEO = auto()
+    SHOWING_VIDEO_SURFACE = auto()
 
 
 class PlaybackController:
@@ -52,10 +65,9 @@ class PlaybackController:
         self._resume_playback_after_scrub = False
         self._pending_live_photo_still: Path | None = None
         self._original_mute_state = False
-        self._live_mode_active = False
         self._active_live_motion: Path | None = None
         self._active_live_still: Path | None = None
-        self._is_transitioning = False
+        self._state = PlayerState.IDLE
 
         self._header.clear()
         self._player_view.hide_live_badge()
@@ -68,12 +80,39 @@ class PlaybackController:
         self._view_controller.galleryViewShown.connect(self._handle_gallery_view_shown)
 
     # ------------------------------------------------------------------
+    # State helpers
+    # ------------------------------------------------------------------
+    def _set_state(self, new_state: PlayerState) -> None:
+        """Update the controller state while guarding redundant transitions.
+
+        Centralising the assignment makes future validation (for example,
+        asserting that ``TRANSITIONING`` always leads to a concrete playback
+        state) trivial and keeps the intent of each transition obvious to
+        readers.
+        """
+
+        if self._state == new_state:
+            return
+        self._state = new_state
+
+    def _is_transitioning(self) -> bool:
+        """Return ``True`` while a content transition is in progress."""
+
+        return self._state == PlayerState.TRANSITIONING
+
+    def _is_live_context(self, *, state: PlayerState | None = None) -> bool:
+        """Return ``True`` when the supplied or current state is Live Photo specific."""
+
+        target = self._state if state is None else state
+        return target in {PlayerState.PLAYING_LIVE_MOTION, PlayerState.SHOWING_LIVE_STILL}
+
+    # ------------------------------------------------------------------
     # Selection handling
     # ------------------------------------------------------------------
     def activate_index(self, index: QModelIndex) -> None:
         """Handle item activation from either the main grid or the filmstrip."""
 
-        if self._is_transitioning:
+        if self._is_transitioning():
             return
         if not index or not index.isValid():
             return
@@ -169,12 +208,10 @@ class PlaybackController:
         self._filmstrip_view.updateGeometries()
         self._filmstrip_view.doItemsLayout()
         if row < 0:
-            self._player_bar.reset()
+            self._reset_playback_state(previous_state=self._state, set_idle_state=True)
             self._player_bar.setEnabled(False)
-            self._media.stop()
             self._player_view.show_placeholder()
             selection_model.clearSelection()
-            self._release_transition_lock()
             return
         selection_model.clearSelection()
         if proxy_index is None:
@@ -194,8 +231,9 @@ class PlaybackController:
         self._view_controller.show_detail_view()
 
     def handle_playlist_source_changed(self, source: Path) -> None:
-        self._is_transitioning = True
-        self._reset_playback_state()
+        previous_state = self._state
+        self._set_state(PlayerState.TRANSITIONING)
+        self._reset_playback_state(previous_state=previous_state, set_idle_state=False)
         is_video = False
         is_live_photo = False
         current_row = self._playlist.current_row()
@@ -215,28 +253,31 @@ class PlaybackController:
 
         if not is_video and not is_live_photo:
             self._show_image_asset(source, current_row)
-            self._release_transition_lock()
             return
 
         self._media.load(source)
         if is_live_photo:
-            if not self._live_mode_active:
+            if not self._is_live_context(state=previous_state):
                 self._original_mute_state = self._media.is_muted()
-            self._live_mode_active = True
             self._active_live_motion = source
             self._media.set_muted(True)
             self._player_view.show_live_badge()
             self._player_view.show_video_surface(interactive=False)
             self._player_bar.setEnabled(False)
+            self._player_view.set_live_replay_enabled(False)
         else:
-            if self._live_mode_active:
+            if self._is_live_context(state=previous_state):
                 self._media.set_muted(self._original_mute_state)
-            self._live_mode_active = False
             self._player_view.hide_live_badge()
             self._player_view.show_video_surface(interactive=True)
             self._player_bar.setEnabled(True)
+            self._player_view.set_live_replay_enabled(False)
         self._view_controller.show_detail_view()
         self._media.play()
+        if is_live_photo:
+            self._set_state(PlayerState.PLAYING_LIVE_MOTION)
+        else:
+            self._set_state(PlayerState.PLAYING_VIDEO)
         if is_live_photo and self._active_live_still is not None:
             self._status.showMessage(
                 f"Playing Live Photo {self._active_live_still.name}"
@@ -250,21 +291,24 @@ class PlaybackController:
     def handle_media_status_changed(self, status: object) -> None:
         name = getattr(status, "name", None)
         if name == "EndOfMedia":
-            self._release_transition_lock()
             if self._pending_live_photo_still is not None:
                 self._show_still_frame_for_live_photo()
             else:
                 self._freeze_video_final_frame()
             return
         if name in {"LoadedMedia", "BufferedMedia"}:
-            self._release_transition_lock()
+            if self._is_transitioning():
+                if self._active_live_motion is not None:
+                    self._set_state(PlayerState.PLAYING_LIVE_MOTION)
+                else:
+                    self._set_state(PlayerState.PLAYING_VIDEO)
             self._player_view.note_video_activity()
             return
         if name in {"BufferingMedia", "StalledMedia"}:
             self._player_view.note_video_activity()
             return
         if name in {"InvalidMedia", "NoMedia"}:
-            self._release_transition_lock()
+            self._reset_playback_state(previous_state=self._state, set_idle_state=True)
 
     def handle_media_position_changed(self, position_ms: int) -> None:
         self._player_bar.set_position(position_ms)
@@ -325,35 +369,51 @@ class PlaybackController:
     # Internal helpers
     # ------------------------------------------------------------------
     def _request_next_item(self) -> None:
-        if self._is_transitioning:
+        if self._is_transitioning():
             return
         self._playlist.next()
 
     def _request_previous_item(self) -> None:
-        if self._is_transitioning:
+        if self._is_transitioning():
             return
         self._playlist.previous()
 
-    def _reset_playback_state(self) -> None:
+    def _reset_playback_state(
+        self,
+        previous_state: PlayerState | None = None,
+        *,
+        set_idle_state: bool = True,
+    ) -> None:
+        """Stop playback artefacts so the next asset starts from a clean slate.
+
+        Args:
+            previous_state: The state that was active before the reset.  Passing the
+                prior state allows the controller to restore properties such as the
+                original mute flag when leaving a Live Photo context.
+            set_idle_state: When ``True`` the controller ends the reset in the
+                :class:`PlayerState.IDLE` state.  Callers performing a hand-off to a
+                different state can set this to ``False`` and update the state once
+                the new presentation has been prepared.
+        """
+
+        source_state = self._state if previous_state is None else previous_state
         self._media.stop()
-        if self._live_mode_active:
+        if self._is_live_context(state=source_state):
             self._media.set_muted(self._original_mute_state)
         self._pending_live_photo_still = None
         self._active_live_motion = None
         self._active_live_still = None
-        self._live_mode_active = False
         self._player_view.hide_live_badge()
         self._player_view.set_live_replay_enabled(False)
         self._player_bar.reset()
         self._resume_playback_after_scrub = False
-
-    def _release_transition_lock(self) -> None:
-        self._is_transitioning = False
+        if set_idle_state:
+            self._set_state(PlayerState.IDLE)
 
     def _handle_gallery_view_shown(self) -> None:
         """Perform cleanup when the UI switches back to the gallery."""
 
-        self._reset_playback_state()
+        self._reset_playback_state(previous_state=self._state, set_idle_state=True)
         self._playlist.clear()
         self._player_bar.setEnabled(False)
         self._player_view.show_placeholder()
@@ -362,7 +422,6 @@ class PlaybackController:
         self._filmstrip_view.clearSelection()
         self._grid_view.clearSelection()
         self._status.showMessage("Browse your library")
-        self._release_transition_lock()
 
     def _show_still_frame_for_live_photo(self) -> None:
         """Swap the detail view back to the Live Photo still image."""
@@ -372,7 +431,6 @@ class PlaybackController:
             return
 
         self._pending_live_photo_still = None
-        self._live_mode_active = True
         self._active_live_still = still_path
 
         current_row = self._playlist.current_row()
@@ -396,6 +454,7 @@ class PlaybackController:
 
         self._header.update_for_row(current_row if current_row is not None else None, self._model)
         self._status.showMessage(f"Viewing {still_path.name}")
+        self._set_state(PlayerState.SHOWING_LIVE_STILL)
 
     def _show_image_asset(self, source: Path, row: int | None = None) -> None:
         """Display a still image asset and update related UI state."""
@@ -406,9 +465,6 @@ class PlaybackController:
             self._player_view.show_placeholder()
             return
         self._pending_live_photo_still = None
-        if self._live_mode_active:
-            self._media.set_muted(self._original_mute_state)
-        self._live_mode_active = False
         self._active_live_motion = None
         self._active_live_still = None
         self._player_view.hide_live_badge()
@@ -420,6 +476,7 @@ class PlaybackController:
         self._player_bar.setEnabled(False)
         self._header.update_for_row(row, self._model)
         self._status.showMessage(f"Viewing {source.name}")
+        self._set_state(PlayerState.SHOWING_IMAGE)
 
     def _freeze_video_final_frame(self) -> None:
         if not self._player_view.is_showing_video():
@@ -434,12 +491,13 @@ class PlaybackController:
         self._player_bar.set_position(duration)
         self._resume_playback_after_scrub = False
         self._player_view.note_video_activity()
+        self._set_state(PlayerState.SHOWING_VIDEO_SURFACE)
 
     # ------------------------------------------------------------------
     # Live Photo controls
     # ------------------------------------------------------------------
     def replay_live_photo(self) -> None:
-        if not self._live_mode_active:
+        if self._state not in {PlayerState.SHOWING_LIVE_STILL, PlayerState.PLAYING_LIVE_MOTION}:
             return
         if not self._player_view.is_live_badge_visible():
             return
@@ -462,7 +520,7 @@ class PlaybackController:
             self._active_live_still = still_path
         self._active_live_motion = Path(motion_source)
         self._preview_window.close_preview(False)
-        self._live_mode_active = True
+        self._set_state(PlayerState.TRANSITIONING)
         self._media.stop()
         self._media.load(self._active_live_motion)
         self._player_bar.reset()
@@ -475,11 +533,12 @@ class PlaybackController:
         self._view_controller.show_detail_view()
         self._media.play()
         self._player_bar.setEnabled(False)
+        self._set_state(PlayerState.PLAYING_LIVE_MOTION)
         if still_path is not None:
             self._status.showMessage(f"Playing Live Photo {still_path.name}")
         else:
             self._status.showMessage(f"Playing {self._active_live_motion.name}")
 
     def _on_media_muted_changed(self, muted: bool) -> None:
-        if not self._live_mode_active:
+        if not self._is_live_context():
             self._original_mute_state = bool(muted)
