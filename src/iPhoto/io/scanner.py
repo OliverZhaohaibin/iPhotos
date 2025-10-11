@@ -12,16 +12,22 @@ from ..errors import ExternalToolError
 from ..utils.exiftool import get_metadata_batch
 from ..utils.hashutils import file_xxh3
 from ..utils.pathutils import ensure_work_dir, is_excluded, should_include
-from .metadata import read_image_meta, read_image_meta_with_exiftool, read_video_meta
+from .metadata import read_image_meta_with_exiftool, read_video_meta
 
 _IMAGE_EXTENSIONS = {".heic", ".jpg", ".jpeg", ".png"}
 _VIDEO_EXTENSIONS = {".mov", ".mp4", ".m4v", ".qt"}
 
 
-def _gather_media_paths(
+def gather_media_paths(
     root: Path, include_globs: Iterable[str], exclude_globs: Iterable[str]
 ) -> Tuple[List[Path], List[Path]]:
-    """Return image and video paths that satisfy the inclusion rules."""
+    """Collect candidate media files before metadata processing.
+
+    Separating discovery from processing enables the caller (typically the
+    UI worker) to know how many files need work, which in turn allows an
+    accurate progress bar.  The function returns two lists so images and
+    videos can be handled using their respective metadata pipelines.
+    """
 
     image_paths: List[Path] = []
     video_paths: List[Path] = []
@@ -45,21 +51,22 @@ def _gather_media_paths(
     return image_paths, video_paths
 
 
-def scan_album(
-    root: Path,
-    include_globs: Iterable[str],
-    exclude_globs: Iterable[str],
+def process_media_paths(
+    root: Path, image_paths: List[Path], video_paths: List[Path]
 ) -> Iterator[Dict[str, Any]]:
-    """Yield index rows for all matching assets in *root*."""
+    """Yield populated index rows for the provided media paths.
 
-    ensure_work_dir(root, WORK_DIR_NAME)
-    image_paths, video_paths = _gather_media_paths(root, include_globs, exclude_globs)
+    Images are processed in a batch so we can reuse a single ExifTool
+    invocation.  This is significantly faster than launching a new process
+    per image and also guarantees consistent locale handling because the
+    metadata payloads share a single execution context.
+    """
 
     try:
         image_metadata_payloads = get_metadata_batch(image_paths)
     except ExternalToolError as exc:
-        # Surface the problem but continue scanning so at least a minimal
-        # index can be produced for the affected files.
+        # Expose the failure so operators understand why GPS/location data may
+        # be missing, but continue producing rows so the scan still completes.
         print(f"Failed to get metadata for images: {exc}")
         image_metadata_payloads = []
 
@@ -68,16 +75,14 @@ def scan_album(
         if not isinstance(payload, dict):
             continue
 
-        # ExifTool returns results in the same order as the requested files, so
-        # we map both the original ``Path`` instance and the resolved path from
-        # the payload.  This dual registration keeps lookups reliable on
-        # platforms where ExifTool normalises case or symlinks differently from
-        # Python's ``Path.resolve``.
         if idx < len(image_paths):
             metadata_lookup[image_paths[idx]] = payload
 
         source = payload.get("SourceFile")
         if isinstance(source, str):
+            # Resolving the path reported by ExifTool protects us against
+            # casing differences and symlink resolution quirks across
+            # platforms.  Registering both keys keeps lookups stable.
             metadata_lookup[Path(source).resolve()] = payload
 
     for image_path in image_paths:
@@ -88,6 +93,24 @@ def scan_album(
 
     for video_path in video_paths:
         yield _build_row(root, video_path)
+
+
+def scan_album(
+    root: Path,
+    include_globs: Iterable[str],
+    exclude_globs: Iterable[str],
+) -> Iterator[Dict[str, Any]]:
+    """Yield index rows for all matching assets in *root*.
+
+    The default CLI entry points rely on this helper.  It remains as a thin
+    wrapper so existing call sites keep working, while new code (the GUI
+    scanner worker) can directly call :func:`gather_media_paths` and
+    :func:`process_media_paths` for more granular progress control.
+    """
+
+    ensure_work_dir(root, WORK_DIR_NAME)
+    image_paths, video_paths = gather_media_paths(root, include_globs, exclude_globs)
+    yield from process_media_paths(root, image_paths, video_paths)
 
 
 def _build_base_row(root: Path, file_path: Path, stat: Any) -> Dict[str, Any]:
@@ -115,38 +138,31 @@ def _build_row(
     Parameters
     ----------
     root:
-        Root directory of the album being scanned. Used to compute the
-        relative path stored in the index entry.
+        Album directory currently being scanned.  Needed to compute
+        ``rel`` (the path stored in the index file).
     file_path:
-        Absolute path to the asset that should be indexed.
+        Fully-qualified path to the media item that should be indexed.
     metadata_override:
-        Optional ExifTool payload that has already been resolved for
-        ``file_path``. When provided (e.g. during batch scans) we skip the
-        additional lookup to avoid spawning a separate ExifTool process.
+        Optional ExifTool payload that has already been fetched for this
+        file.  When ``None`` the helper falls back to running a dedicated
+        batch so callers outside the batch pipeline still succeed.
     """
 
     stat = file_path.stat()
     base_row = _build_base_row(root, file_path, stat)
 
     suffix = file_path.suffix.lower()
-    metadata: Dict[str, Any] = {}
+    metadata: Dict[str, Any]
 
     if suffix in _IMAGE_EXTENSIONS:
-        payload = metadata_override
-        if payload is None:
-            try:
-                payloads = get_metadata_batch([file_path])
-                payload = payloads[0] if payloads else None
-            except ExternalToolError as exc:
-                print(f"Failed to fetch ExifTool metadata for {file_path}: {exc}")
-                payload = None
-        metadata = read_image_meta_with_exiftool(file_path, payload)
+        metadata = read_image_meta_with_exiftool(file_path, metadata_override)
     elif suffix in _VIDEO_EXTENSIONS:
         metadata = read_video_meta(file_path)
     else:
-        # For unknown formats fall back to the simple Pillow-based reader so
-        # the caller still receives geometry and timestamp information.
-        metadata = read_image_meta(file_path)
+        # Unsupported file types still contribute their basic filesystem
+        # information.  We intentionally avoid raising so scans remain robust
+        # even when albums contain stray helper documents.
+        metadata = {}
 
     for key, value in metadata.items():
         if value is None and key in base_row:
