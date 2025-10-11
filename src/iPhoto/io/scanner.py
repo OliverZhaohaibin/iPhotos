@@ -64,13 +64,26 @@ def scan_album(
         image_metadata_payloads = []
 
     metadata_lookup: Dict[Path, Dict[str, Any]] = {}
-    for payload in image_metadata_payloads:
+    for idx, payload in enumerate(image_metadata_payloads):
+        if not isinstance(payload, dict):
+            continue
+
+        # ExifTool returns results in the same order as the requested files, so
+        # we map both the original ``Path`` instance and the resolved path from
+        # the payload.  This dual registration keeps lookups reliable on
+        # platforms where ExifTool normalises case or symlinks differently from
+        # Python's ``Path.resolve``.
+        if idx < len(image_paths):
+            metadata_lookup[image_paths[idx]] = payload
+
         source = payload.get("SourceFile")
         if isinstance(source, str):
             metadata_lookup[Path(source).resolve()] = payload
 
     for image_path in image_paths:
-        metadata = metadata_lookup.get(image_path.resolve())
+        metadata = metadata_lookup.get(image_path)
+        if metadata is None:
+            metadata = metadata_lookup.get(image_path.resolve())
         yield _build_row(root, image_path, metadata)
 
     for video_path in video_paths:
