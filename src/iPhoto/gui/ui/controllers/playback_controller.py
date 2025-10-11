@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+from calendar import month_name
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
-from PySide6.QtCore import QItemSelectionModel, QModelIndex, QRect, QTimer
-from PySide6.QtWidgets import QStackedWidget, QStatusBar, QWidget
+from dateutil.parser import isoparse
+from PySide6.QtCore import QItemSelectionModel, QModelIndex, QRect, QTimer, Qt
+from PySide6.QtGui import QFont
+from PySide6.QtWidgets import QLabel, QStackedWidget, QStatusBar, QWidget
 
 from ....config import VIDEO_COMPLETE_HOLD_BACKSTEP_MS
 from ..media import MediaController, PlaylistController
@@ -40,6 +45,8 @@ class PlaybackController:
         detail_page: QWidget,
         preview_window: PreviewWindow,
         live_badge: LiveBadge,
+        location_label: QLabel,
+        timestamp_label: QLabel,
         status_bar: QStatusBar,
         dialog: DialogController,
     ) -> None:
@@ -58,6 +65,8 @@ class PlaybackController:
         self._detail_page = detail_page
         self._preview_window = preview_window
         self._live_badge = live_badge
+        self._location_label = location_label
+        self._timestamp_label = timestamp_label
         self._status = status_bar
         self._dialog = dialog
         self._resume_playback_after_scrub = False
@@ -67,6 +76,17 @@ class PlaybackController:
         self._active_live_motion: Path | None = None
         self._active_live_still: Path | None = None
         self._is_transitioning = False
+        self._timestamp_default_font = QFont(self._timestamp_label.font())
+        self._timestamp_single_line_font = QFont(self._timestamp_label.font())
+        if self._timestamp_single_line_font.pointSize() > 0:
+            self._timestamp_single_line_font.setPointSize(
+                self._timestamp_single_line_font.pointSize() + 1
+            )
+        else:
+            self._timestamp_single_line_font.setPointSize(14)
+        self._timestamp_single_line_font.setBold(True)
+        self._location_label.hide()
+        self._timestamp_label.hide()
         media.mutedChanged.connect(self._on_media_muted_changed)
         self._image_viewer.replayRequested.connect(self.replay_live_photo)
         self._image_viewer.set_live_replay_enabled(False)
@@ -159,6 +179,8 @@ class PlaybackController:
         if row >= 0:
             _set_is_current(row, True)
 
+        self._update_header_for_row(row if row >= 0 else None)
+
         proxy_index: QModelIndex | None = None
         if row >= 0:
             proxy_row = row + 1
@@ -214,6 +236,7 @@ class PlaybackController:
                         still_path = Path(str(still_raw))
                         self._pending_live_photo_still = still_path
                         self._active_live_still = still_path
+        self._update_header_for_row(current_row if current_row != -1 else None)
         self._preview_window.close_preview(False)
 
         if not is_video and not is_live_photo:
@@ -299,6 +322,70 @@ class PlaybackController:
     # ------------------------------------------------------------------
     # View helpers
     # ------------------------------------------------------------------
+    def _clear_header(self) -> None:
+        self._location_label.clear()
+        self._location_label.hide()
+        self._timestamp_label.clear()
+        self._timestamp_label.hide()
+        self._timestamp_label.setFont(self._timestamp_default_font)
+
+    def _apply_header_text(
+        self, location: Optional[str], timestamp: Optional[str]
+    ) -> None:
+        if not timestamp:
+            self._clear_header()
+            return
+        timestamp = timestamp.strip()
+        if not timestamp:
+            self._clear_header()
+            return
+        if location:
+            location = location.strip()
+        if location:
+            self._location_label.setText(location)
+            self._location_label.show()
+            self._timestamp_label.setFont(self._timestamp_default_font)
+        else:
+            self._location_label.clear()
+            self._location_label.hide()
+            self._timestamp_label.setFont(self._timestamp_single_line_font)
+        self._timestamp_label.setText(timestamp)
+        self._timestamp_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._timestamp_label.show()
+
+    def _format_timestamp(self, dt_value: object) -> Optional[str]:
+        if not dt_value or not isinstance(dt_value, str):
+            return None
+        try:
+            parsed = isoparse(dt_value)
+        except (ValueError, TypeError):
+            return None
+        if parsed.tzinfo is None:
+            local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+            parsed = parsed.replace(tzinfo=local_tz)
+        localized = parsed.astimezone()
+        month_label = month_name[localized.month] if 0 <= localized.month < len(month_name) else ""
+        if not month_label:
+            month_label = f"{localized.month:02d}"
+        return f"{localized.day}. {month_label}, {localized:%H:%M}"
+
+    def _update_header_for_row(self, row: Optional[int]) -> None:
+        if row is None or row < 0:
+            self._clear_header()
+            return
+        index = self._model.index(row, 0)
+        if not index.isValid():
+            self._clear_header()
+            return
+        location_raw = index.data(Roles.LOCATION)
+        location_text = None
+        if isinstance(location_raw, str):
+            location_text = location_raw.strip() or None
+        elif location_raw is not None:
+            location_text = str(location_raw).strip() or None
+        timestamp_text = self._format_timestamp(index.data(Roles.DT))
+        self._apply_header_text(location_text, timestamp_text)
+
     def show_gallery_view(self) -> None:
         self._release_transition_lock()
         self._pending_live_photo_still = None
@@ -309,6 +396,7 @@ class PlaybackController:
         self._player_bar.setEnabled(False)
         self._show_player_placeholder()
         self._image_viewer.clear()
+        self._clear_header()
         self._filmstrip_view.clearSelection()
         self._grid_view.clearSelection()
         if self._gallery_page is not None:
@@ -404,6 +492,7 @@ class PlaybackController:
         if current_row is not None and current_row >= 0:
             self.select_filmstrip_row(current_row)
 
+        self._update_header_for_row(current_row)
         self._status.showMessage(f"Viewing {still_path.name}")
 
     def _display_image(self, source: Path, row: int | None = None) -> None:
@@ -427,6 +516,7 @@ class PlaybackController:
         self.show_detail_view()
         self._player_bar.reset()
         self._player_bar.setEnabled(False)
+        self._update_header_for_row(row)
         self._status.showMessage(f"Viewing {source.name}")
 
     def _show_player_placeholder(self) -> None:
@@ -440,6 +530,7 @@ class PlaybackController:
         self._image_viewer.set_live_replay_enabled(False)
         self._video_area.hide_controls(animate=False)
         self._resume_playback_after_scrub = False
+        self._clear_header()
         if self._player_stack.currentWidget() is not self._player_placeholder:
             self._player_stack.setCurrentWidget(self._player_placeholder)
         self._image_viewer.clear()

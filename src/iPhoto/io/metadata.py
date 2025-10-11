@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 from dateutil.tz import gettz
 
@@ -84,6 +84,73 @@ def _normalise_exif_datetime(dt_value: str, exif: Any) -> Optional[str]:
     return _format_result(naive.replace(tzinfo=local_tz))
 
 
+def _rational_to_float(value: Any) -> Optional[float]:
+    """Normalise EXIF rational values to plain floats."""
+
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, Sequence) and len(value) == 2:
+        numerator, denominator = value
+        try:
+            numerator = float(numerator)
+            denominator = float(denominator)
+        except (TypeError, ValueError):
+            return None
+        if denominator == 0:
+            return None
+        return numerator / denominator
+    numerator = getattr(value, "numerator", None)
+    denominator = getattr(value, "denominator", None)
+    if numerator is None or denominator in {None, 0}:
+        return None
+    try:
+        return float(numerator) / float(denominator)
+    except (TypeError, ValueError):
+        return None
+
+
+def _dms_to_degrees(values: Sequence[Any], ref: Any) -> Optional[float]:
+    """Convert EXIF degrees/minutes/seconds tuples to decimal degrees."""
+
+    if not values or len(values) < 3:
+        return None
+    parts = []
+    for item in values[:3]:
+        number = _rational_to_float(item)
+        if number is None:
+            return None
+        parts.append(number)
+    degrees = parts[0] + parts[1] / 60.0 + parts[2] / 3600.0
+    if isinstance(ref, bytes):
+        ref = ref.decode("ascii", errors="ignore")
+    if isinstance(ref, str):
+        ref = ref.strip().upper()
+        if ref in {"S", "W"}:
+            degrees = -degrees
+    return degrees
+
+
+def _extract_gps_coordinates(exif: Any) -> Optional[Dict[str, float]]:
+    """Parse GPS latitude/longitude from a Pillow EXIF payload."""
+
+    gps_tag = exif.get(34853)
+    if not isinstance(gps_tag, dict):
+        return None
+
+    lat_values = gps_tag.get(2)
+    lat_ref = gps_tag.get(1)
+    lon_values = gps_tag.get(4)
+    lon_ref = gps_tag.get(3)
+
+    latitude = _dms_to_degrees(lat_values, lat_ref)
+    longitude = _dms_to_degrees(lon_values, lon_ref)
+    if latitude is None or longitude is None:
+        return None
+    return {"lat": latitude, "lon": longitude}
+
+
 def read_image_meta(path: Path) -> Dict[str, Any]:
     """Read metadata for an image file using Pillow."""
 
@@ -107,6 +174,9 @@ def read_image_meta(path: Path) -> Dict[str, Any]:
                 dt_value = exif.get(36867) or exif.get(306)
                 if isinstance(dt_value, str):
                     info["dt"] = _normalise_exif_datetime(dt_value, exif)
+                gps_info = _extract_gps_coordinates(exif)
+                if gps_info is not None:
+                    info["gps"] = gps_info
             return info
     except UnidentifiedImageError as exc:
         raise ExternalToolError(f"Unable to read image metadata for {path}") from exc
