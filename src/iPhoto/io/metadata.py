@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -74,35 +73,6 @@ def _normalise_exif_datetime(dt_value: str, exif: Any) -> Optional[str]:
     return _format_result(naive.replace(tzinfo=local_tz))
 
 
-def _parse_dms(value: str) -> Optional[float]:
-    """Convert a degrees/minutes/seconds string into decimal degrees."""
-
-    cleaned = value.strip()
-    if not cleaned:
-        return None
-
-    direction = 1.0
-    if cleaned[-1] in "NSEWnsew":
-        last = cleaned[-1].upper()
-        cleaned = cleaned[:-1].strip()
-        if last in {"S", "W"}:
-            direction = -1.0
-
-    normalised = re.sub(r"[^0-9\.]+", " ", cleaned)
-    parts = [segment for segment in normalised.split() if segment]
-    if not parts:
-        return None
-
-    try:
-        degrees = float(parts[0])
-        minutes = float(parts[1]) if len(parts) > 1 else 0.0
-        seconds = float(parts[2]) if len(parts) > 2 else 0.0
-    except ValueError:
-        return None
-
-    return direction * (degrees + minutes / 60.0 + seconds / 3600.0)
-
-
 def _coerce_decimal(value: Any) -> Optional[float]:
     """Return ``value`` as a floating point number when possible."""
 
@@ -115,7 +85,7 @@ def _coerce_decimal(value: Any) -> Optional[float]:
         try:
             return float(candidate)
         except ValueError:
-            return _parse_dms(candidate)
+            return None
     return None
 
 
@@ -202,8 +172,19 @@ def _extract_datetime_from_exiftool(meta: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _extract_content_id_from_exiftool(meta: Dict[str, Any]) -> Optional[str]:
+    """Extract the Apple ``ContentIdentifier`` used for Live Photo pairing."""
+
+    apple_group = _extract_group(meta, "Apple")
+    if apple_group:
+        content_id = apple_group.get("ContentIdentifier")
+        if isinstance(content_id, str) and content_id:
+            return content_id
+    return None
+
+
 def read_image_meta(path: Path) -> Dict[str, Any]:
-    """Read metadata for ``path`` using Pillow for geometry and ExifTool for GPS."""
+    """Read metadata for ``path`` using Pillow for geometry and ExifTool for rich data."""
 
     print(f"Opening image for metadata: {path}")
     info = _empty_image_info()
@@ -218,25 +199,17 @@ def read_image_meta(path: Path) -> Dict[str, Any]:
                 exif_payload = img.getexif() if hasattr(img, "getexif") else None
         except UnidentifiedImageError as exc:
             raise ExternalToolError(f"Unable to read image metadata for {path}") from exc
-        except OSError:
-            pass
+        except OSError as exc:
+            raise ExternalToolError(f"OS error while reading {path}: {exc}") from exc
 
     try:
-        raw_metadata = get_exiftool_metadata(path)
+        metadata_block = get_exiftool_metadata(path)
     except ExternalToolError as exc:
         print(f"Warning: Could not use ExifTool for {path}: {exc}")
-        raw_metadata = None
-
-    metadata_block: Optional[Dict[str, Any]]
-    if isinstance(raw_metadata, list):
-        metadata_block = raw_metadata[0] if raw_metadata else None
-    elif isinstance(raw_metadata, dict):
-        metadata_block = raw_metadata
-    else:
         metadata_block = None
 
     gps_found = False
-    if metadata_block:
+    if isinstance(metadata_block, dict):
         gps_payload = _extract_gps_from_exiftool(metadata_block)
         if gps_payload is not None:
             info["gps"] = gps_payload
@@ -244,6 +217,9 @@ def read_image_meta(path: Path) -> Dict[str, Any]:
         dt_value = _extract_datetime_from_exiftool(metadata_block)
         if dt_value:
             info["dt"] = dt_value
+        content_id = _extract_content_id_from_exiftool(metadata_block)
+        if content_id:
+            info["content_id"] = content_id
 
     if info["dt"] is None and exif_payload:
         fallback_dt = exif_payload.get(36867) or exif_payload.get(306)
@@ -313,6 +289,11 @@ def read_video_meta(path: Path) -> Dict[str, Any]:
                 codec = stream.get("codec_name")
                 if isinstance(codec, str) and not info.get("codec"):
                     info["codec"] = codec
+                tags = stream.get("tags")
+                if isinstance(tags, dict):
+                    content_id = tags.get("com.apple.quicktime.content.identifier")
+                    if isinstance(content_id, str) and content_id:
+                        info["content_id"] = content_id
     return info
 
 
