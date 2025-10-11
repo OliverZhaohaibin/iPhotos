@@ -166,6 +166,9 @@ def read_image_meta(path: Path) -> Dict[str, Any]:
 
     try:
         with Image.open(path) as img:
+            # Emit a lightweight diagnostic message so users can follow the
+            # metadata workflow in the console while debugging.
+            print(f"Opening image for metadata: {path}")
             # Force Pillow (and plugins such as ``pillow-heif``) to fully decode
             # the container so that auxiliary metadata like ``gps_exif`` is
             # populated before we attempt to access it.
@@ -187,7 +190,18 @@ def read_image_meta(path: Path) -> Dict[str, Any]:
                     info["dt"] = _normalise_exif_datetime(dt_value, exif)
             gps_info = _extract_gps_coordinates(img)
             if gps_info is not None:
+                # Provide visibility into the extracted coordinates to simplify
+                # field testing with sample images that may or may not carry
+                # embedded GPS tags.
+                print(
+                    "Extracted GPS coordinates: "
+                    f"lat={gps_info['lat']:.6f}, lon={gps_info['lon']:.6f}"
+                )
                 info["gps"] = gps_info
+            else:
+                # Make the absence of GPS metadata explicit so the user knows
+                # why location lookups might not appear in the UI.
+                print("No GPS coordinates found in metadata")
             return info
     except UnidentifiedImageError as exc:
         raise ExternalToolError(f"Unable to read image metadata for {path}") from exc
