@@ -35,7 +35,7 @@ class AssetGridDelegate(QStyledItemDelegate):
         self._base_size = 192
         self._filmstrip_height = 120
         self._filmstrip_border_width = 2
-        self._favorite_icon: QIcon = load_icon("suit.heart.fill.svg")
+        self._favorite_icon: QIcon = load_icon("suit.heart.svg")
 
     # ------------------------------------------------------------------
     # Painting
@@ -225,13 +225,11 @@ class AssetGridDelegate(QStyledItemDelegate):
             icon_size,
             icon_size,
         )
-        background_rect = icon_rect.adjusted(-4, -4, 4, 4)
-
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing, True)
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(0, 0, 0, 160))
-        painter.drawRoundedRect(background_rect, 6, 6)
+        # Draw the outline-only heart so it matches the toolbar affordance and keeps the
+        # thumbnail unobscured.
+        # Avoid adding a backdrop rectangle; the minimalist badge works on every photo.
         self._favorite_icon.paint(painter, icon_rect)
         painter.restore()
 

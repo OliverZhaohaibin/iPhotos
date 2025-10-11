@@ -160,21 +160,36 @@ class AppFacade(QObject):
         return self._save_manifest(album)
 
     def toggle_featured(self, ref: str) -> bool:
-        """Toggle *ref* in the album's featured list."""
+        """Toggle *ref* in the album's featured list without reopening the album."""
 
         album = self._require_album()
         if album is None:
             return False
+
         featured = album.manifest.setdefault("featured", [])
-        if ref in featured:
+        was_featured = ref in featured
+
+        if was_featured:
             album.remove_featured(ref)
-            changed = False
         else:
             album.add_featured(ref)
-            changed = True
-        if self._save_manifest(album):
-            return changed
-        return False
+
+        try:
+            album.save()
+        except IPhotoError as exc:
+            # Surface the failure to the UI and roll back the in-memory change so the
+            # model keeps reflecting the persisted state.
+            self.errorRaised.emit(str(exc))
+            if was_featured:
+                album.add_featured(ref)
+            else:
+                album.remove_featured(ref)
+            return was_featured
+
+        # Refresh the asset list in-place so Roles.FEATURED updates propagate to every
+        # connected view without bouncing the user back to the gallery layout.
+        self._asset_list_model.start_load()
+        return not was_featured
 
     # ------------------------------------------------------------------
     # Internal utilities

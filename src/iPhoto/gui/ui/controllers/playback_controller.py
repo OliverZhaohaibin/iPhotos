@@ -167,11 +167,8 @@ class PlaybackController:
         new_state = self._facade.toggle_featured(self._current_asset_ref)
         self._current_is_favorite = bool(new_state)
         self._apply_favorite_visual_state(self._current_is_favorite)
+        # Re-enable the control immediately so the user can toggle back if required.
         self._favorite_button.setEnabled(True)
-
-        current_row = self._playlist.current_row()
-        if current_row >= 0:
-            QTimer.singleShot(0, lambda r=current_row: self._update_favorite_button_state(r))
 
     # ------------------------------------------------------------------
     # Selection handling
