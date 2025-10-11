@@ -164,6 +164,9 @@ class PlaybackController:
         if not self._current_asset_ref:
             return
 
+        # Temporarily disable the button so repeated clicks cannot queue multiple toggle
+        # requests before the facade refreshes the model.
+        self._favorite_button.setEnabled(False)
         new_state = self._facade.toggle_featured(self._current_asset_ref)
         self._current_is_favorite = bool(new_state)
         self._apply_favorite_visual_state(self._current_is_favorite)

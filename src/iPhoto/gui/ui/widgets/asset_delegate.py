@@ -35,7 +35,10 @@ class AssetGridDelegate(QStyledItemDelegate):
         self._base_size = 192
         self._filmstrip_height = 120
         self._filmstrip_border_width = 2
-        self._favorite_icon: QIcon = load_icon("suit.heart.svg")
+        # ``suit.heart.svg`` ships as a black outline.  Tint it to white so the badge stays
+        # legible on dark thumbnails without introducing a background plate that could hide
+        # image details.
+        self._favorite_icon: QIcon = load_icon("suit.heart.svg", color="white")
 
     # ------------------------------------------------------------------
     # Painting
@@ -219,6 +222,8 @@ class AssetGridDelegate(QStyledItemDelegate):
 
         margin = 8
         icon_size = 18
+        # Place the icon directly inside the thumbnail bounds so it reads as a subtle overlay
+        # rather than a separate control.
         icon_rect = QRect(
             rect.left() + margin,
             rect.bottom() - margin - icon_size,
