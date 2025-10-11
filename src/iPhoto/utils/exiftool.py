@@ -47,7 +47,11 @@ def get_metadata(path: Path) -> List[Dict[str, Any]]:
 
     try:
         with exiftool.ExifTool(common_args=["-n"]) as tool:
-            return tool.get_metadata(str(path))
+            # ``pyexiftool`` exposes ``get_metadata_batch`` for retrieving data for one or
+            # more files at a time.  Some versions of the binding do not provide a
+            # ``get_metadata`` convenience wrapper, so we always call the batch variant to
+            # remain compatible across releases.
+            return tool.get_metadata_batch([str(path)])
     except FileNotFoundError as exc:
         # ``pyexiftool`` raises ``FileNotFoundError`` if the executable cannot be
         # located.  Wrap it in ``ExternalToolError`` so callers can present a
