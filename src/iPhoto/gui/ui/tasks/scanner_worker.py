@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Iterable, List
 
 from PySide6.QtCore import QObject, QRunnable, Signal
 
 from ....config import WORK_DIR_NAME
-from ....io.scanner import _build_row
-from ....utils.pathutils import ensure_work_dir, is_excluded, should_include
+from ....io.scanner import gather_media_paths, process_media_paths
+from ....utils.pathutils import ensure_work_dir
 
 
 class ScannerSignals(QObject):
@@ -70,48 +70,50 @@ class ScannerWorker(QRunnable):
         try:
             ensure_work_dir(self._root, WORK_DIR_NAME)
 
+            # Emit an initial indeterminate update so the UI can show a busy
+            # indicator while we enumerate the filesystem.  This mirrors the
+            # behaviour of the legacy implementation to keep the UX familiar.
             self._signals.progressUpdated.emit(self._root, 0, -1)
-            all_files: List[Path] = []
-            for candidate in self._root.rglob("*"):
-                if self._is_cancelled:
-                    break
-                if candidate.is_file():
-                    all_files.append(candidate)
 
+            image_paths, video_paths = gather_media_paths(
+                self._root, self._include, self._exclude
+            )
             if self._is_cancelled:
                 return
 
-            total_files = len(all_files)
+            total_files = len(image_paths) + len(video_paths)
+            self._signals.progressUpdated.emit(self._root, 0, total_files)
             if total_files == 0:
-                self._signals.progressUpdated.emit(self._root, 0, 0)
-            else:
-                self._signals.progressUpdated.emit(self._root, 0, total_files)
-                for index, file_path in enumerate(all_files, start=1):
-                    if self._is_cancelled:
-                        break
-                    row = self._process_single_file(file_path)
-                    if row is not None:
-                        rows.append(row)
-                    if index == total_files or index % 50 == 0:
-                        self._signals.progressUpdated.emit(self._root, index, total_files)
+                self._signals.finished.emit(self._root, [])
+                return
+
+            processed_count = 0
+            last_reported = 0
+            for row in process_media_paths(self._root, image_paths, video_paths):
+                if self._is_cancelled:
+                    return
+                rows.append(row)
+                processed_count += 1
+
+                # To avoid overwhelming the UI thread we only emit progress
+                # every 25 items (and always on completion).  This matches the
+                # cadence of the original worker implementation.
+                if processed_count == total_files or processed_count - last_reported >= 25:
+                    self._signals.progressUpdated.emit(
+                        self._root, processed_count, total_files
+                    )
+                    last_reported = processed_count
         except Exception as exc:  # pragma: no cover - best-effort error propagation
             if not self._is_cancelled:
                 self._had_error = True
                 self._signals.error.emit(self._root, str(exc))
         finally:
-            payload = rows if not (self._is_cancelled or self._had_error) else []
-            self._signals.finished.emit(self._root, payload)
+            if not self._is_cancelled and not self._had_error:
+                self._signals.finished.emit(self._root, rows)
+            else:
+                self._signals.finished.emit(self._root, [])
 
     def cancel(self) -> None:
         """Request cancellation of the in-progress scan."""
 
         self._is_cancelled = True
-
-    def _process_single_file(self, file_path: Path) -> Optional[dict]:
-        if WORK_DIR_NAME in file_path.parts:
-            return None
-        if is_excluded(file_path, self._exclude, root=self._root):
-            return None
-        if not should_include(file_path, self._include, self._exclude, root=self._root):
-            return None
-        return _build_row(self._root, file_path)

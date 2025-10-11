@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QEvent, Qt
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QFont
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -83,6 +83,8 @@ class MainWindow(QMainWindow):
         self._live_badge = LiveBadge(self)
         self._live_badge.hide()
         self._badge_host: QWidget | None = None
+        self._location_label = QLabel()
+        self._timestamp_label = QLabel()
 
         self._dialog = DialogController(self, context, self._status)
         self._rescan_action: QAction | None = None
@@ -132,6 +134,8 @@ class MainWindow(QMainWindow):
             self._detail_page,
             self._preview_window,
             self._live_badge,
+            self._location_label,
+            self._timestamp_label,
             self._status,
             self._dialog,
         )
@@ -226,7 +230,39 @@ class MainWindow(QMainWindow):
         self._back_button.setAutoRaise(True)
         self._back_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         header_layout.addWidget(self._back_button)
-        header_layout.addStretch(1)
+
+        info_container = QWidget()
+        info_layout = QVBoxLayout(info_container)
+        info_layout.setContentsMargins(0, 0, 0, 0)
+        info_layout.setSpacing(0)
+        info_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        base_font = self.font()
+        location_font = QFont(base_font)
+        if location_font.pointSize() > 0:
+            location_font.setPointSize(location_font.pointSize() + 2)
+        else:
+            location_font.setPointSize(14)
+        location_font.setBold(True)
+
+        timestamp_font = QFont(base_font)
+        if timestamp_font.pointSize() > 0:
+            timestamp_font.setPointSize(max(timestamp_font.pointSize() + 1, 1))
+        else:
+            timestamp_font.setPointSize(12)
+        timestamp_font.setBold(False)
+
+        self._location_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._location_label.setFont(location_font)
+        self._location_label.setVisible(False)
+
+        self._timestamp_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._timestamp_label.setFont(timestamp_font)
+        self._timestamp_label.setVisible(False)
+
+        info_layout.addWidget(self._location_label)
+        info_layout.addWidget(self._timestamp_label)
+        header_layout.addWidget(info_container, 1)
         detail_layout.addWidget(header)
 
         player_container = QWidget()
