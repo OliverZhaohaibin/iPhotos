@@ -320,6 +320,8 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
     status_bar = QStatusBar()
     preview_window = _StubPreviewWindow()
     dialog = _StubDialog()
+    location_label = QLabel()
+    timestamp_label = QLabel()
 
     controller = PlaybackController(
         model,
@@ -337,6 +339,8 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
         detail_page,
         preview_window,  # type: ignore[arg-type]
         live_badge,
+        location_label,
+        timestamp_label,
         status_bar,
         dialog,  # type: ignore[arg-type]
     )
