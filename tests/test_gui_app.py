@@ -54,6 +54,26 @@ def _create_image(path: Path) -> None:
     image.save(path)
 
 
+def _wait_for_rows(model: AssetModel, expected: int, qapp: QApplication, timeout: float = 2.0) -> None:
+    """Spin the Qt event loop until *model* exposes *expected* rows.
+
+    Asset metadata is populated asynchronously, so tests need to yield to the
+    event loop until the loader finishes.  The helper raises ``AssertionError``
+    if the desired row count is not reached within ``timeout`` seconds to avoid
+    hanging the suite indefinitely when something goes wrong.
+    """
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        qapp.processEvents()
+        if model.rowCount() == expected:
+            return
+        time.sleep(0.01)
+    raise AssertionError(
+        f"Timed out waiting for {expected} rows (have {model.rowCount()})"
+    )
+
+
 class _StubMediaController(QObject):
     positionChanged = Signal(int)
     durationChanged = Signal(int)
@@ -469,3 +489,55 @@ def test_thumbnail_job_seek_targets_without_hint(tmp_path: Path, qapp: QApplicat
     duration_targets = with_duration._seek_targets()
     assert duration_targets[0] == pytest.approx(2.0, rel=1e-3)
     assert duration_targets[1:] == [None]
+
+
+def test_playlist_keeps_detail_row_when_favourite_removed(
+    tmp_path: Path, qapp: QApplication
+) -> None:
+    """Removing a favourite while filtered should reveal the next asset."""
+
+    first = tmp_path / "IMG_3001.JPG"
+    second = tmp_path / "IMG_3002.JPG"
+    _create_image(first)
+    _create_image(second)
+
+    facade = AppFacade()
+    model = AssetModel(facade)
+    playlist = PlaylistController()
+    playlist.bind_model(model)
+
+    facade.open_album(tmp_path)
+    _wait_for_rows(model, 2, qapp)
+
+    def _apply_featured(rel: str, state: bool) -> None:
+        source = model.source_model()
+        source.update_featured_status(rel, state)
+        model.invalidateFilter()
+
+    facade.featuredStatusChanged.connect(_apply_featured)
+
+    favourites: list[str] = []
+    for row in range(model.rowCount()):
+        index = model.index(row, 0)
+        rel = model.data(index, Roles.REL)
+        assert isinstance(rel, str)
+        assert facade.toggle_featured(rel) is True
+        favourites.append(rel)
+        qapp.processEvents()
+
+    assert len(favourites) == 2
+    model.set_filter_mode("favorites")
+    qapp.processEvents()
+    assert model.rowCount() == 2
+
+    current_source = playlist.set_current(0)
+    assert current_source is not None
+    assert playlist.current_row() == 0
+
+    removed = favourites[0]
+    assert facade.toggle_featured(removed) is False
+
+    # Wait for the proxy to drop the unfavourited row and for the playlist to
+    # adopt the surviving neighbour rather than clearing the selection.
+    _wait_for_rows(model, 1, qapp)
+    assert playlist.current_row() == 0

@@ -103,16 +103,72 @@ class PlaylistController(QObject):
     # Internal helpers
     # ------------------------------------------------------------------
     def _on_model_changed(self, *args, **kwargs) -> None:  # pragma: no cover - Qt signature noise
+        """React to structural model updates and keep playback focused.
+
+        The playlist listens for insert/remove/reset notifications to ensure the
+        currently focused asset always refers to a valid proxy row.  When a row
+        disappears (for example, because a favourite flag was toggled while the
+        *Favorites* filter is active) ``_current_row`` may suddenly point past
+        the end of the model.  Previously the controller cleared the selection
+        outright which forced the detail view back to the gallery.  The updated
+        logic attempts to select the closest surviving row before giving up so
+        playback continues seamlessly whenever another asset is available.
+        """
+
         if self._model is None:
             return
         if self._current_row == -1:
             return
-        count = self._model.rowCount()
-        if not (0 <= self._current_row < count):
+
+        row_count = self._model.rowCount()
+        if row_count == 0:
             self.clear()
             return
-        if not self._is_playable(self._current_row):
+
+        if 0 <= self._current_row < row_count and self._is_playable(self._current_row):
+            return
+
+        fallback = self._resolve_surviving_row(row_count)
+        if fallback is None:
             self.clear()
+            return
+
+        # ``set_current`` updates ``_previous_row`` and emits the usual
+        # signals, ensuring that view controllers stay in sync with the new
+        # selection.
+        self.set_current(fallback)
+
+    def _resolve_surviving_row(self, row_count: int) -> int | None:
+        """Return the nearest playable row after a removal.
+
+        The search favours the item that visually follows the removed entry so
+        that unfavouriting a photo in the *Favorites* view naturally reveals the
+        next favourite.  If no later rows survive we walk backwards towards the
+        start of the model.  ``None`` indicates that no playable rows remain.
+        """
+
+        if self._model is None or row_count <= 0:
+            return None
+
+        # Clamp the starting position so it always references an existing row.
+        start = min(max(self._current_row, 0), row_count - 1)
+        if self._is_playable(start):
+            return start
+
+        # Scan forwards first so the replacement mirrors the behaviour of the
+        # gallery grid, where the next thumbnail automatically slides into the
+        # vacated position.
+        for forward in range(start + 1, row_count):
+            if self._is_playable(forward):
+                return forward
+
+        # Fallback to the nearest previous row when nothing follows the removed
+        # item.  This keeps the most recent neighbour in view.
+        for backward in range(start - 1, -1, -1):
+            if self._is_playable(backward):
+                return backward
+
+        return None
 
     def _step(self, delta: int) -> Optional[Path]:
         if self._model is None or self._model.rowCount() == 0:
