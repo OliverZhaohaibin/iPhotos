@@ -30,7 +30,12 @@ from PySide6.QtWidgets import (
 )
 
 from iPhotos.src.iPhoto.gui.facade import AppFacade
+from iPhotos.src.iPhoto.gui.ui.controllers.header_controller import HeaderController
+from iPhotos.src.iPhoto.gui.ui.controllers.player_view_controller import (
+    PlayerViewController,
+)
 from iPhotos.src.iPhoto.gui.ui.controllers.playback_controller import PlaybackController
+from iPhotos.src.iPhoto.gui.ui.controllers.view_controller import ViewController
 from iPhotos.src.iPhoto.gui.ui.models.asset_model import AssetModel, Roles
 from iPhotos.src.iPhoto.gui.ui.media.playlist_controller import PlaylistController
 from iPhotos.src.iPhoto.gui.ui.tasks.thumbnail_loader import ThumbnailJob
@@ -323,24 +328,38 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
     location_label = QLabel()
     timestamp_label = QLabel()
 
+    # Construct the layered controllers that ``PlaybackController`` depends on.
+    # The widgets built above mirror the real application wiring, so the
+    # controller under test receives the same collaborators it would in
+    # production rather than raw Qt widgets.
+    player_view_controller = PlayerViewController(
+        player_stack,
+        image_viewer,
+        video_area,
+        placeholder,
+        live_badge,
+    )
+    view_controller = ViewController(
+        view_stack,
+        gallery_page,
+        detail_page,
+    )
+    header_controller = HeaderController(
+        location_label,
+        timestamp_label,
+    )
+
     controller = PlaybackController(
         model,
         media,
         playlist,
         player_bar,
-        video_area,
         grid_view,
         filmstrip_view,
-        player_stack,
-        image_viewer,
-        placeholder,
-        view_stack,
-        gallery_page,
-        detail_page,
         preview_window,  # type: ignore[arg-type]
-        live_badge,
-        location_label,
-        timestamp_label,
+        player_view_controller,
+        view_controller,
+        header_controller,
         status_bar,
         dialog,  # type: ignore[arg-type]
     )
