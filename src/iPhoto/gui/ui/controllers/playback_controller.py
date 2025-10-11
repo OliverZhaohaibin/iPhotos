@@ -388,24 +388,21 @@ class PlaybackController:
         """Toggle the featured flag for the playlist's current asset."""
 
         current_row = self._playlist.current_row()
-        if current_row < 0:
+        if current_row == -1:
             return
 
         index = self._model.index(current_row, 0)
         if not index.isValid():
             return
 
-        rel = index.data(Roles.REL)
+        rel = str(index.data(Roles.REL) or "")
         if not rel:
             return
 
-        # ``toggle_featured`` returns ``True`` when the asset becomes featured and
-        # ``False`` otherwise (either removed from favorites or the operation
-        # failed).  Re-read the model role afterwards so the UI reflects the data
-        # model's authoritative state even if persistence failed.
-        self._facade.toggle_featured(str(rel))
-        refreshed_index = self._model.index(current_row, 0)
-        is_featured = bool(refreshed_index.data(Roles.FEATURED)) if refreshed_index.isValid() else False
+        # ``toggle_featured`` now returns the new boolean state.  Reuse the return value so
+        # the button reflects any persistence failure (the facade falls back to the previous
+        # state in that scenario) without having to re-query the proxy model.
+        is_featured = self._facade.toggle_featured(rel)
         self._update_favorite_button_icon(current_row, is_featured=is_featured)
 
     def _update_favorite_button_icon(self, row: int, *, is_featured: Optional[bool] = None) -> None:
