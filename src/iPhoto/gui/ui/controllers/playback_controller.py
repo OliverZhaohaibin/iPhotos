@@ -164,11 +164,19 @@ class PlaybackController:
         if not self._current_asset_ref:
             return
 
+        # Capture the current state before the toggle so we can detect when the action will
+        # remove an item from the "Favorites" virtual collection.  The proxy model applies
+        # the favorites filter by dropping any rows whose ``Roles.FEATURED`` value becomes
+        # ``False``.  When that happens the playlist can end up empty, so we proactively
+        # return the user to the gallery grid to avoid leaving the detail pane in a limbo
+        # state that immediately snaps back to the main view.
+        is_in_favorites_view = self._model.filter_mode() == "favorites"
+        was_favorite = self._current_is_favorite
+
         # Temporarily disable the button so repeated clicks cannot queue multiple toggle
-        # requests while the manifest write is in flight.  The facade emits a
-        # lightweight change notification for the specific asset, so we provide
-        # immediate visual feedback and then re-enable the control once the
-        # operation completes.
+        # requests while the manifest write is in flight.  The facade emits a lightweight
+        # change notification for the specific asset, so we provide immediate visual
+        # feedback and then re-enable the control once the operation completes.
         self._favorite_button.setEnabled(False)
         new_state = self._facade.toggle_featured(self._current_asset_ref)
         self._current_is_favorite = bool(new_state)
@@ -177,6 +185,15 @@ class PlaybackController:
         # playlist change notification will still reconcile the icon with the authoritative
         # model state, keeping the UI responsive even on slower I/O.
         self._favorite_button.setEnabled(True)
+
+        # If a favorite is removed while the favorites filter is active, the proxy model
+        # will discard the now-unfavorited row.  That removal leaves the playlist without a
+        # current item, which would otherwise trigger a jarring jump back to the gallery
+        # once the UI realises the selection is invalid.  By explicitly showing the gallery
+        # we perform the same transition intentionally and immediately, preserving context
+        # and preventing a confusing flicker.
+        if is_in_favorites_view and was_favorite and not new_state:
+            self._view_controller.show_gallery_view()
 
     # ------------------------------------------------------------------
     # Selection handling
