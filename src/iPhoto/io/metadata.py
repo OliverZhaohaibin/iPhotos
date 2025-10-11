@@ -132,34 +132,18 @@ def _dms_to_degrees(values: Sequence[Any], ref: Any) -> Optional[float]:
     return degrees
 
 
-def _extract_gps_coordinates(image: Any, exif: Optional[Any]) -> Optional[Dict[str, float]]:
-    """Return decimal GPS coordinates for *image* if they are present.
+def _extract_gps_coordinates(image: Any) -> Optional[Dict[str, float]]:
+    """Return decimal GPS coordinates for ``image`` when they are available.
 
-    The Pillow ``Image`` class exposes GPS information in multiple ways
-    depending on the container format and the version of Pillow installed.
-    Newer releases populate :attr:`Image.gps_exif` while older versions only
-    expose the raw EXIF dictionary.  To keep compatibility we try both access
-    patterns before attempting to decode the latitude/longitude values.
+    Pillow lazily parses image metadata, so this helper assumes that
+    :meth:`Image.load` has already been invoked.  Once the metadata blocks are
+    hydrated the ``gps_exif`` attribute exposes the decoded GPS sub-IFD as a
+    dictionary keyed by numeric EXIF tags.  The helper maps those values to the
+    latitude/longitude pair expressed in decimal degrees.
     """
 
-    gps_payload: Optional[Dict[int, Any]] = None
-
-    # ``Image.gps_exif`` already returns the GPS sub-dictionary extracted from
-    # the EXIF block.  It is the most reliable source because Pillow performs
-    # the heavy lifting of locating and decoding the structure for us.
-    gps_exif = getattr(image, "gps_exif", None)
-    if isinstance(gps_exif, dict) and gps_exif:
-        gps_payload = gps_exif
-
-    # Fallback to the raw EXIF mapping (tag 34853) when ``gps_exif`` is not
-    # available.  This covers legacy Pillow versions and minimal image types
-    # where only the numeric tag is exposed.
-    if gps_payload is None and isinstance(exif, dict):
-        maybe_tag = exif.get(34853)
-        if isinstance(maybe_tag, dict) and maybe_tag:
-            gps_payload = maybe_tag
-
-    if not gps_payload:
+    gps_payload = getattr(image, "gps_exif", None)
+    if not isinstance(gps_payload, dict) or not gps_payload:
         return None
 
     lat_values = gps_payload.get(2)
@@ -181,8 +165,11 @@ def read_image_meta(path: Path) -> Dict[str, Any]:
         return _empty_image_info()
 
     try:
-        print(f"Opening image for metadata inspection: {path}")
         with Image.open(path) as img:
+            # Force Pillow (and plugins such as ``pillow-heif``) to fully decode
+            # the container so that auxiliary metadata like ``gps_exif`` is
+            # populated before we attempt to access it.
+            img.load()
             exif = img.getexif() if hasattr(img, "getexif") else None
             info: Dict[str, Any] = {
                 "w": img.width,
@@ -198,14 +185,9 @@ def read_image_meta(path: Path) -> Dict[str, Any]:
                 dt_value = exif.get(36867) or exif.get(306)
                 if isinstance(dt_value, str):
                     info["dt"] = _normalise_exif_datetime(dt_value, exif)
-            gps_info = _extract_gps_coordinates(img, exif)
+            gps_info = _extract_gps_coordinates(img)
             if gps_info is not None:
-                # Emit a debug line so users can observe captured GPS coordinates.
-                print(f"Extracted GPS coordinates: {gps_info}")
                 info["gps"] = gps_info
-            else:
-                # Provide feedback when no coordinates are present in the EXIF payload.
-                print("No GPS coordinates found in image metadata.")
             return info
     except UnidentifiedImageError as exc:
         raise ExternalToolError(f"Unable to read image metadata for {path}") from exc
