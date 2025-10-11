@@ -11,11 +11,15 @@ from ..config import WORK_DIR_NAME
 from ..errors import ExternalToolError
 from ..utils.exiftool import get_metadata_batch
 from ..utils.hashutils import file_xxh3
+from ..utils.logging import get_logger
 from ..utils.pathutils import ensure_work_dir, is_excluded, should_include
 from .metadata import read_image_meta_with_exiftool, read_video_meta
 
 _IMAGE_EXTENSIONS = {".heic", ".jpg", ".jpeg", ".png"}
 _VIDEO_EXTENSIONS = {".mov", ".mp4", ".m4v", ".qt"}
+
+
+LOGGER = get_logger()
 
 
 def gather_media_paths(
@@ -67,7 +71,7 @@ def process_media_paths(
     except ExternalToolError as exc:
         # Expose the failure so operators understand why GPS/location data may
         # be missing, but continue producing rows so the scan still completes.
-        print(f"Failed to get metadata for images: {exc}")
+        LOGGER.warning("Batch ExifTool query failed for %s images: %s", len(image_paths), exc)
         image_metadata_payloads = []
 
     metadata_lookup: Dict[Path, Dict[str, Any]] = {}

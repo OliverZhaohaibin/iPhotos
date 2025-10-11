@@ -7,6 +7,8 @@ from typing import Dict, Optional
 
 import reverse_geocoder  # type: ignore[import]
 
+from .logging import get_logger
+
 
 @lru_cache(maxsize=1)
 def _geocoder() -> "reverse_geocoder.RGeocoder":
@@ -65,7 +67,7 @@ def resolve_location_name(gps: Optional[Dict[str, float]]) -> Optional[str]:
         return None
     location_name = " — ".join(components)
     # Use an en dash to match macOS Photos' layout conventions.
-    print(f"Resolved location name: {location_name}")
+    get_logger().debug("Resolved location display name: %s", location_name)
     return location_name
 
 

@@ -12,6 +12,7 @@ from dateutil.tz import gettz
 from ..errors import ExternalToolError
 from ..utils.deps import load_pillow
 from ..utils.exiftool import get_metadata_batch
+from ..utils.logging import get_logger
 from ..utils.ffmpeg import probe_media
 
 _PILLOW = load_pillow()
@@ -87,6 +88,9 @@ def _coerce_decimal(value: Any) -> Optional[float]:
         except ValueError:
             return None
     return None
+
+
+LOGGER = get_logger()
 
 
 def _extract_group(metadata: Dict[str, Any], group_name: str) -> Optional[Dict[str, Any]]:
@@ -236,7 +240,7 @@ def read_image_meta_with_exiftool(
     need_dt_fallback = info["dt"] is None
 
     if (geometry_missing or need_dt_fallback) and Image is not None and UnidentifiedImageError is not None:
-        print(f"Opening image for metadata: {path}")
+        LOGGER.debug("Opening %s with Pillow to backfill metadata", path)
         try:
             with Image.open(path) as img:
                 if geometry_missing:
@@ -258,15 +262,6 @@ def read_image_meta_with_exiftool(
         if isinstance(fallback_dt, str):
             info["dt"] = _normalise_exif_datetime(fallback_dt, exif_payload)
 
-    if info["gps"]:
-        gps = info["gps"]
-        print(
-            "Extracted GPS coordinates via ExifTool: "
-            f"lat={gps['lat']:.6f}, lon={gps['lon']:.6f}"
-        )
-    else:
-        print("No GPS coordinates found in metadata")
-
     return info
 
 
@@ -279,7 +274,7 @@ def read_image_meta(path: Path) -> Dict[str, Any]:
         if payload:
             metadata_block = payload[0]
     except ExternalToolError as exc:
-        print(f"Warning: Could not use ExifTool for {path}: {exc}")
+        LOGGER.warning("Could not use ExifTool for %s: %s", path, exc)
 
     return read_image_meta_with_exiftool(path, metadata_block)
 
