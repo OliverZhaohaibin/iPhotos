@@ -43,7 +43,10 @@ def _call_exiftool_subprocess(paths: List[str]) -> List[Dict[str, Any]]:
         *paths,
     ]
     try:
-        output = subprocess.check_output(cmd, text=True)
+        # ``exiftool`` always emits UTF-8 encoded JSON, even on Windows.  Passing an explicit
+        # ``encoding`` value prevents Python from defaulting to a locale-specific codec such as
+        # ``cp1252`` which would otherwise choke on characters outside the ANSI range.
+        output = subprocess.check_output(cmd, encoding="utf-8")
     except subprocess.CalledProcessError as exc:  # pragma: no cover - rare error path
         stderr = exc.stderr if exc.stderr else "unknown error"
         raise ExternalToolError(f"ExifTool failed: {stderr}") from exc
