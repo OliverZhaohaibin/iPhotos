@@ -11,6 +11,7 @@ from ....cache.index_store import IndexStore
 from ....config import WORK_DIR_NAME
 from ....core.pairing import pair_live
 from ....media_classifier import classify_media
+from ....utils.geocoding import resolve_location_name
 from ....utils.pathutils import ensure_work_dir
 
 
@@ -116,6 +117,9 @@ def _build_entry(
     elif isinstance(live_info, dict) and isinstance(live_info.get("id"), str):
         live_group_id = str(live_info["id"])
 
+    gps_raw = row.get("gps") if isinstance(row, dict) else None
+    location_name = resolve_location_name(gps_raw if isinstance(gps_raw, dict) else None)
+
     entry: Dict[str, object] = {
         "rel": rel,
         "abs": abs_path,
@@ -133,6 +137,8 @@ def _build_entry(
         "featured": _is_featured(rel, featured),
         "still_image_time": row.get("still_image_time"),
         "dur": row.get("dur"),
+        "location": location_name,
+        "gps": gps_raw,
     }
     return entry
 

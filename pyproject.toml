@@ -20,6 +20,8 @@ dependencies = [
   "xxhash>=3",
   "python-dateutil>=2",
   "opencv-python-headless>=4.10",
+  "reverse-geocoder>=1.5.1",
+  "pyexiftool>=0.5.5",
 ]
 
 [project.scripts]

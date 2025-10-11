@@ -1,4 +1,4 @@
-"""Metadata readers for media assets."""
+"""Metadata readers for still images and video clips."""
 
 from __future__ import annotations
 
@@ -6,11 +6,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from dateutil.parser import isoparse
 from dateutil.tz import gettz
 
 from ..errors import ExternalToolError
-from ..utils.ffmpeg import probe_media
 from ..utils.deps import load_pillow
+from ..utils.exiftool import get_metadata as get_exiftool_metadata
+from ..utils.ffmpeg import probe_media
 
 _PILLOW = load_pillow()
 
@@ -21,8 +23,9 @@ else:  # pragma: no cover - exercised only when Pillow is missing
     Image = None  # type: ignore[assignment]
     UnidentifiedImageError = None  # type: ignore[assignment]
 
+
 def _empty_image_info() -> Dict[str, Any]:
-    """Return a metadata stub when image inspection fails."""
+    """Return a metadata stub used whenever inspection fails."""
 
     return {
         "w": None,
@@ -37,13 +40,7 @@ def _empty_image_info() -> Dict[str, Any]:
 
 
 def _normalise_exif_datetime(dt_value: str, exif: Any) -> Optional[str]:
-    """Return an ISO8601 UTC timestamp for an EXIF ``DateTime`` value.
-
-    Many cameras record ``DateTimeOriginal`` without a timezone. When the
-    companion ``OffsetTime`` tags are available we combine them. Otherwise we
-    treat the naive timestamp as local time and convert to UTC so that
-    subsequent pairing logic can compare still and motion captures reliably.
-    """
+    """Normalise an EXIF ``DateTime`` string to a UTC ISO-8601 representation."""
 
     fmt = "%Y:%m:%d %H:%M:%S"
     offset_tags = (36880, 36881, 36882)
@@ -58,8 +55,6 @@ def _normalise_exif_datetime(dt_value: str, exif: Any) -> Optional[str]:
         return captured.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
     if offset:
-        # Normalise offsets like ``+0800`` to ``+08:00`` because Pillow may
-        # preserve either representation depending on the source.
         if len(offset) == 5 and offset[0] in "+-":
             offset = f"{offset[:3]}:{offset[3:]}"
         combined = f"{dt_value}{offset}"
@@ -67,9 +62,6 @@ def _normalise_exif_datetime(dt_value: str, exif: Any) -> Optional[str]:
             captured = datetime.strptime(combined, f"{fmt}%z")
             return _format_result(captured)
         except ValueError:
-            # Fall back to interpreting it as local time when the offset is
-            # malformed. This mirrors the behaviour used when the offset tag
-            # is missing entirely.
             pass
 
     try:
@@ -77,44 +69,173 @@ def _normalise_exif_datetime(dt_value: str, exif: Any) -> Optional[str]:
     except ValueError:
         return None
 
-    # ``dateutil.tz.gettz`` honours daylight saving transitions for the
-    # current locale, making the behaviour both predictable for callers and
-    # easy to override in tests.
     local_tz = gettz() or datetime.now().astimezone().tzinfo or timezone.utc
     return _format_result(naive.replace(tzinfo=local_tz))
 
 
-def read_image_meta(path: Path) -> Dict[str, Any]:
-    """Read metadata for an image file using Pillow."""
+def _coerce_decimal(value: Any) -> Optional[float]:
+    """Return ``value`` as a floating point number when possible."""
 
-    if Image is None or UnidentifiedImageError is None:
-        return _empty_image_info()
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        candidate = value.strip()
+        if not candidate:
+            return None
+        try:
+            return float(candidate)
+        except ValueError:
+            return None
+    return None
+
+
+def _extract_group(metadata: Dict[str, Any], group_name: str) -> Optional[Dict[str, Any]]:
+    """Return a nested ExifTool group dictionary if it exists."""
+
+    group = metadata.get(group_name)
+    if isinstance(group, dict):
+        return group
+    return None
+
+
+def _extract_gps_from_exiftool(meta: Dict[str, Any]) -> Optional[Dict[str, float]]:
+    """Extract decimal GPS coordinates from ExifTool's nested metadata maps."""
+
+    composite = _extract_group(meta, "Composite")
+    if composite:
+        lat = _coerce_decimal(composite.get("GPSLatitude"))
+        lon = _coerce_decimal(composite.get("GPSLongitude"))
+        if lat is not None and lon is not None:
+            return {"lat": lat, "lon": lon}
+
+    gps_group = _extract_group(meta, "GPS")
+    if gps_group:
+        lat = _coerce_decimal(gps_group.get("GPSLatitude"))
+        lon = _coerce_decimal(gps_group.get("GPSLongitude"))
+        if lat is not None and lon is not None:
+            lat_ref = str(gps_group.get("GPSLatitudeRef", "N")).upper()
+            lon_ref = str(gps_group.get("GPSLongitudeRef", "E")).upper()
+            if lat_ref == "S":
+                lat = -lat
+            if lon_ref == "W":
+                lon = -lon
+            return {"lat": lat, "lon": lon}
+
+    return None
+
+
+def _extract_datetime_from_exiftool(meta: Dict[str, Any]) -> Optional[str]:
+    """Extract a UTC ISO-8601 timestamp from the ExifTool metadata payload."""
+
+    composite = _extract_group(meta, "Composite")
+    if composite:
+        for key in ("SubSecDateTimeOriginal", "SubSecCreateDate", "GPSDateTime"):
+            value = composite.get(key)
+            if isinstance(value, str) and value.strip():
+                try:
+                    parsed = isoparse(value)
+                except (ValueError, TypeError):
+                    continue
+                if parsed.tzinfo is None:
+                    local_tz = gettz() or datetime.now().astimezone().tzinfo or timezone.utc
+                    parsed = parsed.replace(tzinfo=local_tz)
+                return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    exif_ifd = _extract_group(meta, "ExifIFD")
+    if exif_ifd:
+        for key in ("DateTimeOriginal", "CreateDate"):
+            value = exif_ifd.get(key)
+            if not isinstance(value, str) or not value.strip():
+                continue
+            try:
+                parsed = datetime.strptime(value, "%Y:%m:%d %H:%M:%S")
+            except ValueError:
+                continue
+
+            offset_str = exif_ifd.get("OffsetTimeOriginal")
+            if isinstance(offset_str, str) and offset_str:
+                try:
+                    offset = datetime.strptime(offset_str, "%z").tzinfo
+                except ValueError:
+                    offset = None
+                if offset is not None:
+                    parsed = parsed.replace(tzinfo=offset)
+                else:
+                    local_tz = gettz() or datetime.now().astimezone().tzinfo or timezone.utc
+                    parsed = parsed.replace(tzinfo=local_tz)
+            else:
+                local_tz = gettz() or datetime.now().astimezone().tzinfo or timezone.utc
+                parsed = parsed.replace(tzinfo=local_tz)
+
+            return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    return None
+
+
+def _extract_content_id_from_exiftool(meta: Dict[str, Any]) -> Optional[str]:
+    """Extract the Apple ``ContentIdentifier`` used for Live Photo pairing."""
+
+    apple_group = _extract_group(meta, "Apple")
+    if apple_group:
+        content_id = apple_group.get("ContentIdentifier")
+        if isinstance(content_id, str) and content_id:
+            return content_id
+    return None
+
+
+def read_image_meta(path: Path) -> Dict[str, Any]:
+    """Read metadata for ``path`` using Pillow for geometry and ExifTool for rich data."""
+
+    print(f"Opening image for metadata: {path}")
+    info = _empty_image_info()
+
+    exif_payload: Any = None
+    if Image is not None and UnidentifiedImageError is not None:
+        try:
+            with Image.open(path) as img:
+                info["w"] = img.width
+                info["h"] = img.height
+                info["mime"] = Image.MIME.get(img.format, None)
+                exif_payload = img.getexif() if hasattr(img, "getexif") else None
+        except UnidentifiedImageError as exc:
+            raise ExternalToolError(f"Unable to read image metadata for {path}") from exc
+        except OSError as exc:
+            raise ExternalToolError(f"OS error while reading {path}: {exc}") from exc
 
     try:
-        with Image.open(path) as img:
-            exif = img.getexif() if hasattr(img, "getexif") else None
-            info: Dict[str, Any] = {
-                "w": img.width,
-                "h": img.height,
-                "mime": Image.MIME.get(img.format, None),
-                "dt": None,
-                "make": None,
-                "model": None,
-                "gps": None,
-                "content_id": None,
-            }
-            if exif:
-                dt_value = exif.get(36867) or exif.get(306)
-                if isinstance(dt_value, str):
-                    info["dt"] = _normalise_exif_datetime(dt_value, exif)
-            return info
-    except UnidentifiedImageError as exc:
-        raise ExternalToolError(f"Unable to read image metadata for {path}") from exc
-    except OSError:
-        # ``Image.open`` may raise ``OSError`` for minimal or truncated images such
-        # as the 1x1 PNG fixtures used in sidebar tests. Treat those as missing
-        # metadata instead of aborting the scan so the index can still be built.
-        return _empty_image_info()
+        metadata_block = get_exiftool_metadata(path)
+    except ExternalToolError as exc:
+        print(f"Warning: Could not use ExifTool for {path}: {exc}")
+        metadata_block = None
+
+    gps_found = False
+    if isinstance(metadata_block, dict):
+        gps_payload = _extract_gps_from_exiftool(metadata_block)
+        if gps_payload is not None:
+            info["gps"] = gps_payload
+            gps_found = True
+        dt_value = _extract_datetime_from_exiftool(metadata_block)
+        if dt_value:
+            info["dt"] = dt_value
+        content_id = _extract_content_id_from_exiftool(metadata_block)
+        if content_id:
+            info["content_id"] = content_id
+
+    if info["dt"] is None and exif_payload:
+        fallback_dt = exif_payload.get(36867) or exif_payload.get(306)
+        if isinstance(fallback_dt, str):
+            info["dt"] = _normalise_exif_datetime(fallback_dt, exif_payload)
+
+    if gps_found:
+        gps = info["gps"]
+        print(
+            "Extracted GPS coordinates via ExifTool: "
+            f"lat={gps['lat']:.6f}, lon={gps['lon']:.6f}"
+        )
+    else:
+        print("No GPS coordinates found in metadata")
+
+    return info
 
 
 def read_video_meta(path: Path) -> Dict[str, Any]:
@@ -168,4 +289,12 @@ def read_video_meta(path: Path) -> Dict[str, Any]:
                 codec = stream.get("codec_name")
                 if isinstance(codec, str) and not info.get("codec"):
                     info["codec"] = codec
+                tags = stream.get("tags")
+                if isinstance(tags, dict):
+                    content_id = tags.get("com.apple.quicktime.content.identifier")
+                    if isinstance(content_id, str) and content_id:
+                        info["content_id"] = content_id
     return info
+
+
+__all__ = ["read_image_meta", "read_video_meta"]
