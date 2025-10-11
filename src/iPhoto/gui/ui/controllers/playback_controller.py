@@ -232,6 +232,7 @@ class PlaybackController:
         QTimer.singleShot(0, lambda idx=proxy_index: self._filmstrip_view.center_on_index(idx))
         self._player_bar.setEnabled(True)
         self._view_controller.show_detail_view()
+        self._filmstrip_view.doItemsLayout()
 
     def handle_playlist_source_changed(self, source: Path) -> None:
         previous_state = self._state
