@@ -205,13 +205,12 @@ def read_image_meta(path: Path) -> Dict[str, Any]:
 
     gps_found = False
     try:
-        exiftool_data = get_exiftool_metadata(path)
+        metadata_block = get_exiftool_metadata(path)
     except ExternalToolError as exc:
         print(f"Warning: Could not use ExifTool for {path}: {exc}")
-        exiftool_data = []
+        metadata_block = None
 
-    if exiftool_data:
-        metadata_block = exiftool_data[0]
+    if metadata_block:
         gps_payload = _extract_gps_from_exiftool(metadata_block)
         if gps_payload is not None:
             info["gps"] = gps_payload
