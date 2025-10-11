@@ -172,6 +172,25 @@ class PlaybackController:
         # state that immediately snaps back to the main view.
         is_in_favorites_view = self._model.filter_mode() == "favorites"
         was_favorite = self._current_is_favorite
+        fallback_row: int | None = None
+        if is_in_favorites_view and was_favorite:
+            # When removing a favourite while viewing the favourites collection we
+            # need to decide which surviving item should take focus.  We capture
+            # the candidate row before the toggle so we can select a neighbour
+            # once the proxy filter removes the current item.  If another asset
+            # follows the current one we want to promote it into view (which
+            # means re-selecting the current index once the rows shift).  When
+            # we are at the end of the list we fall back to the previous row.
+            total_rows = self._model.rowCount()
+            current_row = self._playlist.current_row()
+            if total_rows <= 1:
+                fallback_row = None
+            elif current_row == -1:
+                fallback_row = 0
+            elif current_row < total_rows - 1:
+                fallback_row = current_row
+            else:
+                fallback_row = current_row - 1
 
         # Temporarily disable the button so repeated clicks cannot queue multiple toggle
         # requests while the manifest write is in flight.  The facade emits a lightweight
@@ -188,11 +207,45 @@ class PlaybackController:
 
         # If a favorite is removed while the favorites filter is active, the proxy model
         # will discard the now-unfavorited row.  That removal leaves the playlist without a
-        # current item, which would otherwise trigger a jarring jump back to the gallery
-        # once the UI realises the selection is invalid.  By explicitly showing the gallery
-        # we perform the same transition intentionally and immediately, preserving context
-        # and preventing a confusing flicker.
+        # current item, which would otherwise trigger a jarring jump back once the UI
+        # realises the selection is invalid.  We schedule a follow-up step that either
+        # focuses a surviving neighbour or, when no favourites remain, falls back to the
+        # gallery grid in a controlled fashion.
         if is_in_favorites_view and was_favorite and not new_state:
+            QTimer.singleShot(
+                0,
+                lambda row=fallback_row: self._focus_next_favorite(row),
+            )
+
+    def _focus_next_favorite(self, candidate_row: int | None) -> None:
+        """Select a surviving favourite after the current item disappears.
+
+        The favourites filter removes rows whose ``Roles.FEATURED`` flag becomes
+        ``False``.  Once that happens the playlist clears its current selection
+        because the proxy index no longer resolves to a valid entry.  This helper
+        attempts to focus a neighbouring row so the detail view keeps showing
+        meaningful content.  When no favourites remain the gallery grid is shown
+        instead to signal that the collection is now empty.
+        """
+
+        if candidate_row is None or self._model.rowCount() == 0:
+            self._view_controller.show_gallery_view()
+            return
+
+        target = max(0, min(candidate_row, self._model.rowCount() - 1))
+        self._playlist.set_current(target)
+        if self._playlist.current_row() != -1:
+            return
+
+        # No favourite could be focused, so try the first available asset before
+        # falling back to the gallery grid.  This best-effort approach keeps the
+        # detail surface active whenever possible while still providing a graceful
+        # exit when the filter results become empty.
+        if self._model.rowCount() == 0:
+            self._view_controller.show_gallery_view()
+            return
+        self._playlist.set_current(0)
+        if self._playlist.current_row() == -1:
             self._view_controller.show_gallery_view()
 
     # ------------------------------------------------------------------
