@@ -300,37 +300,54 @@ def read_video_meta(path: Path) -> Dict[str, Any]:
             info["dur"] = float(duration)
         except ValueError:
             info["dur"] = None
+
+    # Live Photo companion videos often expose the content identifier either at
+    # the container (format) level or within individual streams. We inspect both
+    # so the pairing logic remains stable even if ffprobe changes where it emits
+    # the tag.
+    if isinstance(fmt, dict):
+        top_level_tags = fmt.get("tags")
+        if isinstance(top_level_tags, dict) and not info.get("content_id"):
+            content_id = top_level_tags.get("com.apple.quicktime.content.identifier")
+            if isinstance(content_id, str) and content_id:
+                info["content_id"] = content_id
+
     streams = metadata.get("streams", []) if isinstance(metadata, dict) else []
     if isinstance(streams, list):
         for stream in streams:
             if not isinstance(stream, dict):
                 continue
-            if stream.get("codec_type") == "video":
+
+            tag_payload = stream.get("tags")
+            tags = tag_payload if isinstance(tag_payload, dict) else {}
+            if tags and not info.get("content_id"):
+                content_id = tags.get("com.apple.quicktime.content.identifier")
+                if isinstance(content_id, str) and content_id:
+                    info["content_id"] = content_id
+
+            codec_type = stream.get("codec_type")
+            if codec_type == "video":
                 codec = stream.get("codec_name")
                 if isinstance(codec, str):
                     info["codec"] = codec
+
                 width = stream.get("width")
                 height = stream.get("height")
                 if isinstance(width, int) and isinstance(height, int):
                     info["w"] = width
                     info["h"] = height
-                tags = stream.get("tags")
-                if isinstance(tags, dict):
+
+                if tags:
                     still_time = tags.get("com.apple.quicktime.still-image-time")
                     if isinstance(still_time, str):
                         try:
                             info["still_image_time"] = float(still_time)
                         except ValueError:
                             info["still_image_time"] = None
-            elif stream.get("codec_type") == "audio":
+            elif codec_type == "audio":
                 codec = stream.get("codec_name")
                 if isinstance(codec, str) and not info.get("codec"):
                     info["codec"] = codec
-                tags = stream.get("tags")
-                if isinstance(tags, dict):
-                    content_id = tags.get("com.apple.quicktime.content.identifier")
-                    if isinstance(content_id, str) and content_id:
-                        info["content_id"] = content_id
     return info
 
 
