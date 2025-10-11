@@ -73,10 +73,21 @@ def get_metadata(path: str | Path) -> Optional[Dict[str, Any]]:
 
     target = str(path)
 
+    common_args = ["-n", "-api", "compact=1", "-g1"]
+
     if ExifToolHelper is not None:
+        helper_kwargs: Dict[str, Any] = {"common_args": common_args, "encoding": "utf-8"}
         try:
-            with ExifToolHelper(common_args=["-n", "-api", "compact=1", "-g1"]) as helper:
-                payload = helper.get_metadata([target])
+            try:
+                with ExifToolHelper(**helper_kwargs) as helper:
+                    payload = helper.get_metadata([target])
+            except TypeError:
+                # Older ``pyexiftool`` builds did not accept an explicit ``encoding`` argument.
+                # Retry without it so those versions remain usable while still preferring
+                # UTF-8 on modern releases.
+                helper_kwargs.pop("encoding", None)
+                with ExifToolHelper(**helper_kwargs) as helper:
+                    payload = helper.get_metadata([target])
         except FileNotFoundError as exc:  # pragma: no cover - depends on runtime env
             raise ExternalToolError(
                 "pyexiftool could not locate the exiftool executable."
@@ -84,16 +95,32 @@ def get_metadata(path: str | Path) -> Optional[Dict[str, Any]]:
         return payload[0] if payload else None
 
     if ExifTool is not None:
+        tool_kwargs: Dict[str, Any] = {"common_args": common_args, "encoding": "utf-8"}
         try:
-            with ExifTool(common_args=["-n", "-api", "compact=1", "-g1"]) as tool:
-                if hasattr(tool, "get_metadata_batch"):
-                    payload = tool.get_metadata_batch([target])
-                    return payload[0] if payload else None
-                if hasattr(tool, "get_metadata"):
-                    payload = tool.get_metadata(target)
-                    if isinstance(payload, list):
+            try:
+                with ExifTool(**tool_kwargs) as tool:
+                    if hasattr(tool, "get_metadata_batch"):
+                        payload = tool.get_metadata_batch([target])
                         return payload[0] if payload else None
-                    return payload
+                    if hasattr(tool, "get_metadata"):
+                        payload = tool.get_metadata(target)
+                        if isinstance(payload, list):
+                            return payload[0] if payload else None
+                        return payload
+            except TypeError:
+                # Just like the helper shim, legacy wrappers might not understand the
+                # ``encoding`` keyword.  Removing it keeps the fallback path viable without
+                # sacrificing the Windows-specific fix on newer distributions.
+                tool_kwargs.pop("encoding", None)
+                with ExifTool(**tool_kwargs) as tool:
+                    if hasattr(tool, "get_metadata_batch"):
+                        payload = tool.get_metadata_batch([target])
+                        return payload[0] if payload else None
+                    if hasattr(tool, "get_metadata"):
+                        payload = tool.get_metadata(target)
+                        if isinstance(payload, list):
+                            return payload[0] if payload else None
+                        return payload
         except FileNotFoundError as exc:  # pragma: no cover - depends on runtime env
             raise ExternalToolError(
                 "pyexiftool could not locate the exiftool executable."
