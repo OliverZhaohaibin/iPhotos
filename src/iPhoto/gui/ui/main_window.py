@@ -387,6 +387,7 @@ class MainWindow(QMainWindow):
         self._facade.loadStarted.connect(self._on_load_started)
         self._facade.loadProgress.connect(self._on_load_progress)
         self._facade.loadFinished.connect(self._on_load_finished)
+        self._facade.featuredStatusChanged.connect(self._on_featured_changed)
 
         for signal in (
             self._asset_model.modelReset,
@@ -454,6 +455,20 @@ class MainWindow(QMainWindow):
     def _handle_album_opened(self, root: Path) -> None:
         self._navigation.handle_album_opened(root)
         self._view_controller.show_gallery_view()
+
+    def _on_featured_changed(self, rel: str, is_featured: bool) -> None:
+        """Propagate a favourite toggle for *rel* into the active models.
+
+        ``AssetModel`` filters operate on the cached list-model rows.  When the facade
+        toggles a favourite flag we update the backing list model so all proxy views see
+        the new :class:`Roles.FEATURED` value immediately.  Afterwards the proxy filter is
+        invalidated to ensure views such as the *Favorites* collection hide or reveal the
+        asset according to the refreshed flag.
+        """
+
+        source_model = self._asset_model.source_model()
+        source_model.update_featured_status(rel, is_featured)
+        self._asset_model.invalidateFilter()
 
     def _on_scan_progress(self, root: Path, current: int, total: int) -> None:
         if self._progress_context not in {"scan", None}:

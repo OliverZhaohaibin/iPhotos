@@ -170,6 +170,33 @@ class AssetListModel(QAbstractListModel):
     def thumbnail_loader(self) -> ThumbnailLoader:
         return self._thumb_loader
 
+    def update_featured_status(self, rel: str, featured: bool) -> None:
+        """Synchronise the cached ``featured`` flag for the asset identified by *rel*.
+
+        ``AssetListModel`` keeps a local copy of the manifest data so the views can
+        display rows without repeatedly touching disk.  When the facade toggles the
+        favourite state of a single asset we only need to adjust that cached row instead
+        of rebuilding the entire model.  The lookup table is consulted to translate the
+        relative path into the corresponding row index.  If the asset is currently loaded
+        we mutate the cached row and emit :class:`Roles.FEATURED` so any proxy models and
+        delegates refresh their presentation immediately.
+        """
+
+        row_index = self._row_lookup.get(rel)
+        if row_index is None:
+            return
+        if not (0 <= row_index < len(self._rows)):
+            return
+
+        row = self._rows[row_index]
+        if row.get("featured") == featured:
+            return
+
+        row["featured"] = featured
+        model_index = self.index(row_index, 0)
+        if model_index.isValid():
+            self.dataChanged.emit(model_index, model_index, [Roles.FEATURED])
+
     # ------------------------------------------------------------------
     # Facade callbacks
     # ------------------------------------------------------------------

@@ -165,16 +165,17 @@ class PlaybackController:
             return
 
         # Temporarily disable the button so repeated clicks cannot queue multiple toggle
-        # requests before the facade refreshes the model.  The underlying model reload is
-        # asynchronous, therefore we provide immediate visual feedback and then hand
-        # control back once the facade call returns.
+        # requests while the manifest write is in flight.  The facade emits a
+        # lightweight change notification for the specific asset, so we provide
+        # immediate visual feedback and then re-enable the control once the
+        # operation completes.
         self._favorite_button.setEnabled(False)
         new_state = self._facade.toggle_featured(self._current_asset_ref)
         self._current_is_favorite = bool(new_state)
         self._apply_favorite_visual_state(self._current_is_favorite)
         # Re-enable the control immediately so the user can toggle back if required.  The
-        # playlist change notification will run shortly afterwards and reconcile the icon
-        # with the authoritative model state, keeping the UI responsive even on slower I/O.
+        # playlist change notification will still reconcile the icon with the authoritative
+        # model state, keeping the UI responsive even on slower I/O.
         self._favorite_button.setEnabled(True)
 
     # ------------------------------------------------------------------

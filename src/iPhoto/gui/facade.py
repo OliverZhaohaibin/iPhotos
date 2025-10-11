@@ -28,6 +28,7 @@ class AppFacade(QObject):
     loadStarted = Signal(object)
     loadProgress = Signal(object, int, int)
     loadFinished = Signal(object, bool)
+    featuredStatusChanged = Signal(str, bool)
 
     def __init__(self) -> None:
         super().__init__()
@@ -162,13 +163,12 @@ class AppFacade(QObject):
     def toggle_featured(self, ref: str) -> bool:
         """Toggle *ref* in the album's featured list and return the new state.
 
-        The GUI favours incremental updates when reacting to user input.  The
-        original implementation delegated to :meth:`_save_manifest`, which
-        re-opened the album and triggered a full UI reset.  That behaviour
-        caused the detail view to collapse back to the gallery every time a
-        favourite was toggled.  By keeping the manifest mutation local and
-        simply restarting the asset loader we ensure views receive fresh role
-        data without disturbing the surrounding layout.
+        The GUI favours incremental updates when reacting to user input.  A
+        previous implementation restarted the entire asset loader, which cleared
+        the list model, replaced the detail placeholder, and caused flicker in
+        filtered views.  Emitting :attr:`featuredStatusChanged` instead allows
+        views to adjust a single row in place without disturbing selection or
+        layout state.
         """
 
         album = self._require_album()
@@ -195,11 +195,11 @@ class AppFacade(QObject):
                 album.remove_featured(ref)
             return was_featured
 
-        # Refresh the asset list in-place so Roles.FEATURED updates propagate to every
-        # connected view without bouncing the user back to the gallery layout.  This is
-        # the lightest-weight refresh path that still honours proxy models filtering on
-        # favourite state.
-        self._asset_list_model.start_load()
+        # Surface the new state to the UI layer so the relevant row can be
+        # updated in place.  The signal payload carries the relative asset path
+        # because that identifier is stable across proxy layers and survives
+        # filtering operations.
+        self.featuredStatusChanged.emit(ref, not was_featured)
         return not was_featured
 
     # ------------------------------------------------------------------
