@@ -75,16 +75,14 @@ def get_metadata_batch(paths: List[Path]) -> List[Dict[str, Any]]:
         # ``"2 image files read"`` on stderr. Treat these runs as successful
         # so long as JSON payload is present, otherwise propagate the real
         # failure details to the caller.
-        if "image files read" in stderr.lower():
-            if exc.stdout:
-                try:
-                    return json.loads(exc.stdout)
-                except json.JSONDecodeError as json_exc:  # pragma: no cover - defensive
-                    raise ExternalToolError(
-                        "Failed to parse JSON output from ExifTool: "
-                        f"{json_exc}"
-                    ) from json_exc
-            return []
+        if "image files read" in stderr.lower() and exc.stdout:
+            try:
+                return json.loads(exc.stdout)
+            except json.JSONDecodeError as json_exc:  # pragma: no cover - defensive
+                raise ExternalToolError(
+                    "Failed to parse JSON output from ExifTool: "
+                    f"{json_exc}"
+                ) from json_exc
         raise ExternalToolError(f"ExifTool failed with an error: {stderr}") from exc
 
     try:
