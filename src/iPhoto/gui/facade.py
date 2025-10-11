@@ -177,30 +177,31 @@ class AppFacade(QObject):
 
         featured = album.manifest.setdefault("featured", [])
         was_featured = ref in featured
+        new_state = not was_featured
 
-        if was_featured:
-            album.remove_featured(ref)
-        else:
+        if new_state:
             album.add_featured(ref)
+        else:
+            album.remove_featured(ref)
 
         try:
+            # Step 1: persist the manifest change without reopening the album so the
+            # current UI state remains intact.
             album.save()
         except IPhotoError as exc:
-            # Surface the failure to the UI and roll back the in-memory change so the
-            # model keeps reflecting the persisted state.
+            # Step 1a: roll back the in-memory change if persistence fails so cached
+            # models continue to mirror the on-disk manifest.
             self.errorRaised.emit(str(exc))
-            if was_featured:
-                album.add_featured(ref)
-            else:
+            if new_state:
                 album.remove_featured(ref)
+            else:
+                album.add_featured(ref)
             return was_featured
 
-        # Surface the new state to the UI layer so the relevant row can be
-        # updated in place.  The signal payload carries the relative asset path
-        # because that identifier is stable across proxy layers and survives
-        # filtering operations.
-        self.featuredStatusChanged.emit(ref, not was_featured)
-        return not was_featured
+        # Step 2: emit a lightweight notification so the UI updates only the affected
+        # row instead of rebuilding the entire model.
+        self.featuredStatusChanged.emit(ref, new_state)
+        return new_state
 
     # ------------------------------------------------------------------
     # Internal utilities
