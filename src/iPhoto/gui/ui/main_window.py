@@ -32,8 +32,11 @@ except ImportError:  # pragma: no cover - script execution fallback
     from iPhotos.src.iPhoto.appctx import AppContext
 from ..facade import AppFacade
 from .controllers.dialog_controller import DialogController
+from .controllers.header_controller import HeaderController
 from .controllers.navigation_controller import NavigationController
+from .controllers.player_view_controller import PlayerViewController
 from .controllers.playback_controller import PlaybackController
+from .controllers.view_controller import ViewController
 from .media import MediaController, PlaylistController, require_multimedia
 from .models.asset_model import AssetModel, Roles
 from .models.spacer_proxy_model import SpacerProxyModel
@@ -109,6 +112,24 @@ class MainWindow(QMainWindow):
         self._media.set_muted(initial_muted)
 
         self._build_ui()
+        self._view_controller = ViewController(
+            self._view_stack,
+            self._gallery_page,
+            self._detail_page,
+            self,
+        )
+        self._player_view_controller = PlayerViewController(
+            self._player_stack,
+            self._image_viewer,
+            self._video_area,
+            self._player_placeholder,
+            self._live_badge,
+            self,
+        )
+        self._header_controller = HeaderController(
+            self._location_label,
+            self._timestamp_label,
+        )
         self._navigation = NavigationController(
             context,
             self._facade,
@@ -123,19 +144,12 @@ class MainWindow(QMainWindow):
             self._media,
             self._playlist,
             self._player_bar,
-            self._video_area,
             self._grid_view,
             self._filmstrip_view,
-            self._player_stack,
-            self._image_viewer,
-            self._player_placeholder,
-            self._view_stack,
-            self._gallery_page,
-            self._detail_page,
             self._preview_window,
-            self._live_badge,
-            self._location_label,
-            self._timestamp_label,
+            self._player_view_controller,
+            self._view_controller,
+            self._header_controller,
             self._status,
             self._dialog,
         )
@@ -379,7 +393,7 @@ class MainWindow(QMainWindow):
             (self._media.errorOccurred, self._dialog.show_error),
         ):
             signal.connect(slot)
-        self._back_button.clicked.connect(self._playback.show_gallery_view)
+        self._back_button.clicked.connect(self._view_controller.show_gallery_view)
 
     # Public API used by sidebar/actions
     def open_album_from_path(self, path: Path) -> None:
@@ -406,7 +420,7 @@ class MainWindow(QMainWindow):
 
     def _handle_album_opened(self, root: Path) -> None:
         self._navigation.handle_album_opened(root)
-        self._playback.show_gallery_view()
+        self._view_controller.show_gallery_view()
 
     def _on_scan_progress(self, root: Path, current: int, total: int) -> None:
         if self._progress_context not in {"scan", None}:
