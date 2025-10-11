@@ -11,7 +11,7 @@ from dateutil.tz import gettz
 
 from ..errors import ExternalToolError
 from ..utils.deps import load_pillow
-from ..utils.exiftool import get_metadata as get_exiftool_metadata
+from ..utils.exiftool import get_metadata_batch
 from ..utils.ffmpeg import probe_media
 
 _PILLOW = load_pillow()
@@ -90,16 +90,25 @@ def _coerce_decimal(value: Any) -> Optional[float]:
 
 
 def _extract_group(metadata: Dict[str, Any], group_name: str) -> Optional[Dict[str, Any]]:
-    """Return a nested ExifTool group dictionary if it exists."""
+    """Return an ExifTool group mapping from either nested or flattened layouts."""
 
     group = metadata.get(group_name)
     if isinstance(group, dict):
         return group
-    return None
+
+    # When ``-g1`` is combined with ``-json`` the output may already be nested.
+    # Older configurations without that flag expose keys such as ``Composite:Foo``.
+    prefix = f"{group_name}:"
+    extracted = {
+        key[len(prefix) :]: value
+        for key, value in metadata.items()
+        if isinstance(key, str) and key.startswith(prefix)
+    }
+    return extracted or None
 
 
 def _extract_gps_from_exiftool(meta: Dict[str, Any]) -> Optional[Dict[str, float]]:
-    """Extract decimal GPS coordinates from ExifTool's nested metadata maps."""
+    """Extract decimal GPS coordinates from ExifTool's metadata payload."""
 
     composite = _extract_group(meta, "Composite")
     if composite:
@@ -153,20 +162,17 @@ def _extract_datetime_from_exiftool(meta: Dict[str, Any]) -> Optional[str]:
                 continue
 
             offset_str = exif_ifd.get("OffsetTimeOriginal")
+            tz_info = None
             if isinstance(offset_str, str) and offset_str:
                 try:
-                    offset = datetime.strptime(offset_str, "%z").tzinfo
+                    tz_info = datetime.strptime(offset_str, "%z").tzinfo
                 except ValueError:
-                    offset = None
-                if offset is not None:
-                    parsed = parsed.replace(tzinfo=offset)
-                else:
-                    local_tz = gettz() or datetime.now().astimezone().tzinfo or timezone.utc
-                    parsed = parsed.replace(tzinfo=local_tz)
-            else:
-                local_tz = gettz() or datetime.now().astimezone().tzinfo or timezone.utc
-                parsed = parsed.replace(tzinfo=local_tz)
+                    tz_info = None
 
+            if tz_info is None:
+                tz_info = gettz() or datetime.now().astimezone().tzinfo or timezone.utc
+
+            parsed = parsed.replace(tzinfo=tz_info)
             return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
     return None
@@ -183,50 +189,67 @@ def _extract_content_id_from_exiftool(meta: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def read_image_meta(path: Path) -> Dict[str, Any]:
-    """Read metadata for ``path`` using Pillow for geometry and ExifTool for rich data."""
+def _initialise_image_info(path: Path) -> tuple[Dict[str, Any], Optional[Any]]:
+    """Open ``path`` with Pillow to collect basic geometry and EXIF payload."""
 
     print(f"Opening image for metadata: {path}")
     info = _empty_image_info()
+    exif_payload: Optional[Any] = None
 
-    exif_payload: Any = None
-    if Image is not None and UnidentifiedImageError is not None:
-        try:
-            with Image.open(path) as img:
-                info["w"] = img.width
-                info["h"] = img.height
-                info["mime"] = Image.MIME.get(img.format, None)
-                exif_payload = img.getexif() if hasattr(img, "getexif") else None
-        except UnidentifiedImageError as exc:
-            raise ExternalToolError(f"Unable to read image metadata for {path}") from exc
-        except OSError as exc:
-            raise ExternalToolError(f"OS error while reading {path}: {exc}") from exc
+    if Image is None or UnidentifiedImageError is None:
+        return info, None
 
     try:
-        metadata_block = get_exiftool_metadata(path)
-    except ExternalToolError as exc:
-        print(f"Warning: Could not use ExifTool for {path}: {exc}")
-        metadata_block = None
+        with Image.open(path) as img:
+            info["w"] = img.width
+            info["h"] = img.height
+            info["mime"] = Image.MIME.get(img.format, None)
+            exif_payload = img.getexif() if hasattr(img, "getexif") else None
+    except UnidentifiedImageError as exc:
+        raise ExternalToolError(f"Unable to read image metadata for {path}") from exc
+    except OSError as exc:
+        raise ExternalToolError(f"OS error while reading {path}: {exc}") from exc
+
+    return info, exif_payload
+
+
+def _apply_exiftool_metadata(info: Dict[str, Any], metadata: Optional[Dict[str, Any]]) -> bool:
+    """Populate ``info`` with values extracted from ``metadata``."""
 
     gps_found = False
-    if isinstance(metadata_block, dict):
-        gps_payload = _extract_gps_from_exiftool(metadata_block)
-        if gps_payload is not None:
-            info["gps"] = gps_payload
-            gps_found = True
-        dt_value = _extract_datetime_from_exiftool(metadata_block)
-        if dt_value:
-            info["dt"] = dt_value
-        content_id = _extract_content_id_from_exiftool(metadata_block)
-        if content_id:
-            info["content_id"] = content_id
+    if not isinstance(metadata, dict):
+        return gps_found
+
+    gps_payload = _extract_gps_from_exiftool(metadata)
+    if gps_payload is not None:
+        info["gps"] = gps_payload
+        gps_found = True
+
+    dt_value = _extract_datetime_from_exiftool(metadata)
+    if dt_value:
+        info["dt"] = dt_value
+
+    content_id = _extract_content_id_from_exiftool(metadata)
+    if content_id:
+        info["content_id"] = content_id
+
+    return gps_found
+
+
+def read_image_meta_with_exiftool(
+    path: Path, metadata: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Read metadata for ``path`` using a pre-fetched ExifTool payload."""
+
+    info, exif_payload = _initialise_image_info(path)
+    gps_found = _apply_exiftool_metadata(info, metadata)
 
     if info["dt"] is None and exif_payload:
         fallback_dt = exif_payload.get(36867) or exif_payload.get(306)
         if isinstance(fallback_dt, str):
             info["dt"] = _normalise_exif_datetime(fallback_dt, exif_payload)
 
-    if gps_found:
+    if gps_found and info["gps"]:
         gps = info["gps"]
         print(
             "Extracted GPS coordinates via ExifTool: "
@@ -236,6 +259,20 @@ def read_image_meta(path: Path) -> Dict[str, Any]:
         print("No GPS coordinates found in metadata")
 
     return info
+
+
+def read_image_meta(path: Path) -> Dict[str, Any]:
+    """Compatibility wrapper that fetches ExifTool data for a single image."""
+
+    metadata_block: Optional[Dict[str, Any]] = None
+    try:
+        payload = get_metadata_batch([path])
+        if payload:
+            metadata_block = payload[0]
+    except ExternalToolError as exc:
+        print(f"Warning: Could not use ExifTool for {path}: {exc}")
+
+    return read_image_meta_with_exiftool(path, metadata_block)
 
 
 def read_video_meta(path: Path) -> Dict[str, Any]:
@@ -297,4 +334,4 @@ def read_video_meta(path: Path) -> Dict[str, Any]:
     return info
 
 
-__all__ = ["read_image_meta", "read_video_meta"]
+__all__ = ["read_image_meta", "read_image_meta_with_exiftool", "read_video_meta"]

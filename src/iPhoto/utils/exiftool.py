@@ -1,4 +1,4 @@
-"""Compatible wrapper around the various :mod:`pyexiftool` helpers."""
+"""Batch-oriented helpers for invoking the :command:`exiftool` CLI."""
 
 from __future__ import annotations
 
@@ -6,62 +6,30 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from ..errors import ExternalToolError
 
-# ``pyexiftool`` has shipped multiple helper classes across releases.  Newer
-# versions expose :class:`ExifToolHelper` while older builds only provide the
-# lower-level :class:`ExifTool`.  Importing conditionally lets us support both
-# variants while also keeping the module importable on systems where the Python
-# package is missing entirely.
-try:  # pragma: no cover - depends on optional third-party package
-    from exiftool import ExifToolHelper, ExifTool
-except Exception:  # pragma: no cover - best effort compatibility shim
-    ExifToolHelper = None  # type: ignore[assignment]
-    try:  # pragma: no cover - depends on optional third-party package
-        from exiftool import ExifTool
-    except Exception:  # pragma: no cover - best effort compatibility shim
-        ExifTool = None  # type: ignore[assignment]
 
+def get_metadata_batch(paths: List[Path]) -> List[Dict[str, Any]]:
+    """Return metadata for *paths* by launching a single ``exiftool`` process.
 
-def _call_exiftool_subprocess(paths: List[str]) -> List[Dict[str, Any]]:
-    """Invoke the ``exiftool`` CLI directly as a last-resort fallback.
+    The prior implementation spawned one external process per asset which was
+    both slow and prone to locale-related decoding errors on Windows.  Issuing a
+    single batch request avoids that overhead and lets us explicitly request
+    UTF-8 so ``exiftool`` output is decoded consistently across platforms.
 
-    The command mirrors the arguments we pass through the Python bindings so the
-    downstream parsing code receives consistent, numeric GPS coordinates and a
-    compact key layout.
-    """
+    Parameters
+    ----------
+    paths:
+        The media files that should be inspected.  Passing an empty list returns
+        an empty list immediately.
 
-    cmd = [
-        "exiftool",
-        "-n",  # return numeric values for GPS fields instead of DMS strings
-        "-api",
-        "compact=1",  # collapse duplicate keys and avoid nested structures
-        "-g1",  # include group names for keys (matches helper behaviour)
-        "-json",
-        *paths,
-    ]
-    try:
-        # ``exiftool`` always emits UTF-8 encoded JSON, even on Windows.  Passing an explicit
-        # ``encoding`` value prevents Python from defaulting to a locale-specific codec such as
-        # ``cp1252`` which would otherwise choke on characters outside the ANSI range.
-        output = subprocess.check_output(cmd, encoding="utf-8")
-    except subprocess.CalledProcessError as exc:  # pragma: no cover - rare error path
-        stderr = exc.stderr if exc.stderr else "unknown error"
-        raise ExternalToolError(f"ExifTool failed: {stderr}") from exc
-    return json.loads(output)
-
-
-def get_metadata(path: str | Path) -> Optional[Dict[str, Any]]:
-    """Return metadata for ``path`` using whichever helper is available.
-
-    The function prefers :class:`ExifToolHelper` because it offers the most
-    user-friendly API on modern ``pyexiftool`` releases.  When that helper is not
-    present we gracefully fall back to the legacy :class:`ExifTool` wrapper and
-    finally to executing the ``exiftool`` binary directly.  All code paths ensure
-    the ``-n`` flag is supplied so GPS coordinates arrive as decimals, which
-    keeps the rest of the application logic straightforward.
+    Raises
+    ------
+    ExternalToolError
+        Raised when the ``exiftool`` executable is missing or when the command
+        exits with a non-zero status code.
     """
 
     executable = shutil.which("exiftool")
@@ -71,64 +39,44 @@ def get_metadata(path: str | Path) -> Optional[Dict[str, Any]]:
             "and ensure it is available on PATH."
         )
 
-    target = str(path)
+    if not paths:
+        return []
 
-    common_args = ["-n", "-api", "compact=1", "-g1"]
+    cmd = [
+        executable,
+        "-n",  # emit numeric GPS values instead of DMS strings
+        "-g1",  # keep group information (e.g. Composite, GPS) in the payload
+        "-json",
+        "-charset",
+        "UTF8",  # tell exiftool how to interpret incoming file paths
+        *[str(path) for path in paths],
+    ]
 
-    if ExifToolHelper is not None:
-        helper_kwargs: Dict[str, Any] = {"common_args": common_args, "encoding": "utf-8"}
-        try:
-            try:
-                with ExifToolHelper(**helper_kwargs) as helper:
-                    payload = helper.get_metadata([target])
-            except TypeError:
-                # Older ``pyexiftool`` builds did not accept an explicit ``encoding`` argument.
-                # Retry without it so those versions remain usable while still preferring
-                # UTF-8 on modern releases.
-                helper_kwargs.pop("encoding", None)
-                with ExifToolHelper(**helper_kwargs) as helper:
-                    payload = helper.get_metadata([target])
-        except FileNotFoundError as exc:  # pragma: no cover - depends on runtime env
-            raise ExternalToolError(
-                "pyexiftool could not locate the exiftool executable."
-            ) from exc
-        return payload[0] if payload else None
+    try:
+        # ``encoding`` forces Python to decode the JSON using UTF-8 even on
+        # locales that default to a more restrictive codec such as ``cp1252``.
+        # ``errors='replace'`` keeps the scan moving if unexpected byte
+        # sequences appear in the metadata.
+        process = subprocess.run(
+            cmd,
+            capture_output=True,
+            check=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except FileNotFoundError as exc:
+        raise ExternalToolError(
+            "exiftool executable not found. Install it from https://exiftool.org/ "
+            "and ensure it is available on PATH."
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr if exc.stderr else "unknown error"
+        raise ExternalToolError(f"ExifTool failed with an error: {stderr}") from exc
 
-    if ExifTool is not None:
-        tool_kwargs: Dict[str, Any] = {"common_args": common_args, "encoding": "utf-8"}
-        try:
-            try:
-                with ExifTool(**tool_kwargs) as tool:
-                    if hasattr(tool, "get_metadata_batch"):
-                        payload = tool.get_metadata_batch([target])
-                        return payload[0] if payload else None
-                    if hasattr(tool, "get_metadata"):
-                        payload = tool.get_metadata(target)
-                        if isinstance(payload, list):
-                            return payload[0] if payload else None
-                        return payload
-            except TypeError:
-                # Just like the helper shim, legacy wrappers might not understand the
-                # ``encoding`` keyword.  Removing it keeps the fallback path viable without
-                # sacrificing the Windows-specific fix on newer distributions.
-                tool_kwargs.pop("encoding", None)
-                with ExifTool(**tool_kwargs) as tool:
-                    if hasattr(tool, "get_metadata_batch"):
-                        payload = tool.get_metadata_batch([target])
-                        return payload[0] if payload else None
-                    if hasattr(tool, "get_metadata"):
-                        payload = tool.get_metadata(target)
-                        if isinstance(payload, list):
-                            return payload[0] if payload else None
-                        return payload
-        except FileNotFoundError as exc:  # pragma: no cover - depends on runtime env
-            raise ExternalToolError(
-                "pyexiftool could not locate the exiftool executable."
-            ) from exc
-
-    payload = _call_exiftool_subprocess([target])
-    return payload[0] if payload else None
+    try:
+        return json.loads(process.stdout)
+    except json.JSONDecodeError as exc:
+        raise ExternalToolError(f"Failed to parse JSON output from ExifTool: {exc}") from exc
 
 
-__all__ = ["get_metadata"]
-
+__all__ = ["get_metadata_batch"]
