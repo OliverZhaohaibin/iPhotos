@@ -53,7 +53,12 @@ class FilmstripView(AssetGrid):
         self.refresh_spacers()
 
     def refresh_spacers(self, current_proxy_index: QModelIndex | None = None) -> None:
-        """Recalculate the spacer width exposed by the proxy model."""
+        """Recalculate spacer padding and optionally use the provided index.
+
+        Passing the proxy index of the current asset allows the view to
+        compute spacing without walking the entire model, which keeps rapid
+        navigation smooth when many items are present.
+        """
 
         viewport = self.viewport()
         model = self.model()
@@ -77,6 +82,7 @@ class FilmstripView(AssetGrid):
         setter(padding)
 
     def _current_item_width(self, current_proxy_index: QModelIndex | None = None) -> int:
+        """Return the width of the active tile, preferring the supplied index."""
         model = self.model()
         delegate = self.itemDelegate()
         if model is None or delegate is None or model.rowCount() == 0:

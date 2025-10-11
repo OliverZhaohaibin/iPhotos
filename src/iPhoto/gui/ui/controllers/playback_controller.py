@@ -201,12 +201,11 @@ class PlaybackController:
             if candidate.isValid():
                 proxy_index = candidate
 
-        # Ensure the filmstrip layout responds to width changes from the
-        # delegate's dynamic size hints so neighbours slide instead of
-        # overlapping the current tile.
+        # Refresh the spacer width once with the known proxy index so the
+        # proxy model can update padding without having to rescan for the
+        # current item. This replaces the previous manual geometry updates
+        # that forced Qt to recompute the layout repeatedly.
         self._filmstrip_view.refresh_spacers(proxy_index)
-        self._filmstrip_view.updateGeometries()
-        self._filmstrip_view.doItemsLayout()
         if row < 0:
             self._reset_playback_state(previous_state=self._state, set_idle_state=True)
             self._player_bar.setEnabled(False)
@@ -225,6 +224,10 @@ class PlaybackController:
             proxy_index,
             QItemSelectionModel.SelectionFlag.NoUpdate,
         )
+        # The post-selection refresh keeps the spacer centred when the
+        # delegate reports selection-dependent hints (for example, showing a
+        # thicker border). The fast path in ``refresh_spacers`` makes this
+        # call inexpensive.
         self._filmstrip_view.refresh_spacers(proxy_index)
         QTimer.singleShot(0, lambda idx=proxy_index: self._filmstrip_view.center_on_index(idx))
         self._player_bar.setEnabled(True)
