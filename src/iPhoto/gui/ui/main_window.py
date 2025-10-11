@@ -6,7 +6,7 @@ from functools import partial
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import QEvent, Qt, QSize
 from PySide6.QtGui import QAction, QFont
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -50,6 +50,7 @@ from .widgets import (
     PreviewWindow,
     LiveBadge,
 )
+from .icons import load_icon
 
 class MainWindow(QMainWindow):
     """Primary window for the desktop experience."""
@@ -83,6 +84,9 @@ class MainWindow(QMainWindow):
         self._view_stack = QStackedWidget()
         self._gallery_page = self._detail_page = None
         self._back_button = QToolButton()
+        self._info_button = QToolButton()
+        self._share_button = QToolButton()
+        self._favorite_button = QToolButton()
         self._live_badge = LiveBadge(self)
         self._live_badge.hide()
         self._badge_host: QWidget | None = None
@@ -152,6 +156,8 @@ class MainWindow(QMainWindow):
             self._header_controller,
             self._status,
             self._dialog,
+            self._facade,
+            self._favorite_button,
         )
 
         self._connect_signals()
@@ -239,10 +245,13 @@ class MainWindow(QMainWindow):
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(6)
-        self._back_button.setText("← Back")
+
+        icon_size = QSize(24, 24)
+        self._back_button.setIcon(load_icon("chevron.left.svg"))
+        self._back_button.setIconSize(icon_size)
         self._back_button.setToolTip("Return to grid view")
         self._back_button.setAutoRaise(True)
-        self._back_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self._back_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         header_layout.addWidget(self._back_button)
 
         info_container = QWidget()
@@ -277,6 +286,30 @@ class MainWindow(QMainWindow):
         info_layout.addWidget(self._location_label)
         info_layout.addWidget(self._timestamp_label)
         header_layout.addWidget(info_container, 1)
+
+        actions_container = QWidget()
+        actions_layout = QHBoxLayout(actions_container)
+        actions_layout.setContentsMargins(0, 0, 0, 0)
+        actions_layout.setSpacing(4)
+
+        def _configure_action_button(button: QToolButton, icon_name: str, tooltip: str) -> None:
+            """Assign a consistent icon-only appearance to header actions."""
+
+            button.setIcon(load_icon(icon_name))
+            button.setIconSize(icon_size)
+            button.setAutoRaise(True)
+            button.setToolTip(tooltip)
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+
+        _configure_action_button(self._info_button, "info.circle.svg", "Show photo information")
+        _configure_action_button(self._share_button, "square.and.arrow.up.svg", "Share this item")
+        _configure_action_button(self._favorite_button, "suit.heart.svg", "Mark as Favorite")
+        self._favorite_button.setEnabled(False)
+
+        for button in (self._info_button, self._share_button, self._favorite_button):
+            actions_layout.addWidget(button)
+
+        header_layout.addWidget(actions_container)
         detail_layout.addWidget(header)
 
         player_container = QWidget()

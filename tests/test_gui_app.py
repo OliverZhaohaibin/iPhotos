@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QStackedWidget,
     QStatusBar,
+    QToolButton,
     QWidget,
 )
 
@@ -327,6 +328,7 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
     dialog = _StubDialog()
     location_label = QLabel()
     timestamp_label = QLabel()
+    favorite_button = QToolButton()
 
     # Construct the layered controllers that ``PlaybackController`` depends on.
     # The widgets built above mirror the real application wiring, so the
@@ -362,6 +364,8 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
         header_controller,
         status_bar,
         dialog,  # type: ignore[arg-type]
+        facade,
+        favorite_button,
     )
     playlist.currentChanged.connect(controller.handle_playlist_current_changed)
     playlist.sourceChanged.connect(controller.handle_playlist_source_changed)

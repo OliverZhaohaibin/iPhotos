@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from enum import Enum, auto
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QItemSelectionModel, QModelIndex, QRect, QTimer
-from PySide6.QtWidgets import QStatusBar
+from PySide6.QtWidgets import QStatusBar, QToolButton
 
 from ....config import VIDEO_COMPLETE_HOLD_BACKSTEP_MS
 from ..media import MediaController, PlaylistController
@@ -18,6 +19,10 @@ from .dialog_controller import DialogController
 from .header_controller import HeaderController
 from .player_view_controller import PlayerViewController
 from .view_controller import ViewController
+from ..icons import load_icon
+
+if TYPE_CHECKING:  # pragma: no cover - import for type checking only
+    from ...facade import AppFacade
 
 
 class PlayerState(Enum):
@@ -49,6 +54,8 @@ class PlaybackController:
         header: HeaderController,
         status_bar: QStatusBar,
         dialog: DialogController,
+        facade: "AppFacade",
+        favorite_button: QToolButton,
     ) -> None:
         self._model = model
         self._media = media
@@ -62,12 +69,22 @@ class PlaybackController:
         self._header = header
         self._status = status_bar
         self._dialog = dialog
+        self._facade = facade
+        self._favorite_button = favorite_button
         self._resume_playback_after_scrub = False
         self._pending_live_photo_still: Path | None = None
         self._original_mute_state = False
         self._active_live_motion: Path | None = None
         self._active_live_still: Path | None = None
         self._state = PlayerState.IDLE
+        self._favorite_icon_active = load_icon("suit.heart.fill.svg")
+        self._favorite_icon_inactive = load_icon("suit.heart.svg")
+        self._current_asset_ref: str | None = None
+        self._current_is_favorite = False
+
+        self._favorite_button.clicked.connect(self._toggle_favorite_for_current)
+        self._apply_favorite_visual_state(False)
+        self._favorite_button.setEnabled(False)
 
         self._header.clear()
         self._player_view.hide_live_badge()
@@ -105,6 +122,56 @@ class PlaybackController:
 
         target = self._state if state is None else state
         return target in {PlayerState.PLAYING_LIVE_MOTION, PlayerState.SHOWING_LIVE_STILL}
+
+    def _apply_favorite_visual_state(self, is_favorite: bool) -> None:
+        """Update the favorite button icon and tooltip to reflect *is_favorite*."""
+
+        icon = self._favorite_icon_active if is_favorite else self._favorite_icon_inactive
+        if not icon.isNull():
+            self._favorite_button.setIcon(icon)
+        tooltip = "Remove from Favorites" if is_favorite else "Mark as Favorite"
+        self._favorite_button.setToolTip(tooltip)
+
+    def _update_favorite_button_state(self, row: int | None) -> None:
+        """Enable, disable, and retarget the favorite button for *row*."""
+
+        if row is None or row < 0:
+            self._current_asset_ref = None
+            self._current_is_favorite = False
+            self._favorite_button.setEnabled(False)
+            self._apply_favorite_visual_state(False)
+            return
+
+        index = self._model.index(row, 0)
+        if not index.isValid():
+            self._current_asset_ref = None
+            self._current_is_favorite = False
+            self._favorite_button.setEnabled(False)
+            self._apply_favorite_visual_state(False)
+            return
+
+        rel_raw = index.data(Roles.REL)
+        ref = str(rel_raw) if rel_raw else None
+        is_favorite = bool(index.data(Roles.FEATURED))
+        self._current_asset_ref = ref
+        self._current_is_favorite = is_favorite
+        self._favorite_button.setEnabled(ref is not None)
+        self._apply_favorite_visual_state(is_favorite)
+
+    def _toggle_favorite_for_current(self) -> None:
+        """Toggle the featured state for the currently focused asset."""
+
+        if not self._current_asset_ref:
+            return
+
+        new_state = self._facade.toggle_featured(self._current_asset_ref)
+        self._current_is_favorite = bool(new_state)
+        self._apply_favorite_visual_state(self._current_is_favorite)
+        self._favorite_button.setEnabled(True)
+
+        current_row = self._playlist.current_row()
+        if current_row >= 0:
+            QTimer.singleShot(0, lambda r=current_row: self._update_favorite_button_state(r))
 
     # ------------------------------------------------------------------
     # Selection handling
@@ -175,6 +242,8 @@ class PlaybackController:
         filmstrip_model = self._filmstrip_view.model()
         if filmstrip_model is None:
             return
+
+        self._update_favorite_button_state(row if row >= 0 else None)
 
         def _set_is_current(proxy_row: int, value: bool) -> None:
             if proxy_row < 0:
@@ -252,6 +321,7 @@ class PlaybackController:
                         still_path = Path(str(still_raw))
                         self._pending_live_photo_still = still_path
                         self._active_live_still = still_path
+        self._update_favorite_button_state(current_row if current_row != -1 else None)
         self._header.update_for_row(current_row if current_row != -1 else None, self._model)
         self._preview_window.close_preview(False)
 
@@ -426,6 +496,7 @@ class PlaybackController:
         self._filmstrip_view.clearSelection()
         self._grid_view.clearSelection()
         self._status.showMessage("Browse your library")
+        self._update_favorite_button_state(None)
 
     def _show_still_frame_for_live_photo(self) -> None:
         """Swap the detail view back to the Live Photo still image."""

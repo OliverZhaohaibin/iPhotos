@@ -35,6 +35,7 @@ class AssetGridDelegate(QStyledItemDelegate):
         self._base_size = 192
         self._filmstrip_height = 120
         self._filmstrip_border_width = 2
+        self._favorite_icon: QIcon = load_icon("suit.heart.fill.svg")
 
     # ------------------------------------------------------------------
     # Painting
@@ -133,6 +134,9 @@ class AssetGridDelegate(QStyledItemDelegate):
         if index.data(Roles.IS_VIDEO):
             self._draw_duration_badge(painter, option, thumb_rect, index.data(Roles.SIZE))
 
+        if not self._filmstrip_mode and bool(index.data(Roles.FEATURED)):
+            self._draw_favorite_badge(painter, thumb_rect)
+
         painter.restore()
 
     # ------------------------------------------------------------------
@@ -205,6 +209,30 @@ class AssetGridDelegate(QStyledItemDelegate):
             icon_size,
         )
         self._live_icon.paint(painter, icon_rect)
+        painter.restore()
+
+    def _draw_favorite_badge(self, painter: QPainter, rect: QRect) -> None:
+        """Overlay a heart icon in the lower-left corner for favorite assets."""
+
+        if self._favorite_icon.isNull():
+            return
+
+        margin = 8
+        icon_size = 18
+        icon_rect = QRect(
+            rect.left() + margin,
+            rect.bottom() - margin - icon_size,
+            icon_size,
+            icon_size,
+        )
+        background_rect = icon_rect.adjusted(-4, -4, 4, 4)
+
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 160))
+        painter.drawRoundedRect(background_rect, 6, 6)
+        self._favorite_icon.paint(painter, icon_rect)
         painter.restore()
 
     @staticmethod
