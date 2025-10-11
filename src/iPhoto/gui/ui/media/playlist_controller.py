@@ -21,6 +21,7 @@ class PlaylistController(QObject):
         self._model: Optional[AssetModel] = None
         self._current_row: int = -1
         self._previous_row: int = -1
+        self._current_rel: str | None = None
 
     # ------------------------------------------------------------------
     # Model wiring
@@ -33,6 +34,11 @@ class PlaylistController(QObject):
             self._model.rowsInserted.disconnect(self._on_model_changed)
             self._model.rowsRemoved.disconnect(self._on_model_changed)
         self._model = model
+        # Forget the previous selection whenever a new proxy model is bound so the
+        # controller never dereferences stale rows from the earlier album.
+        self._current_row = -1
+        self._previous_row = -1
+        self._current_rel = None
         model.modelReset.connect(self._on_model_changed)
         model.rowsInserted.connect(self._on_model_changed)
         model.rowsRemoved.connect(self._on_model_changed)
@@ -50,7 +56,14 @@ class PlaylistController(QObject):
             return None
         if not self._is_playable(row):
             return None
+        rel = self._extract_rel(row)
         if row == self._current_row:
+            # The logical selection may migrate to a different asset while the
+            # proxy row index remains unchanged (for example, unfavouriting the
+            # current photo within the *Favorites* filter).  Refreshing the
+            # cached identifier before emitting the playback signals guarantees
+            # that downstream consumers resolve the latest asset reference.
+            self._current_rel = rel
             source = self._resolve_source(row)
             self.currentChanged.emit(row)
             if source is not None:
@@ -58,6 +71,7 @@ class PlaylistController(QObject):
             return source
         self._previous_row = self._current_row
         self._current_row = row
+        self._current_rel = rel
         source = self._resolve_source(row)
         self.currentChanged.emit(row)
         if source is not None:
@@ -97,6 +111,7 @@ class PlaylistController(QObject):
         if self._current_row != -1:
             self._previous_row = self._current_row
             self._current_row = -1
+            self._current_rel = None
             self.currentChanged.emit(-1)
 
     # ------------------------------------------------------------------
@@ -126,6 +141,21 @@ class PlaylistController(QObject):
             return
 
         if 0 <= self._current_row < row_count and self._is_playable(self._current_row):
+            # The proxy row still exists, but it may now refer to a different
+            # asset because the filter dropped the previous favourite.  Comparing
+            # the cached relative path against the fresh data lets us detect this
+            # situation and re-run ``set_current`` so the rest of the UI receives
+            # a new ``sourceChanged`` signal.
+            current_rel = self._extract_rel(self._current_row)
+            if current_rel is None:
+                fallback = self._resolve_surviving_row(row_count)
+                if fallback is None:
+                    self.clear()
+                else:
+                    self.set_current(fallback)
+                return
+            if self._current_rel != current_rel:
+                self.set_current(self._current_row)
             return
 
         fallback = self._resolve_surviving_row(row_count)
@@ -223,3 +253,14 @@ class PlaylistController(QObject):
         if isinstance(raw, str) and raw:
             return Path(raw)
         return None
+
+    def _extract_rel(self, row: int) -> str | None:
+        """Return the relative path for *row*, or ``None`` if unavailable."""
+
+        if self._model is None:
+            return None
+        index: QModelIndex = self._model.index(row, 0)
+        if not index.isValid():
+            return None
+        rel = index.data(Roles.REL)
+        return str(rel) if isinstance(rel, str) and rel else None

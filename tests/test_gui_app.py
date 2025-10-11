@@ -530,9 +530,11 @@ def test_playlist_keeps_detail_row_when_favourite_removed(
     qapp.processEvents()
     assert model.rowCount() == 2
 
+    source_spy = QSignalSpy(playlist.sourceChanged)
     current_source = playlist.set_current(0)
     assert current_source is not None
     assert playlist.current_row() == 0
+    assert len(source_spy) == 1
 
     removed = favourites[0]
     assert facade.toggle_featured(removed) is False
@@ -541,3 +543,8 @@ def test_playlist_keeps_detail_row_when_favourite_removed(
     # adopt the surviving neighbour rather than clearing the selection.
     _wait_for_rows(model, 1, qapp)
     assert playlist.current_row() == 0
+    qapp.processEvents()
+    assert len(source_spy) >= 2
+    promoted_path = source_spy[-1][0]
+    assert isinstance(promoted_path, Path)
+    assert promoted_path.name == second.name
