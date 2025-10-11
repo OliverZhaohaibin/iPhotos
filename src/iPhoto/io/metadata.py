@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -75,13 +76,13 @@ def _normalise_exif_datetime(dt_value: str, exif: Any) -> Optional[str]:
 
 
 def _parse_dms(value: str) -> Optional[float]:
-    """Convert a "degrees, minutes, seconds" string to decimal degrees."""
+    """Convert a degrees/minutes/seconds string into decimal degrees."""
 
     cleaned = value.strip()
     if not cleaned:
         return None
 
-    # Extract direction (N, S, E, W) when present so we can preserve the sign.
+    # Extract the hemisphere marker so we can maintain the sign correctly.
     direction = 1.0
     if cleaned[-1] in "NSEWnsew":
         last = cleaned[-1].upper()
@@ -89,7 +90,7 @@ def _parse_dms(value: str) -> Optional[float]:
         if last in {"S", "W"}:
             direction = -1.0
 
-    # Replace textual markers with spaces so we can split the components.
+    # Replace textual markers with spaces so the components can be parsed safely.
     normalised = re.sub(r"[^0-9\.]+", " ", cleaned)
     parts = [segment for segment in normalised.split() if segment]
     if not parts:
@@ -122,9 +123,8 @@ def _coerce_decimal(value: Any) -> Optional[float]:
 
 
 def _extract_gps_from_exiftool(meta: Dict[str, Any]) -> Optional[Dict[str, float]]:
-    """Extract decimal GPS coordinates from ExifTool metadata."""
+    """Extract decimal GPS coordinates from an ExifTool metadata payload."""
 
-    # Attempt to read the co-ordinates from the most reliable composite fields.
     key_pairs = [
         ("Composite:GPSLatitude", "Composite:GPSLongitude"),
         ("EXIF:GPSLatitude", "EXIF:GPSLongitude"),
@@ -136,9 +136,6 @@ def _extract_gps_from_exiftool(meta: Dict[str, Any]) -> Optional[Dict[str, float
         if latitude is not None and longitude is not None:
             return {"lat": latitude, "lon": longitude}
 
-    # Fall back to the combined position string when separate fields are
-    # unavailable.  The value typically resembles "51.5034 -0.1195" or
-    # "51 deg 30' 12.0" etc.
     composite_position = meta.get("Composite:GPSPosition")
     if isinstance(composite_position, str):
         tokens = [
@@ -156,7 +153,7 @@ def _extract_gps_from_exiftool(meta: Dict[str, Any]) -> Optional[Dict[str, float
 
 
 def _extract_datetime_from_exiftool(meta: Dict[str, Any]) -> Optional[str]:
-    """Extract a UTC ISO-8601 timestamp from ExifTool metadata."""
+    """Extract a UTC ISO-8601 timestamp from an ExifTool metadata payload."""
 
     candidate_keys = [
         "EXIF:DateTimeOriginal",
@@ -186,8 +183,8 @@ def read_image_meta(path: Path) -> Dict[str, Any]:
     print(f"Opening image for metadata: {path}")
     info = _empty_image_info()
 
-    # Pillow is used for fast dimension lookups.  We keep it optional so the
-    # code still functions on systems where Pillow is unavailable.
+    # Pillow is used for fast dimension lookups.  Keep its usage optional so the
+    # reader still works on systems where Pillow is not installed.
     exif_payload: Any = None
     if Image is not None and UnidentifiedImageError is not None:
         try:
@@ -199,8 +196,7 @@ def read_image_meta(path: Path) -> Dict[str, Any]:
         except UnidentifiedImageError as exc:
             raise ExternalToolError(f"Unable to read image metadata for {path}") from exc
         except OSError:
-            # Pillow can raise ``OSError`` for truncated fixtures.  Treat those as
-            # missing metadata rather than aborting the scan.
+            # Pillow may raise ``OSError`` for truncated or unsupported files.
             pass
 
     gps_found = False
@@ -211,6 +207,12 @@ def read_image_meta(path: Path) -> Dict[str, Any]:
         metadata_block = None
 
     if metadata_block:
+        # Diagnostic print to surface the entire ExifTool payload so we can see
+        # which keys are populated on the user's system.
+        print(f"\n--- METADATA FOR {path.name} ---")
+        print(json.dumps(metadata_block, indent=2, ensure_ascii=False))
+        print("--- END METADATA ---\n")
+
         gps_payload = _extract_gps_from_exiftool(metadata_block)
         if gps_payload is not None:
             info["gps"] = gps_payload
@@ -290,4 +292,3 @@ def read_video_meta(path: Path) -> Dict[str, Any]:
 
 
 __all__ = ["read_image_meta", "read_video_meta"]
-
