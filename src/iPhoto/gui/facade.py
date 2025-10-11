@@ -160,7 +160,16 @@ class AppFacade(QObject):
         return self._save_manifest(album)
 
     def toggle_featured(self, ref: str) -> bool:
-        """Toggle *ref* in the album's featured list without reopening the album."""
+        """Toggle *ref* in the album's featured list and return the new state.
+
+        The GUI favours incremental updates when reacting to user input.  The
+        original implementation delegated to :meth:`_save_manifest`, which
+        re-opened the album and triggered a full UI reset.  That behaviour
+        caused the detail view to collapse back to the gallery every time a
+        favourite was toggled.  By keeping the manifest mutation local and
+        simply restarting the asset loader we ensure views receive fresh role
+        data without disturbing the surrounding layout.
+        """
 
         album = self._require_album()
         if album is None:
@@ -187,7 +196,9 @@ class AppFacade(QObject):
             return was_featured
 
         # Refresh the asset list in-place so Roles.FEATURED updates propagate to every
-        # connected view without bouncing the user back to the gallery layout.
+        # connected view without bouncing the user back to the gallery layout.  This is
+        # the lightest-weight refresh path that still honours proxy models filtering on
+        # favourite state.
         self._asset_list_model.start_load()
         return not was_featured
 
