@@ -18,19 +18,17 @@ from .metadata import read_image_meta_with_exiftool, read_video_meta
 _IMAGE_EXTENSIONS = {".heic", ".jpg", ".jpeg", ".png"}
 _VIDEO_EXTENSIONS = {".mov", ".mp4", ".m4v", ".qt"}
 
-
 LOGGER = get_logger()
 
 
 def gather_media_paths(
     root: Path, include_globs: Iterable[str], exclude_globs: Iterable[str]
 ) -> Tuple[List[Path], List[Path]]:
-    """Collect candidate media files before metadata processing.
+    """Collect media files that should be indexed.
 
-    Separating discovery from processing enables the caller (typically the
-    UI worker) to know how many files need work, which in turn allows an
-    accurate progress bar.  The function returns two lists so images and
-    videos can be handled using their respective metadata pipelines.
+    Separating discovery from processing allows callers to present accurate
+    progress indicators, because the total work is known before any metadata
+    extraction begins.
     """
 
     image_paths: List[Path] = []
@@ -58,45 +56,35 @@ def gather_media_paths(
 def process_media_paths(
     root: Path, image_paths: List[Path], video_paths: List[Path]
 ) -> Iterator[Dict[str, Any]]:
-    """Yield populated index rows for the provided media paths.
+    """Yield populated index rows for the provided media paths."""
 
-    Images are processed in a batch so we can reuse a single ExifTool
-    invocation.  This is significantly faster than launching a new process
-    per image and also guarantees consistent locale handling because the
-    metadata payloads share a single execution context.
-    """
-
+    all_paths = image_paths + video_paths
     try:
-        image_metadata_payloads = get_metadata_batch(image_paths)
+        metadata_payloads = get_metadata_batch(all_paths)
     except ExternalToolError as exc:
-        # Expose the failure so operators understand why GPS/location data may
-        # be missing, but continue producing rows so the scan still completes.
-        LOGGER.warning("Batch ExifTool query failed for %s images: %s", len(image_paths), exc)
-        image_metadata_payloads = []
+        LOGGER.warning("Batch ExifTool query failed for %s files: %s", len(all_paths), exc)
+        metadata_payloads = []
 
     metadata_lookup: Dict[Path, Dict[str, Any]] = {}
-    for idx, payload in enumerate(image_metadata_payloads):
+    for payload in metadata_payloads:
         if not isinstance(payload, dict):
             continue
 
-        if idx < len(image_paths):
-            metadata_lookup[image_paths[idx]] = payload
-
         source = payload.get("SourceFile")
         if isinstance(source, str):
-            # Resolving the path reported by ExifTool protects us against
-            # casing differences and symlink resolution quirks across
-            # platforms.  Registering both keys keeps lookups stable.
-            metadata_lookup[Path(source).resolve()] = payload
+            source_path = Path(source)
+            # Register both the raw path reported by ExifTool and the resolved
+            # absolute path so lookups succeed regardless of how the caller
+            # constructed the candidate list.
+            metadata_lookup[source_path] = payload
+            metadata_lookup[source_path.resolve()] = payload
 
-    for image_path in image_paths:
-        metadata = metadata_lookup.get(image_path)
+    for path in all_paths:
+        resolved = path.resolve()
+        metadata = metadata_lookup.get(resolved)
         if metadata is None:
-            metadata = metadata_lookup.get(image_path.resolve())
-        yield _build_row(root, image_path, metadata)
-
-    for video_path in video_paths:
-        yield _build_row(root, video_path)
+            metadata = metadata_lookup.get(path)
+        yield _build_row(root, path, metadata)
 
 
 def scan_album(
@@ -104,13 +92,7 @@ def scan_album(
     include_globs: Iterable[str],
     exclude_globs: Iterable[str],
 ) -> Iterator[Dict[str, Any]]:
-    """Yield index rows for all matching assets in *root*.
-
-    The default CLI entry points rely on this helper.  It remains as a thin
-    wrapper so existing call sites keep working, while new code (the GUI
-    scanner worker) can directly call :func:`gather_media_paths` and
-    :func:`process_media_paths` for more granular progress control.
-    """
+    """Yield index rows for all matching assets in *root*."""
 
     ensure_work_dir(root, WORK_DIR_NAME)
     image_paths, video_paths = gather_media_paths(root, include_globs, exclude_globs)
@@ -137,20 +119,7 @@ def _build_row(
     file_path: Path,
     metadata_override: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Return an index row for ``file_path``.
-
-    Parameters
-    ----------
-    root:
-        Album directory currently being scanned.  Needed to compute
-        ``rel`` (the path stored in the index file).
-    file_path:
-        Fully-qualified path to the media item that should be indexed.
-    metadata_override:
-        Optional ExifTool payload that has already been fetched for this
-        file.  When ``None`` the helper falls back to running a dedicated
-        batch so callers outside the batch pipeline still succeed.
-    """
+    """Return an index row for ``file_path``."""
 
     stat = file_path.stat()
     base_row = _build_base_row(root, file_path, stat)
@@ -161,11 +130,8 @@ def _build_row(
     if suffix in _IMAGE_EXTENSIONS:
         metadata = read_image_meta_with_exiftool(file_path, metadata_override)
     elif suffix in _VIDEO_EXTENSIONS:
-        metadata = read_video_meta(file_path)
+        metadata = read_video_meta(file_path, metadata_override)
     else:
-        # Unsupported file types still contribute their basic filesystem
-        # information.  We intentionally avoid raising so scans remain robust
-        # even when albums contain stray helper documents.
         metadata = {}
 
     for key, value in metadata.items():

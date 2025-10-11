@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -12,8 +13,8 @@ from dateutil.tz import gettz
 from ..errors import ExternalToolError
 from ..utils.deps import load_pillow
 from ..utils.exiftool import get_metadata_batch
-from ..utils.logging import get_logger
 from ..utils.ffmpeg import probe_media
+from ..utils.logging import get_logger
 
 _PILLOW = load_pillow()
 
@@ -24,8 +25,10 @@ else:  # pragma: no cover - exercised only when Pillow is missing
     Image = None  # type: ignore[assignment]
     UnidentifiedImageError = None  # type: ignore[assignment]
 
+LOGGER = get_logger()
 
-def _empty_image_info() -> Dict[str, Any]:
+
+def _empty_media_info() -> Dict[str, Any]:
     """Return a metadata stub used whenever inspection fails."""
 
     return {
@@ -90,18 +93,17 @@ def _coerce_decimal(value: Any) -> Optional[float]:
     return None
 
 
-LOGGER = get_logger()
-
-
 def _extract_group(metadata: Dict[str, Any], group_name: str) -> Optional[Dict[str, Any]]:
     """Return an ExifTool group mapping from either nested or flattened layouts."""
 
+    # ``exiftool`` can emit nested dictionaries (when ``-g1`` is supplied) or a
+    # flat mapping of ``Group:Tag`` keys depending on the version and flags in
+    # use.  This helper normalises both forms so downstream code can treat the
+    # result as a simple dictionary of tag names.
     group = metadata.get(group_name)
     if isinstance(group, dict):
         return group
 
-    # When ``-g1`` is combined with ``-json`` the output may already be nested.
-    # Older configurations without that flag expose keys such as ``Composite:Foo``.
     prefix = f"{group_name}:"
     extracted = {
         key[len(prefix) :]: value
@@ -120,6 +122,36 @@ def _extract_gps_from_exiftool(meta: Dict[str, Any]) -> Optional[Dict[str, float
         lon = _coerce_decimal(composite.get("GPSLongitude"))
         if lat is not None and lon is not None:
             return {"lat": lat, "lon": lon}
+
+    quicktime = _extract_group(meta, "QuickTime")
+    if quicktime:
+        lat = _coerce_decimal(quicktime.get("GPSLatitude"))
+        lon = _coerce_decimal(quicktime.get("GPSLongitude"))
+        if lat is not None and lon is not None:
+            return {"lat": lat, "lon": lon}
+
+        iso6709 = quicktime.get("LocationISO6709")
+        if isinstance(iso6709, str):
+            # Some devices only publish a single ISO 6709 string (for example
+            # ``+51.5080-0.1400/``).  The regex extracts the latitude and
+            # longitude so they can be converted to floating point numbers.
+            match = re.match(r"([+-]\d+\.\d+)([+-]\d+\.\d+)", iso6709)
+            if match:
+                try:
+                    lat, lon = (float(component) for component in match.groups())
+                    return {"lat": lat, "lon": lon}
+                except (TypeError, ValueError):
+                    LOGGER.debug("Failed to parse QuickTime ISO6709 string: %s", iso6709)
+
+    iso6709_fallback = meta.get("com.apple.quicktime.location.ISO6709")
+    if isinstance(iso6709_fallback, str):
+        match = re.match(r"([+-]\d+\.\d+)([+-]\d+\.\d+)", iso6709_fallback)
+        if match:
+            try:
+                lat, lon = (float(component) for component in match.groups())
+                return {"lat": lat, "lon": lon}
+            except (TypeError, ValueError):
+                LOGGER.debug("Failed to parse QuickTime ISO6709 fallback: %s", iso6709_fallback)
 
     gps_group = _extract_group(meta, "GPS")
     if gps_group:
@@ -153,6 +185,25 @@ def _extract_datetime_from_exiftool(meta: Dict[str, Any]) -> Optional[str]:
                     local_tz = gettz() or datetime.now().astimezone().tzinfo or timezone.utc
                     parsed = parsed.replace(tzinfo=local_tz)
                 return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    quicktime = _extract_group(meta, "QuickTime")
+    if quicktime:
+        for key in ("CreateDate", "ModifyDate"):
+            value = quicktime.get(key)
+            if not isinstance(value, str) or not value.strip():
+                continue
+            try:
+                parts = value.split(" ")
+                if len(parts) > 1 and ":" in parts[0]:
+                    parts[0] = parts[0].replace(":", "-")
+                    value = " ".join(parts)
+                parsed = isoparse(value)
+            except (ValueError, TypeError):
+                continue
+            if parsed.tzinfo is None:
+                local_tz = gettz() or datetime.now().astimezone().tzinfo or timezone.utc
+                parsed = parsed.replace(tzinfo=local_tz)
+            return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
     exif_ifd = _extract_group(meta, "ExifIFD")
     if exif_ifd:
@@ -190,6 +241,13 @@ def _extract_content_id_from_exiftool(meta: Dict[str, Any]) -> Optional[str]:
         content_id = apple_group.get("ContentIdentifier")
         if isinstance(content_id, str) and content_id:
             return content_id
+
+    quicktime = _extract_group(meta, "QuickTime")
+    if quicktime:
+        content_id = quicktime.get("ContentIdentifier")
+        if isinstance(content_id, str) and content_id:
+            return content_id
+
     return None
 
 
@@ -198,15 +256,12 @@ def read_image_meta_with_exiftool(
 ) -> Dict[str, Any]:
     """Read metadata for ``path`` using a pre-fetched ExifTool payload."""
 
-    info = _empty_image_info()
+    info = _empty_media_info()
     exif_payload: Optional[Any] = None
 
     if isinstance(metadata, dict):
         file_group = _extract_group(metadata, "File")
         if file_group:
-            # Prefer geometry reported by ExifTool because it is already
-            # available from the batch query and saves us from opening the file
-            # with Pillow on every scan.
             width = file_group.get("ImageWidth")
             height = file_group.get("ImageHeight")
             mime = file_group.get("MIMEType")
@@ -244,8 +299,6 @@ def read_image_meta_with_exiftool(
         try:
             with Image.open(path) as img:
                 if geometry_missing:
-                    # Only fall back to Pillow when ExifTool could not supply
-                    # the dimensions, keeping the happy-path fast.
                     info["w"] = img.width
                     info["h"] = img.height
                     if info["mime"] is None:
@@ -279,36 +332,41 @@ def read_image_meta(path: Path) -> Dict[str, Any]:
     return read_image_meta_with_exiftool(path, metadata_block)
 
 
-def read_video_meta(path: Path) -> Dict[str, Any]:
-    """Return basic metadata for a video file."""
+def read_video_meta(path: Path, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Return metadata for a video file, enriching it with ExifTool payloads."""
 
-    mime = "video/quicktime" if path.suffix.lower() in {".mov", ".qt"} else "video/mp4"
-    info: Dict[str, Any] = {
-        "mime": mime,
-        "dur": None,
-        "codec": None,
-        "content_id": None,
-        "still_image_time": None,
-        "w": None,
-        "h": None,
-    }
+    info = _empty_media_info()
+    info["mime"] = "video/quicktime" if path.suffix.lower() in {".mov", ".qt"} else "video/mp4"
+    info["dur"] = None
+    info["codec"] = None
+    info["still_image_time"] = None
+
+    if isinstance(metadata, dict):
+        gps_payload = _extract_gps_from_exiftool(metadata)
+        if gps_payload is not None:
+            info["gps"] = gps_payload
+
+        dt_value = _extract_datetime_from_exiftool(metadata)
+        if dt_value:
+            info["dt"] = dt_value
+
+        content_id = _extract_content_id_from_exiftool(metadata)
+        if content_id:
+            info["content_id"] = content_id
+
     try:
-        metadata = probe_media(path)
+        ffprobe_meta = probe_media(path)
     except ExternalToolError:
         return info
 
-    fmt = metadata.get("format", {}) if isinstance(metadata, dict) else {}
-    duration = fmt.get("duration")
+    fmt = ffprobe_meta.get("format", {}) if isinstance(ffprobe_meta, dict) else {}
+    duration = fmt.get("duration") if isinstance(fmt, dict) else None
     if isinstance(duration, str):
         try:
             info["dur"] = float(duration)
         except ValueError:
             info["dur"] = None
 
-    # Live Photo companion videos often expose the content identifier either at
-    # the container (format) level or within individual streams. We inspect both
-    # so the pairing logic remains stable even if ffprobe changes where it emits
-    # the tag.
     if isinstance(fmt, dict):
         top_level_tags = fmt.get("tags")
         if isinstance(top_level_tags, dict) and not info.get("content_id"):
@@ -316,14 +374,13 @@ def read_video_meta(path: Path) -> Dict[str, Any]:
             if isinstance(content_id, str) and content_id:
                 info["content_id"] = content_id
 
-    streams = metadata.get("streams", []) if isinstance(metadata, dict) else []
+    streams = ffprobe_meta.get("streams", []) if isinstance(ffprobe_meta, dict) else []
     if isinstance(streams, list):
         for stream in streams:
             if not isinstance(stream, dict):
                 continue
 
-            tag_payload = stream.get("tags")
-            tags = tag_payload if isinstance(tag_payload, dict) else {}
+            tags = stream.get("tags") if isinstance(stream.get("tags"), dict) else {}
             if tags and not info.get("content_id"):
                 content_id = tags.get("com.apple.quicktime.content.identifier")
                 if isinstance(content_id, str) and content_id:
@@ -352,6 +409,7 @@ def read_video_meta(path: Path) -> Dict[str, Any]:
                 codec = stream.get("codec_name")
                 if isinstance(codec, str) and not info.get("codec"):
                     info["codec"] = codec
+
     return info
 
 
