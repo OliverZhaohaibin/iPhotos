@@ -254,21 +254,25 @@ class LibraryManager(QObject):
             # change when the reported directory lies anywhere along the
             # manifest's parent chain so our immunity logic stays robust across
             # varying watcher behaviours.
-            if changed_dir not in manifest_path.parents:
-                continue
-            if now - timestamp <= self._WRITE_IMMUNITY_NS:
-                # The manifest that triggered this notification was written by
-                # the application itself just moments ago.  Drop the token so a
-                # subsequent genuine external edit will still be detected and
-                # exit early to prevent an unnecessary tree refresh.
+            if changed_dir in manifest_path.parents:
+                if now - timestamp <= self._WRITE_IMMUNITY_NS:
+                    # The manifest that triggered this notification was written
+                    # by the application itself just moments ago.  Drop the
+                    # token so a subsequent genuine external edit will still be
+                    # detected and exit early to prevent an unnecessary tree
+                    # refresh.
+                    del self._immunity_tokens[manifest_path]
+                    return
+                # The manifest lives under the reported directory but the
+                # recorded timestamp has fallen outside the immunity window,
+                # meaning the change we are observing is not linked to the
+                # known internal operation.  Remove the stale token so future
+                # internal writes can register fresh entries.
                 del self._immunity_tokens[manifest_path]
-                return
-            # The manifest lives under the reported directory but the recorded
-            # timestamp has fallen outside the immunity window, meaning the
-            # change we are observing is not linked to the known internal
-            # operation.  Remove the stale token so future internal writes can
-            # register fresh entries.
-            del self._immunity_tokens[manifest_path]
+                continue
+            # Keep immunity tokens whose directories do not match the watcher
+            # notification so they can still protect subsequent callbacks for
+            # the manifests that have not yet reported in.
 
         self._debounce.start()
 
