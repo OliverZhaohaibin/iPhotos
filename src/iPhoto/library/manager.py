@@ -239,7 +239,7 @@ class LibraryManager(QObject):
     def _on_directory_changed(self, path_str: str) -> None:
         """React to watcher updates while honouring internal-write immunity."""
 
-        directory = Path(path_str).resolve()
+        changed_dir = Path(path_str).resolve()
         now = time_ns()
         self._prune_immunity_tokens(now)
 
@@ -249,7 +249,12 @@ class LibraryManager(QObject):
         # like-for-like values here even when the watcher delivers symlinked or
         # differently-cased directory strings on macOS/Windows.
         for manifest_path, timestamp in list(self._immunity_tokens.items()):
-            if manifest_path.parent != directory:
+            # Some platforms notify parent or ancestor directories rather than
+            # the folder that actually contains the manifest.  Accept the
+            # change when the reported directory lies anywhere along the
+            # manifest's parent chain so our immunity logic stays robust across
+            # varying watcher behaviours.
+            if changed_dir not in manifest_path.parents:
                 continue
             if now - timestamp <= self._WRITE_IMMUNITY_NS:
                 # The manifest that triggered this notification was written by
@@ -258,7 +263,7 @@ class LibraryManager(QObject):
                 # exit early to prevent an unnecessary tree refresh.
                 del self._immunity_tokens[manifest_path]
                 return
-            # The manifest resides in the same directory but the recorded
+            # The manifest lives under the reported directory but the recorded
             # timestamp has fallen outside the immunity window, meaning the
             # change we are observing is not linked to the known internal
             # operation.  Remove the stale token so future internal writes can
