@@ -43,17 +43,55 @@ class NavigationController:
         self._dialog = dialog
         self._view_controller = view_controller
         self._static_selection: Optional[str] = None
+        # ``_last_open_was_refresh`` records whether ``open_album`` most recently
+        # reissued the currently open album.  When ``True`` the main window can
+        # keep the detail pane visible rather than reverting to the gallery.
+        self._last_open_was_refresh: bool = False
 
     # ------------------------------------------------------------------
     # Album management
     # ------------------------------------------------------------------
     def open_album(self, path: Path) -> None:
+        # ``QFileSystemWatcher`` refreshes, library tree rebuilds and other
+        # background activities occasionally reissue ``open_album`` for the
+        # album the user is already browsing.  Those calls should be treated as
+        # passive refreshes so the detail pane remains visible instead of
+        # bouncing back to the gallery.  Compare the requested path with the
+        # active album before touching any UI state so we can preserve the
+        # current presentation when appropriate.
+        target_root = path.resolve()
+        current_root = (
+            self._facade.current_album.root.resolve()
+            if self._facade.current_album is not None
+            else None
+        )
+        is_same_album = current_root == target_root
+
+        # Static collections ("All Photos", "Favorites", etc.) deliberately
+        # re-use the library root, so only treat the invocation as a refresh
+        # when no static node is active.  This keeps virtual collections using
+        # their gallery-first behaviour while allowing genuine album reloads to
+        # bypass the gallery reset.
+        is_refresh = bool(is_same_album and self._static_selection is None)
+        self._last_open_was_refresh = is_refresh
+
+        if is_refresh:
+            # The album is already open and the caller is simply synchronising
+            # sidebar state (for example after a manifest edit triggered by the
+            # favorites button).  Returning early prevents a redundant call to
+            # :meth:`AppFacade.open_album`, which would otherwise reset the
+            # asset model, clear the playlist selection and bounce the detail
+            # pane back to its placeholder.  The existing model already reflects
+            # the manifest change via targeted data updates, so there is nothing
+            # further to do.
+            return
+
         self._static_selection = None
         self._asset_model.set_filter_mode(None)
-        # Always present the gallery grid before loading a new album so any
-        # lingering detail state from the previous album does not create an
-        # empty detail view while the new model is populating.
+        # Present the gallery grid when navigating to a different album so the
+        # UI avoids showing a stale detail pane while the model loads.
         self._view_controller.show_gallery_view()
+
         album = self._facade.open_album(path)
         if album is not None:
             self._context.remember_album(album.root)
@@ -108,6 +146,13 @@ class NavigationController:
             self._asset_model.set_filter_mode(None)
             return
         album.manifest = {**album.manifest, "title": title}
+
+    def consume_last_open_refresh(self) -> bool:
+        """Return ``True`` if the previous :meth:`open_album` was a refresh."""
+
+        was_refresh = self._last_open_was_refresh
+        self._last_open_was_refresh = False
+        return was_refresh
 
     # ------------------------------------------------------------------
     # Status helpers

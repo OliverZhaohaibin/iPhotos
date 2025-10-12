@@ -36,14 +36,14 @@ class LibraryManager(QObject):
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
         self._debounce.setInterval(500)
+        # ``_watch_suspend_depth`` tracks how many in-flight operations asked us to
+        # ignore file-system notifications.  Using a counter instead of a boolean
+        # keeps the logic safe when nested saves occur (for example when both the
+        # album manifest and a library-level manifest are updated as part of a
+        # single user action).
+        self._watch_suspend_depth = 0
         self._watcher.directoryChanged.connect(self._on_directory_changed)
         self._debounce.timeout.connect(self._refresh_tree)
-        # ``_watch_suspend_depth`` keeps track of nested pause requests so nested
-        # operations can safely disable and later re-enable the filesystem
-        # watcher without racing each other.  Only the outer-most pause toggles
-        # the ``blockSignals`` flag to ensure normal change propagation resumes
-        # once the final resume arrives.
-        self._watch_suspend_depth = 0
 
     # ------------------------------------------------------------------
     # Basic properties
@@ -217,9 +217,35 @@ class LibraryManager(QObject):
             raise AlbumNameConflictError(f"An album named '{candidate}' already exists.")
         return target
 
-    def _on_directory_changed(self, _path: str) -> None:
+    def pause_watcher(self) -> None:
+        """Temporarily suppress change notifications during internal writes."""
+
+        # Increment the suspension depth so nested pause calls continue to be
+        # reference-counted.  The debounce timer is stopped on the first pause
+        # to ensure that an earlier notification does not race with the write we
+        # are about to perform.
+        self._watch_suspend_depth += 1
+        if self._watch_suspend_depth == 1 and self._debounce.isActive():
+            self._debounce.stop()
+
+    def resume_watcher(self) -> None:
+        """Re-enable change notifications once protected writes have finished."""
+
+        if self._watch_suspend_depth == 0:
+            return
+        self._watch_suspend_depth -= 1
+
+    def _on_directory_changed(self, path: str) -> None:
+        # Skip notifications while we are in the middle of an internally
+        # triggered write such as a manifest save.  The associated UI components
+        # already know about those updates, so reacting to the file-system event
+        # would only cause redundant reloads.
         if self._watch_suspend_depth > 0:
             return
+
+        # ``QFileSystemWatcher`` emits plain strings.  Queue a debounced refresh
+        # whenever a change notification arrives so the sidebar reflects
+        # external edits without thrashing the filesystem.
         self._debounce.start()
 
     def _rebuild_watches(self) -> None:
@@ -244,35 +270,5 @@ class LibraryManager(QObject):
         if node is not None:
             return node
         raise AlbumOperationError(f"Album node not found for path: {path}")
-
-    # ------------------------------------------------------------------
-    # Watcher coordination
-    # ------------------------------------------------------------------
-    def pause_watching(self) -> None:
-        """Temporarily suppress filesystem change notifications.
-
-        The GUI toggles manifest data in response to lightweight interactions
-        such as updating the favorite flag.  Those writes should not cause the
-        entire album tree to refresh because doing so clears selections and
-        forces the detail pane to close.  Callers therefore pause the watcher
-        before persisting and resume it afterwards.  The depth counter prevents
-        nested pauses from prematurely re-enabling the watcher.
-        """
-
-        self._watch_suspend_depth += 1
-        if self._watch_suspend_depth == 1:
-            if self._debounce.isActive():
-                self._debounce.stop()
-            self._watcher.blockSignals(True)
-
-    def resume_watching(self) -> None:
-        """Re-enable filesystem change notifications when safe to do so."""
-
-        if self._watch_suspend_depth == 0:
-            return
-        self._watch_suspend_depth -= 1
-        if self._watch_suspend_depth == 0:
-            self._watcher.blockSignals(False)
-
 
 __all__ = ["LibraryManager"]
