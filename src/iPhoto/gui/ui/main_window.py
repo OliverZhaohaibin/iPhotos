@@ -496,12 +496,25 @@ class MainWindow(QMainWindow):
         is_detail_view_before_handle = (
             self._view_stack.currentWidget() is self._detail_page
         )
+        was_refresh = self._navigation.consume_last_open_refresh()
         self._navigation.handle_album_opened(root)
         # Avoid forcing a transition back to the gallery while the detail view is
         # actively showing an item. ``PlaylistController.current_row`` remains
         # greater than or equal to zero whenever the detail pane has a focused
         # asset, so only trigger the gallery view when nothing is selected.
-        if self._playlist.current_row() == -1 and not is_detail_view_before_handle:
+        if was_refresh and is_detail_view_before_handle:
+            # ``NavigationController`` flagged this as a passive refresh, so the
+            # album reopened while the user was already looking at the detail
+            # pane.  Explicitly restore the detail view to counteract any
+            # sidebar-driven gallery resets that occurred during the reload.
+            self._view_controller.show_detail_view()
+            return
+
+        if (
+            self._playlist.current_row() == -1
+            and not is_detail_view_before_handle
+            and not was_refresh
+        ):
             self._view_controller.show_gallery_view()
 
     def _on_scan_progress(self, root: Path, current: int, total: int) -> None:

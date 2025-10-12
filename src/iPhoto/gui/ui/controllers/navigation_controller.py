@@ -43,26 +43,34 @@ class NavigationController:
         self._dialog = dialog
         self._view_controller = view_controller
         self._static_selection: Optional[str] = None
+        self._syncing_sidebar_selection: bool = False
+        # ``_last_open_was_refresh`` remembers whether the most recent
+        # :meth:`open_album` call represented a passive reload of the current
+        # album.  The main window inspects this flag to decide if it should
+        # preserve the detail pane instead of forcing the gallery into view.
+        self._last_open_was_refresh: bool = False
 
     # ------------------------------------------------------------------
     # Album management
     # ------------------------------------------------------------------
     def open_album(self, path: Path) -> None:
-        # ``QFileSystemWatcher`` refreshes can report the currently opened album
-        # even though the user did not request a navigation change.  In that
-        # situation the detail pane should remain visible instead of jumping
-        # back to the gallery grid.  By comparing the requested path with the
-        # active album we can detect these passive reloads and skip the view
-        # reset.
+        # ``QFileSystemWatcher`` refreshes and sidebar synchronisation can
+        # request that the facade re-open the album that is already active.
+        # When that happens we treat the call as a passive refresh so the
+        # detail pane remains visible.
         target_root = path.resolve()
         current_root = (
             self._facade.current_album.root.resolve()
             if self._facade.current_album is not None
             else None
         )
-        is_refresh = (
-            current_root == target_root and self._static_selection is None
-        )
+        is_same_album = current_root == target_root
+
+        # Programmatic selection updates toggle ``_syncing_sidebar_selection``
+        # while they run.  Those invocations should never reset the gallery
+        # view because the user did not request a navigation change.
+        is_refresh = bool(is_same_album and self._syncing_sidebar_selection)
+        self._last_open_was_refresh = is_refresh
 
         self._static_selection = None
         self._asset_model.set_filter_mode(None)
@@ -70,6 +78,7 @@ class NavigationController:
             # Present the gallery grid when navigating to a different album so
             # the UI avoids showing a stale detail pane while the model loads.
             self._view_controller.show_gallery_view()
+
         album = self._facade.open_album(path)
         if album is not None:
             self._context.remember_album(album.root)
@@ -78,14 +87,22 @@ class NavigationController:
         library_root = self._context.library.root()
         if self._static_selection and library_root == root:
             title = self._static_selection
-            self._sidebar.select_static_node(self._static_selection)
+            self._syncing_sidebar_selection = True
+            try:
+                self._sidebar.select_static_node(self._static_selection)
+            finally:
+                self._syncing_sidebar_selection = False
         else:
             title = (
                 self._facade.current_album.manifest.get("title")
                 if self._facade.current_album
                 else root.name
             )
-            self._sidebar.select_path(root)
+            self._syncing_sidebar_selection = True
+            try:
+                self._sidebar.select_path(root)
+            finally:
+                self._syncing_sidebar_selection = False
             self._static_selection = None
             self._asset_model.set_filter_mode(None)
         self._album_label.setText(f"{title} — {root}")
@@ -124,6 +141,13 @@ class NavigationController:
             self._asset_model.set_filter_mode(None)
             return
         album.manifest = {**album.manifest, "title": title}
+
+    def consume_last_open_refresh(self) -> bool:
+        """Return ``True`` if the previous :meth:`open_album` was a refresh."""
+
+        was_refresh = self._last_open_was_refresh
+        self._last_open_was_refresh = False
+        return was_refresh
 
     # ------------------------------------------------------------------
     # Status helpers
