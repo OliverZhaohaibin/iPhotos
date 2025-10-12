@@ -163,8 +163,11 @@ class MainController(QObject):
             self._handle_open_album_dialog
         )
         self._window.ui.rescan_action.triggered.connect(self._handle_rescan_request)
+        # ``QAction.triggered`` emits a boolean ``checked`` flag that our facade method
+        # does not accept; use a ``lambda`` wrapper to discard that GUI-specific detail
+        # and call the pure application logic with its expected signature.
         self._window.ui.rebuild_links_action.triggered.connect(
-            self._facade.pair_live_current
+            lambda: self._facade.pair_live_current()
         )
         self._window.ui.bind_library_action.triggered.connect(
             self._dialog.bind_library_dialog
