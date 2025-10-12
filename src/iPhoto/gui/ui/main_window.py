@@ -52,6 +52,13 @@ from .widgets import (
     LiveBadge,
 )
 
+HEADER_ICON_GLYPH_SIZE = QSize(36, 36)
+"""Standard glyph size (in device-independent pixels) for header icons."""
+
+HEADER_BUTTON_SIZE = QSize(44, 44)
+"""Hit target size that guarantees a comfortable clickable header button."""
+
+
 class MainWindow(QMainWindow):
     """Primary window for the desktop experience."""
 
@@ -180,6 +187,27 @@ class MainWindow(QMainWindow):
         self._configure_views()
         self.setCentralWidget(self._build_splitter())
 
+    def _configure_header_button(
+        self,
+        button: QToolButton,
+        icon_name: str,
+        tooltip: str,
+    ) -> None:
+        """Normalize header button appearance to the spec-compliant defaults.
+
+        The helper enforces a 36px glyph rendered inside a 44px click target so the
+        back button and the right-aligned actions share the same affordance.  It also
+        enables the floating toolbar look-and-feel (``setAutoRaise``) and applies the
+        provided tooltip for clarity when hovering.
+        """
+
+        button.setIcon(load_icon(icon_name))
+        button.setIconSize(HEADER_ICON_GLYPH_SIZE)
+        button.setFixedSize(HEADER_BUTTON_SIZE)
+        button.setAutoRaise(True)
+        button.setToolTip(tooltip)
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+
     def _build_actions(self) -> None:
         open_action = QAction("Open Album Folder…", self)
         open_action.triggered.connect(self._handle_open_album_dialog)
@@ -251,16 +279,11 @@ class MainWindow(QMainWindow):
         # Match the icon-to-text spacing to the icon grouping spacing for
         # improved visual rhythm per the updated toolbar specification.
         header_layout.setSpacing(8)
-        icon_size = QSize(36, 36)
-        button_size = QSize(44, 44)
-        self._back_button.setIcon(load_icon("chevron.left.svg"))
-        # The back button uses a 36px glyph while reserving a 44px clickable
-        # target to satisfy the accessibility requirements from the UI spec.
-        self._back_button.setIconSize(icon_size)
-        self._back_button.setFixedSize(button_size)
-        self._back_button.setToolTip("Return to grid view")
-        self._back_button.setAutoRaise(True)
-        self._back_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self._configure_header_button(
+            self._back_button,
+            "chevron.left.svg",
+            "Return to grid view",
+        )
         header_layout.addWidget(self._back_button)
 
         info_container = QWidget()
@@ -308,15 +331,7 @@ class MainWindow(QMainWindow):
             (self._share_button, "square.and.arrow.up.svg", "Share"),
             (self._favorite_button, "suit.heart.svg", "Add to Favorites"),
         ):
-            button.setIcon(load_icon(icon_name))
-            # Apply the shared icon and button sizing so all actions expose the
-            # same 36px glyph inside a 44px click target, matching the header
-            # alignment adjustments above.
-            button.setIconSize(icon_size)
-            button.setFixedSize(button_size)
-            button.setAutoRaise(True)
-            button.setToolTip(tooltip)
-            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+            self._configure_header_button(button, icon_name, tooltip)
             actions_layout.addWidget(button)
 
         self._favorite_button.setEnabled(False)
