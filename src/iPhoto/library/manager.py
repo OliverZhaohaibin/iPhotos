@@ -38,12 +38,14 @@ class LibraryManager(QObject):
         self._debounce.setInterval(500)
         self._watcher.directoryChanged.connect(self._on_directory_changed)
         self._debounce.timeout.connect(self._refresh_tree)
-        # ``_watch_suspend_depth`` keeps track of nested pause requests so nested
-        # operations can safely disable and later re-enable the filesystem
-        # watcher without racing each other.  Only the outer-most pause toggles
-        # the ``blockSignals`` flag to ensure normal change propagation resumes
-        # once the final resume arrives.
-        self._watch_suspend_depth = 0
+        # ``_watching_enabled`` behaves like a lightweight gate in front of the
+        # filesystem watcher callbacks.  Instead of blocking Qt signals we keep
+        # delivering them but simply choose to ignore the resulting callbacks
+        # while the facade persists manifest changes.  This avoids the race
+        # where pending notifications are flushed the moment signals become
+        # unblocked, which previously caused the UI to refresh at inconvenient
+        # times.
+        self._watching_enabled = True
 
     # ------------------------------------------------------------------
     # Basic properties
@@ -218,7 +220,7 @@ class LibraryManager(QObject):
         return target
 
     def _on_directory_changed(self, _path: str) -> None:
-        if self._watch_suspend_depth > 0:
+        if not self._watching_enabled:
             return
         self._debounce.start()
 
@@ -249,30 +251,25 @@ class LibraryManager(QObject):
     # Watcher coordination
     # ------------------------------------------------------------------
     def pause_watching(self) -> None:
-        """Temporarily suppress filesystem change notifications.
+        """Temporarily ignore filesystem change notifications.
 
-        The GUI toggles manifest data in response to lightweight interactions
-        such as updating the favorite flag.  Those writes should not cause the
-        entire album tree to refresh because doing so clears selections and
-        forces the detail pane to close.  Callers therefore pause the watcher
-        before persisting and resume it afterwards.  The depth counter prevents
-        nested pauses from prematurely re-enabling the watcher.
+        Lightweight manifest writes triggered by the GUI should not force a
+        library-wide refresh because that would reset selections and close the
+        detail view.  Instead of blocking Qt signals altogether—which defers the
+        notification and replays it later—we keep receiving the signals but set
+        a flag so the slot exits immediately.  Stopping the debounce timer at
+        the same time prevents stale refresh requests from firing after the
+        pause begins.
         """
 
-        self._watch_suspend_depth += 1
-        if self._watch_suspend_depth == 1:
-            if self._debounce.isActive():
-                self._debounce.stop()
-            self._watcher.blockSignals(True)
+        if self._debounce.isActive():
+            self._debounce.stop()
+        self._watching_enabled = False
 
     def resume_watching(self) -> None:
-        """Re-enable filesystem change notifications when safe to do so."""
+        """Re-enable filesystem change notifications by flipping the guard."""
 
-        if self._watch_suspend_depth == 0:
-            return
-        self._watch_suspend_depth -= 1
-        if self._watch_suspend_depth == 0:
-            self._watcher.blockSignals(False)
+        self._watching_enabled = True
 
 
 __all__ = ["LibraryManager"]

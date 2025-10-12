@@ -273,11 +273,12 @@ class AppFacade(QObject):
             return False
         finally:
             if suppress_watcher:
-                # Queue the resume notification so callers always receive it
-                # even when ``album.save`` raises; resuming in the next event
-                # loop turn avoids reentrancy issues with slots that manipulate
-                # Qt widgets.
-                QTimer.singleShot(0, self.didSaveManifest.emit)
+                # Queue the resume notification with a small delay so the
+                # library manager has time to discard filesystem notifications
+                # originating from this save.  Resuming too quickly allows the
+                # pending ``directoryChanged`` signal to slip through and trigger
+                # a UI refresh before the facade finishes its own bookkeeping.
+                QTimer.singleShot(250, self.didSaveManifest.emit)
         if reload_view:
             # Reload to ensure any concurrent edits are picked up.
             self._current_album = Album.open(album.root)
