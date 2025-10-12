@@ -252,14 +252,17 @@ def test_toggle_featured_does_not_emit_album_opened(tmp_path: Path, qapp: QAppli
     qapp.processEvents()
 
     spy = QSignalSpy(facade.albumOpened)
-    about_spy = QSignalSpy(facade.aboutToSaveManifest)
-    did_spy = QSignalSpy(facade.didSaveManifest)
+    saved_spy = QSignalSpy(facade.manifestSaved)
     facade.toggle_featured("IMG_2102.JPG")
     qapp.processEvents()
 
     assert spy.count() == 0
-    assert about_spy.count() == 1
-    assert did_spy.count() == 1
+    assert saved_spy.count() == 1
+    # The signal carries the manifest path and token.  Ensure the first
+    # argument references the album currently being edited so the library
+    # watcher can correlate the notification.
+    saved_args = saved_spy.takeFirst()
+    assert Path(saved_args[0]).parent == tmp_path
 
 
 def test_toggle_featured_syncs_library_manifest(tmp_path: Path, qapp: QApplication) -> None:

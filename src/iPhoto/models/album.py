@@ -48,7 +48,7 @@ class Album:
         return None
 
     def save(self) -> Path:
-        """Persist the manifest to disk."""
+        """Persist the manifest to disk and return the written path."""
 
         path = self._find_manifest(self.root) or (self.root / ALBUM_MANIFEST_NAMES[0])
         work_dir = self.root / WORK_DIR_NAME / "manifest.bak"

@@ -453,11 +453,11 @@ class MainWindow(QMainWindow):
         ):
             signal.connect(slot)
         self._back_button.clicked.connect(self._view_controller.show_gallery_view)
-        # Pause the library watcher while manifest edits are persisted so the
-        # UI remains focused on the current detail view instead of reacting to
-        # the filesystem change notification triggered by the save.
-        self._facade.aboutToSaveManifest.connect(self._context.library.pause_watching)
-        self._facade.didSaveManifest.connect(self._context.library.resume_watching)
+        # Inform the library manager whenever the GUI commits a lightweight
+        # manifest edit.  The manager uses the provided path/token pair to
+        # identify the resulting filesystem change notification as "self" and
+        # therefore keep the current view steady instead of forcing a reload.
+        self._facade.manifestSaved.connect(self._context.library.register_internal_write)
 
     # Public API used by sidebar/actions
     def open_album_from_path(self, path: Path) -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from time import time_ns
 from typing import Dict, Iterable
 
 from PySide6.QtCore import QFileSystemWatcher, QObject, QTimer, Signal
@@ -38,14 +39,16 @@ class LibraryManager(QObject):
         self._debounce.setInterval(500)
         self._watcher.directoryChanged.connect(self._on_directory_changed)
         self._debounce.timeout.connect(self._refresh_tree)
-        # ``_watching_enabled`` behaves like a lightweight gate in front of the
-        # filesystem watcher callbacks.  Instead of blocking Qt signals we keep
-        # delivering them but simply choose to ignore the resulting callbacks
-        # while the facade persists manifest changes.  This avoids the race
-        # where pending notifications are flushed the moment signals become
-        # unblocked, which previously caused the UI to refresh at inconvenient
-        # times.
-        self._watching_enabled = True
+        # ``_immunity_tokens`` remembers manifest paths the application has
+        # written moments ago.  When the filesystem watcher later reports a
+        # change under the same directory, we can compare timestamps and ignore
+        # notifications that clearly originate from our own saves.
+        self._immunity_tokens: Dict[Path, int] = {}
+
+    # ``_WRITE_IMMUNITY_NS`` defines how long a manifest write is considered
+    # trusted.  Two seconds is comfortably longer than the debounce timer while
+    # still short enough that external edits quickly become visible again.
+    _WRITE_IMMUNITY_NS = 2_000_000_000
 
     # ------------------------------------------------------------------
     # Basic properties
@@ -219,9 +222,37 @@ class LibraryManager(QObject):
             raise AlbumNameConflictError(f"An album named '{candidate}' already exists.")
         return target
 
-    def _on_directory_changed(self, _path: str) -> None:
-        if not self._watching_enabled:
-            return
+    def register_internal_write(self, path: Path, token: str) -> None:
+        """Record an internal manifest write so watcher callbacks can ignore it."""
+
+        try:
+            timestamp = int(token)
+        except (TypeError, ValueError):
+            # Fall back to the current time when the token cannot be parsed.  A
+            # best-effort value is sufficient because the signal only ever
+            # originates from trusted application code.
+            timestamp = time_ns()
+        resolved = path.resolve()
+        self._immunity_tokens[resolved] = timestamp
+        self._prune_immunity_tokens(time_ns())
+
+    def _on_directory_changed(self, path_str: str) -> None:
+        directory = Path(path_str).resolve()
+        now = time_ns()
+        self._prune_immunity_tokens(now)
+        for name in ALBUM_MANIFEST_NAMES:
+            manifest_path = directory / name
+            timestamp = self._immunity_tokens.get(manifest_path)
+            if timestamp is None:
+                continue
+            if now - timestamp <= self._WRITE_IMMUNITY_NS:
+                # This notification corresponds to an internal write.  Consume
+                # the token so subsequent external edits trigger refreshes as
+                # expected and skip the debounce entirely.
+                del self._immunity_tokens[manifest_path]
+                return
+            # The token is stale; drop it so fresh writes can reuse the entry.
+            del self._immunity_tokens[manifest_path]
         self._debounce.start()
 
     def _rebuild_watches(self) -> None:
@@ -237,6 +268,16 @@ class LibraryManager(QObject):
         if add:
             self._watcher.addPaths(add)
 
+    def _prune_immunity_tokens(self, now: int) -> None:
+        """Discard outdated immunity tokens to keep the map small."""
+
+        expired = [
+            manifest for manifest, timestamp in self._immunity_tokens.items()
+            if now - timestamp > self._WRITE_IMMUNITY_NS
+        ]
+        for manifest in expired:
+            self._immunity_tokens.pop(manifest, None)
+
     def _node_for_path(self, path: Path) -> AlbumNode:
         node = self._nodes.get(path)
         if node is not None:
@@ -246,30 +287,6 @@ class LibraryManager(QObject):
         if node is not None:
             return node
         raise AlbumOperationError(f"Album node not found for path: {path}")
-
-    # ------------------------------------------------------------------
-    # Watcher coordination
-    # ------------------------------------------------------------------
-    def pause_watching(self) -> None:
-        """Temporarily ignore filesystem change notifications.
-
-        Lightweight manifest writes triggered by the GUI should not force a
-        library-wide refresh because that would reset selections and close the
-        detail view.  Instead of blocking Qt signals altogether—which defers the
-        notification and replays it later—we keep receiving the signals but set
-        a flag so the slot exits immediately.  Stopping the debounce timer at
-        the same time prevents stale refresh requests from firing after the
-        pause begins.
-        """
-
-        if self._debounce.isActive():
-            self._debounce.stop()
-        self._watching_enabled = False
-
-    def resume_watching(self) -> None:
-        """Re-enable filesystem change notifications by flipping the guard."""
-
-        self._watching_enabled = True
 
 
 __all__ = ["LibraryManager"]

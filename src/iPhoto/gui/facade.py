@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 from typing import TYPE_CHECKING, List, Optional, Set
 
 from PySide6.QtCore import QObject, QThreadPool, QTimer, Signal
@@ -29,11 +30,12 @@ class AppFacade(QObject):
     loadStarted = Signal(object)
     loadProgress = Signal(object, int, int)
     loadFinished = Signal(object, bool)
-    # ``aboutToSaveManifest`` and ``didSaveManifest`` allow the UI layer to
-    # temporarily pause library watchers around lightweight manifest writes so
-    # that simple interactions do not trigger expensive reloads.
-    aboutToSaveManifest = Signal()
-    didSaveManifest = Signal()
+    # ``manifestSaved`` announces that a lightweight manifest write has
+    # completed.  The signal carries the path that was written alongside a
+    # monotonic token so the ``LibraryManager`` can tell whether subsequent
+    # filesystem notifications originated from this process or from an
+    # external editor.
+    manifestSaved = Signal(object, str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -264,21 +266,25 @@ class AppFacade(QObject):
     # ------------------------------------------------------------------
     def _save_manifest(self, album: Album, *, reload_view: bool = True) -> bool:
         suppress_watcher = not reload_view
-        if suppress_watcher:
-            self.aboutToSaveManifest.emit()
         try:
-            album.save()
+            # ``time.time_ns`` provides a high resolution monotonic-ish token
+            # that uniquely identifies this write operation.  Passing it back
+            # to the library watcher allows us to ignore the exact change
+            # notification triggered by this save without relying on timing
+            # windows.
+            token = str(time.time_ns())
+            manifest_path = album.save()
         except IPhotoError as exc:
             self.errorRaised.emit(str(exc))
             return False
-        finally:
+        else:
             if suppress_watcher:
-                # Queue the resume notification with a small delay so the
-                # library manager has time to discard filesystem notifications
-                # originating from this save.  Resuming too quickly allows the
-                # pending ``directoryChanged`` signal to slip through and trigger
-                # a UI refresh before the facade finishes its own bookkeeping.
-                QTimer.singleShot(250, self.didSaveManifest.emit)
+                # Inform the library watcher about the internal write so it can
+                # ignore the accompanying ``directoryChanged`` signal.  Emitting
+                # the notification only when ``reload_view`` is disabled keeps
+                # full reloads working as before while ensuring lightweight
+                # updates stay focused on the current view.
+                self.manifestSaved.emit(manifest_path, token)
         if reload_view:
             # Reload to ensure any concurrent edits are picked up.
             self._current_album = Album.open(album.root)
