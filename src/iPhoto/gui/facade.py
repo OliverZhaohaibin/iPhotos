@@ -237,11 +237,25 @@ class AppFacade(QObject):
     # Internal utilities
     # ------------------------------------------------------------------
     def _save_manifest(self, album: Album, *, reload_view: bool = True) -> bool:
+        manager = self._library_manager
+        if manager is not None:
+            # Guard the library watcher before writing the manifest.  Without
+            # this the ``QFileSystemWatcher`` would observe our own save
+            # operation and interpret it as an external change, which in turn
+            # kicks off a disruptive album reload.
+            manager.pause_watcher()
         try:
             album.save()
         except IPhotoError as exc:
             self.errorRaised.emit(str(exc))
             return False
+        finally:
+            if manager is not None:
+                # Resume the watcher on the next turn of the event loop.  A
+                # short delay gives the operating system time to coalesce its
+                # own notifications so we avoid receiving a stale change as
+                # soon as we re-enable monitoring.
+                QTimer.singleShot(250, manager.resume_watcher)
         if reload_view:
             # Reload to ensure any concurrent edits are picked up.
             self._current_album = Album.open(album.root)

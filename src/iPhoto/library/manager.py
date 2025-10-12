@@ -36,6 +36,12 @@ class LibraryManager(QObject):
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
         self._debounce.setInterval(500)
+        # ``_watch_suspend_depth`` tracks how many in-flight operations asked us to
+        # ignore file-system notifications.  Using a counter instead of a boolean
+        # keeps the logic safe when nested saves occur (for example when both the
+        # album manifest and a library-level manifest are updated as part of a
+        # single user action).
+        self._watch_suspend_depth = 0
         self._watcher.directoryChanged.connect(self._on_directory_changed)
         self._debounce.timeout.connect(self._refresh_tree)
 
@@ -211,7 +217,32 @@ class LibraryManager(QObject):
             raise AlbumNameConflictError(f"An album named '{candidate}' already exists.")
         return target
 
+    def pause_watcher(self) -> None:
+        """Temporarily suppress change notifications during internal writes."""
+
+        # Increment the suspension depth so nested pause calls continue to be
+        # reference-counted.  The debounce timer is stopped on the first pause
+        # to ensure that an earlier notification does not race with the write we
+        # are about to perform.
+        self._watch_suspend_depth += 1
+        if self._watch_suspend_depth == 1 and self._debounce.isActive():
+            self._debounce.stop()
+
+    def resume_watcher(self) -> None:
+        """Re-enable change notifications once protected writes have finished."""
+
+        if self._watch_suspend_depth == 0:
+            return
+        self._watch_suspend_depth -= 1
+
     def _on_directory_changed(self, path: str) -> None:
+        # Skip notifications while we are in the middle of an internally
+        # triggered write such as a manifest save.  The associated UI components
+        # already know about those updates, so reacting to the file-system event
+        # would only cause redundant reloads.
+        if self._watch_suspend_depth > 0:
+            return
+
         # ``QFileSystemWatcher`` emits plain strings.  Queue a debounced refresh
         # whenever a change notification arrives so the sidebar reflects
         # external edits without thrashing the filesystem.
