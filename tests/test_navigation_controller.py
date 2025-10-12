@@ -22,8 +22,8 @@ pytest.importorskip(
 
 from PySide6.QtWidgets import QApplication, QLabel, QStackedWidget, QStatusBar, QWidget
 
-from src.iPhoto.gui.ui.controllers.navigation_controller import NavigationController
-from src.iPhoto.gui.ui.controllers.view_controller import ViewController
+from iPhotos.src.iPhoto.gui.ui.controllers.navigation_controller import NavigationController
+from iPhotos.src.iPhoto.gui.ui.controllers.view_controller import ViewController
 
 
 @pytest.fixture

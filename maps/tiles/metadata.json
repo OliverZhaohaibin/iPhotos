@@ -1,0 +1,18 @@
+{
+    "name": "maplibre",
+    "description": "",
+    "legend": "",
+    "attribution": "Rendered with <a href=\"https://www.maptiler.com/desktop/\">MapTiler Desktop</a>",
+    "type": "baselayer",
+    "version": "1",
+    "format": "pbf",
+    "format_arguments": "",
+    "minzoom": "0",
+    "maxzoom": "6",
+    "bounds": "-180.000000,-85.051129,180.000000,85.051129",
+    "scale": "1.000000",
+    "profile": "mercator",
+    "scheme": "tms",
+    "json": "{\"vector_layers\":[{\"id\":\"geolines\",\"description\":\"geographic lines\",\"minzoom\":0, \"maxzoom\":4,\"fields\":{\"name\":\"String\"}},{\"id\":\"countries\",\"description\":\"world countries polygon\",\"minzoom\":0, \"maxzoom\":6,\"fields\":{\"fid\":\"Number\",\"ADM0_A3\":\"String\",\"NAME\":\"String\",\"ABBREV\":\"String\",\"CONTINENT\":\"String\"}},{\"id\":\"centroids\",\"description\":\"world countries points\",\"minzoom\":0, \"maxzoom\":6,\"fields\":{\"NAME\":\"String\",\"ABBREV\":\"String\"}}]}",
+    "generator": "MapTiler Desktop Pro 11.1-2ae5f855e2"
+}
