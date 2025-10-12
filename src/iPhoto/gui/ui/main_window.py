@@ -52,10 +52,10 @@ from .widgets import (
     LiveBadge,
 )
 
-HEADER_ICON_GLYPH_SIZE = QSize(36, 36)
+HEADER_ICON_GLYPH_SIZE = QSize(24, 24)
 """Standard glyph size (in device-independent pixels) for header icons."""
 
-HEADER_BUTTON_SIZE = QSize(44, 44)
+HEADER_BUTTON_SIZE = QSize(36, 38)
 """Hit target size that guarantees a comfortable clickable header button."""
 
 
@@ -195,7 +195,7 @@ class MainWindow(QMainWindow):
     ) -> None:
         """Normalize header button appearance to the spec-compliant defaults.
 
-        The helper enforces a 36px glyph rendered inside a 44px click target so the
+        The helper enforces a 24px glyph rendered inside a 36px click target so the
         back button and the right-aligned actions share the same affordance.  It also
         enables the floating toolbar look-and-feel (``setAutoRaise``) and applies the
         provided tooltip for clarity when hovering.
