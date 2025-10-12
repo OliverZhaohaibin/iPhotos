@@ -20,6 +20,7 @@ pytest.importorskip(
     exc_type=ImportError,
 )
 
+from PySide6.QtCore import QModelIndex, QObject, Signal
 from PySide6.QtWidgets import QApplication, QLabel, QStackedWidget, QStatusBar, QWidget
 
 from iPhotos.src.iPhoto.gui.ui.controllers.navigation_controller import NavigationController
@@ -59,6 +60,19 @@ class _SpyViewController(ViewController):
         super().show_detail_view()
 
 
+class _StubMapView(QObject):
+    """Minimal stand-in for :class:`~MapView` used during tests."""
+
+    clusterClicked = Signal(str)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.last_clusters = None
+
+    def set_photo_clusters(self, clusters):  # pragma: no cover - simple setter
+        self.last_clusters = clusters
+
+
 class _StubFacade:
     """Minimal facade exposing the bits required by :class:`NavigationController`."""
 
@@ -73,10 +87,15 @@ class _StubFacade:
         return album
 
 
-class _StubAssetModel:
+class _StubAssetModel(QObject):
     """Track calls to ``set_filter_mode`` for sanity checks in tests."""
 
+    modelReset = Signal()
+    rowsInserted = Signal(QModelIndex, int, int)
+    rowsRemoved = Signal(QModelIndex, int, int)
+
     def __init__(self) -> None:
+        super().__init__()
         self.filter_mode = object()
 
     def set_filter_mode(self, mode: Optional[str]) -> None:
@@ -140,6 +159,7 @@ def test_open_album_skips_gallery_on_refresh(tmp_path: Path, qapp: QApplication)
     status_bar = QStatusBar()
     dialog = _StubDialog()
     view_controller = _SpyViewController()
+    map_view = _StubMapView()
 
     controller = NavigationController(
         context,
@@ -150,6 +170,7 @@ def test_open_album_skips_gallery_on_refresh(tmp_path: Path, qapp: QApplication)
         status_bar,
         dialog,  # type: ignore[arg-type]
         view_controller,
+        map_view,
     )
 
     album_path = tmp_path / "album"
@@ -191,6 +212,7 @@ def test_open_album_refresh_detected_without_sidebar_sync(
     status_bar = QStatusBar()
     dialog = _StubDialog()
     view_controller = _SpyViewController()
+    map_view = _StubMapView()
 
     controller = NavigationController(
         context,
@@ -201,6 +223,7 @@ def test_open_album_refresh_detected_without_sidebar_sync(
         status_bar,
         dialog,  # type: ignore[arg-type]
         view_controller,
+        map_view,
     )
 
     album_path = tmp_path / "album"

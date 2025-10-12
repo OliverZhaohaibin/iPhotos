@@ -8,6 +8,7 @@ from .filmstrip_view import FilmstripView
 from .image_viewer import ImageViewer
 from .player_bar import PlayerBar
 from .video_area import VideoArea
+from .map_view import MapView
 from .preview_window import PreviewWindow
 from .live_badge import LiveBadge
 
@@ -22,4 +23,5 @@ __all__ = [
     "VideoArea",
     "PreviewWindow",
     "LiveBadge",
+    "MapView",
 ]

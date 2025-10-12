@@ -142,6 +142,8 @@ class AssetListModel(QAbstractListModel):
             return row["dt"]
         if role == Roles.LOCATION:
             return row.get("location")
+        if role == Roles.GPS:
+            return row.get("gps")
         if role == Roles.FEATURED:
             return row["featured"]
         if role == Roles.IS_CURRENT:

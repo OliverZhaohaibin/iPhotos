@@ -69,6 +69,14 @@ class AssetFilterProxyModel(QSortFilterProxyModel):
             return False
         if self._filter_mode == "favorites" and not bool(index.data(Roles.FEATURED)):
             return False
+        if self._filter_mode and self._filter_mode.startswith("location:"):
+            expected = self._filter_mode.partition(":")[2]
+            location_raw = index.data(Roles.LOCATION)
+            location_name = (
+                str(location_raw).casefold() if location_raw is not None else ""
+            )
+            if expected and location_name != expected:
+                return False
         if self._search_text:
             rel = index.data(Roles.REL)
             name = str(rel).casefold() if rel is not None else ""

@@ -72,6 +72,7 @@ class AlbumTreeModel(QAbstractItemModel):
         "Videos",
         "Live Photos",
         "Favorites",
+        "Locations",
     )
 
     TRAILING_STATIC_NODES: tuple[str, ...] = ("Recently Deleted",)
@@ -81,6 +82,7 @@ class AlbumTreeModel(QAbstractItemModel):
         "videos": "video.fill",
         "live photos": "livephoto",
         "favorites": "suit.heart.fill",
+        "locations": "mappin",
         "recently deleted": "trash",
     }
 

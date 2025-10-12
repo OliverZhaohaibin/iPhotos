@@ -58,6 +58,7 @@ class MainController(QObject):
             window.ui.gallery_page,
             window.ui.detail_page,
             window,
+            map_page=window.ui.map_view,
         )
         self._player_view_controller = PlayerViewController(
             window.ui.player_stack,
@@ -80,6 +81,7 @@ class MainController(QObject):
             window.ui.status_bar,
             self._dialog,
             self._view_controller,
+            window.ui.map_view,
         )
         self._detail_ui = DetailUIController(
             self._asset_model,

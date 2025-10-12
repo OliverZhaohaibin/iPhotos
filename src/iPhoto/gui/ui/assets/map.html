@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Photo Locations</title>
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1"
+    />
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha512-mwWW1xgNggCB2A+qsSVqS+8CA0nVddOZXS6SmttuPAHyBs+K6TfGsDz3jHK5vVsQt1zArKeXd1qcI3Z3r3r3Eg=="
+      crossorigin=""
+    />
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        padding: 0;
+      }
+
+      #map {
+        width: 100%;
+        height: 100%;
+        background: #f2f2f2;
+      }
+
+      .cluster-icon-wrapper {
+        border: none;
+        background: transparent;
+      }
+
+      .cluster-icon {
+        position: relative;
+        width: 72px;
+        height: 72px;
+        border-radius: 16px;
+        overflow: hidden;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+        border: 2px solid rgba(255, 255, 255, 0.85);
+      }
+
+      .cluster-icon img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
+
+      .cluster-count {
+        position: absolute;
+        top: 4px;
+        right: 4px;
+        min-width: 24px;
+        padding: 2px 6px;
+        border-radius: 12px;
+        background: rgba(0, 0, 0, 0.75);
+        color: #ffffff;
+        font: 600 12px/1.2 "Segoe UI", sans-serif;
+        text-align: center;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+      }
+
+      .leaflet-tooltip.cluster-tooltip {
+        font: 500 14px/1.4 "Segoe UI", sans-serif;
+        padding: 6px 10px;
+        background: rgba(32, 32, 32, 0.85);
+        border: none;
+        border-radius: 6px;
+        color: #ffffff;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha512-VuXNx3KgwxObn2ymlk/wEYBLETymFcpnSUsctNk6heAQ7Ez+KQEiC5EvhczFMMz9Yx8RJWb1x1o1t4bm/FYn1Q==" crossorigin=""></script>
+    <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+    <script>
+      "use strict";
+
+      const map = L.map("map", {
+        worldCopyJump: true,
+        zoomControl: true,
+      }).setView([20, 0], 2);
+
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution:
+          '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+      }).addTo(map);
+
+      const markerLayer = L.layerGroup().addTo(map);
+      let qtBridge = null;
+
+      function clearMarkers() {
+        markerLayer.clearLayers();
+      }
+
+      function toNumber(value) {
+        const numberValue = Number(value);
+        return Number.isFinite(numberValue) ? numberValue : null;
+      }
+
+      function buildIconMarkup(entry) {
+        const wrapper = document.createElement("div");
+        wrapper.className = "cluster-icon";
+
+        const thumbnail = document.createElement("img");
+        thumbnail.src = entry.thumbnail_url;
+        thumbnail.alt = entry.location_name || "Location preview";
+        wrapper.appendChild(thumbnail);
+
+        const badge = document.createElement("span");
+        badge.className = "cluster-count";
+        badge.textContent = String(entry.count || 0);
+        wrapper.appendChild(badge);
+
+        return wrapper.outerHTML;
+      }
+
+      function addMarker(entry) {
+        const latitude = toNumber(entry.lat);
+        const longitude = toNumber(entry.lon);
+        if (latitude === null || longitude === null) {
+          return;
+        }
+
+        const icon = L.divIcon({
+          html: buildIconMarkup(entry),
+          iconSize: [72, 72],
+          iconAnchor: [36, 36],
+          className: "cluster-icon-wrapper",
+        });
+
+        const marker = L.marker([latitude, longitude], { icon });
+        if (entry.location_name) {
+          marker.bindTooltip(entry.location_name, {
+            direction: "top",
+            className: "cluster-tooltip",
+          });
+        }
+
+        marker.on("click", () => {
+          if (qtBridge && typeof qtBridge.reportClusterClicked === "function") {
+            qtBridge.reportClusterClicked(entry.location_name || "");
+          }
+        });
+
+        markerLayer.addLayer(marker);
+        return marker;
+      }
+
+      function fitToMarkers(markers) {
+        if (!markers.length) {
+          map.setView([20, 0], 2);
+          return;
+        }
+        const bounds = L.latLngBounds(markers.map((marker) => marker.getLatLng()));
+        if (markers.length === 1) {
+          map.flyTo(bounds.getCenter(), 8);
+        } else {
+          map.flyToBounds(bounds.pad(0.35), { maxZoom: 10 });
+        }
+      }
+
+      window.updateClusters = function updateClusters(clustersJson) {
+        let clusters = [];
+        if (typeof clustersJson === "string") {
+          try {
+            clusters = JSON.parse(clustersJson);
+          } catch (error) {
+            console.error("Failed to parse cluster payload", error);
+            clusters = [];
+          }
+        } else if (Array.isArray(clustersJson)) {
+          clusters = clustersJson;
+        }
+
+        clearMarkers();
+        const markers = [];
+        clusters.forEach((entry) => {
+          const marker = addMarker(entry || {});
+          if (marker) {
+            markers.push(marker);
+          }
+        });
+        fitToMarkers(markers);
+      };
+
+      new QWebChannel(qt.webChannelTransport, (channel) => {
+        qtBridge = channel.objects.qtBridge;
+      });
+    </script>
+  </body>
+</html>
