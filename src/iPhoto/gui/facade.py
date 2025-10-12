@@ -13,6 +13,7 @@ from ..models.album import Album
 from .ui.tasks.scanner_worker import ScannerSignals, ScannerWorker
 
 if TYPE_CHECKING:
+    from ..library.manager import LibraryManager
     from .ui.models.asset_list_model import AssetListModel
 
 
@@ -28,11 +29,17 @@ class AppFacade(QObject):
     loadStarted = Signal(object)
     loadProgress = Signal(object, int, int)
     loadFinished = Signal(object, bool)
+    # ``aboutToSaveManifest`` and ``didSaveManifest`` allow the UI layer to
+    # temporarily pause library watchers around lightweight manifest writes so
+    # that simple interactions do not trigger expensive reloads.
+    aboutToSaveManifest = Signal()
+    didSaveManifest = Signal()
 
     def __init__(self) -> None:
         super().__init__()
         self._current_album: Optional[Album] = None
         self._pending_index_announcements: Set[Path] = set()
+        self._library_manager: Optional["LibraryManager"] = None
         self._scanner_pool = QThreadPool.globalInstance()
         self._scanner_worker: Optional[ScannerWorker] = None
         self._scan_pending = False
@@ -159,38 +166,104 @@ class AppFacade(QObject):
         album.set_cover(rel)
         return self._save_manifest(album)
 
+    def bind_library(self, library: "LibraryManager") -> None:
+        """Remember the library manager so static collections stay in sync."""
+
+        self._library_manager = library
+
     def toggle_featured(self, ref: str) -> bool:
-        """Toggle *ref* in the album's featured list."""
+        """Toggle *ref* in the active album and mirror the change in the library."""
 
         album = self._require_album()
-        if album is None:
+        if album is None or not ref:
             return False
+
         featured = album.manifest.setdefault("featured", [])
-        if ref in featured:
+        was_featured = ref in featured
+        desired_state = not was_featured
+
+        library_root: Optional[Path] = None
+        if self._library_manager is not None:
+            library_root = self._library_manager.root()
+
+        root_album: Optional[Album] = None
+        root_ref: Optional[str] = None
+        if (
+            library_root is not None
+            and library_root != album.root
+        ):
+            try:
+                # ``ref`` is relative to the currently open album.  Convert it
+                # to a fully-qualified path before deriving the library-level
+                # relative path used by the global manifest.
+                absolute_asset = (album.root / ref).resolve()
+                root_relative = absolute_asset.relative_to(library_root.resolve())
+            except (OSError, ValueError):
+                root_ref = None
+            else:
+                root_ref = root_relative.as_posix()
+                try:
+                    # Re-open the library root manifest on demand so updates do
+                    # not disturb the album the user is currently browsing.
+                    root_album = Album.open(library_root)
+                except IPhotoError as exc:
+                    self.errorRaised.emit(str(exc))
+                    return was_featured
+
+        if desired_state:
+            album.add_featured(ref)
+            if root_album is not None and root_ref is not None:
+                root_album.add_featured(root_ref)
+        else:
             album.remove_featured(ref)
-            changed = False
+            if root_album is not None and root_ref is not None:
+                root_album.remove_featured(root_ref)
+
+        current_saved = self._save_manifest(album, reload_view=False)
+        root_saved = True
+        if root_album is not None and root_ref is not None:
+            root_saved = self._save_manifest(root_album, reload_view=False)
+
+        if current_saved and root_saved:
+            self._asset_list_model.update_featured_status(ref, desired_state)
+            return desired_state
+
+        if desired_state:
+            album.remove_featured(ref)
+            if root_album is not None and root_ref is not None:
+                root_album.remove_featured(root_ref)
         else:
             album.add_featured(ref)
-            changed = True
-        if self._save_manifest(album):
-            return changed
-        return False
+            if root_album is not None and root_ref is not None:
+                root_album.add_featured(root_ref)
+        return was_featured
 
     # ------------------------------------------------------------------
     # Internal utilities
     # ------------------------------------------------------------------
-    def _save_manifest(self, album: Album) -> bool:
+    def _save_manifest(self, album: Album, *, reload_view: bool = True) -> bool:
+        suppress_watcher = not reload_view
+        if suppress_watcher:
+            self.aboutToSaveManifest.emit()
         try:
             album.save()
         except IPhotoError as exc:
             self.errorRaised.emit(str(exc))
             return False
-        # Reload to ensure any concurrent edits are picked up.
-        self._current_album = Album.open(album.root)
-        refreshed_root = self._current_album.root
-        self._asset_list_model.prepare_for_album(refreshed_root)
-        self.albumOpened.emit(refreshed_root)
-        self._restart_asset_load(refreshed_root)
+        finally:
+            if suppress_watcher:
+                # Queue the resume notification so callers always receive it
+                # even when ``album.save`` raises; resuming in the next event
+                # loop turn avoids reentrancy issues with slots that manipulate
+                # Qt widgets.
+                QTimer.singleShot(0, self.didSaveManifest.emit)
+        if reload_view:
+            # Reload to ensure any concurrent edits are picked up.
+            self._current_album = Album.open(album.root)
+            refreshed_root = self._current_album.root
+            self._asset_list_model.prepare_for_album(refreshed_root)
+            self.albumOpened.emit(refreshed_root)
+            self._restart_asset_load(refreshed_root)
         return True
 
     def _require_album(self) -> Optional[Album]:

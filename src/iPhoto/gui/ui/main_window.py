@@ -37,6 +37,7 @@ from .controllers.navigation_controller import NavigationController
 from .controllers.player_view_controller import PlayerViewController
 from .controllers.playback_controller import PlaybackController
 from .controllers.view_controller import ViewController
+from .icons import load_icon
 from .media import MediaController, PlaylistController, require_multimedia
 from .models.asset_model import AssetModel, Roles
 from .models.spacer_proxy_model import SpacerProxyModel
@@ -82,7 +83,12 @@ class MainWindow(QMainWindow):
         self._player_stack = QStackedWidget()
         self._view_stack = QStackedWidget()
         self._gallery_page = self._detail_page = None
+        # Detail header tool buttons are created up-front so downstream controllers
+        # can wire signal handlers once the UI has been built.
         self._back_button = QToolButton()
+        self._info_button = QToolButton()
+        self._share_button = QToolButton()
+        self._favorite_button = QToolButton()
         self._live_badge = LiveBadge(self)
         self._live_badge.hide()
         self._badge_host: QWidget | None = None
@@ -150,6 +156,8 @@ class MainWindow(QMainWindow):
             self._player_view_controller,
             self._view_controller,
             self._header_controller,
+            self._facade,
+            self._favorite_button,
             self._status,
             self._dialog,
         )
@@ -239,10 +247,10 @@ class MainWindow(QMainWindow):
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(6)
-        self._back_button.setText("← Back")
+        self._back_button.setIcon(load_icon("chevron.left.svg"))
         self._back_button.setToolTip("Return to grid view")
         self._back_button.setAutoRaise(True)
-        self._back_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self._back_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         header_layout.addWidget(self._back_button)
 
         info_container = QWidget()
@@ -277,6 +285,25 @@ class MainWindow(QMainWindow):
         info_layout.addWidget(self._location_label)
         info_layout.addWidget(self._timestamp_label)
         header_layout.addWidget(info_container, 1)
+
+        actions_container = QWidget()
+        actions_layout = QHBoxLayout(actions_container)
+        actions_layout.setContentsMargins(0, 0, 0, 0)
+        actions_layout.setSpacing(4)
+
+        for button, icon_name, tooltip in (
+            (self._info_button, "info.circle.svg", "Info"),
+            (self._share_button, "square.and.arrow.up.svg", "Share"),
+            (self._favorite_button, "suit.heart.svg", "Add to Favorites"),
+        ):
+            button.setIcon(load_icon(icon_name))
+            button.setAutoRaise(True)
+            button.setToolTip(tooltip)
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+            actions_layout.addWidget(button)
+
+        self._favorite_button.setEnabled(False)
+        header_layout.addWidget(actions_container)
         detail_layout.addWidget(header)
 
         player_container = QWidget()
@@ -394,6 +421,11 @@ class MainWindow(QMainWindow):
         ):
             signal.connect(slot)
         self._back_button.clicked.connect(self._view_controller.show_gallery_view)
+        # Pause the library watcher while manifest edits are persisted so the
+        # UI remains focused on the current detail view instead of reacting to
+        # the filesystem change notification triggered by the save.
+        self._facade.aboutToSaveManifest.connect(self._context.library.pause_watching)
+        self._facade.didSaveManifest.connect(self._context.library.resume_watching)
 
     # Public API used by sidebar/actions
     def open_album_from_path(self, path: Path) -> None:
@@ -420,7 +452,12 @@ class MainWindow(QMainWindow):
 
     def _handle_album_opened(self, root: Path) -> None:
         self._navigation.handle_album_opened(root)
-        self._view_controller.show_gallery_view()
+        # Avoid forcing a transition back to the gallery while the detail view is
+        # actively showing an item. ``PlaylistController.current_row`` remains
+        # greater than or equal to zero whenever the detail pane has a focused
+        # asset, so only trigger the gallery view when nothing is selected.
+        if self._playlist.current_row() == -1:
+            self._view_controller.show_gallery_view()
 
     def _on_scan_progress(self, root: Path, current: int, total: int) -> None:
         if self._progress_context not in {"scan", None}:

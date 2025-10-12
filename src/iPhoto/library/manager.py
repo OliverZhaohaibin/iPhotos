@@ -38,6 +38,12 @@ class LibraryManager(QObject):
         self._debounce.setInterval(500)
         self._watcher.directoryChanged.connect(self._on_directory_changed)
         self._debounce.timeout.connect(self._refresh_tree)
+        # ``_watch_suspend_depth`` keeps track of nested pause requests so nested
+        # operations can safely disable and later re-enable the filesystem
+        # watcher without racing each other.  Only the outer-most pause toggles
+        # the ``blockSignals`` flag to ensure normal change propagation resumes
+        # once the final resume arrives.
+        self._watch_suspend_depth = 0
 
     # ------------------------------------------------------------------
     # Basic properties
@@ -212,6 +218,8 @@ class LibraryManager(QObject):
         return target
 
     def _on_directory_changed(self, _path: str) -> None:
+        if self._watch_suspend_depth > 0:
+            return
         self._debounce.start()
 
     def _rebuild_watches(self) -> None:
@@ -236,6 +244,35 @@ class LibraryManager(QObject):
         if node is not None:
             return node
         raise AlbumOperationError(f"Album node not found for path: {path}")
+
+    # ------------------------------------------------------------------
+    # Watcher coordination
+    # ------------------------------------------------------------------
+    def pause_watching(self) -> None:
+        """Temporarily suppress filesystem change notifications.
+
+        The GUI toggles manifest data in response to lightweight interactions
+        such as updating the favorite flag.  Those writes should not cause the
+        entire album tree to refresh because doing so clears selections and
+        forces the detail pane to close.  Callers therefore pause the watcher
+        before persisting and resume it afterwards.  The depth counter prevents
+        nested pauses from prematurely re-enabling the watcher.
+        """
+
+        self._watch_suspend_depth += 1
+        if self._watch_suspend_depth == 1:
+            if self._debounce.isActive():
+                self._debounce.stop()
+            self._watcher.blockSignals(True)
+
+    def resume_watching(self) -> None:
+        """Re-enable filesystem change notifications when safe to do so."""
+
+        if self._watch_suspend_depth == 0:
+            return
+        self._watch_suspend_depth -= 1
+        if self._watch_suspend_depth == 0:
+            self._watcher.blockSignals(False)
 
 
 __all__ = ["LibraryManager"]

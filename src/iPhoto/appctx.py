@@ -46,6 +46,13 @@ class AppContext:
     def __post_init__(self) -> None:
         from .errors import LibraryError
 
+        # ``AppFacade`` needs to observe the shared library manager so that
+        # manifest writes performed while browsing nested albums can keep the
+        # global "Favorites" collection in sync.  The binding is established
+        # eagerly here because both collaborators are constructed via default
+        # factories before ``__post_init__`` runs.
+        self.facade.bind_library(self.library)
+
         basic_path = self.settings.get("basic_library_path")
         if isinstance(basic_path, str) and basic_path:
             candidate = Path(basic_path).expanduser()

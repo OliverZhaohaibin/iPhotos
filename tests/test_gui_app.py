@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QStackedWidget,
     QStatusBar,
+    QToolButton,
     QWidget,
 )
 
@@ -46,6 +48,8 @@ from iPhotos.src.iPhoto.gui.ui.widgets.player_bar import PlayerBar
 from iPhotos.src.iPhoto.gui.ui.widgets.video_area import VideoArea
 from iPhotos.src.iPhoto.gui.ui.widgets.live_badge import LiveBadge
 from iPhotos.src.iPhoto.config import WORK_DIR_NAME
+from iPhotos.src.iPhoto.library.manager import LibraryManager
+from iPhotos.src.iPhoto.models.album import Album
 
 
 def _create_image(path: Path) -> None:
@@ -204,6 +208,152 @@ def test_asset_model_populates_rows(tmp_path: Path, qapp: QApplication) -> None:
     assert any(thumbs_dir.iterdir())
 
 
+def test_facade_toggle_featured_updates_model(tmp_path: Path, qapp: QApplication) -> None:
+    asset = tmp_path / "IMG_2101.JPG"
+    _create_image(asset)
+    facade = AppFacade()
+    model = AssetModel(facade)
+    facade.open_album(tmp_path)
+    qapp.processEvents()
+
+    assert model.rowCount() == 1
+    index = model.index(0, 0)
+    assert not bool(model.data(index, Roles.FEATURED))
+
+    add_spy = QSignalSpy(model.dataChanged)
+    added = facade.toggle_featured("IMG_2101.JPG")
+    qapp.processEvents()
+    assert added is True
+    assert bool(model.data(index, Roles.FEATURED))
+    assert add_spy.count() >= 1
+
+    manifest_path = tmp_path / ".iphoto.album.json"
+    assert manifest_path.exists()
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest.get("featured") == ["IMG_2101.JPG"]
+
+    remove_spy = QSignalSpy(model.dataChanged)
+    removed = facade.toggle_featured("IMG_2101.JPG")
+    qapp.processEvents()
+    assert removed is False
+    assert not bool(model.data(index, Roles.FEATURED))
+    assert remove_spy.count() >= 1
+
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest.get("featured") == []
+
+
+def test_toggle_featured_does_not_emit_album_opened(tmp_path: Path, qapp: QApplication) -> None:
+    asset = tmp_path / "IMG_2102.JPG"
+    _create_image(asset)
+    facade = AppFacade()
+    AssetModel(facade)  # Ensure the list model is initialised for the album.
+    facade.open_album(tmp_path)
+    qapp.processEvents()
+
+    spy = QSignalSpy(facade.albumOpened)
+    about_spy = QSignalSpy(facade.aboutToSaveManifest)
+    did_spy = QSignalSpy(facade.didSaveManifest)
+    facade.toggle_featured("IMG_2102.JPG")
+    qapp.processEvents()
+
+    assert spy.count() == 0
+    assert about_spy.count() == 1
+    assert did_spy.count() == 1
+
+
+def test_toggle_featured_syncs_library_manifest(tmp_path: Path, qapp: QApplication) -> None:
+    """Favorites toggled in sub-albums must appear in the library view."""
+
+    library_root = tmp_path / "Library"
+    sub_album = library_root / "Trip"
+    library_root.mkdir()
+    sub_album.mkdir()
+
+    asset = sub_album / "IMG_9101.JPG"
+    _create_image(asset)
+
+    # Create manifests so both the library root and the sub-album behave like
+    # real albums during the test.  ``Album.open`` lazily builds a manifest
+    # structure when one is missing, therefore saving immediately writes the
+    # expected on-disk representation.
+    Album.open(library_root).save()
+    Album.open(sub_album).save()
+
+    library = LibraryManager()
+    library.bind_path(library_root)
+
+    facade = AppFacade()
+    facade.bind_library(library)
+    model = AssetModel(facade)
+
+    # Start in the sub-album where the user would typically toggle the
+    # favorite flag.  ``processEvents`` allows the background loader to ingest
+    # the freshly scanned index rows.
+    facade.open_album(sub_album)
+    for _ in range(10):
+        qapp.processEvents()
+        if model.rowCount() > 0:
+            break
+
+    assert model.rowCount() == 1
+    index = model.index(0, 0)
+    assert bool(model.data(index, Roles.FEATURED)) is False
+
+    became_featured = facade.toggle_featured("IMG_9101.JPG")
+    qapp.processEvents()
+    assert became_featured is True
+    assert bool(model.data(index, Roles.FEATURED)) is True
+
+    # The sub-album manifest keeps its local relative path, while the library
+    # root tracks the asset via the fully qualified path.  Both perspectives
+    # must reflect the update for the Favorites collection to work.
+    sub_manifest = Album.open(sub_album)
+    assert "IMG_9101.JPG" in sub_manifest.manifest.get("featured", [])
+    root_manifest = Album.open(library_root)
+    assert "Trip/IMG_9101.JPG" in root_manifest.manifest.get("featured", [])
+
+    # Switching to the library root mirrors the behavior of choosing the
+    # "Favorites" node.  The model should now expose the nested asset with the
+    # global relative path and the featured flag enabled.
+    facade.open_album(library_root)
+    for _ in range(10):
+        qapp.processEvents()
+        if model.rowCount() > 0:
+            break
+
+    rel_values = [
+        model.data(model.index(row, 0), Roles.REL)
+        for row in range(model.rowCount())
+    ]
+    assert "Trip/IMG_9101.JPG" in rel_values
+    root_index = next(
+        (
+            model.index(row, 0)
+            for row in range(model.rowCount())
+            if rel_values[row] == "Trip/IMG_9101.JPG"
+        ),
+        None,
+    )
+    assert root_index is not None
+    assert bool(model.data(root_index, Roles.FEATURED)) is True
+
+    # Toggling the favorite off from the sub-album must clear both manifests so
+    # the Favorites collection stops listing the asset.
+    facade.open_album(sub_album)
+    for _ in range(10):
+        qapp.processEvents()
+        if model.rowCount() > 0:
+            break
+
+    reverted = facade.toggle_featured("IMG_9101.JPG")
+    qapp.processEvents()
+    assert reverted is False
+
+    sub_manifest = Album.open(sub_album)
+    assert "IMG_9101.JPG" not in sub_manifest.manifest.get("featured", [])
+    root_manifest = Album.open(library_root)
+    assert "Trip/IMG_9101.JPG" not in root_manifest.manifest.get("featured", [])
 def test_asset_model_filters_videos(tmp_path: Path, qapp: QApplication) -> None:
     image = tmp_path / "IMG_3001.JPG"
     video = tmp_path / "CLIP_0001.MP4"
@@ -327,6 +477,7 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
     dialog = _StubDialog()
     location_label = QLabel()
     timestamp_label = QLabel()
+    favorite_button = QToolButton()
 
     # Construct the layered controllers that ``PlaybackController`` depends on.
     # The widgets built above mirror the real application wiring, so the
@@ -360,6 +511,8 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
         player_view_controller,
         view_controller,
         header_controller,
+        facade,
+        favorite_button,
         status_bar,
         dialog,  # type: ignore[arg-type]
     )

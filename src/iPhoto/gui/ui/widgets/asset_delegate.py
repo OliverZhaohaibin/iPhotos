@@ -31,6 +31,7 @@ class AssetGridDelegate(QStyledItemDelegate):
         super().__init__(parent)
         self._duration_font: Optional[QFont] = None
         self._live_icon: QIcon = load_icon("livephoto.svg", color="white")
+        self._favorite_icon: QIcon = load_icon("suit.heart.fill.svg", color="#ff4d67")
         self._filmstrip_mode = filmstrip_mode
         self._base_size = 192
         self._filmstrip_height = 120
@@ -133,6 +134,9 @@ class AssetGridDelegate(QStyledItemDelegate):
         if index.data(Roles.IS_VIDEO):
             self._draw_duration_badge(painter, option, thumb_rect, index.data(Roles.SIZE))
 
+        if bool(index.data(Roles.FEATURED)):
+            self._draw_favorite_badge(painter, option, thumb_rect)
+
         painter.restore()
 
     # ------------------------------------------------------------------
@@ -205,6 +209,37 @@ class AssetGridDelegate(QStyledItemDelegate):
             icon_size,
         )
         self._live_icon.paint(painter, icon_rect)
+        painter.restore()
+
+    def _draw_favorite_badge(
+        self,
+        painter: QPainter,
+        option: QStyleOptionViewItem,
+        rect: QRect,
+    ) -> None:
+        if self._favorite_icon.isNull():
+            return
+
+        # The badge mirrors the live/video overlays but anchors to the bottom-left
+        # corner so it stays readable regardless of the thumbnail content.
+        padding = 5
+        icon_size = 16
+        badge_width = icon_size + padding * 2
+        badge_height = icon_size + padding * 2
+        badge_rect = QRect(
+            rect.left() + 8,
+            rect.bottom() - badge_height - 8,
+            badge_width,
+            badge_height,
+        )
+
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 160))
+        painter.drawRoundedRect(badge_rect, 6, 6)
+        icon_rect = badge_rect.adjusted(padding, padding, -padding, -padding)
+        self._favorite_icon.paint(painter, icon_rect)
         painter.restore()
 
     @staticmethod
