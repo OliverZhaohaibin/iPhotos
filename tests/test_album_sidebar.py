@@ -80,6 +80,8 @@ def test_opening_library_root_indexes_nested_assets(tmp_path: Path, qapp: QAppli
     album_dir = root / "Trip"
     child_dir = album_dir / "Day1"
     child_dir.mkdir(parents=True)
+    # Ensure the library root is treated as an album so ``open_album`` returns a value.
+    _write_manifest(root, "Library")
     _write_manifest(album_dir, "Trip")
     (child_dir / ".iphoto.album").touch()
     (album_dir / "photo.PNG").write_bytes(_PNG_DATA)
