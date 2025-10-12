@@ -251,10 +251,13 @@ class LibraryManager(QObject):
         for manifest_path, timestamp in list(self._immunity_tokens.items()):
             # Some platforms notify parent or ancestor directories rather than
             # the folder that actually contains the manifest.  Accept the
-            # change when the reported directory lies anywhere along the
-            # manifest's parent chain so our immunity logic stays robust across
-            # varying watcher behaviours.
-            if changed_dir in manifest_path.parents:
+            # change when the reported directory matches the manifest's parent
+            # exactly or lies anywhere along the parent chain so our immunity
+            # logic stays robust across varying watcher behaviours.
+            if (
+                manifest_path.parent == changed_dir
+                or changed_dir in manifest_path.parents
+            ):
                 if now - timestamp <= self._WRITE_IMMUNITY_NS:
                     # The manifest that triggered this notification was written
                     # by the application itself just moments ago.  Drop the
