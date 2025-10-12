@@ -457,7 +457,13 @@ class MainWindow(QMainWindow):
         # manifest edit.  The manager uses the provided path/token pair to
         # identify the resulting filesystem change notification as "self" and
         # therefore keep the current view steady instead of forcing a reload.
-        self._facade.manifestSaved.connect(self._context.library.register_internal_write)
+        # Use a direct connection so the LibraryManager receives and records the
+        # manifest immunity token immediately, guaranteeing it wins the race
+        # against the filesystem watcher notification that follows the write.
+        self._facade.manifestSaved.connect(
+            self._context.library.register_internal_write,
+            Qt.ConnectionType.DirectConnection,
+        )
 
     # Public API used by sidebar/actions
     def open_album_from_path(self, path: Path) -> None:
