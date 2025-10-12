@@ -38,13 +38,6 @@ class LibraryManager(QObject):
         self._debounce.setInterval(500)
         self._watcher.directoryChanged.connect(self._on_directory_changed)
         self._debounce.timeout.connect(self._refresh_tree)
-        # ``_watch_suspend_depth`` counts how many nested ``pause_watching``
-        # requests are active.  When the depth transitions from zero to one the
-        # watcher is synchronously muted so the application can update files
-        # without immediately receiving its own change notification.  Using a
-        # depth counter keeps the behaviour well defined even when multiple
-        # subsystems pause and resume the watcher in a re-entrant fashion.
-        self._watch_suspend_depth = 0
 
     # ------------------------------------------------------------------
     # Basic properties
@@ -219,10 +212,9 @@ class LibraryManager(QObject):
         return target
 
     def _on_directory_changed(self, path: str) -> None:
-        # ``QFileSystemWatcher`` emits raw strings.  The watcher itself is
-        # already silenced while ``pause_watching`` is active, so reaching this
-        # handler means the change originated externally and should refresh the
-        # in-memory tree after the debounce window.
+        # ``QFileSystemWatcher`` emits plain strings.  Queue a debounced refresh
+        # whenever a change notification arrives so the sidebar reflects
+        # external edits without thrashing the filesystem.
         self._debounce.start()
 
     def _rebuild_watches(self) -> None:
@@ -247,37 +239,5 @@ class LibraryManager(QObject):
         if node is not None:
             return node
         raise AlbumOperationError(f"Album node not found for path: {path}")
-
-    # ------------------------------------------------------------------
-    # Watcher coordination
-    # ------------------------------------------------------------------
-    def pause_watching(self) -> None:
-        """Synchronously block watcher signals during application writes.
-
-        ``QFileSystemWatcher`` delivers notifications asynchronously which can
-        easily race with manifest saves triggered from the GUI.  Muting the
-        watcher before the write and re-enabling it afterwards ensures those
-        self-induced edits never bounce back into the UI as unintended reloads.
-        The depth counter guarantees that nested pauses remain balanced: only
-        the outermost call actually blocks (and later restores) the signals.
-        """
-
-        self._watch_suspend_depth += 1
-        if self._watch_suspend_depth == 1:
-            if self._debounce.isActive():
-                # Cancel any pending refresh because it would run with stale
-                # state while the application is updating files.
-                self._debounce.stop()
-            self._watcher.blockSignals(True)
-
-    def resume_watching(self) -> None:
-        """Re-enable watcher notifications once application writes are done."""
-
-        if self._watch_suspend_depth == 0:
-            return
-        self._watch_suspend_depth -= 1
-        if self._watch_suspend_depth == 0:
-            self._watcher.blockSignals(False)
-
 
 __all__ = ["LibraryManager"]

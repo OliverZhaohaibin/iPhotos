@@ -29,12 +29,6 @@ class AppFacade(QObject):
     loadStarted = Signal(object)
     loadProgress = Signal(object, int, int)
     loadFinished = Signal(object, bool)
-    # Signals used to coordinate filesystem watcher suspension while the GUI
-    # writes manifests.  ``aboutToSaveManifest`` fires immediately before the
-    # write so listeners can block change notifications, while
-    # ``didSaveManifest`` indicates that normal watching may resume.
-    aboutToSaveManifest = Signal()
-    didSaveManifest = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -243,24 +237,11 @@ class AppFacade(QObject):
     # Internal utilities
     # ------------------------------------------------------------------
     def _save_manifest(self, album: Album, *, reload_view: bool = True) -> bool:
-        suppress_watcher = not reload_view
-        if suppress_watcher:
-            # Pause watcher notifications synchronously so the application's own
-            # manifest writes never feed back as external edits.  Using explicit
-            # signals keeps the coordination deterministic and avoids the
-            # zero-length timing windows that plagued the earlier QTimer-based
-            # implementation.
-            self.aboutToSaveManifest.emit()
         try:
             album.save()
         except IPhotoError as exc:
             self.errorRaised.emit(str(exc))
             return False
-        finally:
-            if suppress_watcher:
-                # Always resume the watcher, even if the save fails, to avoid
-                # leaving the filesystem monitor muted indefinitely.
-                self.didSaveManifest.emit()
         if reload_view:
             # Reload to ensure any concurrent edits are picked up.
             self._current_album = Album.open(album.root)

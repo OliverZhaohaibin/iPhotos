@@ -43,11 +43,9 @@ class NavigationController:
         self._dialog = dialog
         self._view_controller = view_controller
         self._static_selection: Optional[str] = None
-        self._syncing_sidebar_selection: bool = False
-        # ``_last_open_was_refresh`` remembers whether the most recent
-        # :meth:`open_album` call represented a passive reload of the current
-        # album.  The main window inspects this flag to decide if it should
-        # preserve the detail pane instead of forcing the gallery into view.
+        # ``_last_open_was_refresh`` records whether ``open_album`` most recently
+        # reissued the currently open album.  When ``True`` the main window can
+        # keep the detail pane visible rather than reverting to the gallery.
         self._last_open_was_refresh: bool = False
 
     # ------------------------------------------------------------------
@@ -92,22 +90,14 @@ class NavigationController:
         library_root = self._context.library.root()
         if self._static_selection and library_root == root:
             title = self._static_selection
-            self._syncing_sidebar_selection = True
-            try:
-                self._sidebar.select_static_node(self._static_selection)
-            finally:
-                self._syncing_sidebar_selection = False
+            self._sidebar.select_static_node(self._static_selection)
         else:
             title = (
                 self._facade.current_album.manifest.get("title")
                 if self._facade.current_album
                 else root.name
             )
-            self._syncing_sidebar_selection = True
-            try:
-                self._sidebar.select_path(root)
-            finally:
-                self._syncing_sidebar_selection = False
+            self._sidebar.select_path(root)
             self._static_selection = None
             self._asset_model.set_filter_mode(None)
         self._album_label.setText(f"{title} — {root}")

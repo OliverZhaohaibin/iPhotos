@@ -252,18 +252,11 @@ def test_toggle_featured_does_not_emit_album_opened(tmp_path: Path, qapp: QAppli
     qapp.processEvents()
 
     opened_spy = QSignalSpy(facade.albumOpened)
-    pause_spy = QSignalSpy(facade.aboutToSaveManifest)
-    resume_spy = QSignalSpy(facade.didSaveManifest)
 
     facade.toggle_featured("IMG_2102.JPG")
     qapp.processEvents()
 
     assert opened_spy.count() == 0
-    # The facade must synchronously pause and resume the watcher around the
-    # lightweight manifest save so the UI never reloads in response to its own
-    # write.
-    assert pause_spy.count() == 1
-    assert resume_spy.count() == 1
 
 
 def test_toggle_featured_syncs_library_manifest(tmp_path: Path, qapp: QApplication) -> None:
