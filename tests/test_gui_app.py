@@ -241,6 +241,21 @@ def test_facade_toggle_featured_updates_model(tmp_path: Path, qapp: QApplication
     assert manifest.get("featured") == []
 
 
+def test_toggle_featured_does_not_emit_album_opened(tmp_path: Path, qapp: QApplication) -> None:
+    asset = tmp_path / "IMG_2102.JPG"
+    _create_image(asset)
+    facade = AppFacade()
+    AssetModel(facade)  # Ensure the list model is initialised for the album.
+    facade.open_album(tmp_path)
+    qapp.processEvents()
+
+    spy = QSignalSpy(facade.albumOpened)
+    facade.toggle_featured("IMG_2102.JPG")
+    qapp.processEvents()
+
+    assert spy.count() == 0
+
+
 def test_asset_model_filters_videos(tmp_path: Path, qapp: QApplication) -> None:
     image = tmp_path / "IMG_3001.JPG"
     video = tmp_path / "CLIP_0001.MP4"

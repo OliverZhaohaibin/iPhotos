@@ -447,7 +447,12 @@ class MainWindow(QMainWindow):
 
     def _handle_album_opened(self, root: Path) -> None:
         self._navigation.handle_album_opened(root)
-        self._view_controller.show_gallery_view()
+        # Avoid forcing a transition back to the gallery while the detail view is
+        # actively showing an item. ``PlaylistController.current_row`` remains
+        # greater than or equal to zero whenever the detail pane has a focused
+        # asset, so only trigger the gallery view when nothing is selected.
+        if self._playlist.current_row() == -1:
+            self._view_controller.show_gallery_view()
 
     def _on_scan_progress(self, root: Path, current: int, total: int) -> None:
         if self._progress_context not in {"scan", None}:
