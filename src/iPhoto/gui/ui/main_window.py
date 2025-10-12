@@ -6,7 +6,7 @@ from functools import partial
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import QEvent, QSize, Qt
 from PySide6.QtGui import QAction, QFont
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -51,6 +51,13 @@ from .widgets import (
     PreviewWindow,
     LiveBadge,
 )
+
+HEADER_ICON_GLYPH_SIZE = QSize(24, 24)
+"""Standard glyph size (in device-independent pixels) for header icons."""
+
+HEADER_BUTTON_SIZE = QSize(36, 38)
+"""Hit target size that guarantees a comfortable clickable header button."""
+
 
 class MainWindow(QMainWindow):
     """Primary window for the desktop experience."""
@@ -180,6 +187,27 @@ class MainWindow(QMainWindow):
         self._configure_views()
         self.setCentralWidget(self._build_splitter())
 
+    def _configure_header_button(
+        self,
+        button: QToolButton,
+        icon_name: str,
+        tooltip: str,
+    ) -> None:
+        """Normalize header button appearance to the spec-compliant defaults.
+
+        The helper enforces a 24px glyph rendered inside a 36px click target so the
+        back button and the right-aligned actions share the same affordance.  It also
+        enables the floating toolbar look-and-feel (``setAutoRaise``) and applies the
+        provided tooltip for clarity when hovering.
+        """
+
+        button.setIcon(load_icon(icon_name))
+        button.setIconSize(HEADER_ICON_GLYPH_SIZE)
+        button.setFixedSize(HEADER_BUTTON_SIZE)
+        button.setAutoRaise(True)
+        button.setToolTip(tooltip)
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+
     def _build_actions(self) -> None:
         open_action = QAction("Open Album Folder…", self)
         open_action.triggered.connect(self._handle_open_album_dialog)
@@ -245,12 +273,17 @@ class MainWindow(QMainWindow):
         detail_layout.setSpacing(6)
         header = QWidget()
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(6)
-        self._back_button.setIcon(load_icon("chevron.left.svg"))
-        self._back_button.setToolTip("Return to grid view")
-        self._back_button.setAutoRaise(True)
-        self._back_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        # Ensure both edges of the header keep a consistent 12px padding so the
+        # icon groupings align cleanly with the window frame.
+        header_layout.setContentsMargins(12, 0, 12, 0)
+        # Match the icon-to-text spacing to the icon grouping spacing for
+        # improved visual rhythm per the updated toolbar specification.
+        header_layout.setSpacing(8)
+        self._configure_header_button(
+            self._back_button,
+            "chevron.left.svg",
+            "Return to grid view",
+        )
         header_layout.addWidget(self._back_button)
 
         info_container = QWidget()
@@ -289,17 +322,16 @@ class MainWindow(QMainWindow):
         actions_container = QWidget()
         actions_layout = QHBoxLayout(actions_container)
         actions_layout.setContentsMargins(0, 0, 0, 0)
-        actions_layout.setSpacing(4)
+        # Increase spacing to 8px so each action button respects the updated
+        # horizontal rhythm requested by design.
+        actions_layout.setSpacing(8)
 
         for button, icon_name, tooltip in (
             (self._info_button, "info.circle.svg", "Info"),
             (self._share_button, "square.and.arrow.up.svg", "Share"),
             (self._favorite_button, "suit.heart.svg", "Add to Favorites"),
         ):
-            button.setIcon(load_icon(icon_name))
-            button.setAutoRaise(True)
-            button.setToolTip(tooltip)
-            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+            self._configure_header_button(button, icon_name, tooltip)
             actions_layout.addWidget(button)
 
         self._favorite_button.setEnabled(False)
