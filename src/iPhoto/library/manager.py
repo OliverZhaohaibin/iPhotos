@@ -237,22 +237,34 @@ class LibraryManager(QObject):
         self._prune_immunity_tokens(time_ns())
 
     def _on_directory_changed(self, path_str: str) -> None:
+        """React to watcher updates while honouring internal-write immunity."""
+
         directory = Path(path_str).resolve()
         now = time_ns()
         self._prune_immunity_tokens(now)
-        for name in ALBUM_MANIFEST_NAMES:
-            manifest_path = directory / name
-            timestamp = self._immunity_tokens.get(manifest_path)
-            if timestamp is None:
+
+        # Iterate over a snapshot of the immunity table so we can freely mutate
+        # it during the loop without invalidating the iterator.  Storing
+        # ``manifest_path`` as a resolved absolute path ensures we are comparing
+        # like-for-like values here even when the watcher delivers symlinked or
+        # differently-cased directory strings on macOS/Windows.
+        for manifest_path, timestamp in list(self._immunity_tokens.items()):
+            if manifest_path.parent != directory:
                 continue
             if now - timestamp <= self._WRITE_IMMUNITY_NS:
-                # This notification corresponds to an internal write.  Consume
-                # the token so subsequent external edits trigger refreshes as
-                # expected and skip the debounce entirely.
+                # The manifest that triggered this notification was written by
+                # the application itself just moments ago.  Drop the token so a
+                # subsequent genuine external edit will still be detected and
+                # exit early to prevent an unnecessary tree refresh.
                 del self._immunity_tokens[manifest_path]
                 return
-            # The token is stale; drop it so fresh writes can reuse the entry.
+            # The manifest resides in the same directory but the recorded
+            # timestamp has fallen outside the immunity window, meaning the
+            # change we are observing is not linked to the known internal
+            # operation.  Remove the stale token so future internal writes can
+            # register fresh entries.
             del self._immunity_tokens[manifest_path]
+
         self._debounce.start()
 
     def _rebuild_watches(self) -> None:
