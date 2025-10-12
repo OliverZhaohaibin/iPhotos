@@ -66,7 +66,12 @@ def test_asset_roles_expose_metadata(tmp_path: Path, qapp: QApplication) -> None
     # Mark the still as featured and ensure the role updates after reload.
     assert facade.current_album is not None
     facade.current_album.manifest["featured"] = ["IMG_0001.JPG"]
-    facade.indexUpdated.emit(tmp_path)
+    # ``AssetListModel.update_featured_status`` is the supported entry point for
+    # synchronising the UI with manifest changes.  Emitting ``indexUpdated``
+    # only informs listeners that a refresh already happened, so the model would
+    # otherwise keep stale data.  Updating the source model directly mirrors the
+    # behaviour performed by :meth:`AppFacade.toggle_featured` in production.
+    model.source_model().update_featured_status("IMG_0001.JPG", True)
     qapp.processEvents()
 
     featured_index = next(
