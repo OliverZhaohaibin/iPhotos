@@ -29,11 +29,6 @@ class AppFacade(QObject):
     loadStarted = Signal(object)
     loadProgress = Signal(object, int, int)
     loadFinished = Signal(object, bool)
-    # ``aboutToSaveManifest`` and ``didSaveManifest`` allow the UI layer to
-    # temporarily pause library watchers around lightweight manifest writes so
-    # that simple interactions do not trigger expensive reloads.
-    aboutToSaveManifest = Signal()
-    didSaveManifest = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -243,20 +238,18 @@ class AppFacade(QObject):
     # ------------------------------------------------------------------
     def _save_manifest(self, album: Album, *, reload_view: bool = True) -> bool:
         suppress_watcher = not reload_view
-        if suppress_watcher:
-            self.aboutToSaveManifest.emit()
+        if suppress_watcher and self._library_manager is not None:
+            # Flag the directory for the upcoming manifest write so the library
+            # watcher swallows the corresponding change notification.  This
+            # avoids a race where Qt restores the watcher before the
+            # filesystem event arrives, which previously caused the UI to reset
+            # to the gallery view during lightweight edits.
+            self._library_manager.ignore_next_change_for(album.root)
         try:
             album.save()
         except IPhotoError as exc:
             self.errorRaised.emit(str(exc))
             return False
-        finally:
-            if suppress_watcher:
-                # Queue the resume notification so callers always receive it
-                # even when ``album.save`` raises; resuming in the next event
-                # loop turn avoids reentrancy issues with slots that manipulate
-                # Qt widgets.
-                QTimer.singleShot(0, self.didSaveManifest.emit)
         if reload_view:
             # Reload to ensure any concurrent edits are picked up.
             self._current_album = Album.open(album.root)

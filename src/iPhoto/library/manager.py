@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterable
+from typing import Dict, Iterable, Set
 
 from PySide6.QtCore import QFileSystemWatcher, QObject, QTimer, Signal
 
@@ -38,12 +38,12 @@ class LibraryManager(QObject):
         self._debounce.setInterval(500)
         self._watcher.directoryChanged.connect(self._on_directory_changed)
         self._debounce.timeout.connect(self._refresh_tree)
-        # ``_watch_suspend_depth`` keeps track of nested pause requests so nested
-        # operations can safely disable and later re-enable the filesystem
-        # watcher without racing each other.  Only the outer-most pause toggles
-        # the ``blockSignals`` flag to ensure normal change propagation resumes
-        # once the final resume arrives.
-        self._watch_suspend_depth = 0
+        # ``_ignored_paths`` tracks directories whose next change event should
+        # be suppressed because the application itself performed the
+        # modification.  This set guarantees that manifest writes triggered from
+        # the GUI do not bounce back through the watcher and unexpectedly reset
+        # the user interface.
+        self._ignored_paths: Set[str] = set()
 
     # ------------------------------------------------------------------
     # Basic properties
@@ -217,8 +217,18 @@ class LibraryManager(QObject):
             raise AlbumNameConflictError(f"An album named '{candidate}' already exists.")
         return target
 
-    def _on_directory_changed(self, _path: str) -> None:
-        if self._watch_suspend_depth > 0:
+    def _on_directory_changed(self, path: str) -> None:
+        # ``QFileSystemWatcher`` delivers directory paths as strings.  Resolve
+        # them eagerly so the ignore bookkeeping can rely on a normalised
+        # canonical form regardless of how the underlying platform reports the
+        # value.
+        resolved_path = str(Path(path).resolve())
+        if resolved_path in self._ignored_paths:
+            # Only a single change notification should be skipped.  Removing the
+            # entry immediately ensures that genuine external edits still flow
+            # through and trigger a rescan after the application completes its
+            # own write.
+            self._ignored_paths.discard(resolved_path)
             return
         self._debounce.start()
 
@@ -248,31 +258,16 @@ class LibraryManager(QObject):
     # ------------------------------------------------------------------
     # Watcher coordination
     # ------------------------------------------------------------------
-    def pause_watching(self) -> None:
-        """Temporarily suppress filesystem change notifications.
+    def ignore_next_change_for(self, path: Path) -> None:
+        """Ignore the next watcher event emitted for ``path``.
 
-        The GUI toggles manifest data in response to lightweight interactions
-        such as updating the favorite flag.  Those writes should not cause the
-        entire album tree to refresh because doing so clears selections and
-        forces the detail pane to close.  Callers therefore pause the watcher
-        before persisting and resume it afterwards.  The depth counter prevents
-        nested pauses from prematurely re-enabling the watcher.
+        Manifest writes carried out by the application itself should not cause
+        the surrounding interface to treat them as external edits.  Callers can
+        therefore register the directory being modified before writing so the
+        immediately following watcher notification gets swallowed.
         """
 
-        self._watch_suspend_depth += 1
-        if self._watch_suspend_depth == 1:
-            if self._debounce.isActive():
-                self._debounce.stop()
-            self._watcher.blockSignals(True)
-
-    def resume_watching(self) -> None:
-        """Re-enable filesystem change notifications when safe to do so."""
-
-        if self._watch_suspend_depth == 0:
-            return
-        self._watch_suspend_depth -= 1
-        if self._watch_suspend_depth == 0:
-            self._watcher.blockSignals(False)
+        self._ignored_paths.add(str(path.resolve()))
 
 
 __all__ = ["LibraryManager"]

@@ -248,18 +248,33 @@ def test_toggle_featured_does_not_emit_album_opened(tmp_path: Path, qapp: QAppli
     _create_image(asset)
     facade = AppFacade()
     AssetModel(facade)  # Ensure the list model is initialised for the album.
+
+    class DummyLibrary:
+        """Test double that records ignored paths for later assertions."""
+
+        def __init__(self, root: Path) -> None:
+            self._root = root
+            self.ignored: list[Path] = []
+
+        def root(self) -> Path:
+            return self._root
+
+        def ignore_next_change_for(self, path: Path) -> None:
+            self.ignored.append(Path(path))
+
+    library = DummyLibrary(tmp_path)
+    facade.bind_library(library)
     facade.open_album(tmp_path)
     qapp.processEvents()
 
     spy = QSignalSpy(facade.albumOpened)
-    about_spy = QSignalSpy(facade.aboutToSaveManifest)
-    did_spy = QSignalSpy(facade.didSaveManifest)
     facade.toggle_featured("IMG_2102.JPG")
     qapp.processEvents()
 
     assert spy.count() == 0
-    assert about_spy.count() == 1
-    assert did_spy.count() == 1
+    # The facade should suppress the watcher for the current album exactly
+    # once so the UI does not reload in response to its own manifest write.
+    assert library.ignored == [tmp_path]
 
 
 def test_toggle_featured_syncs_library_manifest(tmp_path: Path, qapp: QApplication) -> None:
