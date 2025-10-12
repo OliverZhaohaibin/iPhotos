@@ -250,10 +250,14 @@ def test_toggle_featured_does_not_emit_album_opened(tmp_path: Path, qapp: QAppli
     qapp.processEvents()
 
     spy = QSignalSpy(facade.albumOpened)
+    about_spy = QSignalSpy(facade.aboutToSaveManifest)
+    did_spy = QSignalSpy(facade.didSaveManifest)
     facade.toggle_featured("IMG_2102.JPG")
     qapp.processEvents()
 
     assert spy.count() == 0
+    assert about_spy.count() == 1
+    assert did_spy.count() == 1
 
 
 def test_asset_model_filters_videos(tmp_path: Path, qapp: QApplication) -> None:
