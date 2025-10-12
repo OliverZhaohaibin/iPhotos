@@ -454,6 +454,14 @@ class MainWindow(QMainWindow):
         ):
             signal.connect(slot)
         self._back_button.clicked.connect(self._view_controller.show_gallery_view)
+        # Synchronously mute the library watcher while lightweight manifest saves
+        # are in progress so the UI does not respond to its own writes with a
+        # disruptive reload.  The facade emits the coordination signals just
+        # before and after each save, allowing the library manager to block and
+        # subsequently restore filesystem notifications without relying on
+        # fragile event-loop timing.
+        self._facade.aboutToSaveManifest.connect(self._context.library.pause_watching)
+        self._facade.didSaveManifest.connect(self._context.library.resume_watching)
 
     # Public API used by sidebar/actions
     def open_album_from_path(self, path: Path) -> None:

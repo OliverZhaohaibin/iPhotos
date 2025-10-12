@@ -48,19 +48,6 @@ class NavigationController:
     # Album management
     # ------------------------------------------------------------------
     def open_album(self, path: Path) -> None:
-        # Short-circuit redundant open requests that target the album that is
-        # already active. These redundant calls usually originate from the
-        # filesystem watcher reacting to a manifest save that the application
-        # itself initiated. Treating them as no-ops prevents the gallery view
-        # from being shown briefly while the detail pane still has focus, which
-        # would otherwise feel like a disruptive flicker to the user.
-        if (
-            self._facade.current_album
-            and self._facade.current_album.root == path
-            and self._static_selection is None
-        ):
-            return
-
         self._static_selection = None
         self._asset_model.set_filter_mode(None)
         # Always present the gallery grid before loading a new album so any

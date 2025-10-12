@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterable, Set
+from typing import Dict, Iterable
 
 from PySide6.QtCore import QFileSystemWatcher, QObject, QTimer, Signal
 
@@ -38,12 +38,13 @@ class LibraryManager(QObject):
         self._debounce.setInterval(500)
         self._watcher.directoryChanged.connect(self._on_directory_changed)
         self._debounce.timeout.connect(self._refresh_tree)
-        # ``_ignored_paths`` tracks directories whose next change event should
-        # be suppressed because the application itself performed the
-        # modification.  This set guarantees that manifest writes triggered from
-        # the GUI do not bounce back through the watcher and unexpectedly reset
-        # the user interface.
-        self._ignored_paths: Set[str] = set()
+        # ``_watch_suspend_depth`` counts how many nested ``pause_watching``
+        # requests are active.  When the depth transitions from zero to one the
+        # watcher is synchronously muted so the application can update files
+        # without immediately receiving its own change notification.  Using a
+        # depth counter keeps the behaviour well defined even when multiple
+        # subsystems pause and resume the watcher in a re-entrant fashion.
+        self._watch_suspend_depth = 0
 
     # ------------------------------------------------------------------
     # Basic properties
@@ -218,18 +219,10 @@ class LibraryManager(QObject):
         return target
 
     def _on_directory_changed(self, path: str) -> None:
-        # ``QFileSystemWatcher`` delivers directory paths as strings.  Resolve
-        # them eagerly so the ignore bookkeeping can rely on a normalised
-        # canonical form regardless of how the underlying platform reports the
-        # value.
-        resolved_path = str(Path(path).resolve())
-        if resolved_path in self._ignored_paths:
-            # Only a single change notification should be skipped.  Removing the
-            # entry immediately ensures that genuine external edits still flow
-            # through and trigger a rescan after the application completes its
-            # own write.
-            self._ignored_paths.discard(resolved_path)
-            return
+        # ``QFileSystemWatcher`` emits raw strings.  The watcher itself is
+        # already silenced while ``pause_watching`` is active, so reaching this
+        # handler means the change originated externally and should refresh the
+        # in-memory tree after the debounce window.
         self._debounce.start()
 
     def _rebuild_watches(self) -> None:
@@ -258,16 +251,33 @@ class LibraryManager(QObject):
     # ------------------------------------------------------------------
     # Watcher coordination
     # ------------------------------------------------------------------
-    def ignore_next_change_for(self, path: Path) -> None:
-        """Ignore the next watcher event emitted for ``path``.
+    def pause_watching(self) -> None:
+        """Synchronously block watcher signals during application writes.
 
-        Manifest writes carried out by the application itself should not cause
-        the surrounding interface to treat them as external edits.  Callers can
-        therefore register the directory being modified before writing so the
-        immediately following watcher notification gets swallowed.
+        ``QFileSystemWatcher`` delivers notifications asynchronously which can
+        easily race with manifest saves triggered from the GUI.  Muting the
+        watcher before the write and re-enabling it afterwards ensures those
+        self-induced edits never bounce back into the UI as unintended reloads.
+        The depth counter guarantees that nested pauses remain balanced: only
+        the outermost call actually blocks (and later restores) the signals.
         """
 
-        self._ignored_paths.add(str(path.resolve()))
+        self._watch_suspend_depth += 1
+        if self._watch_suspend_depth == 1:
+            if self._debounce.isActive():
+                # Cancel any pending refresh because it would run with stale
+                # state while the application is updating files.
+                self._debounce.stop()
+            self._watcher.blockSignals(True)
+
+    def resume_watching(self) -> None:
+        """Re-enable watcher notifications once application writes are done."""
+
+        if self._watch_suspend_depth == 0:
+            return
+        self._watch_suspend_depth -= 1
+        if self._watch_suspend_depth == 0:
+            self._watcher.blockSignals(False)
 
 
 __all__ = ["LibraryManager"]
