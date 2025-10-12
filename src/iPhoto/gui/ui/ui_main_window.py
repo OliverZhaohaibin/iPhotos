@@ -1,0 +1,278 @@
+"""UI definition for the primary application window."""
+
+from __future__ import annotations
+
+from PySide6.QtCore import QCoreApplication, QMetaObject, QSize, Qt
+from PySide6.QtGui import QAction, QFont
+from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMenuBar,
+    QProgressBar,
+    QSplitter,
+    QStackedWidget,
+    QStatusBar,
+    QToolBar,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
+
+from .icons import load_icon
+from .widgets import (
+    AlbumSidebar,
+    FilmstripView,
+    GalleryGridView,
+    ImageViewer,
+    LiveBadge,
+    PreviewWindow,
+    VideoArea,
+)
+
+HEADER_ICON_GLYPH_SIZE = QSize(24, 24)
+"""Standard glyph size (in device-independent pixels) for header icons."""
+
+HEADER_BUTTON_SIZE = QSize(36, 38)
+"""Hit target size that guarantees a comfortable clickable header button."""
+
+
+class Ui_MainWindow(object):
+    """Pure UI layer for :class:`~PySide6.QtWidgets.QMainWindow`.
+
+    The class mirrors the structure produced by ``pyuic`` so the widget
+    hierarchy lives in a single, importable module.  All widgets are exposed as
+    public attributes so controllers can reference them without forcing the
+    view to know about application logic.
+    """
+
+    def setupUi(self, MainWindow: QMainWindow, library) -> None:  # noqa: N802 - Qt style
+        """Instantiate and lay out every widget composing the main window.
+
+        Parameters
+        ----------
+        MainWindow:
+            The concrete :class:`QMainWindow` receiving the widgets.
+        library:
+            The album library descriptor used by :class:`AlbumSidebar` to
+            populate its tree.  The concrete type is deliberately left open
+            because the sidebar only requires a duck-typed interface.
+        """
+
+        if not MainWindow.objectName():
+            MainWindow.setObjectName("MainWindow")
+
+        MainWindow.resize(1200, 720)
+
+        self.menu_bar = QMenuBar(MainWindow)
+        MainWindow.setMenuBar(self.menu_bar)
+
+        self.status_bar = QStatusBar(MainWindow)
+        MainWindow.setStatusBar(self.status_bar)
+
+        self.progress_bar = QProgressBar(MainWindow)
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setMinimumWidth(160)
+        self.progress_bar.setTextVisible(False)
+        self.status_bar.addPermanentWidget(self.progress_bar)
+
+        self.open_album_action = QAction("Open Album Folder…", MainWindow)
+        self.rescan_action = QAction("Rescan", MainWindow)
+        self.rebuild_links_action = QAction("Rebuild Live Links", MainWindow)
+        self.bind_library_action = QAction("Set Basic Library…", MainWindow)
+
+        file_menu = self.menu_bar.addMenu("&File")
+        for action in (
+            self.open_album_action,
+            None,
+            self.bind_library_action,
+            None,
+            self.rescan_action,
+            self.rebuild_links_action,
+        ):
+            if action is None:
+                file_menu.addSeparator()
+            else:
+                file_menu.addAction(action)
+
+        self.main_toolbar = QToolBar("Main", MainWindow)
+        self.main_toolbar.setMovable(False)
+        MainWindow.addToolBar(self.main_toolbar)
+        for action in (
+            self.open_album_action,
+            self.rescan_action,
+            self.rebuild_links_action,
+        ):
+            self.main_toolbar.addAction(action)
+
+        self.sidebar = AlbumSidebar(library, MainWindow)
+        self.album_label = QLabel("Open a folder to browse your photos.")
+        self.grid_view = GalleryGridView()
+        self.filmstrip_view = FilmstripView()
+        self.video_area = VideoArea()
+        self.player_bar = self.video_area.player_bar
+        self.preview_window = PreviewWindow(MainWindow)
+        self.image_viewer = ImageViewer()
+        self.player_placeholder = QLabel("Select a photo or video to preview.")
+        self.player_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.player_placeholder.setStyleSheet(
+            "background-color: black; color: white; font-size: 16px;"
+        )
+        self.player_placeholder.setMinimumHeight(320)
+        self.player_stack = QStackedWidget()
+        self.view_stack = QStackedWidget()
+
+        self.back_button = QToolButton()
+        self.info_button = QToolButton()
+        self.share_button = QToolButton()
+        self.favorite_button = QToolButton()
+        self.favorite_button.setEnabled(False)
+
+        self.live_badge = LiveBadge(MainWindow)
+        self.live_badge.hide()
+        self.badge_host: QWidget | None = None
+
+        self.location_label = QLabel()
+        self.timestamp_label = QLabel()
+
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(8, 8, 8, 8)
+
+        self.album_label.setObjectName("albumLabel")
+        right_layout.addWidget(self.album_label)
+
+        gallery_page = QWidget()
+        gallery_layout = QVBoxLayout(gallery_page)
+        gallery_layout.setContentsMargins(0, 0, 0, 0)
+        gallery_layout.setSpacing(0)
+        gallery_layout.addWidget(self.grid_view)
+        self.gallery_page = gallery_page
+
+        detail_page = QWidget()
+        detail_layout = QVBoxLayout(detail_page)
+        detail_layout.setContentsMargins(0, 0, 0, 0)
+        detail_layout.setSpacing(6)
+
+        header = QWidget()
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(12, 0, 12, 0)
+        header_layout.setSpacing(8)
+
+        self._configure_header_button(
+            self.back_button,
+            "chevron.left.svg",
+            "Return to grid view",
+        )
+        header_layout.addWidget(self.back_button)
+
+        info_container = QWidget()
+        info_layout = QVBoxLayout(info_container)
+        info_layout.setContentsMargins(0, 0, 0, 0)
+        info_layout.setSpacing(0)
+        info_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        base_font = MainWindow.font()
+
+        location_font = QFont(base_font)
+        if location_font.pointSize() > 0:
+            location_font.setPointSize(location_font.pointSize() + 2)
+        else:
+            location_font.setPointSize(14)
+        location_font.setBold(True)
+
+        timestamp_font = QFont(base_font)
+        if timestamp_font.pointSize() > 0:
+            timestamp_font.setPointSize(max(timestamp_font.pointSize() + 1, 1))
+        else:
+            timestamp_font.setPointSize(12)
+        timestamp_font.setBold(False)
+
+        self.location_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.location_label.setFont(location_font)
+        self.location_label.setVisible(False)
+
+        self.timestamp_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.timestamp_label.setFont(timestamp_font)
+        self.timestamp_label.setVisible(False)
+
+        info_layout.addWidget(self.location_label)
+        info_layout.addWidget(self.timestamp_label)
+        header_layout.addWidget(info_container, 1)
+
+        actions_container = QWidget()
+        actions_layout = QHBoxLayout(actions_container)
+        actions_layout.setContentsMargins(0, 0, 0, 0)
+        actions_layout.setSpacing(8)
+
+        for button, icon_name, tooltip in (
+            (self.info_button, "info.circle.svg", "Info"),
+            (self.share_button, "square.and.arrow.up.svg", "Share"),
+            (self.favorite_button, "suit.heart.svg", "Add to Favorites"),
+        ):
+            self._configure_header_button(button, icon_name, tooltip)
+            actions_layout.addWidget(button)
+
+        header_layout.addWidget(actions_container)
+        detail_layout.addWidget(header)
+
+        player_container = QWidget()
+        player_layout = QVBoxLayout(player_container)
+        player_layout.setContentsMargins(0, 0, 0, 0)
+        player_layout.setSpacing(0)
+        player_layout.addWidget(self.player_stack)
+        detail_layout.addWidget(player_container)
+        detail_layout.addWidget(self.filmstrip_view)
+        self.detail_page = detail_page
+
+        self.player_stack.addWidget(self.player_placeholder)
+        self.player_stack.addWidget(self.image_viewer)
+        self.player_stack.addWidget(self.video_area)
+        self.player_stack.setCurrentWidget(self.player_placeholder)
+
+        self.live_badge.setParent(player_container)
+        self.badge_host = player_container
+        self.live_badge.raise_()
+
+        self.view_stack.addWidget(self.gallery_page)
+        self.view_stack.addWidget(self.detail_page)
+        self.view_stack.setCurrentWidget(self.gallery_page)
+        right_layout.addWidget(self.view_stack)
+
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.addWidget(self.sidebar)
+        self.splitter.addWidget(right_panel)
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setCollapsible(0, False)
+        self.splitter.setCollapsible(1, False)
+
+        MainWindow.setCentralWidget(self.splitter)
+
+        player_container.installEventFilter(MainWindow)
+
+        self.retranslateUi(MainWindow)
+        QMetaObject.connectSlotsByName(MainWindow)
+
+    def _configure_header_button(
+        self,
+        button: QToolButton,
+        icon_name: str,
+        tooltip: str,
+    ) -> None:
+        """Normalize header button appearance to the design defaults."""
+
+        button.setIcon(load_icon(icon_name))
+        button.setIconSize(HEADER_ICON_GLYPH_SIZE)
+        button.setFixedSize(HEADER_BUTTON_SIZE)
+        button.setAutoRaise(True)
+        button.setToolTip(tooltip)
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+
+    def retranslateUi(self, MainWindow: QMainWindow) -> None:  # noqa: N802 - Qt style
+        """Apply translatable strings to the window."""
+
+        MainWindow.setWindowTitle(
+            QCoreApplication.translate("MainWindow", "iPhoto", None)
+        )
+
