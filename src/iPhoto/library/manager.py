@@ -272,7 +272,12 @@ class LibraryManager(QObject):
         desired: set[str] = set()
         if self._root is not None:
             desired.add(str(self._root))
-            desired.update(str(node.path) for node in self._albums)
+            # ``_nodes`` contains every discovered album node, including nested
+            # sub-albums.  Watching each directory individually ensures the
+            # filesystem notifications we receive match the exact manifest
+            # location, allowing the immunity token logic to recognise internal
+            # writes reliably even for deeply nested structures.
+            desired.update(str(path) for path in self._nodes)
         remove = [path for path in current if path not in desired]
         if remove:
             self._watcher.removePaths(remove)
