@@ -17,6 +17,7 @@ from ...facade import AppFacade
 from ..models.asset_model import AssetModel
 from ..widgets.album_sidebar import AlbumSidebar
 from .dialog_controller import DialogController
+from .view_controller import ViewController
 
 
 class NavigationController:
@@ -31,6 +32,7 @@ class NavigationController:
         album_label: QLabel,
         status_bar: QStatusBar,
         dialog: DialogController,
+        view_controller: ViewController,
     ) -> None:
         self._context = context
         self._facade = facade
@@ -39,14 +41,32 @@ class NavigationController:
         self._album_label = album_label
         self._status = status_bar
         self._dialog = dialog
+        self._view_controller = view_controller
         self._static_selection: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Album management
     # ------------------------------------------------------------------
     def open_album(self, path: Path) -> None:
+        # Short-circuit redundant open requests that target the album that is
+        # already active. These redundant calls usually originate from the
+        # filesystem watcher reacting to a manifest save that the application
+        # itself initiated. Treating them as no-ops prevents the gallery view
+        # from being shown briefly while the detail pane still has focus, which
+        # would otherwise feel like a disruptive flicker to the user.
+        if (
+            self._facade.current_album
+            and self._facade.current_album.root == path
+            and self._static_selection is None
+        ):
+            return
+
         self._static_selection = None
         self._asset_model.set_filter_mode(None)
+        # Always present the gallery grid before loading a new album so any
+        # lingering detail state from the previous album does not create an
+        # empty detail view while the new model is populating.
+        self._view_controller.show_gallery_view()
         album = self._facade.open_album(path)
         if album is not None:
             self._context.remember_album(album.root)
@@ -89,6 +109,10 @@ class NavigationController:
         if root is None:
             self._dialog.bind_library_dialog()
             return
+        # Reset the detail pane whenever a static collection (All Photos,
+        # Favorites, etc.) is opened so the UI consistently shows the grid as
+        # its entry point for that virtual album.
+        self._view_controller.show_gallery_view()
         self._asset_model.set_filter_mode(filter_mode)
         self._static_selection = title
         album = self._facade.open_album(root)
