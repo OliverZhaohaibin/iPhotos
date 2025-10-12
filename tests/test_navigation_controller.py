@@ -64,8 +64,10 @@ class _StubFacade:
 
     def __init__(self) -> None:
         self.current_album: Optional[SimpleNamespace] = None
+        self.open_requests: list[Path] = []
 
     def open_album(self, root: Path) -> SimpleNamespace:
+        self.open_requests.append(root)
         album = SimpleNamespace(root=root.resolve(), manifest={"title": root.name})
         self.current_album = album
         return album
@@ -158,6 +160,7 @@ def test_open_album_skips_gallery_on_refresh(tmp_path: Path, qapp: QApplication)
     controller.open_album(album_path)
     assert view_controller.gallery_calls == 1
     assert controller.consume_last_open_refresh() is False
+    assert facade.open_requests == [album_path]
 
     # ``handle_album_opened`` drives the sidebar selection update in the real
     # application.  Wire the stub to mimic the sidebar re-emitting
@@ -167,9 +170,11 @@ def test_open_album_skips_gallery_on_refresh(tmp_path: Path, qapp: QApplication)
     controller.handle_album_opened(album_path)
 
     # The refresh triggered by the sidebar must not reset the gallery view and
-    # should advertise itself via ``consume_last_open_refresh``.
+    # should advertise itself via ``consume_last_open_refresh``.  Crucially, the
+    # facade must not be asked to reload the already-open album again.
     assert view_controller.gallery_calls == 1
     assert controller.consume_last_open_refresh() is True
+    assert facade.open_requests == [album_path]
 
 
 def test_open_album_refresh_detected_without_sidebar_sync(
@@ -205,6 +210,7 @@ def test_open_album_refresh_detected_without_sidebar_sync(
     controller.open_album(album_path)
     assert view_controller.gallery_calls == 1
     assert controller.consume_last_open_refresh() is False
+    assert facade.open_requests == [album_path]
 
     # The follow-up call mimics a filesystem watcher re-selecting the already
     # open album without going through ``handle_album_opened``.  The controller
@@ -213,3 +219,4 @@ def test_open_album_refresh_detected_without_sidebar_sync(
 
     assert view_controller.gallery_calls == 1
     assert controller.consume_last_open_refresh() is True
+    assert facade.open_requests == [album_path]

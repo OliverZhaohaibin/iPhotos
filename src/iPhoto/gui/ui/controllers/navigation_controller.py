@@ -75,12 +75,22 @@ class NavigationController:
         is_refresh = bool(is_same_album and self._static_selection is None)
         self._last_open_was_refresh = is_refresh
 
-        if not is_refresh:
-            self._static_selection = None
-            self._asset_model.set_filter_mode(None)
-            # Present the gallery grid when navigating to a different album so
-            # the UI avoids showing a stale detail pane while the model loads.
-            self._view_controller.show_gallery_view()
+        if is_refresh:
+            # The album is already open and the caller is simply synchronising
+            # sidebar state (for example after a manifest edit triggered by the
+            # favorites button).  Returning early prevents a redundant call to
+            # :meth:`AppFacade.open_album`, which would otherwise reset the
+            # asset model, clear the playlist selection and bounce the detail
+            # pane back to its placeholder.  The existing model already reflects
+            # the manifest change via targeted data updates, so there is nothing
+            # further to do.
+            return
+
+        self._static_selection = None
+        self._asset_model.set_filter_mode(None)
+        # Present the gallery grid when navigating to a different album so the
+        # UI avoids showing a stale detail pane while the model loads.
+        self._view_controller.show_gallery_view()
 
         album = self._facade.open_album(path)
         if album is not None:
