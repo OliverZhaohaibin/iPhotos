@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from functools import partial
 from pathlib import Path
 from typing import Iterable, TYPE_CHECKING
 
@@ -21,11 +20,14 @@ from ..media import MediaController, PlaylistController
 from ..models.asset_model import AssetModel, Roles
 from ..models.spacer_proxy_model import SpacerProxyModel
 from ..widgets import AssetGridDelegate
+from .detail_ui_controller import DetailUIController
 from .dialog_controller import DialogController
 from .header_controller import HeaderController
 from .navigation_controller import NavigationController
-from .player_view_controller import PlayerViewController
 from .playback_controller import PlaybackController
+from .playback_state_manager import PlaybackStateManager
+from .player_view_controller import PlayerViewController
+from .preview_controller import PreviewController
 from .status_bar_controller import StatusBarController
 from .view_controller import ViewController
 
@@ -51,7 +53,6 @@ class MainController(QObject):
         self._dialog = DialogController(window, context, window.ui.status_bar)
         self._media = MediaController(window)
         self._playlist = PlaylistController(window)
-        self._preview_window = window.ui.preview_window
         self._view_controller = ViewController(
             window.ui.view_stack,
             window.ui.gallery_page,
@@ -80,21 +81,37 @@ class MainController(QObject):
             self._dialog,
             self._view_controller,
         )
+        self._detail_ui = DetailUIController(
+            self._asset_model,
+            window.ui.filmstrip_view,
+            self._player_view_controller,
+            window.ui.player_bar,
+            self._view_controller,
+            self._header_controller,
+            window.ui.favorite_button,
+            window.ui.status_bar,
+            window,
+        )
+        self._preview_controller = PreviewController(window.ui.preview_window, window)
+        self._state_manager = PlaybackStateManager(
+            self._media,
+            self._playlist,
+            self._asset_model,
+            self._detail_ui,
+            self._dialog,
+            window,
+        )
         self._playback = PlaybackController(
             self._asset_model,
             self._media,
             self._playlist,
             window.ui.player_bar,
             window.ui.grid_view,
-            window.ui.filmstrip_view,
-            self._preview_window,
-            self._player_view_controller,
             self._view_controller,
-            self._header_controller,
+            self._detail_ui,
+            self._state_manager,
+            self._preview_controller,
             self._facade,
-            window.ui.favorite_button,
-            window.ui.status_bar,
-            self._dialog,
         )
         self._status_bar = StatusBarController(
             window.ui.status_bar,
@@ -219,13 +236,7 @@ class MainController(QObject):
         # View interactions
         for view in (self._window.ui.grid_view, self._window.ui.filmstrip_view):
             view.itemClicked.connect(self._playback.activate_index)
-            view.requestPreview.connect(
-                partial(self._playback.show_preview_for_index, view)
-            )
-            view.previewReleased.connect(
-                self._playback.close_preview_after_release
-            )
-            view.previewCancelled.connect(self._playback.cancel_preview)
+            self._preview_controller.bind_view(view)
 
         self._playlist.currentChanged.connect(
             self._playback.handle_playlist_current_changed
