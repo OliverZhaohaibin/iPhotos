@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, List, Optional, Set
 from PySide6.QtCore import QObject, QThreadPool, QTimer, Signal
 
 from .. import app as backend
+from ..config import ALBUM_MANIFEST_NAMES
 from ..errors import IPhotoError
 from ..models.album import Album
 from .ui.tasks.scanner_worker import ScannerSignals, ScannerWorker
@@ -266,25 +267,40 @@ class AppFacade(QObject):
     # ------------------------------------------------------------------
     def _save_manifest(self, album: Album, *, reload_view: bool = True) -> bool:
         suppress_watcher = not reload_view
-        try:
-            # ``time.time_ns`` provides a high resolution monotonic-ish token
-            # that uniquely identifies this write operation.  Passing it back
-            # to the library watcher allows us to ignore the exact change
-            # notification triggered by this save without relying on timing
-            # windows.
+
+        # Derive the manifest path **before** performing any filesystem writes.
+        # The LibraryManager must receive the immunity token ahead of the
+        # upcoming save so it can safely ignore the watcher notification that
+        # will be triggered by this operation.  Reproducing ``Album.save``'s
+        # path resolution logic here keeps the two code paths perfectly aligned
+        # without exposing the helper as part of the public API.
+        manifest_path: Optional[Path] = None
+        for name in ALBUM_MANIFEST_NAMES:
+            candidate = album.root / name
+            if candidate.exists():
+                manifest_path = candidate
+                break
+        if manifest_path is None:
+            manifest_path = album.root / ALBUM_MANIFEST_NAMES[0]
+
+        if suppress_watcher:
+            # Register the immunity token *before* the save happens so the
+            # watcher never observes an untrusted change notification.
             token = str(time.time_ns())
-            manifest_path = album.save()
+            self.manifestSaved.emit(manifest_path, token)
+
+        try:
+            album.save()
         except IPhotoError as exc:
+            if suppress_watcher:
+                # The save failed, so immediately invalidate the previously
+                # registered token to avoid muting legitimate external edits.
+                # Using an obviously stale timestamp prompts the manager to
+                # drop the entry during its pruning step.
+                self.manifestSaved.emit(manifest_path, "-1")
             self.errorRaised.emit(str(exc))
             return False
-        else:
-            if suppress_watcher:
-                # Inform the library watcher about the internal write so it can
-                # ignore the accompanying ``directoryChanged`` signal.  Emitting
-                # the notification only when ``reload_view`` is disabled keeps
-                # full reloads working as before while ensuring lightweight
-                # updates stay focused on the current view.
-                self.manifestSaved.emit(manifest_path, token)
+
         if reload_view:
             # Reload to ensure any concurrent edits are picked up.
             self._current_album = Album.open(album.root)
