@@ -86,13 +86,22 @@ def process_media_paths(
             if metadata is None:
                 metadata = metadata_lookup.get(path)
             yield _build_row(root, path, metadata)
-        except IPhotoError as exc:
+        except (IPhotoError, OSError) as exc:
             # Each asset must be processed independently so that one corrupt
-            # file does not abort the entire album scan.  By catching the
-            # domain-specific ``IPhotoError`` hierarchy we suppress failures
-            # originating from metadata extraction while still allowing
-            # unexpected exceptions to surface for debugging.
+            # file does not abort the entire album scan.  When metadata
+            # extraction raises an ``IPhotoError`` or the underlying imaging
+            # libraries throw ``OSError`` (common for truncated fixtures during
+            # tests), we log the failure and fall back to a minimal row built
+            # from filesystem metadata so the asset still appears in the index.
             LOGGER.warning("Could not process file %s: %s", path, exc)
+            try:
+                stat = path.stat()
+            except OSError as stat_exc:
+                LOGGER.warning(
+                    "Unable to stat file %s after metadata failure: %s", path, stat_exc
+                )
+                continue
+            yield _build_base_row(root, path, stat)
 
 
 def scan_album(
