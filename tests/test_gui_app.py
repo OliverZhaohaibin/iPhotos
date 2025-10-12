@@ -358,6 +358,50 @@ def test_toggle_featured_syncs_library_manifest(tmp_path: Path, qapp: QApplicati
     assert "IMG_9101.JPG" not in sub_manifest.manifest.get("featured", [])
     root_manifest = Album.open(library_root)
     assert "Trip/IMG_9101.JPG" not in root_manifest.manifest.get("featured", [])
+
+
+def test_playlist_selection_survives_favorites_filter_changes(
+    tmp_path: Path, qapp: QApplication
+) -> None:
+    """Removing a favorite should advance to the next playable asset."""
+
+    first = tmp_path / "IMG_7001.JPG"
+    second = tmp_path / "IMG_7002.JPG"
+    _create_image(first)
+    _create_image(second)
+
+    facade = AppFacade()
+    model = AssetModel(facade)
+    facade.open_album(tmp_path)
+    for _ in range(10):
+        qapp.processEvents()
+        if model.rowCount() == 2:
+            break
+
+    assert model.rowCount() == 2
+
+    assert facade.toggle_featured(first.name) is True
+    assert facade.toggle_featured(second.name) is True
+    qapp.processEvents()
+
+    model.set_filter_mode("favorites")
+    qapp.processEvents()
+    assert model.rowCount() == 2
+
+    playlist = PlaylistController()
+    playlist.bind_model(model)
+    selected = playlist.set_current(0)
+    assert selected is not None
+
+    removed = facade.toggle_featured(first.name)
+    assert removed is False
+    qapp.processEvents()
+
+    assert model.rowCount() == 1
+    assert playlist.current_row() == 0
+    current_source = playlist.current_source()
+    assert current_source is not None
+    assert current_source.name == second.name
 def test_asset_model_filters_videos(tmp_path: Path, qapp: QApplication) -> None:
     image = tmp_path / "IMG_3001.JPG"
     video = tmp_path / "CLIP_0001.MP4"

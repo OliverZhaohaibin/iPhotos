@@ -21,6 +21,13 @@ class PlaylistController(QObject):
         self._model: Optional[AssetModel] = None
         self._current_row: int = -1
         self._previous_row: int = -1
+        # ``_current_rel`` mirrors the currently selected asset's relative path.
+        # Remembering the identifier allows the controller to restore or
+        # migrate the selection when the proxy model reorders itself (for
+        # example when the Favorites filter drops an item), keeping the detail
+        # view focused on a sensible neighbour instead of falling back to the
+        # gallery.
+        self._current_rel: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Model wiring
@@ -52,6 +59,7 @@ class PlaylistController(QObject):
             return None
         if row == self._current_row:
             source = self._resolve_source(row)
+            self._current_rel = self._resolve_rel(row)
             self.currentChanged.emit(row)
             if source is not None:
                 self.sourceChanged.emit(source)
@@ -59,6 +67,7 @@ class PlaylistController(QObject):
         self._previous_row = self._current_row
         self._current_row = row
         source = self._resolve_source(row)
+        self._current_rel = self._resolve_rel(row)
         self.currentChanged.emit(row)
         if source is not None:
             self.sourceChanged.emit(source)
@@ -97,6 +106,7 @@ class PlaylistController(QObject):
         if self._current_row != -1:
             self._previous_row = self._current_row
             self._current_row = -1
+            self._current_rel = None
             self.currentChanged.emit(-1)
 
     # ------------------------------------------------------------------
@@ -108,11 +118,36 @@ class PlaylistController(QObject):
         if self._current_row == -1:
             return
         count = self._model.rowCount()
-        if not (0 <= self._current_row < count):
+        if count == 0:
             self.clear()
             return
-        if not self._is_playable(self._current_row):
-            self.clear()
+
+        if 0 <= self._current_row < count:
+            # If the proxy index stayed within range, confirm that it still
+            # references the same asset.  Filter changes (such as removing an
+            # item from the Favorites view) can reuse the same row number for a
+            # different asset once the model compacts itself.  In that case the
+            # playback controller needs to emit an updated selection so the
+            # detail pane refreshes accordingly.
+            current_rel = self._resolve_rel(self._current_row)
+            if current_rel == self._current_rel and current_rel is not None:
+                return
+            # Attempt to relocate the original asset elsewhere in the model so
+            # the selection survives reordering.  When the asset truly
+            # disappears (for example, it leaves the Favorites filter) fall
+            # back to a nearby surrogate.
+            if self._current_rel:
+                relocated = self._find_row_by_rel(self._current_rel)
+                if relocated is not None:
+                    self.set_current(relocated)
+                    return
+            self._select_surrogate_row(count)
+            return
+
+        # ``_current_row`` fell outside the proxy bounds, meaning the
+        # previously focused asset vanished altogether.  Promote the nearest
+        # remaining row to keep the detail pane populated.
+        self._select_surrogate_row(count)
 
     def _step(self, delta: int) -> Optional[Path]:
         if self._model is None or self._model.rowCount() == 0:
@@ -167,3 +202,53 @@ class PlaylistController(QObject):
         if isinstance(raw, str) and raw:
             return Path(raw)
         return None
+
+    def _resolve_rel(self, row: int) -> Optional[str]:
+        """Return the relative path associated with *row*, if available."""
+
+        if self._model is None:
+            return None
+        index: QModelIndex = self._model.index(row, 0)
+        if not index.isValid():
+            return None
+        rel = index.data(Roles.REL)
+        return str(rel) if isinstance(rel, str) else None
+
+    def _find_row_by_rel(self, rel: str) -> Optional[int]:
+        """Locate the proxy row that currently exposes *rel*, if any."""
+
+        if self._model is None:
+            return None
+        count = self._model.rowCount()
+        for row in range(count):
+            if self._resolve_rel(row) == rel:
+                return row
+        return None
+
+    def _select_surrogate_row(self, count: int) -> None:
+        """Pick the nearest playable row so the detail pane stays populated."""
+
+        if self._model is None or count <= 0:
+            self.clear()
+            return
+        anchor = min(max(self._current_row, 0), count - 1)
+        tried: set[int] = set()
+
+        def _consider(row: int) -> bool:
+            if row in tried or row < 0 or row >= count:
+                return False
+            tried.add(row)
+            if self._is_playable(row):
+                self.set_current(row)
+                return True
+            return False
+
+        if _consider(anchor):
+            return
+        for candidate in range(anchor - 1, -1, -1):
+            if _consider(candidate):
+                return
+        for candidate in range(anchor + 1, count):
+            if _consider(candidate):
+                return
+        self.clear()
