@@ -6,7 +6,7 @@ from functools import partial
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import QEvent, QSize, Qt
 from PySide6.QtGui import QAction, QFont
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -245,9 +245,19 @@ class MainWindow(QMainWindow):
         detail_layout.setSpacing(6)
         header = QWidget()
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(6)
+        # Ensure both edges of the header keep a consistent 12px padding so the
+        # icon groupings align cleanly with the window frame.
+        header_layout.setContentsMargins(12, 0, 12, 0)
+        # Match the icon-to-text spacing to the icon grouping spacing for
+        # improved visual rhythm per the updated toolbar specification.
+        header_layout.setSpacing(8)
+        icon_size = QSize(36, 36)
+        button_size = QSize(44, 44)
         self._back_button.setIcon(load_icon("chevron.left.svg"))
+        # The back button uses a 36px glyph while reserving a 44px clickable
+        # target to satisfy the accessibility requirements from the UI spec.
+        self._back_button.setIconSize(icon_size)
+        self._back_button.setFixedSize(button_size)
         self._back_button.setToolTip("Return to grid view")
         self._back_button.setAutoRaise(True)
         self._back_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
@@ -289,7 +299,9 @@ class MainWindow(QMainWindow):
         actions_container = QWidget()
         actions_layout = QHBoxLayout(actions_container)
         actions_layout.setContentsMargins(0, 0, 0, 0)
-        actions_layout.setSpacing(4)
+        # Increase spacing to 8px so each action button respects the updated
+        # horizontal rhythm requested by design.
+        actions_layout.setSpacing(8)
 
         for button, icon_name, tooltip in (
             (self._info_button, "info.circle.svg", "Info"),
@@ -297,6 +309,11 @@ class MainWindow(QMainWindow):
             (self._favorite_button, "suit.heart.svg", "Add to Favorites"),
         ):
             button.setIcon(load_icon(icon_name))
+            # Apply the shared icon and button sizing so all actions expose the
+            # same 36px glyph inside a 44px click target, matching the header
+            # alignment adjustments above.
+            button.setIconSize(icon_size)
+            button.setFixedSize(button_size)
             button.setAutoRaise(True)
             button.setToolTip(tooltip)
             button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
