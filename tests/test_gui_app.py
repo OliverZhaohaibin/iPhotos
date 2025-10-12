@@ -32,14 +32,20 @@ from PySide6.QtWidgets import (
 )
 
 from iPhotos.src.iPhoto.gui.facade import AppFacade
+from iPhotos.src.iPhoto.gui.ui.controllers.detail_ui_controller import DetailUIController
 from iPhotos.src.iPhoto.gui.ui.controllers.header_controller import HeaderController
 from iPhotos.src.iPhoto.gui.ui.controllers.player_view_controller import (
     PlayerViewController,
 )
 from iPhotos.src.iPhoto.gui.ui.controllers.playback_controller import PlaybackController
+from iPhotos.src.iPhoto.gui.ui.controllers.playback_state_manager import (
+    PlaybackStateManager,
+)
+from iPhotos.src.iPhoto.gui.ui.controllers.preview_controller import PreviewController
 from iPhotos.src.iPhoto.gui.ui.controllers.view_controller import ViewController
 from iPhotos.src.iPhoto.gui.ui.models.asset_model import AssetModel, Roles
 from iPhotos.src.iPhoto.gui.ui.media.playlist_controller import PlaylistController
+from iPhotos.src.iPhoto.gui.ui.models.spacer_proxy_model import SpacerProxyModel
 from iPhotos.src.iPhoto.gui.ui.tasks.thumbnail_loader import ThumbnailJob
 from iPhotos.src.iPhoto.gui.ui.widgets.gallery_grid_view import GalleryGridView
 from iPhotos.src.iPhoto.gui.ui.widgets.filmstrip_view import FilmstripView
@@ -499,7 +505,15 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
     grid_view = GalleryGridView()
     filmstrip_view = FilmstripView()
     grid_view.setModel(model)
-    filmstrip_view.setModel(model)
+
+    # The production UI inserts spacer tiles before and after the first asset so
+    # the current item stays centered.  ``SpacerProxyModel`` mirrors that
+    # behaviour to keep the controller logic operating on the same indices the
+    # real window exposes.
+    filmstrip_model = SpacerProxyModel()
+    filmstrip_model.setSourceModel(model)
+    filmstrip_view.setModel(filmstrip_model)
+
     player_stack = QStackedWidget()
     placeholder = QLabel("placeholder")
     image_viewer = ImageViewer()
@@ -521,9 +535,8 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
     favorite_button = QToolButton()
 
     # Construct the layered controllers that ``PlaybackController`` depends on.
-    # The widgets built above mirror the real application wiring, so the
-    # controller under test receives the same collaborators it would in
-    # production rather than raw Qt widgets.
+    # Each helper mirrors the real application wiring so the behaviour under test
+    # reflects production signal routing rather than shortcutting widget access.
     player_view_controller = PlayerViewController(
         player_stack,
         image_viewer,
@@ -540,27 +553,48 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
         location_label,
         timestamp_label,
     )
-
+    detail_ui = DetailUIController(
+        model,
+        filmstrip_view,
+        player_view_controller,
+        player_bar,
+        view_controller,
+        header_controller,
+        favorite_button,
+        status_bar,
+    )
+    preview_controller = PreviewController(preview_window)  # type: ignore[arg-type]
+    state_manager = PlaybackStateManager(
+        media,
+        playlist,
+        model,
+        detail_ui,
+        dialog,  # type: ignore[arg-type]
+    )
     controller = PlaybackController(
         model,
         media,
         playlist,
-        player_bar,
         grid_view,
-        filmstrip_view,
-        preview_window,  # type: ignore[arg-type]
-        player_view_controller,
         view_controller,
-        header_controller,
+        detail_ui,
+        state_manager,
+        preview_controller,
         facade,
-        favorite_button,
-        status_bar,
-        dialog,  # type: ignore[arg-type]
     )
+
+    # The preview controller now owns the long-press workflow, so bind it to the
+    # grid and filmstrip views to mimic how the main window connects the shared
+    # preview window.
+    preview_controller.bind_view(grid_view)
+    preview_controller.bind_view(filmstrip_view)
     playlist.currentChanged.connect(controller.handle_playlist_current_changed)
     playlist.sourceChanged.connect(controller.handle_playlist_source_changed)
 
-    controller.show_preview_for_index(grid_view, index)
+    # Emit the long-press signal directly to simulate a user previewing the Live
+    # Photo before activating it.  ``PreviewController`` listens to the signal
+    # and routes the preview request to the shared window.
+    grid_view.requestPreview.emit(index)
     qapp.processEvents()
     assert preview_window.previewed
     preview_source, _ = preview_window.previewed[-1]
