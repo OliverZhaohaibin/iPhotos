@@ -48,12 +48,28 @@ class NavigationController:
     # Album management
     # ------------------------------------------------------------------
     def open_album(self, path: Path) -> None:
+        # ``QFileSystemWatcher`` refreshes can report the currently opened album
+        # even though the user did not request a navigation change.  In that
+        # situation the detail pane should remain visible instead of jumping
+        # back to the gallery grid.  By comparing the requested path with the
+        # active album we can detect these passive reloads and skip the view
+        # reset.
+        target_root = path.resolve()
+        current_root = (
+            self._facade.current_album.root.resolve()
+            if self._facade.current_album is not None
+            else None
+        )
+        is_refresh = (
+            current_root == target_root and self._static_selection is None
+        )
+
         self._static_selection = None
         self._asset_model.set_filter_mode(None)
-        # Always present the gallery grid before loading a new album so any
-        # lingering detail state from the previous album does not create an
-        # empty detail view while the new model is populating.
-        self._view_controller.show_gallery_view()
+        if not is_refresh:
+            # Present the gallery grid when navigating to a different album so
+            # the UI avoids showing a stale detail pane while the model loads.
+            self._view_controller.show_gallery_view()
         album = self._facade.open_album(path)
         if album is not None:
             self._context.remember_album(album.root)
