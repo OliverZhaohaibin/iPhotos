@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import QModelIndex, QItemSelectionModel, QObject, QTimer
+from PySide6.QtCore import QModelIndex, QItemSelectionModel, QObject, QTimer, Signal
 from PySide6.QtWidgets import QStatusBar, QToolButton
 
 from ..icons import load_icon
@@ -18,6 +18,12 @@ from .view_controller import ViewController
 
 class DetailUIController(QObject):
     """Manage the collection of widgets that form the detail page."""
+
+    scrubbingStarted = Signal()
+    """Emitted when the player bar begins a scrub gesture."""
+
+    scrubbingFinished = Signal()
+    """Emitted when the player bar completes a scrub gesture."""
 
     def __init__(
         self,
@@ -44,6 +50,7 @@ class DetailUIController(QObject):
         self._status_bar = status_bar
 
         self._initialize_static_state()
+        self._wire_player_bar_events()
 
     # ------------------------------------------------------------------
     # Public helpers
@@ -220,6 +227,39 @@ class DetailUIController(QObject):
 
         self._player_bar.reset()
 
+    def set_player_position(self, position_ms: int) -> None:
+        """Mirror the current playback position onto the player bar."""
+
+        self._player_bar.set_position(position_ms)
+
+    def set_player_duration(self, duration_ms: int) -> None:
+        """Update the player bar with the latest media duration."""
+
+        self._player_bar.set_duration(duration_ms)
+
+    def set_playback_state(self, state: object) -> None:
+        """Synchronise the player bar's play/pause affordance."""
+
+        self._player_bar.set_playback_state(state)
+
+    def is_player_at_end(self) -> bool:
+        """Return ``True`` when the slider reports that playback has ended."""
+
+        duration = self._player_bar.duration()
+        if duration <= 0:
+            return False
+        return self._player_bar.position() >= duration
+
+    def player_duration(self) -> int:
+        """Expose the current duration tracked by the player bar."""
+
+        return self._player_bar.duration()
+
+    def set_player_position_to_start(self) -> None:
+        """Reset the player position to the first frame."""
+
+        self._player_bar.set_position(0)
+
     @property
     def player_bar(self) -> PlayerBar:
         """Expose the managed player bar instance."""
@@ -247,6 +287,12 @@ class DetailUIController(QObject):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+    def _wire_player_bar_events(self) -> None:
+        """Translate player bar gestures into high-level controller signals."""
+
+        self._player_bar.scrubStarted.connect(self.scrubbingStarted.emit)
+        self._player_bar.scrubFinished.connect(self.scrubbingFinished.emit)
+
     def _initialize_static_state(self) -> None:
         """Apply the default state expected when the controller is created."""
 

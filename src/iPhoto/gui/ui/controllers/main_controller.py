@@ -105,7 +105,6 @@ class MainController(QObject):
             self._asset_model,
             self._media,
             self._playlist,
-            window.ui.player_bar,
             window.ui.grid_view,
             self._view_controller,
             self._detail_ui,
@@ -253,8 +252,6 @@ class MainController(QObject):
         self._window.ui.player_bar.muteToggled.connect(self._media.set_muted)
         for signal, slot in (
             (self._window.ui.player_bar.seekRequested, self._media.seek),
-            (self._window.ui.player_bar.scrubStarted, self._playback.on_scrub_started),
-            (self._window.ui.player_bar.scrubFinished, self._playback.on_scrub_finished),
         ):
             signal.connect(slot)
 
@@ -262,12 +259,12 @@ class MainController(QObject):
         for signal, slot in (
             (
                 self._media.positionChanged,
-                self._playback.handle_media_position_changed,
+                self._detail_ui.set_player_position,
             ),
-            (self._media.durationChanged, self._window.ui.player_bar.set_duration),
+            (self._media.durationChanged, self._detail_ui.set_player_duration),
             (
                 self._media.playbackStateChanged,
-                self._window.ui.player_bar.set_playback_state,
+                self._detail_ui.set_playback_state,
             ),
             (self._media.volumeChanged, self._on_volume_changed),
             (self._media.mutedChanged, self._on_mute_changed),

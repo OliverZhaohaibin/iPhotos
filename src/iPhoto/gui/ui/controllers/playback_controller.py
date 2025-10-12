@@ -10,7 +10,6 @@ from ...facade import AppFacade
 from ..media import MediaController, PlaylistController
 from ..models.asset_model import AssetModel, Roles
 from ..widgets.asset_grid import AssetGrid
-from ..widgets.player_bar import PlayerBar
 from .detail_ui_controller import DetailUIController
 from .playback_state_manager import PlaybackStateManager
 from .preview_controller import PreviewController
@@ -25,7 +24,6 @@ class PlaybackController:
         model: AssetModel,
         media: MediaController,
         playlist: PlaylistController,
-        player_bar: PlayerBar,
         grid_view: AssetGrid,
         view_controller: ViewController,
         detail_ui: DetailUIController,
@@ -38,7 +36,6 @@ class PlaybackController:
         self._model = model
         self._media = media
         self._playlist = playlist
-        self._player_bar = player_bar
         self._grid_view = grid_view
         self._view_controller = view_controller
         self._detail_ui = detail_ui
@@ -54,6 +51,8 @@ class PlaybackController:
         self._detail_ui.filmstrip_view.prevItemRequested.connect(self._request_previous_item)
         self._detail_ui.favorite_button.clicked.connect(self._toggle_favorite)
         self._view_controller.galleryViewShown.connect(self._handle_gallery_view_shown)
+        self._detail_ui.scrubbingStarted.connect(self.on_scrub_started)
+        self._detail_ui.scrubbingFinished.connect(self.on_scrub_finished)
 
     # ------------------------------------------------------------------
     # Selection handling
@@ -144,14 +143,6 @@ class PlaybackController:
         if name in {"EndOfMedia", "InvalidMedia", "NoMedia"}:
             self._clear_scrub_state()
 
-    def handle_media_position_changed(self, position_ms: int) -> None:
-        """Keep the player bar in sync with the media engine."""
-
-        self._player_bar.set_position(position_ms)
-
-    # ------------------------------------------------------------------
-    # Player bar events
-    # ------------------------------------------------------------------
     def toggle_playback(self) -> None:
         """Toggle playback state via the media controller."""
 
@@ -160,10 +151,9 @@ class PlaybackController:
         state = self._media.playback_state()
         playing = getattr(state, "name", None) == "PlayingState"
         if not playing:
-            duration = self._player_bar.duration()
-            if duration > 0 and self._player_bar.position() >= duration:
+            if self._detail_ui.is_player_at_end():
                 self._media.seek(0)
-                self._player_bar.set_position(0)
+                self._detail_ui.set_player_position_to_start()
         self._media.toggle()
 
     def on_scrub_started(self) -> None:

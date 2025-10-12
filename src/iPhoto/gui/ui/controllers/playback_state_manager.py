@@ -225,8 +225,8 @@ class PlaybackStateManager(QObject):
         self._media.stop()
         self._media.load(self._active_live_motion)
         self._detail_ui.reset_player_bar()
-        self._detail_ui.player_bar.set_position(0)
-        self._detail_ui.player_bar.set_duration(0)
+        self._detail_ui.set_player_position_to_start()
+        self._detail_ui.set_player_duration(0)
         self._media.set_muted(True)
         self._detail_ui.player_view.show_video_surface(interactive=False)
         self._detail_ui.player_view.set_live_replay_enabled(False)
@@ -276,14 +276,13 @@ class PlaybackStateManager(QObject):
     def _freeze_video_final_frame(self) -> None:
         if not self._detail_ui.player_view.is_showing_video():
             return
-        duration = self._detail_ui.player_bar.duration()
+        duration = self._detail_ui.player_duration()
         if duration <= 0:
             return
         backstep = max(0, VIDEO_COMPLETE_HOLD_BACKSTEP_MS)
         target = max(0, duration - backstep)
         self._media.seek(target)
         self._media.pause()
-        self._detail_ui.player_bar.set_position(duration)
+        self._detail_ui.set_player_position(duration)
         self._detail_ui.player_view.note_video_activity()
         self._set_state(PlayerState.SHOWING_VIDEO_SURFACE)
-*** End Patch
