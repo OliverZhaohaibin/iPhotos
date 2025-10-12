@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from ..config import WORK_DIR_NAME
-from ..errors import ExternalToolError
+from ..errors import ExternalToolError, IPhotoError
 from ..utils.exiftool import get_metadata_batch
 from ..utils.hashutils import file_xxh3
 from ..utils.logging import get_logger
@@ -80,11 +80,19 @@ def process_media_paths(
             metadata_lookup[source_path.resolve()] = payload
 
     for path in all_paths:
-        resolved = path.resolve()
-        metadata = metadata_lookup.get(resolved)
-        if metadata is None:
-            metadata = metadata_lookup.get(path)
-        yield _build_row(root, path, metadata)
+        try:
+            resolved = path.resolve()
+            metadata = metadata_lookup.get(resolved)
+            if metadata is None:
+                metadata = metadata_lookup.get(path)
+            yield _build_row(root, path, metadata)
+        except IPhotoError as exc:
+            # Each asset must be processed independently so that one corrupt
+            # file does not abort the entire album scan.  By catching the
+            # domain-specific ``IPhotoError`` hierarchy we suppress failures
+            # originating from metadata extraction while still allowing
+            # unexpected exceptions to surface for debugging.
+            LOGGER.warning("Could not process file %s: %s", path, exc)
 
 
 def scan_album(
