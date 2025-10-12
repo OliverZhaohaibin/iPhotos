@@ -151,6 +151,7 @@ class MainWindow(QMainWindow):
             self._album_label,
             self._status,
             self._dialog,
+            self._view_controller,
         )
         self._playback = PlaybackController(
             self._asset_model,
@@ -483,12 +484,21 @@ class MainWindow(QMainWindow):
         self._facade.rescan_current_async()
 
     def _handle_album_opened(self, root: Path) -> None:
+        # Record whether the detail page is currently visible before we process
+        # the ``albumOpened`` event.  During manifest saves the asset model may
+        # briefly reset, clearing the playlist selection even though the user is
+        # still inspecting an item.  Remembering this pre-event state allows us
+        # to avoid an unnecessary jump back to the gallery view in that
+        # scenario.
+        is_detail_view_before_handle = (
+            self._view_stack.currentWidget() is self._detail_page
+        )
         self._navigation.handle_album_opened(root)
         # Avoid forcing a transition back to the gallery while the detail view is
         # actively showing an item. ``PlaylistController.current_row`` remains
         # greater than or equal to zero whenever the detail pane has a focused
         # asset, so only trigger the gallery view when nothing is selected.
-        if self._playlist.current_row() == -1:
+        if self._playlist.current_row() == -1 and not is_detail_view_before_handle:
             self._view_controller.show_gallery_view()
 
     def _on_scan_progress(self, root: Path, current: int, total: int) -> None:
