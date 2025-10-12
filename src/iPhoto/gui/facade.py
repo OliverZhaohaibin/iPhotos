@@ -43,6 +43,11 @@ class AppFacade(QObject):
         self._scanner_pool = QThreadPool.globalInstance()
         self._scanner_worker: Optional[ScannerWorker] = None
         self._scan_pending = False
+        # ``_toggle_featured_lock`` prevents overlapping toggle requests when
+        # users hammer the favourite button.  Without this guard, rapid clicks
+        # could interleave manifest save operations and confuse the filesystem
+        # watcher throttling logic.
+        self._toggle_featured_lock = False
 
         from .ui.models.asset_list_model import AssetListModel
 
@@ -174,69 +179,85 @@ class AppFacade(QObject):
     def toggle_featured(self, ref: str) -> bool:
         """Toggle *ref* in the active album and mirror the change in the library."""
 
-        album = self._require_album()
-        if album is None or not ref:
-            return False
+        if self._toggle_featured_lock:
+            # Another toggle is still being processed; return the current state
+            # so the UI remains in sync and ignore this spurious click.
+            album = self._require_album()
+            if album is None or not ref:
+                return False
+            return ref in album.manifest.get("featured", [])
 
-        featured = album.manifest.setdefault("featured", [])
-        was_featured = ref in featured
-        desired_state = not was_featured
+        self._toggle_featured_lock = True
+        try:
+            album = self._require_album()
+            if album is None or not ref:
+                return False
 
-        library_root: Optional[Path] = None
-        if self._library_manager is not None:
-            library_root = self._library_manager.root()
+            featured = album.manifest.setdefault("featured", [])
+            was_featured = ref in featured
+            desired_state = not was_featured
 
-        root_album: Optional[Album] = None
-        root_ref: Optional[str] = None
-        if (
-            library_root is not None
-            and library_root != album.root
-        ):
-            try:
-                # ``ref`` is relative to the currently open album.  Convert it
-                # to a fully-qualified path before deriving the library-level
-                # relative path used by the global manifest.
-                absolute_asset = (album.root / ref).resolve()
-                root_relative = absolute_asset.relative_to(library_root.resolve())
-            except (OSError, ValueError):
-                root_ref = None
-            else:
-                root_ref = root_relative.as_posix()
+            library_root: Optional[Path] = None
+            if self._library_manager is not None:
+                library_root = self._library_manager.root()
+
+            root_album: Optional[Album] = None
+            root_ref: Optional[str] = None
+            if (
+                library_root is not None
+                and library_root != album.root
+            ):
                 try:
-                    # Re-open the library root manifest on demand so updates do
-                    # not disturb the album the user is currently browsing.
-                    root_album = Album.open(library_root)
-                except IPhotoError as exc:
-                    self.errorRaised.emit(str(exc))
-                    return was_featured
+                    # ``ref`` is relative to the currently open album.  Convert it
+                    # to a fully-qualified path before deriving the library-level
+                    # relative path used by the global manifest.
+                    absolute_asset = (album.root / ref).resolve()
+                    root_relative = absolute_asset.relative_to(library_root.resolve())
+                except (OSError, ValueError):
+                    root_ref = None
+                else:
+                    root_ref = root_relative.as_posix()
+                    try:
+                        # Re-open the library root manifest on demand so updates do
+                        # not disturb the album the user is currently browsing.
+                        root_album = Album.open(library_root)
+                    except IPhotoError as exc:
+                        self.errorRaised.emit(str(exc))
+                        return was_featured
 
-        if desired_state:
-            album.add_featured(ref)
-            if root_album is not None and root_ref is not None:
-                root_album.add_featured(root_ref)
-        else:
-            album.remove_featured(ref)
-            if root_album is not None and root_ref is not None:
-                root_album.remove_featured(root_ref)
+            if desired_state:
+                album.add_featured(ref)
+                if root_album is not None and root_ref is not None:
+                    root_album.add_featured(root_ref)
+            else:
+                album.remove_featured(ref)
+                if root_album is not None and root_ref is not None:
+                    root_album.remove_featured(root_ref)
 
-        current_saved = self._save_manifest(album, reload_view=False)
-        root_saved = True
-        if root_album is not None and root_ref is not None:
-            root_saved = self._save_manifest(root_album, reload_view=False)
-
-        if current_saved and root_saved:
-            self._asset_list_model.update_featured_status(ref, desired_state)
-            return desired_state
-
-        if desired_state:
-            album.remove_featured(ref)
+            current_saved = self._save_manifest(album, reload_view=False)
+            root_saved = True
             if root_album is not None and root_ref is not None:
-                root_album.remove_featured(root_ref)
-        else:
-            album.add_featured(ref)
-            if root_album is not None and root_ref is not None:
-                root_album.add_featured(root_ref)
-        return was_featured
+                root_saved = self._save_manifest(root_album, reload_view=False)
+
+            if current_saved and root_saved:
+                self._asset_list_model.update_featured_status(ref, desired_state)
+                return desired_state
+
+            # Roll back the in-memory manifest to the previous state when at least one
+            # save operation failed so repeated attempts remain consistent.
+            if desired_state:
+                album.remove_featured(ref)
+                if root_album is not None and root_ref is not None:
+                    root_album.remove_featured(root_ref)
+            else:
+                album.add_featured(ref)
+                if root_album is not None and root_ref is not None:
+                    root_album.add_featured(root_ref)
+            return was_featured
+        finally:
+            # Release the guard regardless of success or early returns.  This ensures
+            # future clicks are processed once the filesystem watcher is stable again.
+            self._toggle_featured_lock = False
 
     # ------------------------------------------------------------------
     # Internal utilities
