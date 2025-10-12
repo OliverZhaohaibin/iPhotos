@@ -170,3 +170,46 @@ def test_open_album_skips_gallery_on_refresh(tmp_path: Path, qapp: QApplication)
     # should advertise itself via ``consume_last_open_refresh``.
     assert view_controller.gallery_calls == 1
     assert controller.consume_last_open_refresh() is True
+
+
+def test_open_album_refresh_detected_without_sidebar_sync(
+    tmp_path: Path, qapp: QApplication
+) -> None:
+    """A second ``open_album`` call for the same path must be treated as a refresh."""
+
+    facade = _StubFacade()
+    context = _StubContext(tmp_path)
+    context.facade = facade
+    asset_model = _StubAssetModel()
+    sidebar = _StubSidebar()
+    album_label = QLabel()
+    status_bar = QStatusBar()
+    dialog = _StubDialog()
+    view_controller = _SpyViewController()
+
+    controller = NavigationController(
+        context,
+        facade,
+        asset_model,
+        sidebar,
+        album_label,
+        status_bar,
+        dialog,  # type: ignore[arg-type]
+        view_controller,
+    )
+
+    album_path = tmp_path / "album"
+    album_path.mkdir()
+
+    # First call represents a genuine navigation and should reset the gallery.
+    controller.open_album(album_path)
+    assert view_controller.gallery_calls == 1
+    assert controller.consume_last_open_refresh() is False
+
+    # The follow-up call mimics a filesystem watcher re-selecting the already
+    # open album without going through ``handle_album_opened``.  The controller
+    # should classify it as a refresh so the UI stays on the detail page.
+    controller.open_album(album_path)
+
+    assert view_controller.gallery_calls == 1
+    assert controller.consume_last_open_refresh() is True

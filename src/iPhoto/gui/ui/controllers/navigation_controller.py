@@ -54,10 +54,13 @@ class NavigationController:
     # Album management
     # ------------------------------------------------------------------
     def open_album(self, path: Path) -> None:
-        # ``QFileSystemWatcher`` refreshes and sidebar synchronisation can
-        # request that the facade re-open the album that is already active.
-        # When that happens we treat the call as a passive refresh so the
-        # detail pane remains visible.
+        # ``QFileSystemWatcher`` refreshes, library tree rebuilds and other
+        # background activities occasionally reissue ``open_album`` for the
+        # album the user is already browsing.  Those calls should be treated as
+        # passive refreshes so the detail pane remains visible instead of
+        # bouncing back to the gallery.  Compare the requested path with the
+        # active album before touching any UI state so we can preserve the
+        # current presentation when appropriate.
         target_root = path.resolve()
         current_root = (
             self._facade.current_album.root.resolve()
@@ -66,15 +69,17 @@ class NavigationController:
         )
         is_same_album = current_root == target_root
 
-        # Programmatic selection updates toggle ``_syncing_sidebar_selection``
-        # while they run.  Those invocations should never reset the gallery
-        # view because the user did not request a navigation change.
-        is_refresh = bool(is_same_album and self._syncing_sidebar_selection)
+        # Static collections ("All Photos", "Favorites", etc.) deliberately
+        # re-use the library root, so only treat the invocation as a refresh
+        # when no static node is active.  This keeps virtual collections using
+        # their gallery-first behaviour while allowing genuine album reloads to
+        # bypass the gallery reset.
+        is_refresh = bool(is_same_album and self._static_selection is None)
         self._last_open_was_refresh = is_refresh
 
-        self._static_selection = None
-        self._asset_model.set_filter_mode(None)
         if not is_refresh:
+            self._static_selection = None
+            self._asset_model.set_filter_mode(None)
             # Present the gallery grid when navigating to a different album so
             # the UI avoids showing a stale detail pane while the model loads.
             self._view_controller.show_gallery_view()
