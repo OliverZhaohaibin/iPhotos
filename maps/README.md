@@ -27,6 +27,27 @@ For offline use you can download the [.zip](https://github.com/maplibre/demotile
 The map uses a lightweight vector tileset to color and label the world countries. Country polygons are from [Natural Earth Data](https://www.naturalearthdata.com/).
 The shapefiles were converted into vector tiles using the [MapTiler Desktop](https://www.maptiler.com/) software, which generates similar .pbf tile directory structure as present, as well as GeoPackage MVT or MBTiles file output.
 
+## PySide6 desktop preview
+
+This repository now includes a lightweight PySide6 desktop application that can render the bundled vector tiles without relying on a web view.  The preview is helpful when you want to inspect the tiles offline or experiment with simple cartographic tweaks.
+
+### Usage
+
+1. Install the Python dependencies:
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+2. Launch the desktop viewer:
+
+   ```bash
+   python main.py
+   ```
+
+3. Drag the map with the left mouse button to pan.  Use the mouse wheel or the menu entries under **View** to zoom in and out.  The **File** menu contains commands for loading alternative tile directories or style files if you have them available locally.
+
+
 ![maptiler-desktop-generate-vector-tiles](https://user-images.githubusercontent.com/59284/118269170-ac27af80-b4be-11eb-93c9-188c578b914e.gif)
 
 The resulting maplibre.mbtiles is available from this repo (pbf, z0-6, 4Mb).
