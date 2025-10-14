@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from typing import Callable, Protocol
 
 from PySide6.QtCore import QPointF, QTimer
@@ -70,8 +71,8 @@ class MapWidgetController:
         self,
         widget: SupportsMapViewport,
         *,
-        tile_root: str = "tiles",
-        style_path: str = "style.json",
+        tile_root: Path | str = "tiles",
+        style_path: Path | str = "style.json",
     ) -> None:
         """Prepare long-lived helpers shared by both widget implementations.
 
@@ -87,10 +88,25 @@ class MapWidgetController:
         self._widget = widget
         self._view_listeners: list[Callable[[float, float, float], None]] = []
 
+        package_root = Path(__file__).resolve().parent.parent
+
+        # ``PhotoMapView`` embeds the widget from inside the main desktop
+        # application where the current working directory differs from the
+        # standalone demo in ``maps/main.py``.  Resolving the asset paths against
+        # the package directory keeps the map functional regardless of where the
+        # process was started.
+        tile_root_path = Path(tile_root)
+        if not tile_root_path.is_absolute():
+            tile_root_path = package_root / tile_root_path
+
+        style_path_obj = Path(style_path)
+        if not style_path_obj.is_absolute():
+            style_path_obj = package_root / style_path_obj
+
         # ``TileParser`` performs the expensive vector tile decoding while the
         # style resolver exposes drawing instructions taken from ``style.json``.
-        self._tile_parser = TileParser(tile_root)
-        self._style = StyleResolver(style_path)
+        self._tile_parser = TileParser(tile_root_path)
+        self._style = StyleResolver(style_path_obj)
 
         definitions = self._style.vector_layer_definitions()
         if not definitions:

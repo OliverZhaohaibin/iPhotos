@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtGui import QCloseEvent, QPainter
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import QWidget
@@ -16,8 +18,8 @@ class MapGLWidget(QOpenGLWidget):
         self,
         parent: QWidget | None = None,
         *,
-        tile_root: str = "tiles",
-        style_path: str = "style.json",
+        tile_root: Path | str = "tiles",
+        style_path: Path | str = "style.json",
     ) -> None:
         super().__init__(parent)
 
