@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from PySide6.QtCore import QPointF, QResizeEvent, Signal
 from PySide6.QtGui import QCloseEvent, QPainter
 from PySide6.QtWidgets import QWidget
 
@@ -10,6 +11,9 @@ from ._map_widget_base import MapWidgetController
 
 class MapWidget(QWidget):
     """Display an interactive preview using the traditional QWidget surface."""
+
+    viewChanged = Signal(float, float, float)
+    """Signal emitted whenever the map centre or zoom level changes."""
 
     def __init__(
         self,
@@ -28,6 +32,7 @@ class MapWidget(QWidget):
             tile_root=tile_root,
             style_path=style_path,
         )
+        self._controller.add_view_listener(self._emit_view_change)
 
         # QWidget level convenience helpers are safe to call now that the base
         # class finished initialising and the controller has attached to the
@@ -59,6 +64,24 @@ class MapWidget(QWidget):
         """Stop background work before the widget is destroyed."""
 
         self._controller.shutdown()
+
+    # ------------------------------------------------------------------
+    def project_lonlat(self, lon: float, lat: float) -> QPointF | None:
+        """Return widget-relative coordinates for the provided GPS point."""
+
+        return self._controller.project_lonlat(lon, lat)
+
+    # ------------------------------------------------------------------
+    def center_on(self, lon: float, lat: float) -> None:
+        """Centre the viewport on *lon*/*lat*."""
+
+        self._controller.center_on(lon, lat)
+
+    # ------------------------------------------------------------------
+    def focus_on(self, lon: float, lat: float, zoom_delta: float = 1.0) -> None:
+        """Centre the viewport on *lon*/*lat* and zoom by *zoom_delta*."""
+
+        self._controller.focus_on(lon, lat, zoom_delta)
 
     # ------------------------------------------------------------------
     def paintEvent(self, event) -> None:  # type: ignore[override]
@@ -104,6 +127,19 @@ class MapWidget(QWidget):
 
         self._controller.handle_wheel_event(event)
         super().wheelEvent(event)
+
+    # ------------------------------------------------------------------
+    def resizeEvent(self, event: QResizeEvent) -> None:  # type: ignore[override]
+        """Propagate resize events and notify listeners about the new viewport."""
+
+        super().resizeEvent(event)
+        self._emit_view_change(*self._controller.view_state())
+
+    # ------------------------------------------------------------------
+    def _emit_view_change(self, center_x: float, center_y: float, zoom: float) -> None:
+        """Forward controller updates via the Qt signal for external consumers."""
+
+        self.viewChanged.emit(float(center_x), float(center_y), float(zoom))
 
 
 __all__ = ["MapWidget"]

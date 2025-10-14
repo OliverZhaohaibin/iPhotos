@@ -26,6 +26,7 @@ from .widgets import (
     GalleryGridView,
     ImageViewer,
     LiveBadge,
+    PhotoMapView,
     PreviewWindow,
     VideoArea,
 )
@@ -108,6 +109,7 @@ class Ui_MainWindow(object):
         self.sidebar = AlbumSidebar(library, MainWindow)
         self.album_label = QLabel("Open a folder to browse your photos.")
         self.grid_view = GalleryGridView()
+        self.map_view = PhotoMapView()
         self.filmstrip_view = FilmstripView()
         self.video_area = VideoArea()
         self.player_bar = self.video_area.player_bar
@@ -148,6 +150,13 @@ class Ui_MainWindow(object):
         gallery_layout.setSpacing(0)
         gallery_layout.addWidget(self.grid_view)
         self.gallery_page = gallery_page
+
+        map_page = QWidget()
+        map_layout = QVBoxLayout(map_page)
+        map_layout.setContentsMargins(0, 0, 0, 0)
+        map_layout.setSpacing(0)
+        map_layout.addWidget(self.map_view)
+        self.map_page = map_page
 
         detail_page = QWidget()
         detail_layout = QVBoxLayout(detail_page)
@@ -235,6 +244,7 @@ class Ui_MainWindow(object):
         self.live_badge.raise_()
 
         self.view_stack.addWidget(self.gallery_page)
+        self.view_stack.addWidget(self.map_page)
         self.view_stack.addWidget(self.detail_page)
         self.view_stack.setCurrentWidget(self.gallery_page)
         right_layout.addWidget(self.view_stack)

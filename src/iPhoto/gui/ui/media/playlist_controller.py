@@ -95,6 +95,16 @@ class PlaylistController(QObject):
             return None
         return self._resolve_source(self._current_row)
 
+    def set_current_by_relative(self, rel: str) -> bool:
+        """Select the asset identified by *rel* when it exists in the model."""
+
+        if not rel or self._model is None:
+            return False
+        row = self._find_row_by_rel(rel)
+        if row is None:
+            return False
+        return self.set_current(row) is not None
+
     def previous_row(self) -> int:
         """Return the previously active row, or ``-1`` if unavailable."""
 
