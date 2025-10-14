@@ -164,9 +164,12 @@ class _MarkerLayer(QWidget):
                 self.THUMBNAIL_SIZE,
                 self.THUMBNAIL_SIZE,
             )
-            # ``QPainter.drawPixmap`` requires a QRect when no source rect is provided,
-            # therefore the floating point QRectF must be converted to a QRect.
-            painter.drawPixmap(thumb_rect.toRect(), thumbnail)
+            source_rect = QRectF(thumbnail.rect())
+            # ``QPainter.drawPixmap`` only accepts a ``QRectF`` target if a matching source
+            # rectangle is supplied. By passing the pixmap's full bounds as the source we keep
+            # floating point precision for the marker placement while satisfying the overload
+            # requirements.
+            painter.drawPixmap(thumb_rect, thumbnail, source_rect)
 
         count = len(cluster.assets)
         if count > 1:
