@@ -11,7 +11,7 @@ from PySide6.QtCore import QCoreApplication, QPointF, QRectF, QSize, Qt, QTimer,
 from PySide6.QtGui import QColor, QFont, QMouseEvent, QPaintEvent, QPainter, QPen, QPixmap, QWheelEvent
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
-from maps.map_widget.map_widget import MapWidget
+from iPhotos.maps.map_widget.map_widget import MapWidget
 
 from ....library.manager import GeotaggedAsset
 from ..tasks.thumbnail_loader import ThumbnailLoader

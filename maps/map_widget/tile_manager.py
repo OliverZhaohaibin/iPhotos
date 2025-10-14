@@ -8,7 +8,7 @@ from typing import Iterable
 
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 
-from tile_parser import TileLoadingError, TileParser
+from iPhotos.maps.tile_parser import TileLoadingError, TileParser
 
 
 class _TileWorker(QObject):
