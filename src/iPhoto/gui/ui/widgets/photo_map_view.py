@@ -117,6 +117,12 @@ class _ClusterWorker(QObject):
 
     finished = Signal(int, list)
 
+    TILE_SIZE = 256
+    """Base tile size used by the Web Mercator tiling scheme."""
+
+    MERCATOR_LAT_BOUND = 85.05112878
+    """Clamp latitude to the numerical range supported by Web Mercator."""
+
     def __init__(self, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
         self._interrupted = False
@@ -129,34 +135,62 @@ class _ClusterWorker(QObject):
     def build_clusters(
         self,
         request_id: int,
-        projected_assets: list[tuple[GeotaggedAsset, QPointF]],
+        assets: Sequence[GeotaggedAsset],
+        width: int,
+        height: int,
+        center_x: float,
+        center_y: float,
+        zoom: float,
         threshold: float,
         cell_size: int,
+        margin: int,
     ) -> None:
-        """Aggregate *projected_assets* into clusters.
+        """Project *assets* and aggregate them into clusters in screen space.
 
-        Parameters
-        ----------
-        request_id:
-            Monotonic identifier supplied by :class:`PhotoMapView` so stale
-            results can be discarded.
-        projected_assets:
-            Sequence of assets paired with their widget-relative coordinates.
-        threshold:
-            Maximum on-screen distance for assets to be grouped into one
-            cluster.
-        cell_size:
-            Spatial hashing bucket edge length in pixels used to cut down the
-            number of candidate clusters that need to be checked per asset.
+        The worker mirrors the math performed by :class:`MapWidgetController`
+        so the CPU intensive projection loop runs outside of the GUI thread. A
+        monotonic ``request_id`` allows :class:`PhotoMapView` to ignore stale
+        results when the user has already moved the map.
         """
 
         self._interrupted = False
+
+        if width <= 0 or height <= 0:
+            self.finished.emit(request_id, [])
+            return
+
+        world_size = self._world_size(zoom)
+        center_px = center_x * world_size
+        center_py = center_y * world_size
+        top_left_x = center_px - width / 2.0
+        top_left_y = center_py - height / 2.0
+        half_world = world_size / 2.0
+
         grid: Dict[tuple[int, int], list[_MarkerCluster]] = {}
         clusters: list[_MarkerCluster] = []
 
-        for asset, point in projected_assets:
+        for asset in assets:
             if self._interrupted:
                 return
+
+            point = self._project_to_screen(
+                asset.longitude,
+                asset.latitude,
+                top_left_x,
+                top_left_y,
+                center_px,
+                center_py,
+                world_size,
+                half_world,
+            )
+
+            if point is None:
+                continue
+
+            if point.x() < -margin or point.y() < -margin:
+                continue
+            if point.x() > width + margin or point.y() > height + margin:
+                continue
 
             cell_x = int(point.x() // cell_size)
             cell_y = int(point.y() // cell_size)
@@ -198,6 +232,59 @@ class _ClusterWorker(QObject):
 
         if not self._interrupted:
             self.finished.emit(request_id, clusters)
+
+    def _project_to_screen(
+        self,
+        lon: float,
+        lat: float,
+        top_left_x: float,
+        top_left_y: float,
+        center_px: float,
+        center_py: float,
+        world_size: float,
+        half_world: float,
+    ) -> Optional[QPointF]:
+        """Convert a geographic coordinate into widget-relative screen space."""
+
+        world_position = self._lonlat_to_world(lon, lat, world_size)
+        if world_position is None:
+            return None
+
+        world_x, world_y = world_position
+        delta_x = world_x - center_px
+        if delta_x > half_world:
+            world_x -= world_size
+        elif delta_x < -half_world:
+            world_x += world_size
+
+        screen_x = world_x - top_left_x
+        screen_y = world_y - top_left_y
+        return QPointF(screen_x, screen_y)
+
+    def _world_size(self, zoom: float) -> float:
+        """Return the virtual world edge length in pixels for *zoom*."""
+
+        return float(self.TILE_SIZE * (2.0 ** float(zoom)))
+
+    def _lonlat_to_world(
+        self, lon: float, lat: float, world_size: float
+    ) -> Optional[tuple[float, float]]:
+        """Project GPS coordinates into the continuous Web Mercator plane."""
+
+        try:
+            lon = float(lon)
+            lat = float(lat)
+        except (TypeError, ValueError):
+            return None
+
+        lat = max(min(lat, self.MERCATOR_LAT_BOUND), -self.MERCATOR_LAT_BOUND)
+        x = (lon + 180.0) / 360.0 * world_size
+        sin_lat = math.sin(math.radians(lat))
+        y = (
+            0.5
+            - math.log((1 + sin_lat) / (1 - sin_lat)) / (4 * math.pi)
+        ) * world_size
+        return x, y
 
 
 class _MarkerLayer(QWidget):
@@ -402,7 +489,7 @@ class PhotoMapView(QWidget):
     assetActivated = Signal(str)
     """Signal emitted when the user activates a single asset marker."""
 
-    _clustering_requested = Signal(int, object, float, int)
+    _clustering_requested = Signal(int, object, int, int, float, float, float, float, int, int)
     """Internal signal that schedules a clustering job on the worker thread."""
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
@@ -421,6 +508,9 @@ class PhotoMapView(QWidget):
         self._assets: list[GeotaggedAsset] = []
         self._library_root: Optional[Path] = None
         self._clusters: list[_MarkerCluster] = []
+        self._view_center_x = 0.5
+        self._view_center_y = 0.5
+        self._view_zoom = float(self._map_widget.zoom)
         self._is_panning = False
         self._cluster_timer = QTimer(self)
         self._cluster_timer.setSingleShot(True)
@@ -430,7 +520,7 @@ class PhotoMapView(QWidget):
         self._thumbnail_loader = ThumbnailLoader(self)
         self._thumbnail_loader.ready.connect(self._handle_thumbnail_ready)
 
-        self._map_widget.viewChanged.connect(self._schedule_cluster_update)
+        self._map_widget.viewChanged.connect(self._handle_view_changed)
         self._map_widget.panned.connect(self._handle_pan)
         self._map_widget.panFinished.connect(self._handle_pan_finished)
         self._overlay.markerActivated.connect(self._handle_marker_activated)
@@ -470,6 +560,9 @@ class PhotoMapView(QWidget):
         self._assets = []
         self._clusters = []
         self._is_panning = False
+        self._view_center_x = 0.5
+        self._view_center_y = 0.5
+        self._view_zoom = float(self._map_widget.zoom)
         self._overlay.set_clusters([])
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
@@ -484,6 +577,14 @@ class PhotoMapView(QWidget):
             # work until the gesture settles keeps the UI responsive.
             return
         self._cluster_timer.start()
+
+    def _handle_view_changed(self, center_x: float, center_y: float, zoom: float) -> None:
+        """Record the latest viewport and coalesce clustering updates."""
+
+        self._view_center_x = float(center_x)
+        self._view_center_y = float(center_y)
+        self._view_zoom = float(zoom)
+        self._schedule_cluster_update()
 
     def _handle_pan(self, delta: QPointF) -> None:
         """Shift visible markers in response to incremental drag updates."""
@@ -532,31 +633,24 @@ class PhotoMapView(QWidget):
         height = size.height()
         margin = self._overlay.marker_size
 
-        projected_assets: list[tuple[GeotaggedAsset, QPointF]] = []
-        for asset in self._assets:
-            point = self._map_widget.project_lonlat(asset.longitude, asset.latitude)
-            if point is None:
-                continue
-            if point.x() < -margin or point.y() < -margin:
-                continue
-            if point.x() > width + margin or point.y() > height + margin:
-                continue
-            projected_assets.append((asset, point))
-
-        if not projected_assets:
-            self._cluster_worker.interrupt()
-            self._cluster_request_id += 1
-            self._clusters = []
-            self._overlay.set_clusters([])
-            return
-
         # Cancel any in-flight clustering work before queuing the new job so the
         # worker does not waste time on stale data produced for an outdated
         # viewport.
         self._cluster_worker.interrupt()
         self._cluster_request_id += 1
         request_id = self._cluster_request_id
-        self._clustering_requested.emit(request_id, projected_assets, float(threshold), cell_size)
+        self._clustering_requested.emit(
+            request_id,
+            self._assets,
+            width,
+            height,
+            self._view_center_x,
+            self._view_center_y,
+            self._view_zoom,
+            float(threshold),
+            cell_size,
+            margin,
+        )
 
     def _ensure_thumbnail(self, asset: GeotaggedAsset) -> None:
         if self._library_root is None:
@@ -593,12 +687,6 @@ class PhotoMapView(QWidget):
             # ``request_id`` is monotonic so a mismatch means a more recent job
             # already supplied its data.
             return
-
-        def projector(lon: float, lat: float) -> Optional[QPointF]:
-            return self._map_widget.project_lonlat(lon, lat)
-
-        for cluster in clusters:
-            cluster._reproject(projector)
 
         self._clusters = clusters
         self._overlay.set_clusters(clusters)
