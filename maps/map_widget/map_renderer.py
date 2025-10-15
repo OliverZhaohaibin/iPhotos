@@ -17,6 +17,12 @@ from .layer import LayerPlan
 from .tile_manager import TileManager
 
 
+# ``MAX_TILE_ZOOM_LEVEL`` reflects the highest tile zoom level available from the
+# bundled map source. When the view zoom exceeds this value we keep rendering the
+# level-6 tiles and upscale them so that the user never sees empty space.
+MAX_TILE_ZOOM_LEVEL = 6
+
+
 @dataclass(frozen=True)
 class _ViewState:
     """Describe the camera parameters used for the current paint pass."""
@@ -93,7 +99,11 @@ class MapRenderer:
         view_top_left_x = center_px - width / 2.0
         view_top_left_y = center_py - height / 2.0
 
-        fetch_zoom = max(0, math.floor(zoom))
+        # Clamp the requested tile zoom level to the available range so that
+        # the renderer keeps drawing level-6 tiles when the interactive zoom is
+        # higher than the tile set supports. The resulting ``scale_factor``
+        # ensures that those tiles are magnified to match the desired view.
+        fetch_zoom = min(MAX_TILE_ZOOM_LEVEL, max(0, math.floor(zoom)))
         tiles_across = 1 << fetch_zoom if fetch_zoom >= 0 else 1
         scale_factor = 2 ** (zoom - fetch_zoom)
         scaled_tile_size = self._tile_size * scale_factor
