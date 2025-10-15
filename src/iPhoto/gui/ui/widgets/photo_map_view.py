@@ -411,6 +411,16 @@ class PhotoMapView(QWidget):
         if self._library_root is None:
             return
         size = QSize(self._overlay.thumbnail_size, self._overlay.thumbnail_size)
+        # ``print`` statements below intentionally surface the thumbnail flow in developer
+        # consoles.  The messages help us determine whether requests are dispatched and
+        # whether callbacks are discarded because of root mismatches when debugging why
+        # nothing appears on the map.
+        print(
+            "[PhotoMapView] Requesting thumbnail:",
+            f"root={self._library_root}",
+            f"rel={asset.library_relative}",
+            f"abs={asset.absolute_path}",
+        )
         pixmap = self._thumbnail_loader.request(
             asset.library_relative,
             asset.absolute_path,
@@ -428,7 +438,14 @@ class PhotoMapView(QWidget):
             return
 
         incoming_root = self._normalize_root(root)
-        if self._root_token(incoming_root) != self._library_root_token:
+        incoming_token = self._root_token(incoming_root)
+        if incoming_token != self._library_root_token:
+            print(
+                "[PhotoMapView] Ignoring thumbnail with mismatched root:",
+                f"incoming={incoming_root}",
+                f"token={incoming_token}",
+                f"expected={self._library_root_token}",
+            )
             return
         # ``print`` is intentionally used instead of the logging module so the
         # thumbnail path appears immediately in developer consoles when
