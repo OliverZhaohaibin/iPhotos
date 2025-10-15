@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Sequence
 
 from PySide6.QtCore import QPointF, Signal
 from PySide6.QtGui import QCloseEvent, QPainter
 from PySide6.QtWidgets import QWidget
 
 from ._map_widget_base import MapWidgetController
+from .map_renderer import CityAnnotation
 
 
 class MapWidget(QWidget):
@@ -92,6 +94,18 @@ class MapWidget(QWidget):
         """Centre the viewport on *lon*/*lat* and zoom by *zoom_delta*."""
 
         self._controller.focus_on(lon, lat, zoom_delta)
+
+    # ------------------------------------------------------------------
+    def set_city_annotations(self, cities: Sequence[CityAnnotation]) -> None:
+        """Forward the supplied city annotations to the shared controller."""
+
+        self._controller.set_cities(cities)
+
+    # ------------------------------------------------------------------
+    def city_at(self, position: QPointF) -> str | None:
+        """Return the full label text for the city under ``position`` if any."""
+
+        return self._controller.city_at(position)
 
     # ------------------------------------------------------------------
     def paintEvent(self, event) -> None:  # type: ignore[override]

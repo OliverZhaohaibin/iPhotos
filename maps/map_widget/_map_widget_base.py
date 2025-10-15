@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Callable, Protocol, Sequence
 
 from PySide6.QtCore import QPointF, QTimer
 from PySide6.QtGui import QPainter
@@ -14,7 +14,7 @@ from iPhotos.maps.tile_parser import TileParser
 
 from .input_handler import InputHandler
 from .layer import LayerPlan
-from .map_renderer import MapRenderer
+from .map_renderer import CityAnnotation, MapRenderer
 from .tile_manager import TileManager
 
 
@@ -136,6 +136,7 @@ class MapWidgetController:
             layers=self._layers,
             tile_size=self.TILE_SIZE,
         )
+        self._renderer.set_cities([])
         self._input_handler = InputHandler(
             min_zoom=self.MIN_ZOOM,
             max_zoom=self.MAX_ZOOM,
@@ -162,6 +163,7 @@ class MapWidgetController:
         self._center_x = 0.5
         self._center_y = 0.5
         self._zoom = 2.0
+        self._cities: list[CityAnnotation] = []
 
     # ------------------------------------------------------------------
     @property
@@ -210,6 +212,23 @@ class MapWidgetController:
             width=self._widget.width(),
             height=self._widget.height(),
         )
+
+    # ------------------------------------------------------------------
+    def set_cities(self, cities: Sequence[CityAnnotation]) -> None:
+        """Update the lightweight city annotations rendered on top of the map."""
+
+        new_cities = list(cities)
+        if new_cities == self._cities:
+            return
+        self._cities = new_cities
+        self._renderer.set_cities(self._cities)
+        self._widget.update()
+
+    # ------------------------------------------------------------------
+    def city_at(self, position: QPointF) -> str | None:
+        """Return the full name of the city label under *position*, if any."""
+
+        return self._renderer.city_at(position)
 
     # ------------------------------------------------------------------
     def handle_mouse_press(self, event) -> None:
