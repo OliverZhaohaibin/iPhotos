@@ -17,6 +17,12 @@ class MapWidget(QWidget):
     viewChanged = Signal(float, float, float)
     """Signal emitted whenever the map centre or zoom level changes."""
 
+    panned = Signal(QPointF)
+    """Signal emitted with raw drag deltas while the user drags the map."""
+
+    panFinished = Signal()
+    """Signal emitted once the current pan gesture completes."""
+
     def __init__(
         self,
         parent: QWidget | None = None,
@@ -35,6 +41,8 @@ class MapWidget(QWidget):
             style_path=style_path,
         )
         self._controller.add_view_listener(self._emit_view_change)
+        self._controller.add_pan_listener(self._emit_pan_delta)
+        self._controller.add_pan_finished_listener(self._emit_pan_finished)
 
         # QWidget level convenience helpers are safe to call now that the base
         # class finished initialising and the controller has attached to the
@@ -142,6 +150,18 @@ class MapWidget(QWidget):
         """Forward controller updates via the Qt signal for external consumers."""
 
         self.viewChanged.emit(float(center_x), float(center_y), float(zoom))
+
+    # ------------------------------------------------------------------
+    def _emit_pan_delta(self, delta: QPointF) -> None:
+        """Proxy incremental drag deltas to consumers on the Qt signal."""
+
+        self.panned.emit(QPointF(delta))
+
+    # ------------------------------------------------------------------
+    def _emit_pan_finished(self) -> None:
+        """Notify listeners that the current drag gesture has ended."""
+
+        self.panFinished.emit()
 
 
 __all__ = ["MapWidget"]

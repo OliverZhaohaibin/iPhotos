@@ -9,6 +9,11 @@ class InputHandler(QObject):
     """Handle mouse interaction for :class:`~map_widget.map_widget.MapWidget`."""
 
     pan_requested = Signal(QPointF)
+    """Signal emitted for every incremental drag delta while the user pans."""
+
+    pan_finished = Signal()
+    """Signal emitted once the active drag gesture completes."""
+
     zoom_requested = Signal(float, QPointF)
     cursor_changed = Signal(Qt.CursorShape)
     cursor_reset = Signal()
@@ -43,8 +48,12 @@ class InputHandler(QObject):
     def handle_mouse_release(self, event) -> None:
         """Finish drag gestures and restore the default cursor."""
 
-        if event.button() == Qt.LeftButton:
+        if event.button() == Qt.LeftButton and self._is_dragging:
+            # ``pan_finished`` is emitted before the cursor resets so listeners
+            # can perform any final bookkeeping while the drag context is still
+            # active.
             self._is_dragging = False
+            self.pan_finished.emit()
             self.cursor_reset.emit()
 
     # ------------------------------------------------------------------
