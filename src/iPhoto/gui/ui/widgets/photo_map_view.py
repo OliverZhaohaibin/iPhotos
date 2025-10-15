@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import math
+import os
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence
 
@@ -266,6 +267,7 @@ class PhotoMapView(QWidget):
 
         self._assets: list[GeotaggedAsset] = []
         self._library_root: Optional[Path] = None
+        self._library_root_token: Optional[str] = None
         self._clusters: list[_MarkerCluster] = []
         self._pending_focus: bool = False
         self._cluster_timer = QTimer(self)
@@ -288,8 +290,10 @@ class PhotoMapView(QWidget):
 
         normalized = [asset for asset in assets if isinstance(asset, GeotaggedAsset)]
         self._assets = normalized
-        self._library_root = library_root
-        self._thumbnail_loader.reset_for_album(library_root)
+        normalized_root = self._normalize_root(library_root)
+        self._library_root = normalized_root
+        self._library_root_token = self._root_token(normalized_root)
+        self._thumbnail_loader.reset_for_album(normalized_root)
         self._overlay.clear_pixmaps()
         self._schedule_cluster_update()
         self._pending_focus = bool(self._assets)
@@ -302,6 +306,8 @@ class PhotoMapView(QWidget):
         self._clusters = []
         self._overlay.set_clusters([])
         self._pending_focus = False
+        self._library_root = None
+        self._library_root_token = None
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
@@ -418,7 +424,11 @@ class PhotoMapView(QWidget):
             self._overlay.set_thumbnail(asset.library_relative, pixmap)
 
     def _handle_thumbnail_ready(self, root: Path, rel: str, pixmap: QPixmap) -> None:
-        if self._library_root is None or root != self._library_root:
+        if self._library_root is None or self._library_root_token is None:
+            return
+
+        incoming_root = self._normalize_root(root)
+        if self._root_token(incoming_root) != self._library_root_token:
             return
         self._overlay.set_thumbnail(rel, pixmap)
 
@@ -432,6 +442,35 @@ class PhotoMapView(QWidget):
     @staticmethod
     def _distance(a: QPointF, b: QPointF) -> float:
         return math.hypot(a.x() - b.x(), a.y() - b.y())
+
+    @staticmethod
+    def _normalize_root(root: Path | str) -> Path:
+        """Return *root* as an absolute :class:`Path` without resolving failures."""
+
+        candidate = Path(root)
+        try:
+            expanded = candidate.expanduser()
+        except RuntimeError:
+            expanded = candidate
+        try:
+            return expanded.resolve(strict=False)
+        except OSError:
+            # ``resolve(strict=False)`` may still fail on certain network volumes on
+            # Windows.  Falling back to ``absolute()`` keeps the comparison stable
+            # while avoiding an exception that would prevent thumbnails from
+            # loading entirely.
+            return expanded.absolute()
+
+    @staticmethod
+    def _root_token(root: Path) -> str:
+        """Return a normalised identity string used for root comparisons."""
+
+        # Using ``normcase`` mirrors the platform's path comparison semantics.
+        # On Windows this collapses case differences (``C:\`` vs ``c:\``),
+        # which otherwise prevent thumbnails from being accepted because the
+        # loader emits the resolved drive letter.  On POSIX platforms the value
+        # is returned unchanged.
+        return os.path.normcase(str(root))
 
     @staticmethod
     def _mercator_y(lat: float) -> float:
