@@ -66,16 +66,18 @@ class AssetGridDelegate(QStyledItemDelegate):
         is_current = self._filmstrip_mode and bool(index.data(Roles.IS_CURRENT))
         thumb_rect = cell_rect
         base_color = option.palette.color(QPalette.Base)
-        corner_radius = 8.0 if self._filmstrip_mode else 0.0
+        # Use a consistent rounded corner radius so grid and filmstrip previews
+        # share the same visual treatment as the map markers.
+        corner_radius = 8.0
 
         pixmap = index.data(Qt.DecorationRole)
 
         clip_path: QPainterPath | None = None
-        if self._filmstrip_mode and corner_radius > 0.0:
+        if corner_radius > 0.0:
             clip_path = QPainterPath()
             clip_path.addRoundedRect(QRectF(thumb_rect), corner_radius, corner_radius)
             # Fill the rounded bounds first so uncovered corners inherit the
-            # strip background instead of the window behind the transparent view.
+            # surrounding palette colour rather than the widget underneath.
             painter.fillPath(clip_path, base_color)
             painter.setClipPath(clip_path)
         elif self._filmstrip_mode:

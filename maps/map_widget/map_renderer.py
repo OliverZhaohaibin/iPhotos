@@ -337,6 +337,8 @@ class MapRenderer:
         painter.setFont(font)
         painter.setBrush(Qt.BrushStyle.NoBrush)
 
+        rendered_bounds: list[QRectF] = []
+
         for city in self._cities:
             if not city.display_name:
                 continue
@@ -371,6 +373,22 @@ class MapRenderer:
             text_top = baseline_y - metrics.ascent()
             text_left = screen_x + dot_radius + text_gap
 
+            bounds_left = min(screen_x - dot_radius, text_left)
+            bounds_top = min(screen_y - dot_radius, text_top)
+            bounds_right = max(screen_x + dot_radius, text_left + text_width)
+            bounds_bottom = max(screen_y + dot_radius, text_top + text_height)
+            bounds = QRectF(
+                bounds_left - 2.0,
+                bounds_top - 2.0,
+                (bounds_right - bounds_left) + 4.0,
+                (bounds_bottom - bounds_top) + 4.0,
+            )
+
+            # Skip labels that would overlap earlier annotations so the map
+            # remains legible when multiple cities are clustered together.
+            if any(bounds.intersects(existing) for existing in rendered_bounds):
+                continue
+
             text_path = QPainterPath()
             text_path.addText(QPointF(text_left, baseline_y), font, city.display_name)
 
@@ -385,16 +403,7 @@ class MapRenderer:
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawText(QPointF(text_left, baseline_y), city.display_name)
 
-            bounds_left = min(screen_x - dot_radius, text_left)
-            bounds_top = min(screen_y - dot_radius, text_top)
-            bounds_right = max(screen_x + dot_radius, text_left + text_width)
-            bounds_bottom = max(screen_y + dot_radius, text_top + text_height)
-            bounds = QRectF(
-                bounds_left - 2.0,
-                bounds_top - 2.0,
-                (bounds_right - bounds_left) + 4.0,
-                (bounds_bottom - bounds_top) + 4.0,
-            )
+            rendered_bounds.append(bounds)
             full_name = city.full_name or city.display_name
             self._city_labels.append(_RenderedCityLabel(bounds=bounds, full_name=full_name))
 

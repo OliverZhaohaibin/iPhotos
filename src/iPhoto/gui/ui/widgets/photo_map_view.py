@@ -126,7 +126,14 @@ class _MarkerLayer(QWidget):
                 display_edge,
                 display_edge,
             )
+            # Clip the thumbnail to a rounded rectangle so cluster callouts
+            # mirror the rounded assets used elsewhere in the interface.
+            thumb_path = QPainterPath()
+            thumb_path.addRoundedRect(thumb_rect, 10.0, 10.0)
+            painter.save()
+            painter.setClipPath(thumb_path)
             painter.drawPixmap(thumb_rect.toRect(), thumbnail)
+            painter.restore()
 
         count = len(cluster.assets)
         if count > 1:
