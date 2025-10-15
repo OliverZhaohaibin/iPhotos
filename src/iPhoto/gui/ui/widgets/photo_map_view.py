@@ -5,10 +5,30 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import math
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Sequence
+from typing import Callable, Dict, Iterable, Optional, Sequence
 
-from PySide6.QtCore import QCoreApplication, QPointF, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QMouseEvent, QPaintEvent, QPainter, QPen, QPixmap, QWheelEvent
+from PySide6.QtCore import (
+    QCoreApplication,
+    QObject,
+    QPointF,
+    QRectF,
+    QSize,
+    Qt,
+    QThread,
+    QTimer,
+    Signal,
+)
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QMouseEvent,
+    QPaintEvent,
+    QPainter,
+    QPen,
+    QPixmap,
+    QWheelEvent,
+    QCloseEvent,
+)
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from iPhotos.maps.map_widget.map_widget import MapWidget
@@ -28,12 +48,20 @@ class _MarkerCluster:
     screen_pos: QPointF = field(default_factory=QPointF)
     cell: tuple[int, int] | None = None
     bounding_rect: QRectF = field(default_factory=QRectF)
+    screen_x_sum: float = 0.0
+    screen_y_sum: float = 0.0
 
     def __post_init__(self) -> None:
         if not self.assets:
             self.assets.append(self.representative)
         self.latitude_sum = sum(asset.latitude for asset in self.assets)
         self.longitude_sum = sum(asset.longitude for asset in self.assets)
+        if self.screen_pos is None:
+            self.screen_pos = QPointF()
+        count = len(self.assets)
+        if count:
+            self.screen_x_sum = self.screen_pos.x() * float(count)
+            self.screen_y_sum = self.screen_pos.y() * float(count)
 
     @property
     def latitude(self) -> float:
@@ -49,13 +77,29 @@ class _MarkerCluster:
         count = len(self.assets) or 1
         return self.longitude_sum / count
 
-    def add_asset(self, asset: GeotaggedAsset, projector: Callable[[float, float], Optional[QPointF]]) -> None:
-        """Merge *asset* into the cluster and refresh the projected position."""
+    def add_asset(
+        self,
+        asset: GeotaggedAsset,
+        projector: Callable[[float, float], Optional[QPointF]] | None = None,
+        *,
+        projected_point: Optional[QPointF] = None,
+    ) -> None:
+        """Merge *asset* into the cluster and refresh cached aggregates."""
 
         self.assets.append(asset)
         self.latitude_sum += asset.latitude
         self.longitude_sum += asset.longitude
-        self._reproject(projector)
+        if projected_point is not None:
+            # When the caller already computed the projected location in screen
+            # space we simply fold it into the running arithmetic mean. This
+            # keeps the worker thread independent from the QWidget based map
+            # implementation which must only be touched from the GUI thread.
+            self.screen_x_sum += projected_point.x()
+            self.screen_y_sum += projected_point.y()
+            count = float(len(self.assets))
+            self.screen_pos = QPointF(self.screen_x_sum / count, self.screen_y_sum / count)
+        elif projector is not None:
+            self._reproject(projector)
 
     def _reproject(self, projector: Callable[[float, float], Optional[QPointF]]) -> None:
         """Project the average coordinates back into screen space."""
@@ -63,6 +107,97 @@ class _MarkerCluster:
         point = projector(self.longitude, self.latitude)
         if point is not None:
             self.screen_pos = point
+            count = float(len(self.assets))
+            self.screen_x_sum = self.screen_pos.x() * count
+            self.screen_y_sum = self.screen_pos.y() * count
+
+
+class _ClusterWorker(QObject):
+    """Worker object that performs clustering on a dedicated thread."""
+
+    finished = Signal(int, list)
+
+    def __init__(self, parent: Optional[QObject] = None) -> None:
+        super().__init__(parent)
+        self._interrupted = False
+
+    def interrupt(self) -> None:
+        """Request cancellation of the currently running clustering job."""
+
+        self._interrupted = True
+
+    def build_clusters(
+        self,
+        request_id: int,
+        projected_assets: list[tuple[GeotaggedAsset, QPointF]],
+        threshold: float,
+        cell_size: int,
+    ) -> None:
+        """Aggregate *projected_assets* into clusters.
+
+        Parameters
+        ----------
+        request_id:
+            Monotonic identifier supplied by :class:`PhotoMapView` so stale
+            results can be discarded.
+        projected_assets:
+            Sequence of assets paired with their widget-relative coordinates.
+        threshold:
+            Maximum on-screen distance for assets to be grouped into one
+            cluster.
+        cell_size:
+            Spatial hashing bucket edge length in pixels used to cut down the
+            number of candidate clusters that need to be checked per asset.
+        """
+
+        self._interrupted = False
+        grid: Dict[tuple[int, int], list[_MarkerCluster]] = {}
+        clusters: list[_MarkerCluster] = []
+
+        for asset, point in projected_assets:
+            if self._interrupted:
+                return
+
+            cell_x = int(point.x() // cell_size)
+            cell_y = int(point.y() // cell_size)
+            candidates: list[_MarkerCluster] = []
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    candidates.extend(grid.get((cell_x + dx, cell_y + dy), []))
+
+            assigned = False
+            for cluster in candidates:
+                if PhotoMapView._distance(cluster.screen_pos, point) <= threshold:
+                    cluster.add_asset(asset, projected_point=point)
+                    new_cell = (
+                        int(cluster.screen_pos.x() // cell_size),
+                        int(cluster.screen_pos.y() // cell_size),
+                    )
+                    if cluster.cell != new_cell:
+                        if cluster.cell in grid:
+                            try:
+                                grid[cluster.cell].remove(cluster)
+                            except ValueError:
+                                pass
+                        grid.setdefault(new_cell, []).append(cluster)
+                        cluster.cell = new_cell
+                    assigned = True
+                    break
+
+            if not assigned:
+                cluster = _MarkerCluster(
+                    representative=asset,
+                    assets=[asset],
+                    screen_pos=point,
+                )
+                cluster.cell = (cell_x, cell_y)
+                cluster.screen_x_sum = point.x()
+                cluster.screen_y_sum = point.y()
+                clusters.append(cluster)
+                grid.setdefault((cell_x, cell_y), []).append(cluster)
+
+        if not self._interrupted:
+            self.finished.emit(request_id, clusters)
 
 
 class _MarkerLayer(QWidget):
@@ -267,6 +402,9 @@ class PhotoMapView(QWidget):
     assetActivated = Signal(str)
     """Signal emitted when the user activates a single asset marker."""
 
+    _clustering_requested = Signal(int, object, float, int)
+    """Internal signal that schedules a clustering job on the worker thread."""
+
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         layout = QVBoxLayout(self)
@@ -295,6 +433,17 @@ class PhotoMapView(QWidget):
         self._overlay.markerActivated.connect(self._handle_marker_activated)
         self._overlay.clusterActivated.connect(self._handle_cluster_activated)
 
+        # Background clustering infrastructure ---------------------------------
+        self._cluster_thread = QThread(self)
+        self._cluster_thread.setObjectName("photo-map-cluster-worker")
+        self._cluster_worker = _ClusterWorker()
+        self._cluster_worker.moveToThread(self._cluster_thread)
+        self._clustering_requested.connect(self._cluster_worker.build_clusters)
+        self._cluster_worker.finished.connect(self._handle_clustering_finished)
+        self._cluster_thread.finished.connect(self._cluster_worker.deleteLater)
+        self._cluster_thread.start()
+        self._cluster_request_id = 0
+
     def map_widget(self) -> MapWidget:
         return self._map_widget
 
@@ -311,6 +460,10 @@ class PhotoMapView(QWidget):
     def clear(self) -> None:
         """Remove all markers from the map."""
 
+        if hasattr(self, "_cluster_worker"):
+            self._cluster_worker.interrupt()
+        if hasattr(self, "_cluster_request_id"):
+            self._cluster_request_id += 1
         self._assets = []
         self._clusters = []
         self._overlay.set_clusters([])
@@ -325,6 +478,8 @@ class PhotoMapView(QWidget):
 
     def _rebuild_clusters(self) -> None:
         if not self._assets:
+            self._cluster_worker.interrupt()
+            self._cluster_request_id += 1
             self._clusters = []
             self._overlay.set_clusters([])
             return
@@ -332,60 +487,38 @@ class PhotoMapView(QWidget):
         size = self._map_widget.size()
         if size.isEmpty():
             return
+
         threshold = max(self._overlay.marker_size * 0.6, 48)
         cell_size = max(int(threshold), 1)
         width = size.width()
         height = size.height()
         margin = self._overlay.marker_size
 
-        def projector(lon: float, lat: float) -> Optional[QPointF]:
-            return self._map_widget.project_lonlat(lon, lat)
-
-        grid: Dict[tuple[int, int], list[_MarkerCluster]] = {}
-        clusters: list[_MarkerCluster] = []
-
+        projected_assets: list[tuple[GeotaggedAsset, QPointF]] = []
         for asset in self._assets:
-            point = projector(asset.longitude, asset.latitude)
+            point = self._map_widget.project_lonlat(asset.longitude, asset.latitude)
             if point is None:
                 continue
             if point.x() < -margin or point.y() < -margin:
                 continue
             if point.x() > width + margin or point.y() > height + margin:
                 continue
+            projected_assets.append((asset, point))
 
-            cell_x = int(point.x() // cell_size)
-            cell_y = int(point.y() // cell_size)
-            candidates = []
-            for dx in (-1, 0, 1):
-                for dy in (-1, 0, 1):
-                    candidates.extend(grid.get((cell_x + dx, cell_y + dy), []))
+        if not projected_assets:
+            self._cluster_worker.interrupt()
+            self._cluster_request_id += 1
+            self._clusters = []
+            self._overlay.set_clusters([])
+            return
 
-            assigned = False
-            for cluster in candidates:
-                if self._distance(cluster.screen_pos, point) <= threshold:
-                    cluster.add_asset(asset, projector)
-                    new_cell = int(cluster.screen_pos.x() // cell_size), int(cluster.screen_pos.y() // cell_size)
-                    if cluster.cell != new_cell:
-                        if cluster.cell in grid:
-                            try:
-                                grid[cluster.cell].remove(cluster)
-                            except ValueError:
-                                pass
-                        grid.setdefault(new_cell, []).append(cluster)
-                        cluster.cell = new_cell
-                    assigned = True
-                    break
-
-            if not assigned:
-                cluster = _MarkerCluster(representative=asset, assets=[asset], screen_pos=point)
-                cluster.cell = (cell_x, cell_y)
-                clusters.append(cluster)
-                grid.setdefault((cell_x, cell_y), []).append(cluster)
-
-        self._clusters = clusters
-        self._overlay.set_clusters(clusters)
-        for cluster in clusters:
-            self._ensure_thumbnail(cluster.representative)
+        # Cancel any in-flight clustering work before queuing the new job so the
+        # worker does not waste time on stale data produced for an outdated
+        # viewport.
+        self._cluster_worker.interrupt()
+        self._cluster_request_id += 1
+        request_id = self._cluster_request_id
+        self._clustering_requested.emit(request_id, projected_assets, float(threshold), cell_size)
 
     def _ensure_thumbnail(self, asset: GeotaggedAsset) -> None:
         if self._library_root is None:
@@ -415,9 +548,37 @@ class PhotoMapView(QWidget):
     def _handle_cluster_activated(self, cluster: _MarkerCluster) -> None:
         self._map_widget.focus_on(cluster.longitude, cluster.latitude, zoom_delta=0.8)
 
+    def _handle_clustering_finished(self, request_id: int, clusters: list[_MarkerCluster]) -> None:
+        """Receive freshly computed clusters from the background worker."""
+
+        if request_id != self._cluster_request_id:
+            # ``request_id`` is monotonic so a mismatch means a more recent job
+            # already supplied its data.
+            return
+
+        def projector(lon: float, lat: float) -> Optional[QPointF]:
+            return self._map_widget.project_lonlat(lon, lat)
+
+        for cluster in clusters:
+            cluster._reproject(projector)
+
+        self._clusters = clusters
+        self._overlay.set_clusters(clusters)
+        for cluster in clusters:
+            self._ensure_thumbnail(cluster.representative)
+
     @staticmethod
     def _distance(a: QPointF, b: QPointF) -> float:
         return math.hypot(a.x() - b.x(), a.y() - b.y())
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # type: ignore[override]
+        """Ensure the clustering thread shuts down before the widget closes."""
+
+        if self._cluster_thread.isRunning():
+            self._cluster_worker.interrupt()
+            self._cluster_thread.quit()
+            self._cluster_thread.wait()
+        super().closeEvent(event)
 
 
 __all__ = ["PhotoMapView"]
