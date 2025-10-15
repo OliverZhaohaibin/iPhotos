@@ -430,6 +430,12 @@ class PhotoMapView(QWidget):
         incoming_root = self._normalize_root(root)
         if self._root_token(incoming_root) != self._library_root_token:
             return
+        # ``print`` is intentionally used instead of the logging module so the
+        # thumbnail path appears immediately in developer consoles when
+        # diagnosing why map thumbnails are missing.  The path is reconstructed
+        # from the loader's ``root`` and ``rel`` arguments so the message is
+        # unambiguous on every platform.
+        print(f"[PhotoMapView] Thumbnail ready: {incoming_root / rel}")
         self._overlay.set_thumbnail(rel, pixmap)
 
     def _handle_marker_activated(self, cluster: _MarkerCluster) -> None:
