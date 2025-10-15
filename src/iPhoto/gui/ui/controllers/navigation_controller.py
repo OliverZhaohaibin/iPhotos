@@ -88,8 +88,9 @@ class NavigationController:
 
         self._static_selection = None
         self._asset_model.set_filter_mode(None)
-        # Present the gallery grid when navigating to a different album so the
-        # UI avoids showing a stale detail pane while the model loads.
+        # Returning to a real album should always restore the traditional grid
+        # presentation before the model finishes loading.
+        self._view_controller.restore_default_gallery()
         self._view_controller.show_gallery_view()
 
         album = self._facade.open_album(path)
@@ -117,6 +118,7 @@ class NavigationController:
     # Static collections
     # ------------------------------------------------------------------
     def open_all_photos(self) -> None:
+        self._view_controller.restore_default_gallery()
         self.open_static_collection(AlbumSidebar.ALL_PHOTOS_TITLE, None)
 
     def open_static_node(self, title: str) -> None:
@@ -129,7 +131,18 @@ class NavigationController:
         mode = mapping.get(key, None)
         self.open_static_collection(title, mode)
 
-    def open_static_collection(self, title: str, filter_mode: Optional[str]) -> None:
+    def open_location_view(self) -> None:
+        """Activate the Location view without forcing the gallery grid."""
+
+        self.open_static_collection("Location", None, show_gallery=False)
+
+    def open_static_collection(
+        self,
+        title: str,
+        filter_mode: Optional[str],
+        *,
+        show_gallery: bool = True,
+    ) -> None:
         root = self._context.library.root()
         if root is None:
             self._dialog.bind_library_dialog()
@@ -137,7 +150,9 @@ class NavigationController:
         # Reset the detail pane whenever a static collection (All Photos,
         # Favorites, etc.) is opened so the UI consistently shows the grid as
         # its entry point for that virtual album.
-        self._view_controller.show_gallery_view()
+        if show_gallery:
+            self._view_controller.restore_default_gallery()
+            self._view_controller.show_gallery_view()
         self._asset_model.set_filter_mode(filter_mode)
         self._static_selection = title
         album = self._facade.open_album(root)

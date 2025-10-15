@@ -9,6 +9,7 @@ from .image_viewer import ImageViewer
 from .player_bar import PlayerBar
 from .video_area import VideoArea
 from .preview_window import PreviewWindow
+from .photo_map_view import PhotoMapView
 from .live_badge import LiveBadge
 
 __all__ = [
@@ -22,4 +23,5 @@ __all__ = [
     "VideoArea",
     "PreviewWindow",
     "LiveBadge",
+    "PhotoMapView",
 ]

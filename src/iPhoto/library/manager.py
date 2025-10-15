@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterable
+from typing import Dict, Iterable, List, Optional
 
 from PySide6.QtCore import QFileSystemWatcher, QObject, QTimer, Signal
 
@@ -15,9 +16,38 @@ from ..errors import (
     AlbumOperationError,
     LibraryUnavailableError,
 )
+from ..media_classifier import classify_media
 from ..models.album import Album
 from ..utils.jsonio import read_json
+from ..cache.index_store import IndexStore
 from .tree import AlbumNode
+
+
+@dataclass(slots=True, frozen=True)
+class GeotaggedAsset:
+    """Lightweight descriptor describing an asset with GPS metadata."""
+
+    library_relative: str
+    """Relative path from the library root to the asset."""
+
+    album_relative: str
+    """Relative path from the asset's album root to the file."""
+
+    absolute_path: Path
+    """Absolute filesystem path to the asset."""
+
+    album_path: Path
+    """Root directory of the album that owns the asset."""
+
+    asset_id: str
+    """Identifier reported by the index row."""
+
+    latitude: float
+    longitude: float
+    is_image: bool
+    is_video: bool
+    still_image_time: Optional[float]
+    duration: Optional[float]
 
 
 class LibraryManager(QObject):
@@ -70,6 +100,83 @@ class LibraryManager(QObject):
     def scan_tree(self) -> list[AlbumNode]:
         self._refresh_tree()
         return self.list_albums()
+
+    # ------------------------------------------------------------------
+    # Asset helpers
+    # ------------------------------------------------------------------
+    def get_geotagged_assets(self) -> List[GeotaggedAsset]:
+        """Return every asset in the library that exposes GPS coordinates."""
+
+        root = self._require_root()
+        # ``seen`` prevents duplicate entries when a sub-album and its parent
+        # both reference the same physical file in their indexes.
+        seen: set[Path] = set()
+        assets: list[GeotaggedAsset] = []
+
+        album_paths: set[Path] = {root}
+        album_paths.update(self._nodes.keys())
+
+        for album_path in sorted(album_paths):
+            try:
+                rows = IndexStore(album_path).read_all()
+            except Exception:
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                gps = row.get("gps")
+                if not isinstance(gps, dict):
+                    continue
+                lat = gps.get("lat")
+                lon = gps.get("lon")
+                if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+                    continue
+                rel = row.get("rel")
+                if not isinstance(rel, str) or not rel:
+                    continue
+                abs_path = (album_path / rel).resolve()
+                if abs_path in seen:
+                    continue
+                seen.add(abs_path)
+                try:
+                    library_relative_path = abs_path.relative_to(root)
+                    library_relative_str = library_relative_path.as_posix()
+                except ValueError:
+                    library_relative_str = abs_path.name
+                asset_id = str(row.get("id") or rel)
+                classified_image, classified_video = classify_media(row)
+                # Combine classifier results with any persisted flags to remain
+                # compatible with older index rows that stored boolean values.
+                is_image = classified_image or bool(row.get("is_image"))
+                is_video = classified_video or bool(row.get("is_video"))
+                still_image_time = row.get("still_image_time")
+                if isinstance(still_image_time, (int, float)):
+                    still_image_value: Optional[float] = float(still_image_time)
+                else:
+                    still_image_value = None
+                duration = row.get("dur")
+                if isinstance(duration, (int, float)):
+                    duration_value: Optional[float] = float(duration)
+                else:
+                    duration_value = None
+                assets.append(
+                    GeotaggedAsset(
+                        library_relative=library_relative_str,
+                        album_relative=rel,
+                        absolute_path=abs_path,
+                        album_path=album_path,
+                        asset_id=asset_id,
+                        latitude=float(lat),
+                        longitude=float(lon),
+                        is_image=is_image,
+                        is_video=is_video,
+                        still_image_time=still_image_value,
+                        duration=duration_value,
+                    )
+                )
+
+        assets.sort(key=lambda item: item.library_relative)
+        return assets
 
     # ------------------------------------------------------------------
     # Album creation helpers

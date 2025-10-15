@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+import math
+from pathlib import Path
+from typing import Callable, Protocol
 
 from PySide6.QtCore import QPointF, QTimer
 from PySide6.QtGui import QPainter
 
-from style_resolver import StyleLoadError, StyleResolver
-from tile_parser import TileParser
+from iPhotos.maps.style_resolver import StyleLoadError, StyleResolver
+from iPhotos.maps.tile_parser import TileParser
 
 from .input_handler import InputHandler
 from .layer import LayerPlan
@@ -69,8 +71,8 @@ class MapWidgetController:
         self,
         widget: SupportsMapViewport,
         *,
-        tile_root: str = "tiles",
-        style_path: str = "style.json",
+        tile_root: Path | str = "tiles",
+        style_path: Path | str = "style.json",
     ) -> None:
         """Prepare long-lived helpers shared by both widget implementations.
 
@@ -84,11 +86,27 @@ class MapWidgetController:
         """
 
         self._widget = widget
+        self._view_listeners: list[Callable[[float, float, float], None]] = []
+
+        package_root = Path(__file__).resolve().parent.parent
+
+        # ``PhotoMapView`` embeds the widget from inside the main desktop
+        # application where the current working directory differs from the
+        # standalone demo in ``maps/main.py``.  Resolving the asset paths against
+        # the package directory keeps the map functional regardless of where the
+        # process was started.
+        tile_root_path = Path(tile_root)
+        if not tile_root_path.is_absolute():
+            tile_root_path = package_root / tile_root_path
+
+        style_path_obj = Path(style_path)
+        if not style_path_obj.is_absolute():
+            style_path_obj = package_root / style_path_obj
 
         # ``TileParser`` performs the expensive vector tile decoding while the
         # style resolver exposes drawing instructions taken from ``style.json``.
-        self._tile_parser = TileParser(tile_root)
-        self._style = StyleResolver(style_path)
+        self._tile_parser = TileParser(tile_root_path)
+        self._style = StyleResolver(style_path_obj)
 
         definitions = self._style.vector_layer_definitions()
         if not definitions:
@@ -157,6 +175,7 @@ class MapWidgetController:
             return
         self._zoom = zoom
         self._widget.update()
+        self._notify_view_changed()
 
     # ------------------------------------------------------------------
     def reset_view(self) -> None:
@@ -166,6 +185,7 @@ class MapWidgetController:
         self._center_y = 0.5
         self.set_zoom(2.0)
         self._widget.update()
+        self._notify_view_changed()
 
     # ------------------------------------------------------------------
     def shutdown(self) -> None:
@@ -212,6 +232,68 @@ class MapWidgetController:
         self._input_handler.handle_wheel_event(event, self._zoom)
 
     # ------------------------------------------------------------------
+    def add_view_listener(self, callback: Callable[[float, float, float], None]) -> None:
+        """Register *callback* to receive camera updates."""
+
+        if callback not in self._view_listeners:
+            self._view_listeners.append(callback)
+
+    # ------------------------------------------------------------------
+    def project_lonlat(self, lon: float, lat: float) -> QPointF | None:
+        """Return widget-relative coordinates for the provided GPS point."""
+
+        world_position = self._lonlat_to_world(lon, lat)
+        if world_position is None:
+            return None
+
+        world_x, world_y = world_position
+        world_size = self._world_size()
+
+        center_px = self._center_x * world_size
+        center_py = self._center_y * world_size
+
+        delta_x = world_x - center_px
+        if delta_x > world_size / 2.0:
+            world_x -= world_size
+        elif delta_x < -world_size / 2.0:
+            world_x += world_size
+
+        top_left_x = center_px - self._widget.width() / 2.0
+        top_left_y = center_py - self._widget.height() / 2.0
+
+        screen_x = world_x - top_left_x
+        screen_y = world_y - top_left_y
+        return QPointF(screen_x, screen_y)
+
+    # ------------------------------------------------------------------
+    def center_on(self, lon: float, lat: float) -> None:
+        """Move the camera so *lon*/*lat* becomes the viewport centre."""
+
+        world_position = self._lonlat_to_world(lon, lat)
+        if world_position is None:
+            return
+        world_x, world_y = world_position
+        world_size = self._world_size()
+        self._center_x = (world_x / world_size) % 1.0
+        self._center_y = min(max(world_y / world_size, 0.0), 1.0)
+        self._widget.update()
+        self._notify_view_changed()
+
+    # ------------------------------------------------------------------
+    def focus_on(self, lon: float, lat: float, zoom_delta: float = 1.0) -> None:
+        """Centre the camera on *lon*/*lat* and optionally increase zoom."""
+
+        self.center_on(lon, lat)
+        if zoom_delta:
+            self.set_zoom(self._zoom + zoom_delta)
+
+    # ------------------------------------------------------------------
+    def view_state(self) -> tuple[float, float, float]:
+        """Return the current ``(center_x, center_y, zoom)`` tuple."""
+
+        return self._center_x, self._center_y, self._zoom
+
+    # ------------------------------------------------------------------
     def _schedule_update(self) -> None:
         """Start the coalescing timer when new tiles arrive."""
 
@@ -227,6 +309,7 @@ class MapWidgetController:
         self._center_y -= delta.y() / world_size
         self._wrap_center()
         self._widget.update()
+        self._notify_view_changed()
 
     # ------------------------------------------------------------------
     def _on_zoom_requested(self, new_zoom: float, anchor: QPointF) -> None:
@@ -250,6 +333,7 @@ class MapWidgetController:
         self._center_y = new_center_py / new_world_size
         self._wrap_center()
         self._widget.update()
+        self._notify_view_changed()
 
     # ------------------------------------------------------------------
     def _handle_tile_loaded(self, tile_key: tuple[int, int, int]) -> None:
@@ -281,6 +365,32 @@ class MapWidgetController:
 
         self._center_x %= 1.0
         self._center_y = min(max(self._center_y, 0.0), 1.0)
+
+    # ------------------------------------------------------------------
+    def _notify_view_changed(self) -> None:
+        """Emit the current view state to registered listeners."""
+
+        for callback in list(self._view_listeners):
+            try:
+                callback(self._center_x, self._center_y, self._zoom)
+            except Exception:  # pragma: no cover - best effort notification
+                continue
+
+    # ------------------------------------------------------------------
+    def _lonlat_to_world(self, lon: float, lat: float) -> tuple[float, float] | None:
+        """Project GPS coordinates into the continuous Web Mercator plane."""
+
+        try:
+            lon = float(lon)
+            lat = max(min(float(lat), 85.05112878), -85.05112878)
+        except (TypeError, ValueError):
+            return None
+
+        world_size = self._world_size()
+        x = (lon + 180.0) / 360.0 * world_size
+        sin_lat = math.sin(math.radians(lat))
+        y = (0.5 - math.log((1 + sin_lat) / (1 - sin_lat)) / (4 * math.pi)) * world_size
+        return x, y
 
 
 __all__ = ["MapWidgetBase", "MapWidgetController", "SupportsMapViewport"]

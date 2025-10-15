@@ -271,6 +271,9 @@ class ThumbnailLoader(QObject):
         if cache_path.exists():
             pixmap = QPixmap(str(cache_path))
             if not pixmap.isNull():
+                # Print the cached thumbnail path to help debugging the
+                # Location view while reusing disk-stored thumbnails.
+                print(f"[ThumbnailLoader] Cached thumbnail hit: {cache_path}")
                 self._memory[key] = pixmap
                 return pixmap
             self._safe_unlink(cache_path)

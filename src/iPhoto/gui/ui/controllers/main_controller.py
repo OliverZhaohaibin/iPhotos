@@ -24,6 +24,7 @@ from .detail_ui_controller import DetailUIController
 from .dialog_controller import DialogController
 from .header_controller import HeaderController
 from .navigation_controller import NavigationController
+from .map_view_controller import LocationMapController
 from .playback_controller import PlaybackController
 from .playback_state_manager import PlaybackStateManager
 from .player_view_controller import PlayerViewController
@@ -57,7 +58,8 @@ class MainController(QObject):
             window.ui.view_stack,
             window.ui.gallery_page,
             window.ui.detail_page,
-            window,
+            map_page=window.ui.map_page,
+            parent=window,
         )
         self._player_view_controller = PlayerViewController(
             window.ui.player_stack,
@@ -80,6 +82,13 @@ class MainController(QObject):
             window.ui.status_bar,
             self._dialog,
             self._view_controller,
+        )
+        self._map_controller = LocationMapController(
+            context.library,
+            self._playlist,
+            self._view_controller,
+            window.ui.map_view,
+            window,
         )
         self._detail_ui = DetailUIController(
             self._asset_model,
@@ -196,10 +205,10 @@ class MainController(QObject):
         # Sidebar navigation
         self._window.ui.sidebar.albumSelected.connect(self.open_album_from_path)
         self._window.ui.sidebar.allPhotosSelected.connect(
-            self._navigation.open_all_photos
+            self._handle_all_photos_selected
         )
         self._window.ui.sidebar.staticNodeSelected.connect(
-            self._navigation.open_static_node
+            self._handle_static_node_selected
         )
         self._window.ui.sidebar.bindLibraryRequested.connect(
             self._dialog.bind_library_dialog
@@ -212,6 +221,7 @@ class MainController(QObject):
         self._facade.loadStarted.connect(self._status_bar.handle_load_started)
         self._facade.loadProgress.connect(self._status_bar.handle_load_progress)
         self._facade.loadFinished.connect(self._status_bar.handle_load_finished)
+        self._facade.indexUpdated.connect(self._map_controller.handle_index_update)
 
         # Model housekeeping
         for signal in (
@@ -298,6 +308,26 @@ class MainController(QObject):
         self._status_bar.begin_scan()
         self._facade.rescan_current_async()
 
+    def _handle_all_photos_selected(self) -> None:
+        """Reset to the default gallery view when All Photos is selected."""
+
+        self._map_controller.hide_map_view()
+        self._navigation.open_all_photos()
+
+    def _handle_static_node_selected(self, title: str) -> None:
+        """Dispatch sidebar selections, treating Location as a special case."""
+
+        if title.casefold() == "location":
+            self._navigation.open_location_view()
+            if self._context.library.root() is None:
+                self._map_controller.hide_map_view()
+                return
+            self._map_controller.refresh_assets()
+            self._map_controller.show_map_view()
+            return
+        self._map_controller.hide_map_view()
+        self._navigation.open_static_node(title)
+
     def _handle_album_opened(self, root: Path) -> None:
         """React to the facade opening a new or refreshed album."""
 
@@ -355,6 +385,7 @@ class MainController(QObject):
     def open_album_from_path(self, path: Path) -> None:
         """Forward album navigation requests to the navigation controller."""
 
+        self._map_controller.hide_map_view()
         self._navigation.open_album(path)
 
     def paths_from_indexes(self, indexes: Iterable[QModelIndex]) -> list[Path]:
