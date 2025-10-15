@@ -71,8 +71,19 @@ class _MarkerLayer(QWidget):
     markerActivated = Signal(_MarkerCluster)
     clusterActivated = Signal(_MarkerCluster)
 
+    # ``MARKER_SIZE`` mirrors the historical footprint of the map markers so the
+    # overlay does not feel oversized compared to the surrounding UI controls.
     MARKER_SIZE = 72
-    THUMBNAIL_SIZE = 56
+    # ``THUMBNAIL_NATIVE_SIZE`` describes the cached thumbnail edge length that we
+    # request from the shared thumbnail loader. Location previews now rely on the
+    # higher fidelity 192x192 assets that power the rest of the application so the
+    # map view no longer uses a bespoke, ultra small cache entry.
+    THUMBNAIL_NATIVE_SIZE = 192
+    # ``THUMBNAIL_DISPLAY_SIZE`` is the actual number of on-screen pixels available
+    # within the marker frame for rendering the thumbnail. We keep this at 56px so
+    # the markers retain the previous compact appearance while benefiting from the
+    # sharper 192px source imagery.
+    THUMBNAIL_DISPLAY_SIZE = 56
     BADGE_DIAMETER = 26
 
     def __init__(self, map_widget: MapWidget, parent: Optional[QWidget] = None) -> None:
@@ -94,7 +105,15 @@ class _MarkerLayer(QWidget):
 
     @property
     def thumbnail_size(self) -> int:
-        return self.THUMBNAIL_SIZE
+        """Return the native thumbnail resolution requested from the cache."""
+
+        return self.THUMBNAIL_NATIVE_SIZE
+
+    @property
+    def thumbnail_display_size(self) -> int:
+        """Return the edge length used when painting thumbnails on the map."""
+
+        return self.THUMBNAIL_DISPLAY_SIZE
 
     def set_clusters(self, clusters: Sequence[_MarkerCluster]) -> None:
         """Replace the rendered clusters and schedule a repaint."""
@@ -113,6 +132,9 @@ class _MarkerLayer(QWidget):
     def paintEvent(self, event: QPaintEvent) -> None:  # type: ignore[override]
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
+        # ``SmoothPixmapTransform`` guarantees that shrinking the 192px thumbnails
+        # down to the 56px display slot uses a high quality resampling filter.
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
         for cluster in self._clusters:
             self._paint_cluster(painter, cluster)
         painter.end()
@@ -158,11 +180,12 @@ class _MarkerLayer(QWidget):
         if thumbnail is None:
             thumbnail = self._placeholder
         if not thumbnail.isNull():
+            display_edge = float(self.THUMBNAIL_DISPLAY_SIZE)
             thumb_rect = QRectF(
-                x + (self.MARKER_SIZE - self.THUMBNAIL_SIZE) / 2.0,
-                y + (self.MARKER_SIZE - self.THUMBNAIL_SIZE) / 2.0,
-                self.THUMBNAIL_SIZE,
-                self.THUMBNAIL_SIZE,
+                x + (self.MARKER_SIZE - display_edge) / 2.0,
+                y + (self.MARKER_SIZE - display_edge) / 2.0,
+                display_edge,
+                display_edge,
             )
             # ``QPainter.drawPixmap`` requires a QRect when no source rect is provided,
             # therefore the floating point QRectF must be converted to a QRect.
@@ -226,13 +249,14 @@ class _MarkerLayer(QWidget):
         QCoreApplication.postEvent(self._map_widget, mapped)
 
     def _create_placeholder(self) -> QPixmap:
-        pixmap = QPixmap(self.THUMBNAIL_SIZE, self.THUMBNAIL_SIZE)
+        display_size = self.THUMBNAIL_DISPLAY_SIZE
+        pixmap = QPixmap(display_size, display_size)
         pixmap.fill(Qt.GlobalColor.transparent)
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setBrush(QColor("#cccccc"))
         painter.setPen(Qt.NoPen)
-        painter.drawRoundedRect(0, 0, self.THUMBNAIL_SIZE, self.THUMBNAIL_SIZE, 8, 8)
+        painter.drawRoundedRect(0, 0, display_size, display_size, 8, 8)
         painter.end()
         return pixmap
 
