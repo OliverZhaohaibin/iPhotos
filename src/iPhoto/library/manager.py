@@ -18,6 +18,7 @@ from ..errors import (
 )
 from ..media_classifier import classify_media
 from ..models.album import Album
+from ..utils.geocoding import resolve_location_name
 from ..utils.jsonio import read_json
 from ..cache.index_store import IndexStore
 from .tree import AlbumNode
@@ -48,6 +49,8 @@ class GeotaggedAsset:
     is_video: bool
     still_image_time: Optional[float]
     duration: Optional[float]
+    location_name: Optional[str]
+    """Human-readable label derived from the asset's GPS coordinate."""
 
 
 class LibraryManager(QObject):
@@ -131,6 +134,10 @@ class LibraryManager(QObject):
                 lon = gps.get("lon")
                 if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
                     continue
+                # ``resolve_location_name`` maps the GPS coordinate to a human-readable
+                # label (typically the city) so that low zoom levels can show a
+                # meaningful aggregate marker instead of individual thumbnails.
+                location_name = resolve_location_name(gps)
                 rel = row.get("rel")
                 if not isinstance(rel, str) or not rel:
                     continue
@@ -172,6 +179,7 @@ class LibraryManager(QObject):
                         is_video=is_video,
                         still_image_time=still_image_value,
                         duration=duration_value,
+                        location_name=location_name,
                     )
                 )
 

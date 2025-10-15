@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Iterable, Optional, cast
+from typing import Dict, Iterable, Optional, Union, cast
 
 from PySide6.QtCore import QObject, QRectF, Qt, QEvent, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
+    QFontMetrics,
     QMouseEvent,
     QPaintEvent,
     QPainter,
+    QPainterPath,
     QPen,
     QPixmap,
 )
@@ -21,7 +23,7 @@ from iPhotos.maps.map_widget.map_widget import MapWidget
 
 from ....library.manager import GeotaggedAsset
 from ..tasks.thumbnail_loader import ThumbnailLoader
-from .marker_controller import MarkerController, _MarkerCluster
+from .marker_controller import MarkerController, _MarkerCluster, _CityMarker
 
 
 class _MarkerLayer(QWidget):
@@ -38,6 +40,7 @@ class _MarkerLayer(QWidget):
         # events which are handled by :class:`PhotoMapView` and the map widget.
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self._clusters: list[_MarkerCluster] = []
+        self._cities: list[_CityMarker] = []
         self._pixmaps: Dict[str, QPixmap] = {}
         self._placeholder = self._create_placeholder()
         self._badge_font = QFont()
@@ -45,6 +48,9 @@ class _MarkerLayer(QWidget):
         self._badge_pen = QPen(QColor("white"))
         self._badge_pen.setWidth(1)
         self._badge_brush = QColor("#d64541")
+        self._city_font = QFont()
+        self._city_font.setPointSize(12)
+        self._city_font.setBold(True)
 
     @property
     def marker_size(self) -> int:
@@ -64,10 +70,11 @@ class _MarkerLayer(QWidget):
 
         return self.THUMBNAIL_DISPLAY_SIZE
 
-    def set_clusters(self, clusters: Iterable[_MarkerCluster]) -> None:
-        """Replace the rendered clusters and schedule a repaint."""
+    def set_clusters(self, items: Iterable[Union[_MarkerCluster, _CityMarker]]) -> None:
+        """Replace the rendered markers and schedule a repaint."""
 
-        self._clusters = list(clusters)
+        self._clusters = [item for item in items if isinstance(item, _MarkerCluster)]
+        self._cities = [item for item in items if isinstance(item, _CityMarker)]
         self.update()
 
     def set_thumbnail(self, rel: str, pixmap: QPixmap) -> None:
@@ -90,6 +97,8 @@ class _MarkerLayer(QWidget):
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
         for cluster in self._clusters:
             self._paint_cluster(painter, cluster)
+        for city in self._cities:
+            self._paint_city(painter, city)
         painter.end()
 
     def _paint_cluster(self, painter: QPainter, cluster: _MarkerCluster) -> None:
@@ -131,6 +140,65 @@ class _MarkerLayer(QWidget):
             painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, str(count))
 
         cluster.bounding_rect = rect
+
+    def _paint_city(self, painter: QPainter, city: _CityMarker) -> None:
+        """Render a macOS-style city bubble anchored at ``city.screen_pos``."""
+
+        painter.save()
+        painter.setFont(self._city_font)
+        metrics = QFontMetrics(self._city_font)
+
+        # Measure the text to determine how much padding we need around the
+        # label. The additional offsets mimic the rounded callout used by the
+        # macOS Maps application.
+        text_rect = metrics.boundingRect(city.name)
+        horizontal_padding = 8
+        vertical_padding = 4
+        icon_size = 8
+        icon_spacing = 4
+        pointer_height = 8
+        pointer_width = 12
+
+        box_width = text_rect.width() + icon_size + icon_spacing + 2 * horizontal_padding
+        box_height = max(text_rect.height(), icon_size) + 2 * vertical_padding
+
+        tip_x = city.screen_pos.x()
+        tip_y = city.screen_pos.y()
+        box_x = tip_x - box_width / 2.0
+        box_y = tip_y - box_height - pointer_height
+        box_rect = QRectF(box_x, box_y, box_width, box_height)
+
+        # Compose the callout path with a rounded rectangle and a triangular
+        # pointer. Using a single path ensures the outline blends smoothly.
+        bubble_path = QPainterPath()
+        bubble_path.addRoundedRect(box_rect, 6, 6)
+        pointer_path = QPainterPath()
+        pointer_path.moveTo(tip_x, tip_y)
+        pointer_path.lineTo(tip_x - pointer_width / 2.0, tip_y - pointer_height)
+        pointer_path.lineTo(tip_x + pointer_width / 2.0, tip_y - pointer_height)
+        pointer_path.closeSubpath()
+        bubble_path = bubble_path.united(pointer_path)
+
+        painter.setPen(QPen(QColor(0, 0, 0, 80), 1))
+        painter.setBrush(QColor(255, 255, 255, 230))
+        painter.drawPath(bubble_path)
+
+        # Draw the leading circular icon to visually differentiate the marker
+        # from photo thumbnails.
+        icon_x = box_x + horizontal_padding
+        icon_y = box_y + (box_height - icon_size) / 2.0
+        icon_rect = QRectF(icon_x, icon_y, icon_size, icon_size)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#1e73ff"))
+        painter.drawEllipse(icon_rect)
+
+        text_x = icon_rect.right() + icon_spacing
+        text_rect_final = QRectF(text_x, box_y, box_width - (text_x - box_x), box_height)
+        painter.setPen(QColor("#2b2b2b"))
+        painter.drawText(text_rect_final, Qt.AlignmentFlag.AlignCenter, city.name)
+
+        city.bounding_rect = bubble_path.boundingRect()
+        painter.restore()
 
     def _create_placeholder(self) -> QPixmap:
         display_size = self.THUMBNAIL_DISPLAY_SIZE
@@ -211,9 +279,12 @@ class PhotoMapView(QWidget):
                 QEvent.Type.MouseButtonDblClick,
             ):
                 mouse_event = cast(QMouseEvent, event)
-                cluster = self._marker_controller.cluster_at(mouse_event.position())
-                if cluster is not None:
-                    self._marker_controller.handle_marker_click(cluster)
+                item = self._marker_controller.cluster_at(mouse_event.position())
+                if isinstance(item, _MarkerCluster):
+                    self._marker_controller.handle_marker_click(item)
+                    return True
+                if isinstance(item, _CityMarker):
+                    self._marker_controller.handle_city_click(item)
                     return True
         return super().eventFilter(watched, event)
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import math
 from pathlib import Path
-from typing import Callable, Dict, Iterable, Optional, Sequence
+from typing import Callable, Dict, Iterable, Optional, Sequence, Union
 
 from PySide6.QtCore import QObject, QPointF, QRectF, QSize, QThread, QTimer, Signal
 from PySide6.QtGui import QPixmap
@@ -14,6 +14,18 @@ from iPhotos.maps.map_widget.map_widget import MapWidget
 
 from ....library.manager import GeotaggedAsset
 from ..tasks.thumbnail_loader import ThumbnailLoader
+
+
+@dataclass
+class _CityMarker:
+    """Aggregate of geotagged assets rendered as a single city marker."""
+
+    name: str
+    assets: list[GeotaggedAsset]
+    latitude: float
+    longitude: float
+    screen_pos: QPointF = field(default_factory=QPointF)
+    bounding_rect: QRectF = field(default_factory=QRectF)
 
 
 @dataclass
@@ -258,6 +270,12 @@ class MarkerController(QObject):
     thumbnailsInvalidated = Signal()
     _clustering_requested = Signal(int, object, int, int, float, float, float, float, int, int)
 
+    # ``CITY_VIEW_ZOOM_THRESHOLD`` controls the zoom level at which we switch from
+    # aggregated city bubbles to detailed photo clusters. Values lower than the
+    # threshold render city-level markers, while higher zoom levels reveal
+    # per-cluster thumbnails.
+    CITY_VIEW_ZOOM_THRESHOLD = 5.5
+
     def __init__(
         self,
         map_widget: MapWidget,
@@ -275,6 +293,7 @@ class MarkerController(QObject):
         self._assets: list[GeotaggedAsset] = []
         self._library_root: Optional[Path] = None
         self._clusters: list[_MarkerCluster] = []
+        self._cities: list[_CityMarker] = []
         self._view_center_x = 0.5
         self._view_center_y = 0.5
         self._view_zoom = float(self._map_widget.zoom)
@@ -300,6 +319,7 @@ class MarkerController(QObject):
 
         self._assets = [asset for asset in assets if isinstance(asset, GeotaggedAsset)]
         self._library_root = library_root
+        self._cities = []
         self._thumbnail_loader.reset_for_album(library_root)
         self.thumbnailsInvalidated.emit()
         self._schedule_cluster_update()
@@ -311,6 +331,7 @@ class MarkerController(QObject):
         self._cluster_request_id += 1
         self._assets = []
         self._clusters = []
+        self._cities = []
         self._library_root = None
         self._is_panning = False
         self._view_center_x = 0.5
@@ -343,19 +364,23 @@ class MarkerController(QObject):
         if self._cluster_timer.isActive():
             self._cluster_timer.stop()
 
-        if not self._clusters:
-            self.clustersUpdated.emit(self._clusters)
+        markers: list[Union[_MarkerCluster, _CityMarker]] = []
+        markers.extend(self._clusters)
+        markers.extend(self._cities)
+
+        if not markers:
+            self.clustersUpdated.emit(markers)
             return
 
-        for cluster in self._clusters:
-            cluster.screen_pos = QPointF(
-                cluster.screen_pos.x() + delta.x(),
-                cluster.screen_pos.y() + delta.y(),
+        for marker in markers:
+            marker.screen_pos = QPointF(
+                marker.screen_pos.x() + delta.x(),
+                marker.screen_pos.y() + delta.y(),
             )
-            if cluster.bounding_rect:
-                cluster.bounding_rect.translate(delta.x(), delta.y())
+            if marker.bounding_rect:
+                marker.bounding_rect.translate(delta.x(), delta.y())
 
-        self.clustersUpdated.emit(self._clusters)
+        self.clustersUpdated.emit(markers)
 
     def handle_pan_finished(self) -> None:
         """Resume background clustering once the drag gesture ends."""
@@ -377,6 +402,11 @@ class MarkerController(QObject):
         else:
             self._map_widget.focus_on(cluster.longitude, cluster.latitude, zoom_delta=0.8)
 
+    def handle_city_click(self, city: _CityMarker) -> None:
+        """Zoom in to show photos for the selected city."""
+
+        self._map_widget.focus_on(city.longitude, city.latitude, zoom_delta=2.0)
+
     def handle_thumbnail_ready(self, root: Path, rel: str, pixmap: QPixmap) -> None:
         """Forward freshly rendered thumbnails to the UI layer."""
 
@@ -386,12 +416,15 @@ class MarkerController(QObject):
             return
         self.thumbnailUpdated.emit(rel, pixmap)
 
-    def cluster_at(self, position: QPointF) -> Optional[_MarkerCluster]:
+    def cluster_at(self, position: QPointF) -> Optional[Union[_MarkerCluster, _CityMarker]]:
         """Return the foremost cluster that intersects *position*."""
 
         for cluster in reversed(self._clusters):
             if cluster.bounding_rect.contains(position):
                 return cluster
+        for city in reversed(self._cities):
+            if city.bounding_rect.contains(position):
+                return city
         return None
 
     def _schedule_cluster_update(self) -> None:
@@ -404,11 +437,54 @@ class MarkerController(QObject):
             self._cluster_worker.interrupt()
             self._cluster_request_id += 1
             self._clusters = []
+            self._cities = []
             self.clustersUpdated.emit([])
             return
 
+        if self._view_zoom < self.CITY_VIEW_ZOOM_THRESHOLD:
+            self._rebuild_cities()
+        else:
+            self._rebuild_photo_clusters()
+
+    def _rebuild_cities(self) -> None:
+        """Group assets by city and expose synthetic city markers."""
+
+        self._cluster_worker.interrupt()
+        self._cluster_request_id += 1
+
+        cities: Dict[str, list[GeotaggedAsset]] = {}
+        for asset in self._assets:
+            if asset.location_name:
+                cities.setdefault(asset.location_name, []).append(asset)
+
+        city_markers: list[_CityMarker] = []
+        if not cities:
+            self._clusters = []
+            self._cities = []
+            self.clustersUpdated.emit([])
+            return
+
+        for name in sorted(cities):
+            assets = cities[name]
+            avg_lat = sum(item.latitude for item in assets) / len(assets)
+            avg_lon = sum(item.longitude for item in assets) / len(assets)
+            screen_pos = self._map_widget.project_lonlat(avg_lon, avg_lat)
+            if screen_pos is None:
+                continue
+            city_markers.append(_CityMarker(name, list(assets), avg_lat, avg_lon, screen_pos))
+
+        self._clusters = []
+        self._cities = city_markers
+        self.clustersUpdated.emit(city_markers)
+
+    def _rebuild_photo_clusters(self) -> None:
+        """Generate thumbnail clusters when the user is sufficiently zoomed in."""
+
+        self._cities = []
         size = self._map_widget.size()
         if size.isEmpty():
+            self._clusters = []
+            self.clustersUpdated.emit([])
             return
 
         threshold = max(self._marker_size * 0.6, 48.0)
@@ -441,6 +517,7 @@ class MarkerController(QObject):
         if request_id != self._cluster_request_id:
             return
 
+        self._cities = []
         for cluster in clusters:
             cluster.bounding_rect = self._marker_rect(cluster.screen_pos)
             self._ensure_thumbnail(cluster.representative)
@@ -475,4 +552,4 @@ class MarkerController(QObject):
         return math.hypot(a.x() - b.x(), a.y() - b.y())
 
 
-__all__ = ["MarkerController", "_MarkerCluster"]
+__all__ = ["MarkerController", "_MarkerCluster", "_CityMarker"]
