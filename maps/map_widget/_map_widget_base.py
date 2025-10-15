@@ -87,6 +87,8 @@ class MapWidgetController:
 
         self._widget = widget
         self._view_listeners: list[Callable[[float, float, float], None]] = []
+        self._pan_listeners: list[Callable[[QPointF], None]] = []
+        self._pan_finished_listeners: list[Callable[[], None]] = []
 
         package_root = Path(__file__).resolve().parent.parent
 
@@ -146,6 +148,8 @@ class MapWidgetController:
         self._tile_manager.tiles_changed.connect(self._schedule_update)
 
         self._input_handler.pan_requested.connect(self._on_pan_requested)
+        self._input_handler.pan_requested.connect(self._notify_pan_delta)
+        self._input_handler.pan_finished.connect(self._notify_pan_finished)
         self._input_handler.zoom_requested.connect(self._on_zoom_requested)
         self._input_handler.cursor_changed.connect(self._widget.setCursor)
         self._input_handler.cursor_reset.connect(self._widget.unsetCursor)
@@ -239,6 +243,20 @@ class MapWidgetController:
             self._view_listeners.append(callback)
 
     # ------------------------------------------------------------------
+    def add_pan_listener(self, callback: Callable[[QPointF], None]) -> None:
+        """Register *callback* for raw drag deltas produced by the input handler."""
+
+        if callback not in self._pan_listeners:
+            self._pan_listeners.append(callback)
+
+    # ------------------------------------------------------------------
+    def add_pan_finished_listener(self, callback: Callable[[], None]) -> None:
+        """Register *callback* to be notified once a drag gesture completes."""
+
+        if callback not in self._pan_finished_listeners:
+            self._pan_finished_listeners.append(callback)
+
+    # ------------------------------------------------------------------
     def project_lonlat(self, lon: float, lat: float) -> QPointF | None:
         """Return widget-relative coordinates for the provided GPS point."""
 
@@ -310,6 +328,26 @@ class MapWidgetController:
         self._wrap_center()
         self._widget.update()
         self._notify_view_changed()
+
+    # ------------------------------------------------------------------
+    def _notify_pan_delta(self, delta: QPointF) -> None:
+        """Forward the on-screen drag delta to registered observers."""
+
+        for callback in list(self._pan_listeners):
+            try:
+                callback(delta)
+            except Exception:  # pragma: no cover - observers are best effort only
+                continue
+
+    # ------------------------------------------------------------------
+    def _notify_pan_finished(self) -> None:
+        """Notify observers that the current pan gesture has concluded."""
+
+        for callback in list(self._pan_finished_listeners):
+            try:
+                callback()
+            except Exception:  # pragma: no cover - observers are best effort only
+                continue
 
     # ------------------------------------------------------------------
     def _on_zoom_requested(self, new_zoom: float, anchor: QPointF) -> None:

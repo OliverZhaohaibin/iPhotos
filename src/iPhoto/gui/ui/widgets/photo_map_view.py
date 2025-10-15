@@ -421,6 +421,7 @@ class PhotoMapView(QWidget):
         self._assets: list[GeotaggedAsset] = []
         self._library_root: Optional[Path] = None
         self._clusters: list[_MarkerCluster] = []
+        self._is_panning = False
         self._cluster_timer = QTimer(self)
         self._cluster_timer.setSingleShot(True)
         self._cluster_timer.setInterval(80)
@@ -430,6 +431,8 @@ class PhotoMapView(QWidget):
         self._thumbnail_loader.ready.connect(self._handle_thumbnail_ready)
 
         self._map_widget.viewChanged.connect(self._schedule_cluster_update)
+        self._map_widget.panned.connect(self._handle_pan)
+        self._map_widget.panFinished.connect(self._handle_pan_finished)
         self._overlay.markerActivated.connect(self._handle_marker_activated)
         self._overlay.clusterActivated.connect(self._handle_cluster_activated)
 
@@ -466,6 +469,7 @@ class PhotoMapView(QWidget):
             self._cluster_request_id += 1
         self._assets = []
         self._clusters = []
+        self._is_panning = False
         self._overlay.set_clusters([])
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
@@ -474,7 +478,41 @@ class PhotoMapView(QWidget):
         self._schedule_cluster_update()
 
     def _schedule_cluster_update(self) -> None:
+        if self._is_panning:
+            # Panning is handled incrementally by simply shifting the existing
+            # markers across the overlay. Deferring the expensive clustering
+            # work until the gesture settles keeps the UI responsive.
+            return
         self._cluster_timer.start()
+
+    def _handle_pan(self, delta: QPointF) -> None:
+        """Shift visible markers in response to incremental drag updates."""
+
+        self._is_panning = True
+        if self._cluster_timer.isActive():
+            self._cluster_timer.stop()
+
+        if not self._clusters:
+            self._overlay.update()
+            return
+
+        for cluster in self._clusters:
+            # ``QPointF`` does not support in-place addition in all PySide6
+            # builds, therefore both coordinates are updated explicitly.
+            cluster.screen_pos = QPointF(
+                cluster.screen_pos.x() + delta.x(),
+                cluster.screen_pos.y() + delta.y(),
+            )
+            if getattr(cluster, "bounding_rect", None):
+                cluster.bounding_rect.translate(delta.x(), delta.y())
+
+        self._overlay.update()
+
+    def _handle_pan_finished(self) -> None:
+        """Resume background clustering once the drag gesture ends."""
+
+        self._is_panning = False
+        self._schedule_cluster_update()
 
     def _rebuild_clusters(self) -> None:
         if not self._assets:
