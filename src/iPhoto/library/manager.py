@@ -16,6 +16,7 @@ from ..errors import (
     AlbumOperationError,
     LibraryUnavailableError,
 )
+from ..media_classifier import classify_media
 from ..models.album import Album
 from ..utils.jsonio import read_json
 from ..cache.index_store import IndexStore
@@ -143,8 +144,11 @@ class LibraryManager(QObject):
                 except ValueError:
                     library_relative_str = abs_path.name
                 asset_id = str(row.get("id") or rel)
-                is_image = bool(row.get("is_image"))
-                is_video = bool(row.get("is_video"))
+                classified_image, classified_video = classify_media(row)
+                # Combine classifier results with any persisted flags to remain
+                # compatible with older index rows that stored boolean values.
+                is_image = classified_image or bool(row.get("is_image"))
+                is_video = classified_video or bool(row.get("is_video"))
                 still_image_time = row.get("still_image_time")
                 if isinstance(still_image_time, (int, float)):
                     still_image_value: Optional[float] = float(still_image_time)
