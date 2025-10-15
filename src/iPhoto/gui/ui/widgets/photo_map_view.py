@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Iterable, Optional, Union, cast
 
-from PySide6.QtCore import QObject, QRectF, Qt, QEvent, Signal
+from PySide6.QtCore import QObject, QPointF, QRectF, Qt, QEvent, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -27,7 +27,7 @@ from .marker_controller import MarkerController, _MarkerCluster, _CityMarker
 
 
 class _MarkerLayer(QWidget):
-    """Transparent overlay that paints thumbnails for marker clusters."""
+    """Transparent overlay that paints thumbnails and lightweight city labels."""
 
     MARKER_SIZE = 72
     THUMBNAIL_NATIVE_SIZE = 192
@@ -95,10 +95,10 @@ class _MarkerLayer(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-        for cluster in self._clusters:
-            self._paint_cluster(painter, cluster)
         for city in self._cities:
             self._paint_city(painter, city)
+        for cluster in self._clusters:
+            self._paint_cluster(painter, cluster)
         painter.end()
 
     def _paint_cluster(self, painter: QPainter, cluster: _MarkerCluster) -> None:
@@ -142,62 +142,58 @@ class _MarkerLayer(QWidget):
         cluster.bounding_rect = rect
 
     def _paint_city(self, painter: QPainter, city: _CityMarker) -> None:
-        """Render a macOS-style city bubble anchored at ``city.screen_pos``."""
+        """Draw a lightweight city label directly on the map background."""
 
         painter.save()
         painter.setFont(self._city_font)
         metrics = QFontMetrics(self._city_font)
+        text = city.name
 
-        # Measure the text to determine how much padding we need around the
-        # label. The additional offsets mimic the rounded callout used by the
-        # macOS Maps application.
-        text_rect = metrics.boundingRect(city.name)
-        horizontal_padding = 8
-        vertical_padding = 4
-        icon_size = 8
-        icon_spacing = 4
-        pointer_height = 8
-        pointer_width = 12
+        # ``dot_radius`` and ``text_gap`` control the footprint of the circular
+        # anchor and the spacing between the dot and the caption.  Keeping the
+        # geometry compact helps the overlay blend with the native map labels.
+        dot_radius = 4.0
+        text_gap = 6.0
 
-        box_width = text_rect.width() + icon_size + icon_spacing + 2 * horizontal_padding
-        box_height = max(text_rect.height(), icon_size) + 2 * vertical_padding
+        # Vertically center the baseline around the geographic anchor so the
+        # dot remains aligned with the label's midpoint.
+        text_height = float(metrics.height())
+        text_top = city.screen_pos.y() - text_height / 2.0
+        baseline_y = text_top + float(metrics.ascent())
+        text_x = city.screen_pos.x() + dot_radius + text_gap
 
-        tip_x = city.screen_pos.x()
-        tip_y = city.screen_pos.y()
-        box_x = tip_x - box_width / 2.0
-        box_y = tip_y - box_height - pointer_height
-        box_rect = QRectF(box_x, box_y, box_width, box_height)
-
-        # Compose the callout path with a rounded rectangle and a triangular
-        # pointer. Using a single path ensures the outline blends smoothly.
-        bubble_path = QPainterPath()
-        bubble_path.addRoundedRect(box_rect, 6, 6)
-        pointer_path = QPainterPath()
-        pointer_path.moveTo(tip_x, tip_y)
-        pointer_path.lineTo(tip_x - pointer_width / 2.0, tip_y - pointer_height)
-        pointer_path.lineTo(tip_x + pointer_width / 2.0, tip_y - pointer_height)
-        pointer_path.closeSubpath()
-        bubble_path = bubble_path.united(pointer_path)
-
-        painter.setPen(QPen(QColor(0, 0, 0, 80), 1))
-        painter.setBrush(QColor(255, 255, 255, 230))
-        painter.drawPath(bubble_path)
-
-        # Draw the leading circular icon to visually differentiate the marker
-        # from photo thumbnails.
-        icon_x = box_x + horizontal_padding
-        icon_y = box_y + (box_height - icon_size) / 2.0
-        icon_rect = QRectF(icon_x, icon_y, icon_size, icon_size)
-        painter.setPen(Qt.PenStyle.NoPen)
+        # Render the dot with a subtle stroke so it stays legible on top of
+        # both light and dark map styles.
+        dot_pen = QPen(QColor("#f7fbff"))
+        dot_pen.setWidthF(2.0)
+        dot_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(dot_pen)
         painter.setBrush(QColor("#1e73ff"))
-        painter.drawEllipse(icon_rect)
+        painter.drawEllipse(city.screen_pos, dot_radius, dot_radius)
 
-        text_x = icon_rect.right() + icon_spacing
-        text_rect_final = QRectF(text_x, box_y, box_width - (text_x - box_x), box_height)
+        # Draw a halo behind the label text to improve contrast against the map
+        # tiles while preserving a lightweight appearance.
+        text_path = QPainterPath()
+        text_path.addText(QPointF(text_x, baseline_y), self._city_font, text)
+        label_halo_pen = QPen(QColor(255, 255, 255, 220))
+        label_halo_pen.setWidthF(3.0)
+        label_halo_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        label_halo_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(label_halo_pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(text_path)
+
+        # Finally render the label itself in a muted tone similar to the native
+        # cartography.
         painter.setPen(QColor("#2b2b2b"))
-        painter.drawText(text_rect_final, Qt.AlignmentFlag.AlignCenter, city.name)
+        painter.drawText(QPointF(text_x, baseline_y), text)
 
-        city.bounding_rect = bubble_path.boundingRect()
+        text_width = float(metrics.horizontalAdvance(text))
+        left = city.screen_pos.x() - dot_radius
+        top = min(text_top, city.screen_pos.y() - dot_radius)
+        right = text_x + text_width
+        bottom = max(text_top + text_height, city.screen_pos.y() + dot_radius)
+        city.bounding_rect = QRectF(left - 2.0, top - 2.0, (right - left) + 4.0, (bottom - top) + 4.0)
         painter.restore()
 
     def _create_placeholder(self) -> QPixmap:
