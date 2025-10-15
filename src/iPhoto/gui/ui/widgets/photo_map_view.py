@@ -71,8 +71,12 @@ class _MarkerLayer(QWidget):
     markerActivated = Signal(_MarkerCluster)
     clusterActivated = Signal(_MarkerCluster)
 
-    MARKER_SIZE = 72
-    THUMBNAIL_SIZE = 56
+    # ``MARKER_SIZE`` keeps an 8px padding border around the actual thumbnail so that
+    # large images retain a subtle frame when rendered on top of the map.
+    MARKER_SIZE = 208
+    # Location pins reuse the standard 192x192 thumbnails that power the rest of the UI
+    # to avoid blurry downscaling artefacts when zooming the map view.
+    THUMBNAIL_SIZE = 192
     BADGE_DIAMETER = 26
 
     def __init__(self, map_widget: MapWidget, parent: Optional[QWidget] = None) -> None:
