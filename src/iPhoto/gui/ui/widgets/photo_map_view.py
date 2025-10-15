@@ -215,15 +215,19 @@ class _MarkerLayer(QWidget):
                 event.source(),
             )
         elif isinstance(event, QMouseEvent):
+            # ``QMouseEvent`` exposes several constructor overloads.  The variant
+            # used here mirrors the object that Qt delivered to the overlay
+            # without forwarding the scene coordinates that only exist for
+            # graphics view events.  Supplying the lean overload prevents Qt
+            # from raising a ``TypeError`` when the event is reposted to the
+            # map widget.
             mapped = QMouseEvent(
                 event.type(),
                 event.position(),
-                event.scenePosition(),
                 event.globalPosition(),
                 event.button(),
                 event.buttons(),
                 event.modifiers(),
-                event.source(),
             )
         else:
             return
@@ -263,6 +267,7 @@ class PhotoMapView(QWidget):
         self._assets: list[GeotaggedAsset] = []
         self._library_root: Optional[Path] = None
         self._clusters: list[_MarkerCluster] = []
+        self._pending_focus: bool = False
         self._cluster_timer = QTimer(self)
         self._cluster_timer.setSingleShot(True)
         self._cluster_timer.setInterval(80)
@@ -287,6 +292,8 @@ class PhotoMapView(QWidget):
         self._thumbnail_loader.reset_for_album(library_root)
         self._overlay.clear_pixmaps()
         self._schedule_cluster_update()
+        self._pending_focus = bool(self._assets)
+        self._focus_on_assets()
 
     def clear(self) -> None:
         """Remove all markers from the map."""
@@ -294,14 +301,41 @@ class PhotoMapView(QWidget):
         self._assets = []
         self._clusters = []
         self._overlay.set_clusters([])
+        self._pending_focus = False
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
         self._overlay.setGeometry(self._map_widget.geometry())
         self._schedule_cluster_update()
+        if self._pending_focus:
+            self._focus_on_assets()
 
     def _schedule_cluster_update(self) -> None:
         self._cluster_timer.start()
+
+    def _focus_on_assets(self) -> None:
+        """Centre the map on the current assets once geometry information exists."""
+
+        if not self._pending_focus or not self._assets:
+            return
+
+        width = self._map_widget.width()
+        height = self._map_widget.height()
+        if width <= 0 or height <= 0:
+            # ``set_assets`` may run before Qt finalises the widget geometry.
+            # Deferring the zoom calculation until a resize event arrives keeps
+            # us from dividing by zero while still guaranteeing a later retry.
+            return
+
+        latitudes = [asset.latitude for asset in self._assets]
+        longitudes = [asset.longitude for asset in self._assets]
+        center_lat = sum(latitudes) / len(latitudes)
+        center_lon = sum(longitudes) / len(longitudes)
+
+        self._map_widget.center_on(center_lon, center_lat)
+        zoom = self._estimate_zoom_for_assets(longitudes, latitudes, width, height)
+        self._map_widget.set_zoom(zoom)
+        self._pending_focus = False
 
     def _rebuild_clusters(self) -> None:
         if not self._assets:
@@ -398,6 +432,47 @@ class PhotoMapView(QWidget):
     @staticmethod
     def _distance(a: QPointF, b: QPointF) -> float:
         return math.hypot(a.x() - b.x(), a.y() - b.y())
+
+    @staticmethod
+    def _mercator_y(lat: float) -> float:
+        """Convert *lat* to the Web Mercator Y coordinate used for zoom math."""
+
+        clamped = max(min(lat, 89.9), -89.9)
+        radians = math.radians(clamped)
+        return math.log(math.tan(math.pi / 4.0 + radians / 2.0))
+
+    @classmethod
+    def _estimate_zoom_for_assets(
+        cls,
+        longitudes: Sequence[float],
+        latitudes: Sequence[float],
+        width: int,
+        height: int,
+    ) -> float:
+        """Return a zoom that keeps every asset inside the widget bounds."""
+
+        if not longitudes or not latitudes:
+            return 2.0
+
+        lon_min = min(longitudes)
+        lon_max = max(longitudes)
+        lat_min = min(latitudes)
+        lat_max = max(latitudes)
+
+        lon_span = max(lon_max - lon_min, 1e-6)
+        mercator_span = max(cls._mercator_y(lat_max) - cls._mercator_y(lat_min), 1e-6)
+
+        width = max(width, 1)
+        height = max(height, 1)
+
+        zoom_x = math.log2(width * 360.0 / (256.0 * lon_span))
+        zoom_y = math.log2(height * (2.0 * math.pi) / (256.0 * mercator_span))
+
+        target_zoom = min(zoom_x, zoom_y) - 0.5
+        # ``MapWidgetController`` clamps zoom to ``[0, 8]`` so we mirror the
+        # bounds here.  ``max``/``min`` also remove any stray ``nan`` results in
+        # degenerate cases.
+        return max(0.0, min(8.0, target_zoom))
 
 
 __all__ = ["PhotoMapView"]
