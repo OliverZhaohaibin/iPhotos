@@ -6,7 +6,7 @@ import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Sequence
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set
 
 from PySide6.QtCore import QCoreApplication, QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QMouseEvent, QPaintEvent, QPainter, QPen, QPixmap, QWheelEvent
@@ -14,8 +14,21 @@ from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from iPhotos.maps.map_widget.map_widget import MapWidget
 
+from ....config import WORK_DIR_NAME
 from ....library.manager import GeotaggedAsset
 from ..tasks.thumbnail_loader import ThumbnailLoader
+
+_THUMBNAIL_EXTENSIONS: tuple[str, ...] = (
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
+    ".bmp",
+    ".avif",
+    ".jfif",
+    ".heic",
+    ".heif",
+)
 
 
 @dataclass
@@ -278,6 +291,21 @@ class PhotoMapView(QWidget):
         self._thumbnail_loader = ThumbnailLoader(self)
         self._thumbnail_loader.ready.connect(self._handle_thumbnail_ready)
 
+        # ``_prebaked_thumbnail_tokens`` maps a variety of lookup tokens to
+        # on-disk thumbnail files discovered inside ``.iPhoto/thumbs``.  The
+        # dictionary lets us satisfy future lookups in constant time instead of
+        # walking the filesystem for every marker.
+        self._prebaked_thumbnail_tokens: Dict[str, Path] = {}
+        # ``_prebaked_pixmaps`` caches scaled ``QPixmap`` instances derived
+        # from pre-rendered thumbnails so the overlay does not repeatedly load
+        # them from disk.
+        self._prebaked_pixmaps: Dict[str, QPixmap] = {}
+        # ``_prebaked_misses`` tracks assets that have no matching thumbnail
+        # inside ``.iPhoto/thumbs``.  Recording the miss avoids redundant
+        # filesystem probes for assets that definitely require the async
+        # loader.
+        self._prebaked_misses: Set[str] = set()
+
         self._map_widget.viewChanged.connect(self._schedule_cluster_update)
         self._overlay.markerActivated.connect(self._handle_marker_activated)
         self._overlay.clusterActivated.connect(self._handle_cluster_activated)
@@ -295,6 +323,9 @@ class PhotoMapView(QWidget):
         self._library_root_token = self._root_token(normalized_root)
         self._thumbnail_loader.reset_for_album(normalized_root)
         self._overlay.clear_pixmaps()
+        self._prebaked_pixmaps.clear()
+        self._prebaked_misses.clear()
+        self._index_prebaked_thumbnails(self._assets)
         self._schedule_cluster_update()
         self._pending_focus = bool(self._assets)
         self._focus_on_assets()
@@ -308,6 +339,9 @@ class PhotoMapView(QWidget):
         self._pending_focus = False
         self._library_root = None
         self._library_root_token = None
+        self._prebaked_thumbnail_tokens.clear()
+        self._prebaked_pixmaps.clear()
+        self._prebaked_misses.clear()
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
@@ -411,6 +445,10 @@ class PhotoMapView(QWidget):
         if self._library_root is None:
             return
         size = QSize(self._overlay.thumbnail_size, self._overlay.thumbnail_size)
+        prebaked = self._resolve_prebaked_thumbnail(asset, size)
+        if prebaked is not None:
+            self._overlay.set_thumbnail(asset.library_relative, prebaked)
+            return
         # ``print`` statements below intentionally surface the thumbnail flow in developer
         # consoles.  The messages help us determine whether requests are dispatched and
         # whether callbacks are discarded because of root mismatches when debugging why
@@ -454,6 +492,176 @@ class PhotoMapView(QWidget):
         # unambiguous on every platform.
         print(f"[PhotoMapView] Thumbnail ready: {incoming_root / rel}")
         self._overlay.set_thumbnail(rel, pixmap)
+
+    def _resolve_prebaked_thumbnail(self, asset: GeotaggedAsset, size: QSize) -> Optional[QPixmap]:
+        """Return a marker-sized pixmap derived from pre-rendered thumbnails.
+
+        The desktop importer ships with thumbnails inside ``.iPhoto/thumbs``.
+        When those files exist we can bypass the asynchronous loader entirely,
+        which is crucial on systems lacking the codecs required to generate
+        new pixmaps (for example HEIC/HEVC support on Windows).
+        """
+
+        rel = asset.library_relative
+        cached = self._prebaked_pixmaps.get(rel)
+        if cached is not None:
+            return cached
+        if rel in self._prebaked_misses:
+            return None
+
+        thumb_path = self._find_prebaked_thumbnail_path(asset)
+        if thumb_path is None:
+            self._prebaked_misses.add(rel)
+            return None
+
+        pixmap = QPixmap(str(thumb_path))
+        if pixmap.isNull():
+            self._prebaked_misses.add(rel)
+            return None
+
+        composed = self._composite_marker_pixmap(pixmap, size)
+        self._prebaked_pixmaps[rel] = composed
+        print(f"[PhotoMapView] Using cached thumbnail: {thumb_path}")
+        return composed
+
+    def _find_prebaked_thumbnail_path(self, asset: GeotaggedAsset) -> Optional[Path]:
+        """Return the file path of a pre-rendered thumbnail if one exists."""
+
+        if not self._prebaked_thumbnail_tokens:
+            return None
+
+        rel_path = Path(asset.album_relative)
+        tokens: List[str] = []
+
+        def register(candidate: str) -> None:
+            if candidate:
+                tokens.append(candidate)
+
+        posix_rel = rel_path.as_posix()
+        register(posix_rel)
+        register(posix_rel.lower())
+        register(asset.library_relative)
+        register(asset.library_relative.lower())
+        register(rel_path.name)
+        register(rel_path.name.lower())
+        register(rel_path.stem)
+        register(rel_path.stem.lower())
+        flattened = posix_rel.replace("/", "_")
+        register(flattened)
+        register(flattened.lower())
+        flattened_backslash = posix_rel.replace("/", "\\")
+        register(flattened_backslash)
+        register(flattened_backslash.lower())
+        register(asset.asset_id)
+        register(asset.asset_id.lower())
+        if asset.asset_id.startswith("as_"):
+            short_id = asset.asset_id[3:]
+            register(short_id)
+            register(short_id.lower())
+
+        for ext in _THUMBNAIL_EXTENSIONS:
+            register(f"{posix_rel}{ext}")
+            register(f"{posix_rel.lower()}{ext}")
+            register(f"{rel_path.name}{ext}")
+            register(f"{rel_path.name.lower()}{ext}")
+            register(f"{rel_path.stem}{ext}")
+            register(f"{rel_path.stem.lower()}{ext}")
+            register(f"{asset.asset_id}{ext}")
+            register(f"{asset.asset_id.lower()}{ext}")
+
+        seen: Set[str] = set()
+        for token in tokens:
+            if token in seen:
+                continue
+            seen.add(token)
+            candidate = self._prebaked_thumbnail_tokens.get(token)
+            if candidate is not None and candidate.exists():
+                return candidate
+        return None
+
+    def _composite_marker_pixmap(self, pixmap: QPixmap, size: QSize) -> QPixmap:
+        """Scale/crop *pixmap* so it fills the square marker slot."""
+
+        if pixmap.size() == size:
+            return pixmap
+
+        canvas = QPixmap(size)
+        canvas.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(canvas)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+
+        scaled = pixmap.scaled(
+            size,
+            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+            Qt.SmoothTransformation,
+        )
+        source_rect = QRectF(0.0, 0.0, scaled.width(), scaled.height())
+        target_rect = QRectF(0.0, 0.0, size.width(), size.height())
+
+        if scaled.width() > size.width():
+            diff = scaled.width() - size.width()
+            source_rect.adjust(diff / 2.0, 0.0, -diff / 2.0, 0.0)
+        if scaled.height() > size.height():
+            diff = scaled.height() - size.height()
+            source_rect.adjust(0.0, diff / 2.0, 0.0, -diff / 2.0)
+
+        painter.drawPixmap(target_rect, scaled, source_rect)
+        painter.end()
+        return canvas
+
+    def _index_prebaked_thumbnails(self, assets: Sequence[GeotaggedAsset]) -> None:
+        """Populate the token→path index for ``.iPhoto/thumbs`` caches."""
+
+        tokens: Dict[str, Path] = {}
+        visited: Set[Path] = set()
+
+        for asset in assets:
+            thumb_dir = asset.album_path / WORK_DIR_NAME / "thumbs"
+            if thumb_dir in visited:
+                continue
+            visited.add(thumb_dir)
+            if not thumb_dir.exists():
+                continue
+            try:
+                candidates = thumb_dir.rglob("*")
+            except OSError:
+                continue
+            for path in candidates:
+                if not path.is_file():
+                    continue
+                if path.suffix.lower() not in _THUMBNAIL_EXTENSIONS:
+                    continue
+                rel = path.relative_to(thumb_dir)
+                rel_posix = rel.as_posix()
+                # Each thumbnail registers multiple lookup tokens so we can
+                # match assets regardless of whether the cache mirrors the
+                # original filename, flattens it, or prefixes hashes/sizes.
+                entries: Set[str] = {
+                    rel_posix,
+                    rel_posix.lower(),
+                    path.name,
+                    path.name.lower(),
+                    path.stem,
+                    path.stem.lower(),
+                }
+                without_ext = rel.with_suffix("")
+                without_ext_posix = without_ext.as_posix()
+                entries.add(without_ext_posix)
+                entries.add(without_ext_posix.lower())
+                entries.add(without_ext.name)
+                entries.add(without_ext.name.lower())
+                flattened = rel_posix.replace("/", "_")
+                entries.add(flattened)
+                entries.add(flattened.lower())
+                flattened_backslash = rel_posix.replace("/", "\\")
+                entries.add(flattened_backslash)
+                entries.add(flattened_backslash.lower())
+                for entry in list(entries):
+                    entries.add(entry.strip())
+                for entry in entries:
+                    tokens.setdefault(entry, path)
+
+        self._prebaked_thumbnail_tokens = tokens
 
     def _handle_marker_activated(self, cluster: _MarkerCluster) -> None:
         asset = cluster.representative
