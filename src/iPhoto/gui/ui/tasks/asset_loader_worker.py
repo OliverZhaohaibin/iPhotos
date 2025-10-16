@@ -152,6 +152,8 @@ def _build_entry(
         "w": row.get("w"),
         "h": row.get("h"),
         "content_id": row.get("content_id"),
+        "frame_rate": row.get("frame_rate"),
+        "codec": row.get("codec"),
     }
     return entry
 

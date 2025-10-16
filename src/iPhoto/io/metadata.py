@@ -47,6 +47,11 @@ def _empty_media_info() -> Dict[str, Any]:
         "focal_length": None,
         "gps": None,
         "content_id": None,
+        "bytes": None,
+        "dur": None,
+        "codec": None,
+        "frame_rate": None,
+        "still_image_time": None,
     }
 
 
@@ -489,11 +494,17 @@ def read_video_meta(path: Path, metadata: Optional[Dict[str, Any]] = None) -> Di
 
     info = _empty_media_info()
     info["mime"] = "video/quicktime" if path.suffix.lower() in {".mov", ".qt"} else "video/mp4"
-    info["dur"] = None
-    info["codec"] = None
-    info["still_image_time"] = None
 
     if isinstance(metadata, dict):
+        exif_group = _extract_group(metadata, "EXIF") or {}
+        ifd0_group = _extract_group(metadata, "IFD0") or {}
+        exif_ifd_group = _extract_group(metadata, "ExifIFD") or {}
+        maker_notes_group = _extract_group(metadata, "MakerNotes") or {}
+        composite_group = _extract_group(metadata, "Composite") or {}
+        quicktime_group = _extract_group(metadata, "QuickTime") or {}
+        xmp_group = _extract_group(metadata, "XMP") or {}
+        item_list_group = _extract_group(metadata, "ItemList") or {}
+
         gps_payload = _extract_gps_from_exiftool(metadata)
         if gps_payload is not None:
             info["gps"] = gps_payload
@@ -505,6 +516,39 @@ def read_video_meta(path: Path, metadata: Optional[Dict[str, Any]] = None) -> Di
         content_id = _extract_content_id_from_exiftool(metadata)
         if content_id:
             info["content_id"] = content_id
+
+        # Extract the camera metadata from all common QuickTime and EXIF groups.
+        make_value = _pick_string(
+            info.get("make"),
+            ifd0_group.get("Make"),
+            exif_group.get("Make"),
+            quicktime_group.get("Make"),
+            item_list_group.get("Make"),
+        )
+        if make_value is not None:
+            info["make"] = make_value
+
+        model_value = _pick_string(
+            info.get("model"),
+            ifd0_group.get("Model"),
+            exif_group.get("Model"),
+            quicktime_group.get("Model"),
+            composite_group.get("Model"),
+            maker_notes_group.get("Model"),
+            item_list_group.get("Model"),
+            xmp_group.get("Model"),
+        )
+        if model_value is not None:
+            info["model"] = model_value
+
+        lens_value = _pick_string(
+            exif_ifd_group.get("LensModel"),
+            maker_notes_group.get("LensModel"),
+            composite_group.get("Lens"),
+            quicktime_group.get("LensModel"),
+        )
+        if lens_value is not None:
+            info["lens"] = lens_value
 
     try:
         ffprobe_meta = probe_media(path)
@@ -518,6 +562,22 @@ def read_video_meta(path: Path, metadata: Optional[Dict[str, Any]] = None) -> Di
             info["dur"] = float(duration)
         except ValueError:
             info["dur"] = None
+
+    if isinstance(fmt, dict):
+        size_value = fmt.get("size")
+        if isinstance(size_value, (int, float)):
+            info["bytes"] = int(size_value)
+        elif isinstance(size_value, str):
+            try:
+                info["bytes"] = int(float(size_value))
+            except ValueError:
+                info["bytes"] = info.get("bytes")
+
+        # ``ffprobe`` sometimes exposes the codec through the container tags;
+        # prefer an explicit stream codec but remember the fallback for later.
+        container_codec = fmt.get("codec" if "codec" in fmt else "format_name")
+        if isinstance(container_codec, str) and container_codec and not info.get("codec"):
+            info["codec"] = container_codec
 
     if isinstance(fmt, dict):
         top_level_tags = fmt.get("tags")
@@ -541,14 +601,24 @@ def read_video_meta(path: Path, metadata: Optional[Dict[str, Any]] = None) -> Di
             codec_type = stream.get("codec_type")
             if codec_type == "video":
                 codec = stream.get("codec_name")
-                if isinstance(codec, str):
+                if isinstance(codec, str) and codec:
                     info["codec"] = codec
+                elif isinstance(stream.get("codec_long_name"), str) and stream.get("codec_long_name"):
+                    info["codec"] = str(stream["codec_long_name"])
 
                 width = stream.get("width")
                 height = stream.get("height")
                 if isinstance(width, int) and isinstance(height, int):
                     info["w"] = width
                     info["h"] = height
+
+                frame_rate = _coerce_fractional(stream.get("avg_frame_rate"))
+                if frame_rate is None:
+                    frame_rate = _coerce_fractional(stream.get("r_frame_rate"))
+                if frame_rate is None:
+                    frame_rate = _coerce_fractional(stream.get("frame_rate"))
+                if frame_rate is not None and frame_rate > 0:
+                    info["frame_rate"] = frame_rate
 
                 if tags:
                     still_time = tags.get("com.apple.quicktime.still-image-time")

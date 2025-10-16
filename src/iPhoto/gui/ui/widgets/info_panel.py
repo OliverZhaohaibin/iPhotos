@@ -22,6 +22,7 @@ class _FormattedMetadata:
     lens: str = ""
     summary: str = ""
     exposure_line: str = ""
+    is_video: bool = False
 
 
 class InfoPanel(QWidget):
@@ -106,11 +107,15 @@ class InfoPanel(QWidget):
         self._lens_label.setText(formatted.lens)
         self._summary_label.setVisible(bool(formatted.summary))
         self._summary_label.setText(formatted.summary)
-        self._exposure_label.setText(
-            formatted.exposure_line
-            if formatted.exposure_line
-            else "Detailed exposure information is unavailable."
-        )
+        if formatted.exposure_line:
+            self._exposure_label.setText(formatted.exposure_line)
+        else:
+            fallback = (
+                "Detailed video information is unavailable."
+                if formatted.is_video
+                else "Detailed exposure information is unavailable."
+            )
+            self._exposure_label.setText(fallback)
 
     def clear(self) -> None:
         """Reset the panel to an empty state without hiding the window."""
@@ -144,15 +149,25 @@ class InfoPanel(QWidget):
         timestamp = self._format_timestamp(info.get("dt"))
         camera = self._format_camera(info)
         lens = self._format_lens(info)
-        summary = self._format_summary(info)
-        exposure_line = self._format_exposure_line(info)
+        is_video = bool(info.get("is_video"))
+        summary = (
+            self._format_video_summary(info)
+            if is_video
+            else self._format_photo_summary(info)
+        )
+        exposure_line = (
+            self._format_video_details(info)
+            if is_video
+            else self._format_exposure_line(info)
+        )
         return _FormattedMetadata(
             name=name,
             timestamp=timestamp,
             camera=camera,
-            lens=lens,
+            lens=lens if not is_video else "",
             summary=summary,
             exposure_line=exposure_line,
+            is_video=is_video,
         )
 
     def _resolve_name(self, info: Mapping[str, Any]) -> str:
@@ -215,7 +230,7 @@ class InfoPanel(QWidget):
             return " ".join(components)
         return ""
 
-    def _format_summary(self, info: Mapping[str, Any]) -> str:
+    def _format_photo_summary(self, info: Mapping[str, Any]) -> str:
         """Compose a single line summarising the image dimensions and size."""
 
         width = info.get("w")
@@ -227,6 +242,20 @@ class InfoPanel(QWidget):
         size_text = self._format_filesize(info.get("bytes"))
         format_text = self._format_format(info)
         parts = [part for part in (dimensions, size_text, format_text) if part]
+        return "    ".join(parts)
+
+    def _format_video_summary(self, info: Mapping[str, Any]) -> str:
+        """Summarise a video's dimensions, size, and codec in a single line."""
+
+        width = info.get("w")
+        height = info.get("h")
+        dimensions = ""
+        if isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0:
+            dimensions = f"{width} × {height}"
+
+        size_text = self._format_filesize(info.get("bytes"))
+        codec_text = self._format_codec(info)
+        parts = [part for part in (dimensions, size_text, codec_text) if part]
         return "    ".join(parts)
 
     def _format_exposure_line(self, info: Mapping[str, Any]) -> str:
@@ -243,6 +272,21 @@ class InfoPanel(QWidget):
         shutter_text = self._format_shutter(info.get("exposure_time"))
 
         parts = [part for part in (iso_text, focal_text, ev_text, aperture_text, shutter_text) if part]
+        return "    ".join(parts)
+
+    def _format_video_details(self, info: Mapping[str, Any]) -> str:
+        """Compose the frame-rate and duration line for a video asset."""
+
+        frame_rate_text = self._format_frame_rate(info.get("frame_rate"))
+        duration_text = self._format_duration(info.get("dur"))
+        codec_summary = self._format_codec(info)
+        codec_text = ""
+        # Show the codec twice only when the summary had no value; this keeps
+        # the layout tidy while still surfacing the information somewhere.
+        if not codec_summary:
+            codec_text = self._format_format(info)
+
+        parts = [part for part in (frame_rate_text, duration_text, codec_text) if part]
         return "    ".join(parts)
 
     def _format_focal_length(self, value: Any) -> str:
@@ -307,6 +351,60 @@ class InfoPanel(QWidget):
         if float(rounded).is_integer():
             return f"{int(rounded)} {units[unit_index]}"
         return f"{rounded:.1f} {units[unit_index]}"
+
+    def _format_codec(self, info: Mapping[str, Any]) -> str:
+        """Return a readable codec label derived from the stored metadata."""
+
+        codec_value = info.get("codec")
+        if isinstance(codec_value, str):
+            candidate = codec_value.strip()
+            if not candidate:
+                return ""
+            if "," in candidate:
+                candidate = candidate.split(",", 1)[0].strip()
+            if "/" in candidate:
+                candidate = candidate.split("/")[-1].strip()
+            if "(" in candidate:
+                candidate = candidate.split("(")[0].strip()
+            normalized = candidate.replace(".", "").replace("-", "").replace(" ", "").upper()
+            mapping = {
+                "H264": "H.264",
+                "AVC": "H.264",
+                "AVC1": "H.264",
+                "H265": "H.265",
+                "HEVC": "HEVC",
+                "X265": "H.265",
+                "PRORES": "ProRes",
+            }
+            if normalized in mapping:
+                return mapping[normalized]
+            if candidate.isupper():
+                return candidate
+            if candidate.islower():
+                return candidate.upper()
+            return candidate
+        return self._format_format(info)
+
+    def _format_frame_rate(self, value: Any) -> str:
+        """Return the frame-rate with two decimal places when available."""
+
+        numeric = self._coerce_float(value)
+        if numeric is None or numeric <= 0:
+            return ""
+        return f"{self._format_decimal(numeric, precision=2)} fps"
+
+    def _format_duration(self, value: Any) -> str:
+        """Return a short ``mm:ss`` or ``hh:mm:ss`` string for *value* seconds."""
+
+        numeric = self._coerce_float(value)
+        if numeric is None or numeric < 0:
+            return ""
+        total_seconds = int(round(numeric))
+        minutes, seconds = divmod(total_seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours:
+            return f"{hours:d}:{minutes:02d}:{seconds:02d}"
+        return f"{minutes:d}:{seconds:02d}"
 
     def _format_format(self, info: Mapping[str, Any]) -> str:
         """Return a short label describing the image format."""

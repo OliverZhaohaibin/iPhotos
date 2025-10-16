@@ -345,7 +345,7 @@ class DetailUIController(QObject):
         self.hide_zoom_controls()
 
     def _update_info_button_state(self, row: int) -> None:
-        """Enable the info button only when an image asset is selected."""
+        """Enable the info button whenever the selection is an image or a video."""
 
         if row < 0:
             self._info_button.setEnabled(False)
@@ -361,8 +361,9 @@ class DetailUIController(QObject):
             return
 
         is_image = bool(index.data(Roles.IS_IMAGE))
-        self._info_button.setEnabled(is_image)
-        if not is_image and self._info_panel.isVisible():
+        is_video = bool(index.data(Roles.IS_VIDEO))
+        self._info_button.setEnabled(is_image or is_video)
+        if not (is_image or is_video) and self._info_panel.isVisible():
             self._info_panel.close()
 
     def _refresh_info_panel(self, row: int) -> None:
@@ -375,7 +376,15 @@ class DetailUIController(QObject):
             return
 
         index = self._model.index(row, 0)
-        if not index.isValid() or not bool(index.data(Roles.IS_IMAGE)):
+        if not index.isValid():
+            self._cached_info = None
+            if self._info_panel.isVisible():
+                self._info_panel.clear()
+            return
+
+        is_image = bool(index.data(Roles.IS_IMAGE))
+        is_video = bool(index.data(Roles.IS_VIDEO))
+        if not (is_image or is_video):
             self._cached_info = None
             if self._info_panel.isVisible():
                 self._info_panel.clear()
@@ -394,6 +403,8 @@ class DetailUIController(QObject):
             rel_candidate = index.data(Roles.REL)
             if isinstance(rel_candidate, str) and rel_candidate:
                 payload["rel"] = rel_candidate
+        payload.setdefault("is_image", is_image)
+        payload.setdefault("is_video", is_video)
         payload = self._enrich_metadata_if_needed(payload, index)
         self._cached_info = payload
         if self._info_panel.isVisible():
@@ -409,7 +420,7 @@ class DetailUIController(QObject):
         if not self._cached_info:
             if self._status_bar is not None:
                 self._status_bar.showMessage(
-                    "No metadata is available for this photo.",
+                    "No metadata is available for this asset.",
                     3000,
                 )
             return
@@ -454,6 +465,9 @@ class DetailUIController(QObject):
             "exposure_compensation",
             "focal_length",
         )
+
+        if not bool(index.data(Roles.IS_IMAGE)):
+            return payload
 
         # Bail out quickly when at least one exposure value is present.  This
         # ensures the happy path remains inexpensive and we avoid touching the
