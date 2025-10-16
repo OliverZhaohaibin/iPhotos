@@ -154,9 +154,14 @@ class ImageViewer(QWidget):
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
         if self._pixmap is not None:
-            anchor = self.viewport_center()
-            anchor_ratios = self._capture_anchor_ratios(anchor)
-            self._render_pixmap(anchor_point=anchor, anchor_ratios=anchor_ratios)
+            # During the initial layout pass Qt may deliver resize events while the
+            # widget is still negotiating its final viewport size. In that window we
+            # simply want to fit the image to whatever size is currently available
+            # instead of computing anchor points that assume a stable geometry. By
+            # delegating directly to ``_render_pixmap`` we ensure the image is
+            # re-rendered with the latest dimensions, preventing the first paint from
+            # using stale, undersized measurements.
+            self._render_pixmap()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # pragma: no cover - GUI behaviour
         # The event filter coordinates click-versus-drag behaviour on the scroll area's
