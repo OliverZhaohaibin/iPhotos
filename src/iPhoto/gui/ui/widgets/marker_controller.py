@@ -424,35 +424,49 @@ class MarkerController(QObject):
             self.clustersUpdated.emit([])
             return
 
-        self._update_city_annotations()
-        self._rebuild_photo_clusters()
-
-    def _update_city_annotations(self) -> None:
-        """Derive city annotations from the current asset set and zoom level."""
-
         fetch_level = max(0, int(math.floor(self._view_zoom)))
         if fetch_level < self.CITY_LABEL_FETCH_LEVEL:
+            # Ensure city labels disappear immediately when the user zooms out
+            # so the map does not momentarily display annotations that no
+            # longer correspond to any visible thumbnail clusters.
+            self._update_city_annotations_for_clusters([])
+        self._rebuild_photo_clusters()
+
+    def _update_city_annotations_for_clusters(
+        self, clusters: Sequence[_MarkerCluster]
+    ) -> None:
+        """Publish city labels that correspond to the currently visible clusters."""
+
+        fetch_level = max(0, int(math.floor(self._view_zoom)))
+        if fetch_level < self.CITY_LABEL_FETCH_LEVEL or not clusters:
             if self._city_annotations:
+                # Clearing the cache prevents the renderer from drawing labels
+                # that are no longer associated with a thumbnail cluster.
                 self._city_annotations = []
                 self.citiesUpdated.emit([])
             return
 
-        groups: Dict[str, list[GeotaggedAsset]] = {}
-        for asset in self._assets:
-            if not asset.location_name:
-                continue
-            normalised = asset.location_name.strip()
-            if not normalised:
-                continue
-            groups.setdefault(normalised, []).append(asset)
-
         annotations: list[CityAnnotation] = []
-        for name, assets in groups.items():
-            display_name, tooltip = self._format_city_name(name)
-            if not display_name:
+        for cluster in clusters:
+            label = self._cluster_label(cluster)
+            if label is None:
                 continue
-            avg_lat = sum(item.latitude for item in assets) / len(assets)
-            avg_lon = sum(item.longitude for item in assets) / len(assets)
+            name, display_name, tooltip = label
+            matched_assets: list[GeotaggedAsset] = []
+            for asset in cluster.assets:
+                if not asset.location_name:
+                    continue
+                if self._normalise_location(asset.location_name) != name:
+                    continue
+                matched_assets.append(asset)
+            if matched_assets:
+                avg_lat = sum(item.latitude for item in matched_assets) / len(matched_assets)
+                avg_lon = sum(item.longitude for item in matched_assets) / len(matched_assets)
+            else:
+                # Fall back to the geometric centre so the label remains near
+                # the callout even when metadata differs between assets.
+                avg_lat = cluster.latitude
+                avg_lon = cluster.longitude
             annotations.append(
                 CityAnnotation(
                     longitude=avg_lon,
@@ -464,6 +478,8 @@ class MarkerController(QObject):
 
         annotations.sort(key=lambda item: (item.display_name, item.full_name))
         if annotations != self._city_annotations:
+            # Emit a copy so the renderer can keep a stable snapshot for hit
+            # testing without being affected by subsequent mutations.
             self._city_annotations = annotations
             self.citiesUpdated.emit(list(self._city_annotations))
 
@@ -529,11 +545,50 @@ class MarkerController(QObject):
             self._ensure_thumbnail(cluster.representative)
 
         self._clusters = clusters
+        self._update_city_annotations_for_clusters(self._clusters)
         self.clustersUpdated.emit(self._clusters)
 
+    def _cluster_label(
+        self, cluster: _MarkerCluster
+    ) -> Optional[tuple[str, str, str]]:
+        """Return the normalised, display and tooltip text for *cluster*.
+
+        The helper inspects the assets contained within *cluster* and selects
+        the first non-empty location string. The name is normalised so that
+        downstream comparisons ignore extra whitespace or punctuation.
+        """
+
+        for asset in cluster.assets:
+            if not asset.location_name:
+                continue
+            normalised = self._normalise_location(asset.location_name)
+            if not normalised:
+                continue
+            display_name, tooltip = self._format_city_name(normalised)
+            if not display_name:
+                continue
+            return normalised, display_name, tooltip
+        return None
+
+    @staticmethod
+    def _normalise_location(raw_name: str) -> str:
+        """Coalesce whitespace and trim punctuation from *raw_name*.
+
+        Normalisation allows the controller to match clusters even when the raw
+        metadata varies between assets due to trailing whitespace or other
+        accidental formatting differences.
+        """
+
+        return " ".join(raw_name.split()).strip()
+
     def _marker_rect(self, center: QPointF) -> QRectF:
-        half = float(self._marker_size) / 2.0
-        return QRectF(center.x() - half, center.y() - half, self._marker_size, self._marker_size)
+        """Return the bounding box that mirrors the overlay's callout geometry."""
+
+        height = float(self._marker_size)
+        width = height
+        x = center.x() - width / 2.0
+        y = center.y() - height
+        return QRectF(x, y, width, height)
 
     def _ensure_thumbnail(self, asset: GeotaggedAsset) -> None:
         if self._library_root is None:

@@ -126,7 +126,15 @@ class _MarkerLayer(QWidget):
                 display_edge,
                 display_edge,
             )
+            painter.save()
+            clip_path = QPainterPath()
+            # ``setClipPath`` trims the square pixmap into a rounded rectangle so
+            # the map overlay mirrors the visual language used by the filmstrip
+            # and the rest of the application.
+            clip_path.addRoundedRect(thumb_rect, 8.0, 8.0)
+            painter.setClipPath(clip_path, Qt.ClipOperation.ReplaceClip)
             painter.drawPixmap(thumb_rect.toRect(), thumbnail)
+            painter.restore()
 
         count = len(cluster.assets)
         if count > 1:
