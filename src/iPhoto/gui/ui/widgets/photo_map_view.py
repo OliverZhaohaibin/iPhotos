@@ -134,11 +134,13 @@ class _MarkerLayer(QWidget):
 
     def _paint_cluster(self, painter: QPainter, cluster: _MarkerCluster) -> None:
         width = float(self.MARKER_SIZE)
-        body_height = float(self.THUMBNAIL_DISPLAY_SIZE)
-        # ``height`` includes the triangular pointer whereas ``body_height`` represents the
-        # rounded rectangle that houses the thumbnail.  Using the display size for the body
-        # makes the callout vertically symmetrical so the white border has a consistent
-        # thickness on every edge.
+        display_edge = float(self.THUMBNAIL_DISPLAY_SIZE)
+        # The callout should surround the thumbnail with an equal white border on all sides.
+        # Deriving the border from the configured marker size keeps the geometry consistent
+        # when designers tweak either constant while ensuring horizontal and vertical padding
+        # always match.
+        border = (width - display_edge) / 2.0
+        body_height = display_edge + 2.0 * border
         height = body_height + float(self.POINTER_HEIGHT)
         x = cluster.screen_pos.x() - width / 2.0
         y = cluster.screen_pos.y() - height
@@ -159,10 +161,9 @@ class _MarkerLayer(QWidget):
         if thumbnail is None:
             thumbnail = self._placeholder
         if not thumbnail.isNull():
-            display_edge = float(self.THUMBNAIL_DISPLAY_SIZE)
             thumb_rect = QRectF(
-                x + (width - display_edge) / 2.0,
-                y + (body_height - display_edge) / 2.0,
+                rect.left() + border,
+                rect.top() + border,
                 display_edge,
                 display_edge,
             )
