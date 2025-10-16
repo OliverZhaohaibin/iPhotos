@@ -118,6 +118,9 @@ class AssetGrid(QListView):
         self._drop_validator = validator
         self._external_drop_enabled = handler is not None
         self.setAcceptDrops(self._external_drop_enabled)
+        # The visual items live inside the viewport object, so we must enable drops there
+        # as well; otherwise Qt will refuse to deliver drag/drop events to the grid.
+        self.viewport().setAcceptDrops(self._external_drop_enabled)
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
