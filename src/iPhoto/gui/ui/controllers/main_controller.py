@@ -20,7 +20,7 @@ from ....media_classifier import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 from ..media import MediaController, PlaylistController
 from ..models.asset_model import AssetModel, Roles
 from ..models.spacer_proxy_model import SpacerProxyModel
-from ..widgets import AssetGridDelegate
+from ..widgets import AlbumSidebar, AssetGridDelegate
 from .detail_ui_controller import DetailUIController
 from .dialog_controller import DialogController
 from .header_controller import HeaderController
