@@ -57,6 +57,8 @@ class ImageViewer(QWidget):
         self._button_step = 0.1
         self._wheel_step = 0.1
         self._base_size: Optional[QSize] = None
+        self._is_panning = False
+        self._pan_start_pos = QPoint()
 
     # ------------------------------------------------------------------
     # Public API
@@ -157,17 +159,69 @@ class ImageViewer(QWidget):
             self._render_pixmap(anchor_point=anchor, anchor_ratios=anchor_ratios)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # pragma: no cover - GUI behaviour
-        if self._live_replay_enabled and event.button() == Qt.MouseButton.LeftButton:
-            self.replayRequested.emit()
+        # The event filter coordinates click-versus-drag behaviour on the scroll area's
+        # viewport. Calling the base implementation keeps Qt's standard focus handling
+        # intact.
         super().mousePressEvent(event)
 
     def eventFilter(self, obj, event):  # type: ignore[override]
-        if obj is self._scroll_area.viewport() and event.type() == QEvent.Type.Wheel:
-            if self._pixmap is None or self._pixmap.isNull():
-                return False
-            wheel_event = cast(QWheelEvent, event)
-            if self._handle_wheel_event(wheel_event):
-                return True
+        if obj is self._scroll_area.viewport():
+            if event.type() == QEvent.Type.Wheel:
+                if self._pixmap is None or self._pixmap.isNull():
+                    return False
+                wheel_event = cast(QWheelEvent, event)
+                if self._handle_wheel_event(wheel_event):
+                    return True
+
+            if event.type() == QEvent.Type.MouseButtonPress:
+                mouse_event = cast(QMouseEvent, event)
+                if mouse_event.button() == Qt.MouseButton.LeftButton:
+                    self._pan_start_pos = mouse_event.pos()
+                    if self._is_scrollable():
+                        # Signal to the user that dragging is available when the
+                        # image exceeds the viewport by switching to an open hand
+                        # cursor, but delay activating panning until movement occurs.
+                        self.setCursor(Qt.CursorShape.OpenHandCursor)
+                        return True
+            elif event.type() == QEvent.Type.MouseMove:
+                mouse_event = cast(QMouseEvent, event)
+                if (
+                    mouse_event.buttons() & Qt.MouseButton.LeftButton
+                    and not self._pan_start_pos.isNull()
+                ):
+                    delta = mouse_event.pos() - self._pan_start_pos
+                    if self._is_panning or (self._is_scrollable() and delta.manhattanLength() > 3):
+                        if not self._is_panning:
+                            # The threshold above ensures we only transition into the
+                            # active panning state after a deliberate drag. This avoids
+                            # interference with quick clicks that should replay media.
+                            self._is_panning = True
+                            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+
+                        self._scroll_area.horizontalScrollBar().setValue(
+                            self._scroll_area.horizontalScrollBar().value() - delta.x()
+                        )
+                        self._scroll_area.verticalScrollBar().setValue(
+                            self._scroll_area.verticalScrollBar().value() - delta.y()
+                        )
+                        self._pan_start_pos = mouse_event.pos()
+                        return True
+            elif event.type() == QEvent.Type.MouseButtonRelease:
+                mouse_event = cast(QMouseEvent, event)
+                if (
+                    mouse_event.button() == Qt.MouseButton.LeftButton
+                    and not self._pan_start_pos.isNull()
+                ):
+                    was_panning = self._is_panning
+                    self._is_panning = False
+                    self._pan_start_pos = QPoint()
+                    self.unsetCursor()
+
+                    if not was_panning and self._live_replay_enabled:
+                        # A press followed by a release without movement should still
+                        # behave like a click, so we trigger the Live Photo replay now.
+                        self.replayRequested.emit()
+                    return True
         return super().eventFilter(obj, event)
 
     # ------------------------------------------------------------------
@@ -277,3 +331,12 @@ class ImageViewer(QWidget):
     def _step_zoom(self, delta: float) -> None:
         anchor = self.viewport_center()
         self.set_zoom(self._zoom_factor + delta, anchor=anchor)
+
+    def _is_scrollable(self) -> bool:
+        """Return ``True`` when the current pixmap exceeds the viewport."""
+
+        h_bar = self._scroll_area.horizontalScrollBar()
+        v_bar = self._scroll_area.verticalScrollBar()
+        # At least one scrollbar must offer a scrollable range (max > min) for the
+        # image to be considered pannable.
+        return (h_bar.maximum() > h_bar.minimum()) or (v_bar.maximum() > v_bar.minimum())
