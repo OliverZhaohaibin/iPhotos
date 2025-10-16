@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING, List, Optional, Set
+from typing import Iterable, List, Optional, Set
 
 from PySide6.QtCore import QObject, QThreadPool, QTimer, Signal
 
@@ -166,6 +167,70 @@ class AppFacade(QObject):
 
         self._library_manager = library
 
+    def import_files(
+        self,
+        sources: Iterable[Path],
+        *,
+        destination: Optional[Path] = None,
+        mark_featured: bool = False,
+    ) -> List[Path]:
+        """Copy *sources* into *destination* and refresh the affected album.
+
+        Parameters
+        ----------
+        sources:
+            Iterable of filesystem paths selected by the user.  Non-existent or
+            duplicate entries are ignored.
+        destination:
+            Optional album root that should receive the imported files.  When
+            omitted the currently open album is used instead.
+        mark_featured:
+            When ``True`` the copied files are appended to the album's
+            ``featured`` manifest list before the index is rebuilt.  This is
+            used by the Favorites virtual collection.
+
+        Returns
+        -------
+        list[Path]
+            Absolute paths to the files that were successfully imported.
+        """
+
+        normalized = self._normalise_sources(sources)
+        if not normalized:
+            return []
+
+        target_root = self._resolve_import_destination(destination)
+        if target_root is None:
+            return []
+
+        imported: List[Path] = []
+        for source in normalized:
+            try:
+                imported_path = self._copy_into_album(source, target_root)
+            except OSError as exc:
+                self.errorRaised.emit(f"Could not import '{source}': {exc}")
+                continue
+            imported.append(imported_path)
+
+        if not imported:
+            return []
+
+        if mark_featured:
+            self._ensure_featured_entries(target_root, imported)
+
+        rescan_succeeded = True
+        try:
+            backend.rescan(target_root)
+        except IPhotoError as exc:
+            rescan_succeeded = False
+            self.errorRaised.emit(str(exc))
+        else:
+            self.indexUpdated.emit(target_root)
+            self.linksUpdated.emit(target_root)
+        if rescan_succeeded:
+            self._restart_asset_load(target_root)
+        return imported
+
     def toggle_featured(self, ref: str) -> bool:
         """Toggle *ref* in the active album and mirror the change in the library."""
 
@@ -236,6 +301,100 @@ class AppFacade(QObject):
     # ------------------------------------------------------------------
     # Internal utilities
     # ------------------------------------------------------------------
+    def _normalise_sources(self, sources: Iterable[Path]) -> List[Path]:
+        """Return a deduplicated list of candidate source files.
+
+        The helper expands user directories, resolves symlinks where possible,
+        and filters out non-files so downstream logic only needs to handle
+        regular files.  Missing entries are ignored silently; the caller is
+        responsible for surface-level validation before invoking the facade.
+        """
+
+        normalized: List[Path] = []
+        seen: set[Path] = set()
+        for candidate in sources:
+            try:
+                expanded = Path(candidate).expanduser()
+            except TypeError:
+                continue
+            try:
+                resolved = expanded.resolve()
+            except OSError:
+                resolved = expanded
+            if resolved in seen:
+                continue
+            if not resolved.exists() or not resolved.is_file():
+                continue
+            seen.add(resolved)
+            normalized.append(resolved)
+        return normalized
+
+    def _resolve_import_destination(self, destination: Optional[Path]) -> Optional[Path]:
+        """Return a writable album root for incoming imports."""
+
+        if destination is not None:
+            try:
+                target = Path(destination).expanduser().resolve()
+            except OSError as exc:
+                self.errorRaised.emit(f"Import destination is not accessible: {exc}")
+                return None
+        else:
+            album = self._require_album()
+            if album is None:
+                return None
+            target = album.root
+
+        if not target.exists() or not target.is_dir():
+            self.errorRaised.emit(f"Import destination is not a directory: {target}")
+            return None
+        return target
+
+    def _copy_into_album(self, source: Path, destination: Path) -> Path:
+        """Copy *source* into *destination*, avoiding name collisions."""
+
+        base_name = source.name
+        target = destination / base_name
+        stem = target.stem
+        suffix = target.suffix
+        counter = 1
+        while target.exists():
+            target = destination / f"{stem} ({counter}){suffix}"
+            counter += 1
+        shutil.copy2(source, target)
+        return target.resolve()
+
+    def _ensure_featured_entries(self, root: Path, imported: List[Path]) -> None:
+        """Append the imported files to the album's ``featured`` list."""
+
+        album: Optional[Album]
+        if self._current_album is not None and self._current_album.root == root:
+            album = self._current_album
+        else:
+            try:
+                album = Album.open(root)
+            except IPhotoError as exc:
+                self.errorRaised.emit(str(exc))
+                return
+
+        if album is None:
+            return
+
+        updated = False
+        for path in imported:
+            try:
+                rel = path.relative_to(root).as_posix()
+            except ValueError:
+                continue
+            album.add_featured(rel)
+            updated = True
+
+        if not updated:
+            return
+
+        saved = self._save_manifest(album, reload_view=False)
+        if not saved:
+            return
+
     def _save_manifest(self, album: Album, *, reload_view: bool = True) -> bool:
         manager = self._library_manager
         if manager is not None:

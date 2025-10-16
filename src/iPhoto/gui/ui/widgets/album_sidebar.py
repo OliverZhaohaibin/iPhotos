@@ -5,8 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QModelIndex, QPoint, QRect, QSize, Qt, Signal
-from PySide6.QtGui import QCursor, QFont, QPalette
+from PySide6.QtGui import QCursor, QDragEnterEvent, QDragMoveEvent, QDropEvent, QFont, QPalette
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QFrame,
     QLabel,
     QSizePolicy,
@@ -29,6 +30,103 @@ from ..delegates.album_sidebar_delegate import (
 from ..menus.album_sidebar_menu import show_context_menu
 
 
+class _DropAwareTree(QTreeView):
+    """Tree view that accepts drops of external media files onto albums."""
+
+    filesDropped = Signal(Path, object)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._model: AlbumTreeModel | None = None
+        self.setAcceptDrops(True)
+        self.setDragEnabled(False)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DropOnly)
+        self.setDefaultDropAction(Qt.DropAction.CopyAction)
+        self.setDropIndicatorShown(True)
+
+    # ------------------------------------------------------------------
+    # Qt overrides
+    # ------------------------------------------------------------------
+    def setModel(self, model) -> None:  # type: ignore[override]
+        super().setModel(model)
+        if isinstance(model, AlbumTreeModel):
+            self._model = model
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # type: ignore[override]
+        if self._should_accept_event(event):
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:  # type: ignore[override]
+        if self._should_accept_event(event):
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dropEvent(self, event: QDropEvent) -> None:  # type: ignore[override]
+        target = self._resolve_target_path(event)
+        paths = self._extract_local_files(event)
+        if target is None or not paths:
+            event.ignore()
+            return
+        event.acceptProposedAction()
+        self.filesDropped.emit(target, paths)
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+    def _should_accept_event(self, event: QDragEnterEvent | QDragMoveEvent) -> bool:
+        if self._extract_local_files(event) == []:
+            return False
+        target = self._resolve_target_path(event)
+        return target is not None
+
+    def _resolve_target_path(
+        self, event: QDragEnterEvent | QDragMoveEvent | QDropEvent
+    ) -> Path | None:
+        model = self._model or self.model()
+        if not isinstance(model, AlbumTreeModel):
+            return None
+        index = self.indexAt(self._event_pos(event))
+        if not index.isValid():
+            return None
+        item = model.item_from_index(index)
+        if item is None or item.album is None:
+            return None
+        if item.node_type not in {NodeType.ALBUM, NodeType.SUBALBUM}:
+            return None
+        return item.album.path
+
+    def _extract_local_files(
+        self, event: QDragEnterEvent | QDragMoveEvent | QDropEvent
+    ) -> list[Path]:
+        mime = event.mimeData()
+        if mime is None:
+            return []
+        urls = getattr(mime, "urls", None)
+        if not callable(urls):
+            return []
+        seen: set[Path] = set()
+        paths: list[Path] = []
+        for url in urls():
+            if not url.isLocalFile():
+                continue
+            local = Path(url.toLocalFile()).expanduser()
+            if local in seen:
+                continue
+            seen.add(local)
+            paths.append(local)
+        return paths
+
+    def _event_pos(self, event) -> QPoint:
+        if hasattr(event, "position"):
+            return event.position().toPoint()
+        if hasattr(event, "pos"):
+            return event.pos()
+        return QPoint()
+
+
 class AlbumSidebar(QWidget):
     """Composite widget exposing library navigation and actions."""
 
@@ -36,6 +134,7 @@ class AlbumSidebar(QWidget):
     allPhotosSelected = Signal()
     staticNodeSelected = Signal(str)
     bindLibraryRequested = Signal()
+    filesDropped = Signal(Path, object)
 
     ALL_PHOTOS_TITLE = (
         AlbumTreeModel.STATIC_NODES[0]
@@ -67,7 +166,7 @@ class AlbumSidebar(QWidget):
         self._title.setFont(title_font)
         self._title.setStyleSheet("color: #1b1b1b;")
 
-        self._tree = QTreeView()
+        self._tree = _DropAwareTree(self)
         self._tree.setObjectName("albumSidebarTree")
         self._tree.setModel(self._model)
         self._tree.setHeaderHidden(True)
@@ -111,6 +210,7 @@ class AlbumSidebar(QWidget):
         layout.addWidget(self._tree, stretch=1)
 
         self._model.modelReset.connect(self._on_model_reset)
+        self._tree.filesDropped.connect(self._on_files_dropped)
         self._expand_defaults()
         self._update_title()
 
@@ -269,6 +369,13 @@ class AlbumSidebar(QWidget):
             if child and child.title == title:
                 return index
         return QModelIndex()
+
+    def _on_files_dropped(self, target: Path, paths: list[Path]) -> None:
+        """Relay drop notifications to consumers of :class:`AlbumSidebar`."""
+
+        if not paths:
+            return
+        self.filesDropped.emit(target, paths)
 
 
 __all__ = ["AlbumSidebar"]
