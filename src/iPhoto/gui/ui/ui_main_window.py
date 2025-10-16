@@ -212,7 +212,6 @@ class Ui_MainWindow(object):
 
         info_layout.addWidget(self.location_label)
         info_layout.addWidget(self.timestamp_label)
-        header_layout.addWidget(info_container, 1)
 
         zoom_layout = QHBoxLayout(self.zoom_widget)
         zoom_layout.setContentsMargins(0, 0, 0, 0)
@@ -253,8 +252,11 @@ class Ui_MainWindow(object):
             self._configure_header_button(button, icon_name, tooltip)
             actions_layout.addWidget(button)
 
+        # Place the zoom widget directly beside the back button so the control cluster
+        # mirrors the macOS Photos layout (navigation on the far left, actions on the right).
         header_layout.addWidget(self.zoom_widget)
         self.zoom_widget.hide()
+        header_layout.addWidget(info_container, 1)
         header_layout.addWidget(actions_container)
         detail_layout.addWidget(header)
 
