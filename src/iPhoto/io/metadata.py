@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -38,8 +39,19 @@ def _empty_media_info() -> Dict[str, Any]:
         "dt": None,
         "make": None,
         "model": None,
+        "lens": None,
+        "iso": None,
+        "f_number": None,
+        "exposure_time": None,
+        "exposure_compensation": None,
+        "focal_length": None,
         "gps": None,
         "content_id": None,
+        "bytes": None,
+        "dur": None,
+        "codec": None,
+        "frame_rate": None,
+        "still_image_time": None,
     }
 
 
@@ -90,6 +102,46 @@ def _coerce_decimal(value: Any) -> Optional[float]:
             return float(candidate)
         except ValueError:
             return None
+    return None
+
+
+def _coerce_fractional(value: Any) -> Optional[float]:
+    """Return ``value`` as ``float`` while accepting rational strings."""
+
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        candidate = value.strip()
+        if not candidate:
+            return None
+        candidate = candidate.replace("\u2212", "-").replace("\u2013", "-").replace("\u2014", "-")
+        matches = list(re.finditer(r"-?\d+(?:/\d+|\.\d+)?", candidate))
+        if not matches:
+            return None
+        total = 0.0
+        parsed_any = False
+        for match in matches:
+            token = match.group(0)
+            try:
+                if "/" in token:
+                    total += float(Fraction(token))
+                else:
+                    total += float(token)
+                parsed_any = True
+            except (ValueError, ZeroDivisionError):
+                continue
+        return total if parsed_any else None
+    return None
+
+
+def _pick_string(*candidates: Any) -> Optional[str]:
+    """Return the first non-empty string from ``candidates``."""
+
+    for candidate in candidates:
+        if isinstance(candidate, str):
+            normalized = candidate.strip()
+            if normalized:
+                return normalized
     return None
 
 
@@ -260,6 +312,14 @@ def read_image_meta_with_exiftool(
     exif_payload: Optional[Any] = None
 
     if isinstance(metadata, dict):
+        exif_group = _extract_group(metadata, "EXIF") or {}
+        ifd0_group = _extract_group(metadata, "IFD0") or {}
+        exif_ifd_group = _extract_group(metadata, "ExifIFD") or {}
+        maker_notes_group = _extract_group(metadata, "MakerNotes") or {}
+        composite_group = _extract_group(metadata, "Composite") or {}
+        quicktime_group = _extract_group(metadata, "QuickTime") or {}
+        xmp_group = _extract_group(metadata, "XMP") or {}
+
         file_group = _extract_group(metadata, "File")
         if file_group:
             width = file_group.get("ImageWidth")
@@ -290,6 +350,103 @@ def read_image_meta_with_exiftool(
         content_id = _extract_content_id_from_exiftool(metadata)
         if content_id:
             info["content_id"] = content_id
+
+        # Camera make and model fields are spread across multiple ExifTool groups
+        # depending on the originating device (EXIF/IFD0 for still images,
+        # QuickTime for iOS videos, etc.). We therefore walk through each
+        # candidate group in descending priority to capture a non-empty value.
+        make_value = _pick_string(
+            info.get("make"),
+            ifd0_group.get("Make"),
+            exif_group.get("Make"),
+            maker_notes_group.get("Make"),
+            quicktime_group.get("Make"),
+            xmp_group.get("Make"),
+        )
+        if make_value is not None:
+            info["make"] = make_value
+
+        model_value = _pick_string(
+            info.get("model"),
+            ifd0_group.get("Model"),
+            exif_group.get("Model"),
+            maker_notes_group.get("Model"),
+            composite_group.get("Model"),
+            quicktime_group.get("Model"),
+            xmp_group.get("Model"),
+        )
+        if model_value is not None:
+            info["model"] = model_value
+
+        lens_value = _pick_string(
+            exif_ifd_group.get("LensModel"),
+            exif_group.get("LensModel"),
+            maker_notes_group.get("LensType"),
+            maker_notes_group.get("LensModel"),
+            composite_group.get("LensID"),
+            composite_group.get("Lens"),
+            composite_group.get("LensInfo"),
+            xmp_group.get("Lens"),
+            xmp_group.get("LensModel"),
+        )
+        if lens_value is not None:
+            info["lens"] = lens_value
+
+        iso_value = _coerce_decimal(exif_ifd_group.get("ISO"))
+        if iso_value is None:
+            iso_value = _coerce_decimal(exif_group.get("ISO"))
+        if iso_value is None:
+            iso_value = _coerce_decimal(quicktime_group.get("ISO"))
+        if iso_value is not None:
+            info["iso"] = int(round(iso_value))
+
+        f_number_value = _coerce_fractional(exif_ifd_group.get("FNumber"))
+        if f_number_value is None:
+            f_number_value = _coerce_fractional(exif_group.get("FNumber"))
+        if f_number_value is None:
+            f_number_value = _coerce_fractional(composite_group.get("Aperture"))
+        if f_number_value is not None:
+            info["f_number"] = f_number_value
+
+        exposure_time_value = _coerce_fractional(exif_ifd_group.get("ExposureTime"))
+        if exposure_time_value is None:
+            exposure_time_value = _coerce_fractional(composite_group.get("ShutterSpeed"))
+        if exposure_time_value is None:
+            exposure_time_value = _coerce_fractional(quicktime_group.get("ExposureTime"))
+        if exposure_time_value is not None:
+            info["exposure_time"] = exposure_time_value
+
+        exposure_comp_value = _coerce_fractional(
+            exif_ifd_group.get("ExposureCompensation")
+        )
+        if exposure_comp_value is None:
+            exposure_comp_value = _coerce_fractional(
+                exif_ifd_group.get("ExposureBiasValue")
+            )
+        if exposure_comp_value is None:
+            exposure_comp_value = _coerce_fractional(
+                composite_group.get("ExposureCompensation")
+            )
+        if exposure_comp_value is None:
+            exposure_comp_value = _coerce_fractional(
+                quicktime_group.get("ExposureCompensation")
+            )
+        if exposure_comp_value is not None:
+            info["exposure_compensation"] = exposure_comp_value
+
+        focal_length_value = _coerce_fractional(
+            exif_ifd_group.get("FocalLength")
+        )
+        if focal_length_value is None:
+            focal_length_value = _coerce_fractional(
+                composite_group.get("FocalLength")
+            )
+        if focal_length_value is None:
+            focal_length_value = _coerce_fractional(
+                quicktime_group.get("FocalLength")
+            )
+        if focal_length_value is not None:
+            info["focal_length"] = focal_length_value
 
     geometry_missing = info["w"] is None or info["h"] is None
     need_dt_fallback = info["dt"] is None
@@ -337,11 +494,17 @@ def read_video_meta(path: Path, metadata: Optional[Dict[str, Any]] = None) -> Di
 
     info = _empty_media_info()
     info["mime"] = "video/quicktime" if path.suffix.lower() in {".mov", ".qt"} else "video/mp4"
-    info["dur"] = None
-    info["codec"] = None
-    info["still_image_time"] = None
 
     if isinstance(metadata, dict):
+        exif_group = _extract_group(metadata, "EXIF") or {}
+        ifd0_group = _extract_group(metadata, "IFD0") or {}
+        exif_ifd_group = _extract_group(metadata, "ExifIFD") or {}
+        maker_notes_group = _extract_group(metadata, "MakerNotes") or {}
+        composite_group = _extract_group(metadata, "Composite") or {}
+        quicktime_group = _extract_group(metadata, "QuickTime") or {}
+        xmp_group = _extract_group(metadata, "XMP") or {}
+        item_list_group = _extract_group(metadata, "ItemList") or {}
+
         gps_payload = _extract_gps_from_exiftool(metadata)
         if gps_payload is not None:
             info["gps"] = gps_payload
@@ -353,6 +516,39 @@ def read_video_meta(path: Path, metadata: Optional[Dict[str, Any]] = None) -> Di
         content_id = _extract_content_id_from_exiftool(metadata)
         if content_id:
             info["content_id"] = content_id
+
+        # Extract the camera metadata from all common QuickTime and EXIF groups.
+        make_value = _pick_string(
+            info.get("make"),
+            ifd0_group.get("Make"),
+            exif_group.get("Make"),
+            quicktime_group.get("Make"),
+            item_list_group.get("Make"),
+        )
+        if make_value is not None:
+            info["make"] = make_value
+
+        model_value = _pick_string(
+            info.get("model"),
+            ifd0_group.get("Model"),
+            exif_group.get("Model"),
+            quicktime_group.get("Model"),
+            composite_group.get("Model"),
+            maker_notes_group.get("Model"),
+            item_list_group.get("Model"),
+            xmp_group.get("Model"),
+        )
+        if model_value is not None:
+            info["model"] = model_value
+
+        lens_value = _pick_string(
+            exif_ifd_group.get("LensModel"),
+            maker_notes_group.get("LensModel"),
+            composite_group.get("Lens"),
+            quicktime_group.get("LensModel"),
+        )
+        if lens_value is not None:
+            info["lens"] = lens_value
 
     try:
         ffprobe_meta = probe_media(path)
@@ -366,6 +562,22 @@ def read_video_meta(path: Path, metadata: Optional[Dict[str, Any]] = None) -> Di
             info["dur"] = float(duration)
         except ValueError:
             info["dur"] = None
+
+    if isinstance(fmt, dict):
+        size_value = fmt.get("size")
+        if isinstance(size_value, (int, float)):
+            info["bytes"] = int(size_value)
+        elif isinstance(size_value, str):
+            try:
+                info["bytes"] = int(float(size_value))
+            except ValueError:
+                info["bytes"] = info.get("bytes")
+
+        # ``ffprobe`` sometimes exposes the codec through the container tags;
+        # prefer an explicit stream codec but remember the fallback for later.
+        container_codec = fmt.get("codec" if "codec" in fmt else "format_name")
+        if isinstance(container_codec, str) and container_codec and not info.get("codec"):
+            info["codec"] = container_codec
 
     if isinstance(fmt, dict):
         top_level_tags = fmt.get("tags")
@@ -389,14 +601,24 @@ def read_video_meta(path: Path, metadata: Optional[Dict[str, Any]] = None) -> Di
             codec_type = stream.get("codec_type")
             if codec_type == "video":
                 codec = stream.get("codec_name")
-                if isinstance(codec, str):
+                if isinstance(codec, str) and codec:
                     info["codec"] = codec
+                elif isinstance(stream.get("codec_long_name"), str) and stream.get("codec_long_name"):
+                    info["codec"] = str(stream["codec_long_name"])
 
                 width = stream.get("width")
                 height = stream.get("height")
                 if isinstance(width, int) and isinstance(height, int):
                     info["w"] = width
                     info["h"] = height
+
+                frame_rate = _coerce_fractional(stream.get("avg_frame_rate"))
+                if frame_rate is None:
+                    frame_rate = _coerce_fractional(stream.get("r_frame_rate"))
+                if frame_rate is None:
+                    frame_rate = _coerce_fractional(stream.get("frame_rate"))
+                if frame_rate is not None and frame_rate > 0:
+                    info["frame_rate"] = frame_rate
 
                 if tags:
                     still_time = tags.get("com.apple.quicktime.still-image-time")
