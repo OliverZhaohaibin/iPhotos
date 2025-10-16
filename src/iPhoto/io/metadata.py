@@ -308,6 +308,7 @@ def read_image_meta_with_exiftool(
 
     if isinstance(metadata, dict):
         exif_group = _extract_group(metadata, "EXIF") or {}
+        ifd0_group = _extract_group(metadata, "IFD0") or {}
         exif_ifd_group = _extract_group(metadata, "ExifIFD") or {}
         maker_notes_group = _extract_group(metadata, "MakerNotes") or {}
         composite_group = _extract_group(metadata, "Composite") or {}
@@ -345,18 +346,29 @@ def read_image_meta_with_exiftool(
         if content_id:
             info["content_id"] = content_id
 
+        # Camera make and model fields are spread across multiple ExifTool groups
+        # depending on the originating device (EXIF/IFD0 for still images,
+        # QuickTime for iOS videos, etc.). We therefore walk through each
+        # candidate group in descending priority to capture a non-empty value.
         make_value = _pick_string(
             info.get("make"),
+            ifd0_group.get("Make"),
             exif_group.get("Make"),
+            maker_notes_group.get("Make"),
             quicktime_group.get("Make"),
+            xmp_group.get("Make"),
         )
         if make_value is not None:
             info["make"] = make_value
 
         model_value = _pick_string(
             info.get("model"),
+            ifd0_group.get("Model"),
             exif_group.get("Model"),
+            maker_notes_group.get("Model"),
+            composite_group.get("Model"),
             quicktime_group.get("Model"),
+            xmp_group.get("Model"),
         )
         if model_value is not None:
             info["model"] = model_value
