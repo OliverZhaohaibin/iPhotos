@@ -226,15 +226,26 @@ class AppFacade(QObject):
 
         worker = ImportWorker(normalized, target_root, self._copy_into_album, signals)
         self._active_imports.append(worker)
-        signals.finished.connect(
-            lambda root, imported, rescan_ok, *, worker=worker, mark_featured=mark_featured: self._on_import_finished(
+        def _handle_finished(root: Path, imported: List[Path], rescan_ok: bool) -> None:
+            """Forward worker completion details to the facade callback.
+
+            Using a named local function instead of a ``lambda`` avoids runtime
+            issues on older Python builds where keyword-only defaults inside a
+            ``lambda`` definition are not supported.  The closure still captures
+            the ``worker`` instance and the ``mark_featured`` flag so
+            :meth:`_on_import_finished` receives the full context required to
+            finalise the operation.
+            """
+
+            self._on_import_finished(
                 root,
                 imported,
                 rescan_ok,
                 worker,
                 mark_featured,
             )
-        )
+
+        signals.finished.connect(_handle_finished)
 
         self._scanner_pool.start(worker)
 
