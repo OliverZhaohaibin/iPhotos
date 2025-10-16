@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional, Tuple, cast
 
-from PySide6.QtCore import QEvent, QPoint, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QSize, Qt, Signal, QTimer
 from PySide6.QtGui import QMouseEvent, QPixmap, QWheelEvent
 from PySide6.QtWidgets import (
     QFrame,
@@ -71,12 +71,32 @@ class ImageViewer(QWidget):
             self._label.clear()
             self._label.setMinimumSize(0, 0)
             self._base_size = None
+            # Notify observers that the zoom factor has reset along with the pixmap
+            # content so UI controls (such as sliders) stay in sync with the cleared
+            # state.
             self._zoom_factor = 1.0
             self.zoomChanged.emit(self._zoom_factor)
             return
 
+        # Reset the derived rendering state so the next resize cycle recomputes
+        # a baseline size for the new pixmap.
+        self._base_size = None
         self._zoom_factor = 1.0
-        self._render_pixmap()
+
+        # Clearing the label prevents the previous, potentially undersized pixmap
+        # from lingering on screen while we wait for the viewport to settle on its
+        # final geometry.
+        self._label.clear()
+
+        # Request a fresh layout pass so Qt recalculates the scroll area's viewport
+        # using the intrinsic size of the new pixmap.
+        self.updateGeometry()
+
+        # Defer the actual rendering until Qt finishes processing the current event
+        # queue. By the time this single-shot timer fires, the layout system will have
+        # provided a stable viewport size, allowing ``_render_pixmap`` to compute the
+        # correct scaling on the first paint.
+        QTimer.singleShot(0, self._render_pixmap)
         self.zoomChanged.emit(self._zoom_factor)
 
     def clear(self) -> None:
@@ -154,9 +174,14 @@ class ImageViewer(QWidget):
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
         if self._pixmap is not None:
-            anchor = self.viewport_center()
-            anchor_ratios = self._capture_anchor_ratios(anchor)
-            self._render_pixmap(anchor_point=anchor, anchor_ratios=anchor_ratios)
+            # During the initial layout pass Qt may deliver resize events while the
+            # widget is still negotiating its final viewport size. In that window we
+            # simply want to fit the image to whatever size is currently available
+            # instead of computing anchor points that assume a stable geometry. By
+            # delegating directly to ``_render_pixmap`` we ensure the image is
+            # re-rendered with the latest dimensions, preventing the first paint from
+            # using stale, undersized measurements.
+            self._render_pixmap()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # pragma: no cover - GUI behaviour
         # The event filter coordinates click-versus-drag behaviour on the scroll area's

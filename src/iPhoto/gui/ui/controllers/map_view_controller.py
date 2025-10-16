@@ -41,6 +41,15 @@ class LocationMapController(QObject):
         self._ensure_assets()
         self._view_controller.show_map_view()
 
+    def shutdown(self) -> None:
+        """Close the map view so its worker threads can exit cleanly."""
+
+        # ``PhotoMapView`` owns a ``TileManager`` (running in a ``QThread``)
+        # and a marker clustering worker.  Calling ``close()`` triggers the
+        # widget's ``closeEvent`` hook which shuts both subsystems down.
+        if self._map_view is not None:
+            self._map_view.close()
+
     def hide_map_view(self) -> None:
         """Return to the standard gallery view."""
 
