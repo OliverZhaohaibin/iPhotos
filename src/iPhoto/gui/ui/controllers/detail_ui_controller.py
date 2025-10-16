@@ -13,6 +13,7 @@ ZOOM_SLIDER_DEFAULT = 100
 from ..icons import load_icon
 from ..models.asset_model import AssetModel, Roles
 from ..widgets.asset_grid import AssetGrid
+from ..widgets.info_panel import InfoPanel
 from ..widgets.player_bar import PlayerBar
 from .header_controller import HeaderController
 from .player_view_controller import PlayerViewController
@@ -37,6 +38,8 @@ class DetailUIController(QObject):
         view_controller: ViewController,
         header: HeaderController,
         favorite_button: QToolButton,
+        info_button: QToolButton,
+        info_panel: InfoPanel,
         zoom_widget: QWidget,
         zoom_slider: QSlider,
         zoom_in_button: QToolButton,
@@ -54,15 +57,21 @@ class DetailUIController(QObject):
         self._view_controller = view_controller
         self._header = header
         self._favorite_button = favorite_button
+        self._info_button = info_button
+        self._info_panel = info_panel
         self._zoom_widget = zoom_widget
         self._zoom_slider = zoom_slider
         self._zoom_in_button = zoom_in_button
         self._zoom_out_button = zoom_out_button
         self._status_bar = status_bar
+        self._current_row: int = -1
+        self._cached_info: Optional[dict[str, object]] = None
 
         self._initialize_static_state()
         self._wire_player_bar_events()
         self._wire_zoom_controls()
+        self._info_button.clicked.connect(self._handle_info_button_clicked)
+        self._view_controller.galleryViewShown.connect(self._handle_gallery_view_shown)
 
     # ------------------------------------------------------------------
     # Public helpers
@@ -70,7 +79,10 @@ class DetailUIController(QObject):
     def handle_playlist_current_changed(self, current_row: int, previous_row: int) -> None:
         """Synchronise the detail UI when the playlist focus changes."""
 
+        self._current_row = current_row
         self.update_favorite_button(current_row)
+        self._update_info_button_state(current_row)
+        self._refresh_info_panel(current_row)
 
         selection_model = self._filmstrip_view.selectionModel()
         if selection_model is None:
@@ -175,6 +187,11 @@ class DetailUIController(QObject):
         self._player_view.show_placeholder()
         self._player_bar.setEnabled(False)
         self.hide_zoom_controls()
+        self._current_row = -1
+        self._cached_info = None
+        self._info_button.setEnabled(False)
+        if self._info_panel.isVisible():
+            self._info_panel.close()
 
     def show_live_badge(self) -> None:
         """Expose a convenient wrapper for displaying the Live Photo badge."""
@@ -317,7 +334,98 @@ class DetailUIController(QObject):
         self._favorite_button.setEnabled(False)
         self._favorite_button.setIcon(load_icon("suit.heart.svg"))
         self._favorite_button.setToolTip("Add to Favorites")
+        self._info_button.setEnabled(False)
         self.hide_zoom_controls()
+
+    def _update_info_button_state(self, row: int) -> None:
+        """Enable the info button only when an image asset is selected."""
+
+        if row < 0:
+            self._info_button.setEnabled(False)
+            if self._info_panel.isVisible():
+                self._info_panel.close()
+            return
+
+        index = self._model.index(row, 0)
+        if not index.isValid():
+            self._info_button.setEnabled(False)
+            if self._info_panel.isVisible():
+                self._info_panel.close()
+            return
+
+        is_image = bool(index.data(Roles.IS_IMAGE))
+        self._info_button.setEnabled(is_image)
+        if not is_image and self._info_panel.isVisible():
+            self._info_panel.close()
+
+    def _refresh_info_panel(self, row: int) -> None:
+        """Update the cached metadata and the floating panel for *row*."""
+
+        if row < 0:
+            self._cached_info = None
+            if self._info_panel.isVisible():
+                self._info_panel.clear()
+            return
+
+        index = self._model.index(row, 0)
+        if not index.isValid() or not bool(index.data(Roles.IS_IMAGE)):
+            self._cached_info = None
+            if self._info_panel.isVisible():
+                self._info_panel.clear()
+            return
+
+        raw_info = index.data(Roles.INFO)
+        if not isinstance(raw_info, dict):
+            self._cached_info = None
+            if self._info_panel.isVisible():
+                self._info_panel.clear()
+            return
+
+        payload = dict(raw_info)
+        rel_value = payload.get("rel")
+        if not isinstance(rel_value, str) or not rel_value:
+            rel_candidate = index.data(Roles.REL)
+            if isinstance(rel_candidate, str) and rel_candidate:
+                payload["rel"] = rel_candidate
+        self._cached_info = payload
+        if self._info_panel.isVisible():
+            self._info_panel.set_asset_metadata(self._cached_info)
+
+    def _handle_info_button_clicked(self) -> None:
+        """Show or hide the info panel for the current playlist row."""
+
+        if self._current_row < 0:
+            return
+        if not self._cached_info:
+            self._refresh_info_panel(self._current_row)
+        if not self._cached_info:
+            if self._status_bar is not None:
+                self._status_bar.showMessage(
+                    "No metadata is available for this photo.",
+                    3000,
+                )
+            return
+
+        current_rel = self._cached_info.get("rel")
+        if (
+            self._info_panel.isVisible()
+            and isinstance(current_rel, str)
+            and current_rel
+            and self._info_panel.current_rel() == current_rel
+        ):
+            self._info_panel.close()
+            return
+
+        self._info_panel.set_asset_metadata(self._cached_info)
+        self._info_panel.show()
+        self._info_panel.raise_()
+        self._info_panel.activateWindow()
+
+    def _handle_gallery_view_shown(self) -> None:
+        """Ensure the floating info panel hides when returning to the gallery."""
+
+        if self._info_panel.isVisible():
+            self._info_panel.close()
 
     def _wire_zoom_controls(self) -> None:
         """Connect the zoom toolbar to the image viewer."""

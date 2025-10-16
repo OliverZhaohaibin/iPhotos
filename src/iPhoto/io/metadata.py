@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -38,6 +39,12 @@ def _empty_media_info() -> Dict[str, Any]:
         "dt": None,
         "make": None,
         "model": None,
+        "lens": None,
+        "iso": None,
+        "f_number": None,
+        "exposure_time": None,
+        "exposure_compensation": None,
+        "focal_length": None,
         "gps": None,
         "content_id": None,
     }
@@ -90,6 +97,46 @@ def _coerce_decimal(value: Any) -> Optional[float]:
             return float(candidate)
         except ValueError:
             return None
+    return None
+
+
+def _coerce_fractional(value: Any) -> Optional[float]:
+    """Return ``value`` as ``float`` while accepting rational strings."""
+
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        candidate = value.strip()
+        if not candidate:
+            return None
+        candidate = candidate.replace("\u2212", "-").replace("\u2013", "-").replace("\u2014", "-")
+        matches = list(re.finditer(r"-?\d+(?:/\d+|\.\d+)?", candidate))
+        if not matches:
+            return None
+        total = 0.0
+        parsed_any = False
+        for match in matches:
+            token = match.group(0)
+            try:
+                if "/" in token:
+                    total += float(Fraction(token))
+                else:
+                    total += float(token)
+                parsed_any = True
+            except (ValueError, ZeroDivisionError):
+                continue
+        return total if parsed_any else None
+    return None
+
+
+def _pick_string(*candidates: Any) -> Optional[str]:
+    """Return the first non-empty string from ``candidates``."""
+
+    for candidate in candidates:
+        if isinstance(candidate, str):
+            normalized = candidate.strip()
+            if normalized:
+                return normalized
     return None
 
 
@@ -260,6 +307,13 @@ def read_image_meta_with_exiftool(
     exif_payload: Optional[Any] = None
 
     if isinstance(metadata, dict):
+        exif_group = _extract_group(metadata, "EXIF") or {}
+        exif_ifd_group = _extract_group(metadata, "ExifIFD") or {}
+        maker_notes_group = _extract_group(metadata, "MakerNotes") or {}
+        composite_group = _extract_group(metadata, "Composite") or {}
+        quicktime_group = _extract_group(metadata, "QuickTime") or {}
+        xmp_group = _extract_group(metadata, "XMP") or {}
+
         file_group = _extract_group(metadata, "File")
         if file_group:
             width = file_group.get("ImageWidth")
@@ -290,6 +344,92 @@ def read_image_meta_with_exiftool(
         content_id = _extract_content_id_from_exiftool(metadata)
         if content_id:
             info["content_id"] = content_id
+
+        make_value = _pick_string(
+            info.get("make"),
+            exif_group.get("Make"),
+            quicktime_group.get("Make"),
+        )
+        if make_value is not None:
+            info["make"] = make_value
+
+        model_value = _pick_string(
+            info.get("model"),
+            exif_group.get("Model"),
+            quicktime_group.get("Model"),
+        )
+        if model_value is not None:
+            info["model"] = model_value
+
+        lens_value = _pick_string(
+            exif_ifd_group.get("LensModel"),
+            exif_group.get("LensModel"),
+            maker_notes_group.get("LensType"),
+            maker_notes_group.get("LensModel"),
+            composite_group.get("LensID"),
+            composite_group.get("Lens"),
+            composite_group.get("LensInfo"),
+            xmp_group.get("Lens"),
+            xmp_group.get("LensModel"),
+        )
+        if lens_value is not None:
+            info["lens"] = lens_value
+
+        iso_value = _coerce_decimal(exif_ifd_group.get("ISO"))
+        if iso_value is None:
+            iso_value = _coerce_decimal(exif_group.get("ISO"))
+        if iso_value is None:
+            iso_value = _coerce_decimal(quicktime_group.get("ISO"))
+        if iso_value is not None:
+            info["iso"] = int(round(iso_value))
+
+        f_number_value = _coerce_fractional(exif_ifd_group.get("FNumber"))
+        if f_number_value is None:
+            f_number_value = _coerce_fractional(exif_group.get("FNumber"))
+        if f_number_value is None:
+            f_number_value = _coerce_fractional(composite_group.get("Aperture"))
+        if f_number_value is not None:
+            info["f_number"] = f_number_value
+
+        exposure_time_value = _coerce_fractional(exif_ifd_group.get("ExposureTime"))
+        if exposure_time_value is None:
+            exposure_time_value = _coerce_fractional(composite_group.get("ShutterSpeed"))
+        if exposure_time_value is None:
+            exposure_time_value = _coerce_fractional(quicktime_group.get("ExposureTime"))
+        if exposure_time_value is not None:
+            info["exposure_time"] = exposure_time_value
+
+        exposure_comp_value = _coerce_fractional(
+            exif_ifd_group.get("ExposureCompensation")
+        )
+        if exposure_comp_value is None:
+            exposure_comp_value = _coerce_fractional(
+                exif_ifd_group.get("ExposureBiasValue")
+            )
+        if exposure_comp_value is None:
+            exposure_comp_value = _coerce_fractional(
+                composite_group.get("ExposureCompensation")
+            )
+        if exposure_comp_value is None:
+            exposure_comp_value = _coerce_fractional(
+                quicktime_group.get("ExposureCompensation")
+            )
+        if exposure_comp_value is not None:
+            info["exposure_compensation"] = exposure_comp_value
+
+        focal_length_value = _coerce_fractional(
+            exif_ifd_group.get("FocalLength")
+        )
+        if focal_length_value is None:
+            focal_length_value = _coerce_fractional(
+                composite_group.get("FocalLength")
+            )
+        if focal_length_value is None:
+            focal_length_value = _coerce_fractional(
+                quicktime_group.get("FocalLength")
+            )
+        if focal_length_value is not None:
+            info["focal_length"] = focal_length_value
 
     geometry_missing = info["w"] is None or info["h"] is None
     need_dt_fallback = info["dt"] is None

@@ -146,6 +146,8 @@ class AssetListModel(QAbstractListModel):
             return row["featured"]
         if role == Roles.IS_CURRENT:
             return bool(row.get("is_current", False))
+        if role == Roles.INFO:
+            return dict(row)
         return None
 
     def roleNames(self) -> Dict[int, bytes]:  # type: ignore[override]

@@ -139,6 +139,19 @@ def _build_entry(
         "dur": row.get("dur"),
         "location": location_name,
         "gps": gps_raw,
+        "bytes": row.get("bytes"),
+        "mime": row.get("mime"),
+        "make": row.get("make"),
+        "model": row.get("model"),
+        "lens": row.get("lens"),
+        "iso": row.get("iso"),
+        "f_number": row.get("f_number"),
+        "exposure_time": row.get("exposure_time"),
+        "exposure_compensation": row.get("exposure_compensation"),
+        "focal_length": row.get("focal_length"),
+        "w": row.get("w"),
+        "h": row.get("h"),
+        "content_id": row.get("content_id"),
     }
     return entry
 

@@ -51,9 +51,10 @@ from iPhotos.src.iPhoto.gui.ui.tasks.thumbnail_loader import ThumbnailJob
 from iPhotos.src.iPhoto.gui.ui.widgets.gallery_grid_view import GalleryGridView
 from iPhotos.src.iPhoto.gui.ui.widgets.filmstrip_view import FilmstripView
 from iPhotos.src.iPhoto.gui.ui.widgets.image_viewer import ImageViewer
+from iPhotos.src.iPhoto.gui.ui.widgets.info_panel import InfoPanel
+from iPhotos.src.iPhoto.gui.ui.widgets.live_badge import LiveBadge
 from iPhotos.src.iPhoto.gui.ui.widgets.player_bar import PlayerBar
 from iPhotos.src.iPhoto.gui.ui.widgets.video_area import VideoArea
-from iPhotos.src.iPhoto.gui.ui.widgets.live_badge import LiveBadge
 from iPhotos.src.iPhoto.config import WORK_DIR_NAME
 from iPhotos.src.iPhoto.library.manager import LibraryManager
 from iPhotos.src.iPhoto.models.album import Album
@@ -534,10 +535,12 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
     location_label = QLabel()
     timestamp_label = QLabel()
     favorite_button = QToolButton()
+    info_button = QToolButton()
     zoom_widget = QWidget()
     zoom_slider = QSlider(Qt.Orientation.Horizontal)
     zoom_in_button = QToolButton()
     zoom_out_button = QToolButton()
+    info_panel = InfoPanel()
 
     # Construct the layered controllers that ``PlaybackController`` depends on.
     # Each helper mirrors the real application wiring so the behaviour under test
@@ -566,6 +569,8 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
         view_controller,
         header_controller,
         favorite_button,
+        info_button,
+        info_panel,
         zoom_widget,
         zoom_slider,
         zoom_in_button,

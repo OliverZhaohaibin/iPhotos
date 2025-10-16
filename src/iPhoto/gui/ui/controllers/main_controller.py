@@ -20,7 +20,7 @@ from ....media_classifier import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 from ..media import MediaController, PlaylistController
 from ..models.asset_model import AssetModel, Roles
 from ..models.spacer_proxy_model import SpacerProxyModel
-from ..widgets import AssetGridDelegate
+from ..widgets import AssetGridDelegate, InfoPanel
 from .detail_ui_controller import DetailUIController
 from .dialog_controller import DialogController
 from .header_controller import HeaderController
@@ -70,6 +70,7 @@ class MainController(QObject):
             window.ui.live_badge,
             window,
         )
+        self._info_panel = InfoPanel(window)
         self._header_controller = HeaderController(
             window.ui.location_label,
             window.ui.timestamp_label,
@@ -99,6 +100,8 @@ class MainController(QObject):
             self._view_controller,
             self._header_controller,
             window.ui.favorite_button,
+            window.ui.info_button,
+            self._info_panel,
             window.ui.zoom_widget,
             window.ui.zoom_slider,
             window.ui.zoom_in_button,

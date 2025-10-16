@@ -6,6 +6,7 @@ from .asset_grid import AssetGrid
 from .gallery_grid_view import GalleryGridView
 from .filmstrip_view import FilmstripView
 from .image_viewer import ImageViewer
+from .info_panel import InfoPanel
 from .player_bar import PlayerBar
 from .video_area import VideoArea
 from .preview_window import PreviewWindow
@@ -19,6 +20,7 @@ __all__ = [
     "GalleryGridView",
     "FilmstripView",
     "ImageViewer",
+    "InfoPanel",
     "PlayerBar",
     "VideoArea",
     "PreviewWindow",
