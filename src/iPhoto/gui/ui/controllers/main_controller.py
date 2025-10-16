@@ -5,8 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable, List, Optional, TYPE_CHECKING
 
-from PySide6.QtCore import QObject
-from PySide6.QtCore import QModelIndex
+from PySide6.QtCore import QModelIndex, QObject, QThreadPool
 
 # ``main_controller`` shares the same import caveat as ``main_window``.  The
 # fallback ensures running the module as a script still locates ``AppContext``.
@@ -139,6 +138,24 @@ class MainController(QObject):
         self._restore_playback_preferences()
         self._playlist.bind_model(self._asset_model)
         self._connect_signals()
+
+    def shutdown(self) -> None:
+        """Stop worker threads and background jobs before the app exits."""
+
+        # The map view spawns two dedicated threads (tile streaming and
+        # clustering).  Closing the widget triggers ``PhotoMapView.closeEvent``
+        # which, in turn, shuts down the ``TileManager`` and marker worker.
+        self._map_controller.shutdown()
+
+        # Thumbnail rendering uses both the global and a private thread pool.
+        # Clearing and waiting here ensures no ``QRunnable`` outlives the
+        # QApplication, avoiding Qt warnings about leaked threads.
+        self._asset_model.thumbnail_loader().shutdown()
+
+        # ``QThreadPool.globalInstance()`` may still be flushing one-off tasks
+        # (library scans, metadata reads, etc.).  Waiting guarantees the main
+        # process only exits after every background job has finished.
+        QThreadPool.globalInstance().waitForDone()
 
     # -----------------------------------------------------------------
     # View configuration

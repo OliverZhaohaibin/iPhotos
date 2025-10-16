@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QEvent
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QMainWindow
 
 # ``main_window`` can be imported either via ``iPhoto.gui`` (package execution)
@@ -37,6 +38,18 @@ class MainWindow(QMainWindow):
 
         # Position the Live badge after the layout is finalized.
         self.position_live_badge()
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # type: ignore[override]
+        """Tear down background services before the window closes."""
+
+        # ``MainController`` coordinates every component that spawns worker
+        # threads (thumbnail rendering, map tile loading, clustering, etc.).
+        # Explicitly asking it to shut down here guarantees that all
+        # ``QThread``/``QThreadPool`` instances finish before Qt begins
+        # destroying widgets, preventing the application process from hanging
+        # after the UI is dismissed.
+        self.controller.shutdown()
+        super().closeEvent(event)
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)

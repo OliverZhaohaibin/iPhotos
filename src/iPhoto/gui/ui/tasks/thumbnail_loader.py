@@ -215,6 +215,30 @@ class ThumbnailLoader(QObject):
         ] = {}
         self._delivered.connect(self._handle_result)
 
+    def shutdown(self) -> None:
+        """Stop background workers so the interpreter can exit cleanly."""
+
+        # Drop any queued-but-not-yet-started video jobs to avoid launching new
+        # work while the application is shutting down.  We intentionally leave
+        # the in-memory caches untouched so that, if shutdown is cancelled, the
+        # loader can continue without recomputing every thumbnail.
+        for queue in self._video_queue.values():
+            queue.clear()
+        self._video_queue_lookup.clear()
+
+        # ``QThreadPool.clear()`` prevents additional ``QRunnable`` instances
+        # from starting, and ``waitForDone()`` blocks until active workers
+        # finish.  Calling both ensures the dedicated video pool no longer owns
+        # any threads by the time Qt begins tearing down application state.
+        self._video_pool.clear()
+        self._video_pool.waitForDone()
+
+        # ``ThumbnailLoader`` also submits still-image work to the global pool.
+        # Other subsystems might share that pool, so we avoid clearing the
+        # queue.  Waiting is still safe because Qt tracks active references and
+        # returns immediately when no thumbnail jobs are in flight.
+        self._pool.waitForDone()
+
     def reset_for_album(self, root: Path) -> None:
         if self._album_root and self._album_root == root:
             return
