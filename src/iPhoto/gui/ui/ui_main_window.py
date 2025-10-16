@@ -218,22 +218,27 @@ class Ui_MainWindow(object):
         zoom_layout.setContentsMargins(0, 0, 0, 0)
         zoom_layout.setSpacing(4)
 
+        # Use compact controls so the zoom widget visually aligns with the action buttons.
+        small_button_size = QSize(
+            int(HEADER_BUTTON_SIZE.width() / 2),
+            int(HEADER_BUTTON_SIZE.height() / 2),
+        )
+
         self._configure_header_button(self.zoom_out_button, "minus.svg", "Zoom Out")
+        self.zoom_out_button.setFixedSize(small_button_size)
         zoom_layout.addWidget(self.zoom_out_button)
 
         self.zoom_slider.setRange(10, 400)
         self.zoom_slider.setSingleStep(5)
         self.zoom_slider.setPageStep(25)
         self.zoom_slider.setValue(100)
-        self.zoom_slider.setFixedWidth(180)
+        self.zoom_slider.setFixedWidth(90)
         self.zoom_slider.setToolTip("Zoom")
         zoom_layout.addWidget(self.zoom_slider)
 
         self._configure_header_button(self.zoom_in_button, "plus.svg", "Zoom In")
+        self.zoom_in_button.setFixedSize(small_button_size)
         zoom_layout.addWidget(self.zoom_in_button)
-
-        header_layout.addWidget(self.zoom_widget)
-        self.zoom_widget.hide()
 
         actions_container = QWidget()
         actions_layout = QHBoxLayout(actions_container)
@@ -248,6 +253,8 @@ class Ui_MainWindow(object):
             self._configure_header_button(button, icon_name, tooltip)
             actions_layout.addWidget(button)
 
+        header_layout.addWidget(self.zoom_widget)
+        self.zoom_widget.hide()
         header_layout.addWidget(actions_container)
         detail_layout.addWidget(header)
 
