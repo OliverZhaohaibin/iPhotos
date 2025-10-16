@@ -532,8 +532,13 @@ class MarkerController(QObject):
         self.clustersUpdated.emit(self._clusters)
 
     def _marker_rect(self, center: QPointF) -> QRectF:
-        half = float(self._marker_size) / 2.0
-        return QRectF(center.x() - half, center.y() - half, self._marker_size, self._marker_size)
+        """Return the bounding box that mirrors the overlay's callout geometry."""
+
+        height = float(self._marker_size)
+        width = height
+        x = center.x() - width / 2.0
+        y = center.y() - height
+        return QRectF(x, y, width, height)
 
     def _ensure_thumbnail(self, asset: GeotaggedAsset) -> None:
         if self._library_root is None:
