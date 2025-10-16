@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenuBar,
     QProgressBar,
+    QSlider,
     QSplitter,
     QStackedWidget,
     QStatusBar,
@@ -129,6 +130,10 @@ class Ui_MainWindow(object):
         self.share_button = QToolButton()
         self.favorite_button = QToolButton()
         self.favorite_button.setEnabled(False)
+        self.zoom_widget = QWidget()
+        self.zoom_slider = QSlider(Qt.Orientation.Horizontal)
+        self.zoom_in_button = QToolButton()
+        self.zoom_out_button = QToolButton()
 
         self.live_badge = LiveBadge(MainWindow)
         self.live_badge.hide()
@@ -208,6 +213,27 @@ class Ui_MainWindow(object):
         info_layout.addWidget(self.location_label)
         info_layout.addWidget(self.timestamp_label)
         header_layout.addWidget(info_container, 1)
+
+        zoom_layout = QHBoxLayout(self.zoom_widget)
+        zoom_layout.setContentsMargins(0, 0, 0, 0)
+        zoom_layout.setSpacing(4)
+
+        self._configure_header_button(self.zoom_out_button, "minus.svg", "Zoom Out")
+        zoom_layout.addWidget(self.zoom_out_button)
+
+        self.zoom_slider.setRange(10, 400)
+        self.zoom_slider.setSingleStep(5)
+        self.zoom_slider.setPageStep(25)
+        self.zoom_slider.setValue(100)
+        self.zoom_slider.setFixedWidth(180)
+        self.zoom_slider.setToolTip("Zoom")
+        zoom_layout.addWidget(self.zoom_slider)
+
+        self._configure_header_button(self.zoom_in_button, "plus.svg", "Zoom In")
+        zoom_layout.addWidget(self.zoom_in_button)
+
+        header_layout.addWidget(self.zoom_widget)
+        self.zoom_widget.hide()
 
         actions_container = QWidget()
         actions_layout = QHBoxLayout(actions_container)

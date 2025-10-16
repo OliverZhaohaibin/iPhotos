@@ -99,6 +99,10 @@ class MainController(QObject):
             self._view_controller,
             self._header_controller,
             window.ui.favorite_button,
+            window.ui.zoom_widget,
+            window.ui.zoom_slider,
+            window.ui.zoom_in_button,
+            window.ui.zoom_out_button,
             window.ui.status_bar,
             window,
         )

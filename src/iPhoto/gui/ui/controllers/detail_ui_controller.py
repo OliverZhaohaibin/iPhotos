@@ -5,7 +5,10 @@ from __future__ import annotations
 from typing import Optional
 
 from PySide6.QtCore import QModelIndex, QItemSelectionModel, QObject, QTimer, Signal
-from PySide6.QtWidgets import QStatusBar, QToolButton
+from PySide6.QtWidgets import QSlider, QStatusBar, QToolButton, QWidget
+
+ZOOM_SLIDER_DEFAULT = 100
+"""Default percentage value used when the zoom slider is reset."""
 
 from ..icons import load_icon
 from ..models.asset_model import AssetModel, Roles
@@ -34,6 +37,10 @@ class DetailUIController(QObject):
         view_controller: ViewController,
         header: HeaderController,
         favorite_button: QToolButton,
+        zoom_widget: QWidget,
+        zoom_slider: QSlider,
+        zoom_in_button: QToolButton,
+        zoom_out_button: QToolButton,
         status_bar: QStatusBar,
         parent: QObject | None = None,
     ) -> None:
@@ -47,10 +54,15 @@ class DetailUIController(QObject):
         self._view_controller = view_controller
         self._header = header
         self._favorite_button = favorite_button
+        self._zoom_widget = zoom_widget
+        self._zoom_slider = zoom_slider
+        self._zoom_in_button = zoom_in_button
+        self._zoom_out_button = zoom_out_button
         self._status_bar = status_bar
 
         self._initialize_static_state()
         self._wire_player_bar_events()
+        self._wire_zoom_controls()
 
     # ------------------------------------------------------------------
     # Public helpers
@@ -97,6 +109,7 @@ class DetailUIController(QObject):
         if current_row < 0:
             self._player_bar.setEnabled(False)
             self._player_view.show_placeholder()
+            self.hide_zoom_controls()
             selection_model.clearSelection()
             return
 
@@ -161,6 +174,7 @@ class DetailUIController(QObject):
 
         self._player_view.show_placeholder()
         self._player_bar.setEnabled(False)
+        self.hide_zoom_controls()
 
     def show_live_badge(self) -> None:
         """Expose a convenient wrapper for displaying the Live Photo badge."""
@@ -211,6 +225,7 @@ class DetailUIController(QObject):
         self.update_favorite_button(-1)
         self._filmstrip_view.clearSelection()
         self._status_bar.showMessage("Browse your library")
+        self.hide_zoom_controls()
 
     def show_status_message(self, message: str) -> None:
         """Mirror *message* to the status bar."""
@@ -302,6 +317,69 @@ class DetailUIController(QObject):
         self._favorite_button.setEnabled(False)
         self._favorite_button.setIcon(load_icon("suit.heart.svg"))
         self._favorite_button.setToolTip("Add to Favorites")
+        self.hide_zoom_controls()
+
+    def _wire_zoom_controls(self) -> None:
+        """Connect the zoom toolbar to the image viewer."""
+
+        viewer = self._player_view.image_viewer
+        self._zoom_in_button.clicked.connect(viewer.zoom_in)
+        self._zoom_out_button.clicked.connect(viewer.zoom_out)
+        self._zoom_slider.valueChanged.connect(self._handle_zoom_slider_changed)
+        viewer.zoomChanged.connect(self._handle_viewer_zoom_changed)
+
+    def _handle_zoom_slider_changed(self, value: int) -> None:
+        """Translate slider values into viewer zoom factors."""
+
+        viewer = self._player_view.image_viewer
+        target = self._slider_value_to_zoom(value)
+        viewer.set_zoom(target, anchor=viewer.viewport_center())
+
+    def _handle_viewer_zoom_changed(self, factor: float) -> None:
+        """Synchronise the slider position with the viewer's zoom factor."""
+
+        slider_value = self._zoom_to_slider_value(factor)
+        if slider_value == self._zoom_slider.value():
+            return
+        self._zoom_slider.blockSignals(True)
+        self._zoom_slider.setValue(slider_value)
+        self._zoom_slider.blockSignals(False)
+
+    def _slider_value_to_zoom(self, value: int) -> float:
+        """Convert the slider *value* (percent) into a zoom factor."""
+
+        clamped = max(self._zoom_slider.minimum(), min(self._zoom_slider.maximum(), value))
+        return float(clamped) / 100.0
+
+    def _zoom_to_slider_value(self, factor: float) -> int:
+        """Convert a zoom *factor* into the slider percentage domain."""
+
+        scaled = int(round(factor * 100))
+        return max(self._zoom_slider.minimum(), min(self._zoom_slider.maximum(), scaled))
+
+    def show_zoom_controls(self) -> None:
+        """Make the zoom toolbar visible."""
+
+        self._zoom_widget.show()
+
+    def hide_zoom_controls(self) -> None:
+        """Hide the zoom toolbar and reset it to the default position."""
+
+        self._zoom_widget.hide()
+        self._reset_zoom_slider()
+
+    def _reset_zoom_slider(self) -> None:
+        """Return the slider to its default percentage without emitting signals."""
+
+        default_value = max(
+            self._zoom_slider.minimum(),
+            min(self._zoom_slider.maximum(), ZOOM_SLIDER_DEFAULT),
+        )
+        if self._zoom_slider.value() == default_value:
+            return
+        self._zoom_slider.blockSignals(True)
+        self._zoom_slider.setValue(default_value)
+        self._zoom_slider.blockSignals(False)
 
     @property
     def status_bar(self) -> QStatusBar:

@@ -25,6 +25,7 @@ from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import (
     QApplication,  # type: ignore  # noqa: E402
     QLabel,
+    QSlider,
     QStackedWidget,
     QStatusBar,
     QToolButton,
@@ -533,6 +534,10 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
     location_label = QLabel()
     timestamp_label = QLabel()
     favorite_button = QToolButton()
+    zoom_widget = QWidget()
+    zoom_slider = QSlider(Qt.Orientation.Horizontal)
+    zoom_in_button = QToolButton()
+    zoom_out_button = QToolButton()
 
     # Construct the layered controllers that ``PlaybackController`` depends on.
     # Each helper mirrors the real application wiring so the behaviour under test
@@ -561,6 +566,10 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
         view_controller,
         header_controller,
         favorite_button,
+        zoom_widget,
+        zoom_slider,
+        zoom_in_button,
+        zoom_out_button,
         status_bar,
     )
     preview_controller = PreviewController(preview_window)  # type: ignore[arg-type]
