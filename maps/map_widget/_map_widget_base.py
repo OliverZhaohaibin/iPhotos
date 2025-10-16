@@ -72,7 +72,7 @@ class MapWidgetController:
     # typical desktop viewport so the poles never expose blank background
     # padding.
     MIN_ZOOM = 2.0
-    MAX_ZOOM = 6.0
+    MAX_ZOOM = 8.5
 
     def __init__(
         self,
