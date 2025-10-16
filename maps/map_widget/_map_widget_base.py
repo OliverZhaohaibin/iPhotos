@@ -64,8 +64,12 @@ class MapWidgetController:
     """Encapsulate rendering, tile management, and input handling logic."""
 
     TILE_SIZE = 256
-    MIN_ZOOM = 0.0
-    MAX_ZOOM = 8.0
+    # MapLibre's baked vector tiles only provide meaningful detail between zoom
+    # levels one and six.  Clamping the interaction range keeps the world from
+    # repeating at extremely low zoom values while still allowing users to zoom
+    # in far enough to inspect individual countries and regions.
+    MIN_ZOOM = 1.0
+    MAX_ZOOM = 6.0
 
     def __init__(
         self,
