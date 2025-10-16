@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Iterable, List, Optional, Set
+from typing import Iterable, List, Optional, Set, TYPE_CHECKING
 
 from PySide6.QtCore import QObject, QThreadPool, QTimer, Signal
 
 from .. import app as backend
 from ..errors import IPhotoError
 from ..models.album import Album
+from .ui.tasks.import_worker import ImportSignals, ImportWorker
 from .ui.tasks.scanner_worker import ScannerSignals, ScannerWorker
 
 if TYPE_CHECKING:
@@ -30,6 +31,9 @@ class AppFacade(QObject):
     loadStarted = Signal(object)
     loadProgress = Signal(object, int, int)
     loadFinished = Signal(object, bool)
+    importStarted = Signal(object)
+    importProgress = Signal(object, int, int)
+    importFinished = Signal(object, bool, str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -39,6 +43,7 @@ class AppFacade(QObject):
         self._scanner_pool = QThreadPool.globalInstance()
         self._scanner_worker: Optional[ScannerWorker] = None
         self._scan_pending = False
+        self._active_imports: list[ImportWorker] = []
 
         from .ui.models.asset_list_model import AssetListModel
 
@@ -173,63 +178,65 @@ class AppFacade(QObject):
         *,
         destination: Optional[Path] = None,
         mark_featured: bool = False,
-    ) -> List[Path]:
-        """Copy *sources* into *destination* and refresh the affected album.
+    ) -> None:
+        """Import *sources* asynchronously and refresh the destination album.
 
         Parameters
         ----------
         sources:
-            Iterable of filesystem paths selected by the user.  Non-existent or
-            duplicate entries are ignored.
+            Candidate filesystem paths supplied by the caller.  Paths are
+            normalised before being copied so duplicates and non-files are
+            discarded.
         destination:
-            Optional album root that should receive the imported files.  When
-            omitted the currently open album is used instead.
+            Optional album directory that should receive the imported media.
+            When omitted the currently open album is used.
         mark_featured:
-            When ``True`` the copied files are appended to the album's
-            ``featured`` manifest list before the index is rebuilt.  This is
-            used by the Favorites virtual collection.
+            When ``True`` the facade will flag the imported files as featured
+            once the worker reports success.  This is used for the Favorites
+            collection.
 
-        Returns
-        -------
-        list[Path]
-            Absolute paths to the files that were successfully imported.
+        Notes
+        -----
+        The heavy lifting (filesystem copies and the follow-up rescan) runs in
+        a worker thread so the UI can provide feedback via
+        :class:`QProgressBar` updates.  Progress and completion information is
+        surfaced through the :attr:`importStarted`, :attr:`importProgress`, and
+        :attr:`importFinished` signals.
         """
 
         normalized = self._normalise_sources(sources)
         if not normalized:
-            return []
+            target_root = self._resolve_import_destination(destination)
+            if target_root is not None:
+                self.importFinished.emit(
+                    target_root,
+                    False,
+                    "No files were imported.",
+                )
+            return
 
         target_root = self._resolve_import_destination(destination)
         if target_root is None:
-            return []
+            return
 
-        imported: List[Path] = []
-        for source in normalized:
-            try:
-                imported_path = self._copy_into_album(source, target_root)
-            except OSError as exc:
-                self.errorRaised.emit(f"Could not import '{source}': {exc}")
-                continue
-            imported.append(imported_path)
+        signals = ImportSignals()
+        signals.started.connect(self.importStarted.emit)
+        signals.progress.connect(self.importProgress.emit)
+        signals.error.connect(self.errorRaised.emit)
 
-        if not imported:
-            return []
+        worker = ImportWorker(normalized, target_root, self._copy_into_album, signals)
+        self._active_imports.append(worker)
+        signals.finished.connect(
+            lambda root, imported, rescan_ok, *, worker=worker, mark_featured=mark_featured: self._on_import_finished(
+                root,
+                imported,
+                rescan_ok,
+                worker,
+                mark_featured,
+            )
+        )
 
-        if mark_featured:
-            self._ensure_featured_entries(target_root, imported)
-
-        rescan_succeeded = True
-        try:
-            backend.rescan(target_root)
-        except IPhotoError as exc:
-            rescan_succeeded = False
-            self.errorRaised.emit(str(exc))
-        else:
-            self.indexUpdated.emit(target_root)
-            self.linksUpdated.emit(target_root)
-        if rescan_succeeded:
-            self._restart_asset_load(target_root)
-        return imported
+        self._scanner_pool.start(worker)
 
     def toggle_featured(self, ref: str) -> bool:
         """Toggle *ref* in the active album and mirror the change in the library."""
@@ -394,6 +401,43 @@ class AppFacade(QObject):
         saved = self._save_manifest(album, reload_view=False)
         if not saved:
             return
+
+    def _on_import_finished(
+        self,
+        root: Path,
+        imported: List[Path],
+        rescan_succeeded: bool,
+        worker: ImportWorker,
+        mark_featured: bool,
+    ) -> None:
+        """Handle completion of an asynchronous import operation."""
+
+        if worker in self._active_imports:
+            self._active_imports.remove(worker)
+        worker.signals.deleteLater()
+
+        success = bool(imported) and rescan_succeeded
+
+        if mark_featured and imported:
+            self._ensure_featured_entries(root, imported)
+
+        if rescan_succeeded and imported:
+            self.indexUpdated.emit(root)
+            self.linksUpdated.emit(root)
+            self._restart_asset_load(root)
+
+        if imported:
+            label = "file" if len(imported) == 1 else "files"
+            if rescan_succeeded:
+                message = f"Imported {len(imported)} {label}."
+            else:
+                message = (
+                    f"Imported {len(imported)} {label}, but refreshing the album failed."
+                )
+        else:
+            message = "No files were imported."
+
+        self.importFinished.emit(root, success, message)
 
     def _save_manifest(self, album: Album, *, reload_view: bool = True) -> bool:
         manager = self._library_manager

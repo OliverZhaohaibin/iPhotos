@@ -113,3 +113,43 @@ class StatusBarController(QObject):
         message = "Album loaded." if success else "Failed to load album."
         self.show_message(message, 5000)
 
+    def handle_import_started(self, root: Path) -> None:
+        """Display an indeterminate indicator when an import begins."""
+
+        # The import workflow mirrors the rescan feedback so we reuse the same
+        # progress bar widget.  Setting the context allows other handlers to
+        # recognise that the UI is currently occupied with an import task.
+        self._progress_context = "import"
+        self._progress_bar.setRange(0, 0)
+        self._progress_bar.setValue(0)
+        self._progress_bar.setVisible(True)
+        self.show_message("Starting import…")
+
+    def handle_import_progress(self, root: Path, current: int, total: int) -> None:
+        """Update the progress bar while the worker copies files."""
+
+        if self._progress_context != "import":
+            return
+        if total <= 0:
+            # Keep the bar indeterminate when the worker cannot determine how
+            # many items remain (for example during the initial copy).
+            self._progress_bar.setRange(0, 0)
+        else:
+            self._progress_bar.setRange(0, total)
+            self._progress_bar.setValue(max(0, min(current, total)))
+        if 0 < current < total:
+            self.show_message(f"Importing… ({current}/{total})")
+        elif total > 0 and current >= total:
+            # The worker emits a final update once all files are copied to let
+            # the user know that the subsequent rescan is in progress.
+            self.show_message("Finalising import by rescanning…")
+
+    def handle_import_finished(self, root: Path | None, success: bool, message: str) -> None:
+        """Reset the status bar once the import worker signals completion."""
+
+        if self._progress_context == "import":
+            self._progress_bar.setVisible(False)
+            self._progress_bar.setRange(0, 0)
+            self._progress_context = None
+        self.show_message(message, 5000)
+

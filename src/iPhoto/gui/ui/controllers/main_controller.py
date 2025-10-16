@@ -227,6 +227,9 @@ class MainController(QObject):
         self._facade.loadStarted.connect(self._status_bar.handle_load_started)
         self._facade.loadProgress.connect(self._status_bar.handle_load_progress)
         self._facade.loadFinished.connect(self._status_bar.handle_load_finished)
+        self._facade.importStarted.connect(self._status_bar.handle_import_started)
+        self._facade.importProgress.connect(self._status_bar.handle_import_progress)
+        self._facade.importFinished.connect(self._status_bar.handle_import_finished)
         self._facade.indexUpdated.connect(self._map_controller.handle_index_update)
 
         # Model housekeeping
@@ -468,18 +471,10 @@ class MainController(QObject):
                 return
             target = album.root
 
-        imported = self._facade.import_files(
+        self._facade.import_files(
             allowed,
             destination=target,
             mark_featured=mark_featured,
-        )
-        if not imported:
-            self._status_bar.show_message("No files were imported.", 5000)
-            return
-        label = "file" if len(imported) == 1 else "files"
-        self._status_bar.show_message(
-            f"Imported {len(imported)} {label}.",
-            4000,
         )
 
     def _handle_sidebar_drop(self, target: Path, payload: object) -> None:
@@ -499,15 +494,7 @@ class MainController(QObject):
         if not allowed:
             self._status_bar.show_message("No supported media files were dropped.", 5000)
             return
-        imported = self._facade.import_files(allowed, destination=target)
-        if not imported:
-            self._status_bar.show_message("No files were imported.", 5000)
-            return
-        label = "file" if len(imported) == 1 else "files"
-        self._status_bar.show_message(
-            f"Imported {len(imported)} {label} into {target.name}.",
-            4000,
-        )
+        self._facade.import_files(allowed, destination=target)
 
     def _classify_media_paths(self, paths: Iterable[Path]) -> tuple[List[Path], List[Path], List[Path]]:
         """Split *paths* into images, videos, and unsupported candidates."""
