@@ -10,6 +10,7 @@ from typing import Callable, Dict, Iterable, Optional, Sequence
 from PySide6.QtCore import QObject, QPointF, QRectF, QSize, QThread, QTimer, Signal
 from PySide6.QtGui import QPixmap
 
+from iPhotos.maps.map_widget.map_gl_widget import MapGLWidget
 from iPhotos.maps.map_widget.map_widget import MapWidget
 from iPhotos.maps.map_widget.map_renderer import CityAnnotation
 
@@ -269,7 +270,7 @@ class MarkerController(QObject):
 
     def __init__(
         self,
-        map_widget: MapWidget,
+        map_widget: MapWidget | MapGLWidget,
         thumbnail_loader: ThumbnailLoader,
         *,
         marker_size: int,
