@@ -337,6 +337,7 @@ class MapRenderer:
         painter.setFont(font)
         painter.setBrush(Qt.BrushStyle.NoBrush)
 
+        rendered_label_boxes: list[QRectF] = []
         for city in self._cities:
             if not city.display_name:
                 continue
@@ -395,6 +396,12 @@ class MapRenderer:
                 (bounds_right - bounds_left) + 4.0,
                 (bounds_bottom - bounds_top) + 4.0,
             )
+            # Skip labels whose padded bounding box would overlap an annotation
+            # that has already been drawn. The conservative buffer keeps the map
+            # readable when multiple cities are clustered together.
+            if any(bounds.intersects(existing_box) for existing_box in rendered_label_boxes):
+                continue
+            rendered_label_boxes.append(bounds)
             full_name = city.full_name or city.display_name
             self._city_labels.append(_RenderedCityLabel(bounds=bounds, full_name=full_name))
 
