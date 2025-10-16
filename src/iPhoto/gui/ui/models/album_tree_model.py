@@ -82,7 +82,7 @@ class AlbumTreeModel(QAbstractItemModel):
         "videos": "video.fill",
         "live photos": "livephoto",
         "favorites": "suit.heart.fill",
-        "location": "mappin",
+        "location": "mappin.and.ellipse",
         "recently deleted": "trash",
     }
 
