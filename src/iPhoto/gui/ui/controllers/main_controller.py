@@ -20,7 +20,7 @@ from ....media_classifier import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 from ..media import MediaController, PlaylistController
 from ..models.asset_model import AssetModel, Roles
 from ..models.spacer_proxy_model import SpacerProxyModel
-from ..widgets import AlbumSidebar, AssetGridDelegate
+from ..widgets import AssetGridDelegate
 from .detail_ui_controller import DetailUIController
 from .dialog_controller import DialogController
 from .header_controller import HeaderController
@@ -407,47 +407,48 @@ class MainController(QObject):
     # -----------------------------------------------------------------
     # Drag-and-drop helpers
     def _validate_grid_drop(self, paths: List[Path]) -> bool:
-        """Return ``True`` if the current view can accept *paths*."""
+        """Return ``True`` when the active grid can accept at least one path."""
 
-        images, videos, unsupported = self._classify_media_paths(paths)
-        if unsupported:
+        images, videos, _ = self._classify_media_paths(paths)
+
+        # Reject early when absolutely nothing in the payload is supported.  This keeps
+        # the UX responsive while still allowing the handler to cherry-pick valid files
+        # from a mixed drop that also contained unsupported entries.
+        if not images and not videos:
             return False
+
         selection = (self._navigation.static_selection() or "").casefold()
+
+        # Live Photos rely on separate pairing logic and therefore cannot be imported
+        # via direct drag-and-drop into the dedicated view.
         if selection == "live photos":
             return False
+
+        # The Videos view should respond positively when at least one dropped file is a
+        # video.  The handler will filter the payload down to the allowed subset.
         if selection == "videos":
-            return bool(videos) and not images
-        if selection in {"", AlbumSidebar.ALL_PHOTOS_TITLE.casefold(), "favorites"}:
-            return bool(images or videos)
-        return False
+            return bool(videos)
+
+        # Every other gallery (All Photos, Favorites, user albums, etc.) can import any
+        # mixture of images or videos as long as at least one supported asset is present.
+        return bool(images or videos)
 
     def _handle_grid_drop(self, paths: List[Path]) -> None:
         """Import the dropped files into the active gallery view."""
 
-        images, videos, unsupported = self._classify_media_paths(paths)
-        if unsupported:
-            self._status_bar.show_message(
-                "Only photo and video files can be imported.",
-                5000,
-            )
-            return
-
+        images, videos, _ = self._classify_media_paths(paths)
         selection = (self._navigation.static_selection() or "").casefold()
         target: Optional[Path]
         mark_featured = False
 
         if selection == "videos":
-            if not videos or images:
-                self._status_bar.show_message(
-                    "The Videos view only accepts video files.",
-                    5000,
-                )
-                return
             allowed = videos
         else:
             allowed = images + videos
             mark_featured = selection == "favorites"
 
+        # Inform the user when the drop only contained unsupported files or nothing that
+        # matches the requirements of the active view.
         if not allowed:
             self._status_bar.show_message("No supported media files were dropped.", 5000)
             return
