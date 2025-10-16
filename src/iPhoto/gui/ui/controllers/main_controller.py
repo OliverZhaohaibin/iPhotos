@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, TYPE_CHECKING
+from typing import Iterable, List, Optional, TYPE_CHECKING
 
 from PySide6.QtCore import QObject
 from PySide6.QtCore import QModelIndex
@@ -16,6 +16,7 @@ except ImportError:  # pragma: no cover - script execution fallback
     from iPhotos.src.iPhoto.appctx import AppContext
 
 from ...facade import AppFacade
+from ....media_classifier import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 from ..media import MediaController, PlaylistController
 from ..models.asset_model import AssetModel, Roles
 from ..models.spacer_proxy_model import SpacerProxyModel
@@ -141,6 +142,10 @@ class MainController(QObject):
         self._window.ui.grid_view.setItemDelegate(
             AssetGridDelegate(self._window.ui.grid_view)
         )
+        self._window.ui.grid_view.configure_external_drop(
+            handler=self._handle_grid_drop,
+            validator=self._validate_grid_drop,
+        )
 
         self._window.ui.filmstrip_view.setModel(self._filmstrip_model)
         self._window.ui.filmstrip_view.setItemDelegate(
@@ -213,6 +218,7 @@ class MainController(QObject):
         self._window.ui.sidebar.bindLibraryRequested.connect(
             self._dialog.bind_library_dialog
         )
+        self._window.ui.sidebar.filesDropped.connect(self._handle_sidebar_drop)
 
         # Facade events
         self._facade.albumOpened.connect(self._handle_album_opened)
@@ -221,6 +227,9 @@ class MainController(QObject):
         self._facade.loadStarted.connect(self._status_bar.handle_load_started)
         self._facade.loadProgress.connect(self._status_bar.handle_load_progress)
         self._facade.loadFinished.connect(self._status_bar.handle_load_finished)
+        self._facade.importStarted.connect(self._status_bar.handle_import_started)
+        self._facade.importProgress.connect(self._status_bar.handle_import_progress)
+        self._facade.importFinished.connect(self._status_bar.handle_import_finished)
         self._facade.indexUpdated.connect(self._map_controller.handle_index_update)
 
         # Model housekeeping
@@ -396,5 +405,151 @@ class MainController(QObject):
             rel = index.data(Roles.REL)
             if rel and self._facade.current_album:
                 paths.append((self._facade.current_album.root / rel).resolve())
+        return paths
+
+    # -----------------------------------------------------------------
+    # Drag-and-drop helpers
+    def _validate_grid_drop(self, paths: List[Path]) -> bool:
+        """Return ``True`` when the active grid can accept at least one path."""
+
+        images, videos, _ = self._classify_media_paths(paths)
+
+        # Reject early when absolutely nothing in the payload is supported.  This keeps
+        # the UX responsive while still allowing the handler to cherry-pick valid files
+        # from a mixed drop that also contained unsupported entries.
+        if not images and not videos:
+            return False
+
+        selection = (self._navigation.static_selection() or "").casefold()
+
+        # Live Photos rely on separate pairing logic and therefore cannot be imported
+        # via direct drag-and-drop into the dedicated view.
+        if selection == "live photos":
+            return False
+
+        # The Videos view should respond positively when at least one dropped file is a
+        # video.  The handler will filter the payload down to the allowed subset.
+        if selection == "videos":
+            return bool(videos)
+
+        # Every other gallery (All Photos, Favorites, user albums, etc.) can import any
+        # mixture of images or videos as long as at least one supported asset is present.
+        return bool(images or videos)
+
+    def _handle_grid_drop(self, paths: List[Path]) -> None:
+        """Import the dropped files into the active gallery view."""
+
+        images, videos, _ = self._classify_media_paths(paths)
+        selection = (self._navigation.static_selection() or "").casefold()
+        target: Optional[Path]
+        mark_featured = False
+
+        if selection == "videos":
+            allowed = videos
+        else:
+            allowed = images + videos
+            mark_featured = selection == "favorites"
+
+        # Inform the user when the drop only contained unsupported files or nothing that
+        # matches the requirements of the active view.
+        if not allowed:
+            self._status_bar.show_message("No supported media files were dropped.", 5000)
+            return
+
+        if selection:
+            target = self._context.library.root()
+            if target is None:
+                self._dialog.bind_library_dialog()
+                return
+        else:
+            album = self._facade.current_album
+            if album is None:
+                self._status_bar.show_message(
+                    "Open an album before importing files.",
+                    5000,
+                )
+                return
+            target = album.root
+
+        self._facade.import_files(
+            allowed,
+            destination=target,
+            mark_featured=mark_featured,
+        )
+
+    def _handle_sidebar_drop(self, target: Path, payload: object) -> None:
+        """Import files that were dropped onto *target* in the sidebar."""
+
+        paths = self._coerce_path_list(payload)
+        if not paths:
+            return
+        images, videos, unsupported = self._classify_media_paths(paths)
+        if unsupported:
+            self._status_bar.show_message(
+                "Only photo and video files can be imported.",
+                5000,
+            )
+            return
+        allowed = images + videos
+        if not allowed:
+            self._status_bar.show_message("No supported media files were dropped.", 5000)
+            return
+        self._facade.import_files(allowed, destination=target)
+
+    def _classify_media_paths(self, paths: Iterable[Path]) -> tuple[List[Path], List[Path], List[Path]]:
+        """Split *paths* into images, videos, and unsupported candidates."""
+
+        normalized = self._normalize_drop_paths(paths)
+        images: List[Path] = []
+        videos: List[Path] = []
+        unsupported: List[Path] = []
+        for path in normalized:
+            suffix = path.suffix.lower()
+            if not path.exists() or not path.is_file():
+                unsupported.append(path)
+                continue
+            if suffix in IMAGE_EXTENSIONS:
+                images.append(path)
+            elif suffix in VIDEO_EXTENSIONS:
+                videos.append(path)
+            else:
+                unsupported.append(path)
+        return images, videos, unsupported
+
+    def _normalize_drop_paths(self, paths: Iterable[Path]) -> List[Path]:
+        """Return canonical, deduplicated paths suitable for importing."""
+
+        normalized: List[Path] = []
+        seen: set[Path] = set()
+        for path in paths:
+            try:
+                candidate = Path(path).expanduser()
+            except TypeError:
+                continue
+            try:
+                resolved = candidate.resolve()
+            except OSError:
+                resolved = candidate
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            normalized.append(resolved)
+        return normalized
+
+    def _coerce_path_list(self, payload: object) -> List[Path]:
+        """Best-effort conversion of signal payloads into ``Path`` objects."""
+
+        if isinstance(payload, list):
+            items = payload
+        elif isinstance(payload, tuple):
+            items = list(payload)
+        else:
+            items = [payload]
+        paths: List[Path] = []
+        for item in items:
+            try:
+                paths.append(Path(item))
+            except TypeError:
+                continue
         return paths
 

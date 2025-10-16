@@ -1,11 +1,12 @@
-"""Interactive asset grid with click and long-press handling."""
+"""Interactive asset grid with click, long-press, and drop handling."""
 
 from __future__ import annotations
 
-from typing import Optional
+from pathlib import Path
+from typing import Callable, List, Optional
 
 from PySide6.QtCore import QPoint, QTimer, Qt, Signal
-from PySide6.QtGui import QMouseEvent
+from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent, QMouseEvent
 from PySide6.QtWidgets import QListView
 
 from ....config import LONG_PRESS_THRESHOLD_MS
@@ -36,6 +37,9 @@ class AssetGrid(QListView):
         self._update_timer.timeout.connect(self._emit_visible_rows)
         self._visible_range: Optional[tuple[int, int]] = None
         self._model = None
+        self._external_drop_enabled = False
+        self._drop_handler: Optional[Callable[[List[Path]], None]] = None
+        self._drop_validator: Optional[Callable[[List[Path]], bool]] = None
 
     # ------------------------------------------------------------------
     # Mouse event handling
@@ -85,6 +89,39 @@ class AssetGrid(QListView):
         super().showEvent(event)
         QTimer.singleShot(0, self._schedule_visible_rows_update)
 
+    # ------------------------------------------------------------------
+    # External file drop configuration
+    # ------------------------------------------------------------------
+    def configure_external_drop(
+        self,
+        *,
+        handler: Optional[Callable[[List[Path]], None]] = None,
+        validator: Optional[Callable[[List[Path]], bool]] = None,
+    ) -> None:
+        """Enable or disable external drop support for the grid view.
+
+        Parameters
+        ----------
+        handler:
+            Callable invoked when a valid drop operation completes.  When
+            ``None`` the grid reverts to its default behaviour and external
+            drops are ignored entirely.
+        validator:
+            Optional callable used to preflight an incoming drag.  The
+            validator receives the list of candidate file paths and returns
+            ``True`` to accept the drag or ``False`` to reject it.  When left
+            unspecified every drop that provides at least one local file is
+            considered acceptable.
+        """
+
+        self._drop_handler = handler
+        self._drop_validator = validator
+        self._external_drop_enabled = handler is not None
+        self.setAcceptDrops(self._external_drop_enabled)
+        # The visual items live inside the viewport object, so we must enable drops there
+        # as well; otherwise Qt will refuse to deliver drag/drop events to the grid.
+        self.viewport().setAcceptDrops(self._external_drop_enabled)
+
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
         self._schedule_visible_rows_update()
@@ -92,6 +129,49 @@ class AssetGrid(QListView):
     def scrollContentsBy(self, dx: int, dy: int) -> None:  # type: ignore[override]
         super().scrollContentsBy(dx, dy)
         self._schedule_visible_rows_update()
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # type: ignore[override]
+        if not self._external_drop_enabled:
+            super().dragEnterEvent(event)
+            return
+        paths = self._extract_local_files(event)
+        if not paths:
+            event.ignore()
+            return
+        if self._drop_validator is not None and not self._drop_validator(paths):
+            event.ignore()
+            return
+        event.setDropAction(Qt.DropAction.CopyAction)
+        event.accept()
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:  # type: ignore[override]
+        if not self._external_drop_enabled:
+            super().dragMoveEvent(event)
+            return
+        paths = self._extract_local_files(event)
+        if not paths:
+            event.ignore()
+            return
+        if self._drop_validator is not None and not self._drop_validator(paths):
+            event.ignore()
+            return
+        event.setDropAction(Qt.DropAction.CopyAction)
+        event.accept()
+
+    def dropEvent(self, event: QDropEvent) -> None:  # type: ignore[override]
+        if not self._external_drop_enabled or self._drop_handler is None:
+            super().dropEvent(event)
+            return
+        paths = self._extract_local_files(event)
+        if not paths:
+            event.ignore()
+            return
+        if self._drop_validator is not None and not self._drop_validator(paths):
+            event.ignore()
+            return
+        event.setDropAction(Qt.DropAction.CopyAction)
+        event.accept()
+        self._drop_handler(paths)
 
     def setModel(self, model) -> None:  # type: ignore[override]
         if self._model is not None:
@@ -217,3 +297,31 @@ class AssetGrid(QListView):
 
         self._visible_range = visible_range
         self.visibleRowsChanged.emit(first, last)
+
+    def _extract_local_files(self, event: QDropEvent | QDragEnterEvent | QDragMoveEvent) -> List[Path]:
+        """Return all unique local file paths advertised by *event*.
+
+        The helper normalises the reported URLs, discards remote resources, and
+        guarantees deterministic ordering so validators can rely on stable
+        inputs.  ``Path.resolve`` is intentionally avoided here to keep the
+        method lightweight; callers that require canonical paths can resolve
+        them as needed.
+        """
+
+        mime = event.mimeData()
+        if mime is None:
+            return []
+        urls = getattr(mime, "urls", None)
+        if not callable(urls):
+            return []
+        seen: set[Path] = set()
+        paths: List[Path] = []
+        for url in urls():
+            if not url.isLocalFile():
+                continue
+            local = Path(url.toLocalFile()).expanduser()
+            if local in seen:
+                continue
+            seen.add(local)
+            paths.append(local)
+        return paths
