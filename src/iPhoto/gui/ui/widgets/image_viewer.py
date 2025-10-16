@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional, Tuple, cast
 
-from PySide6.QtCore import QEvent, QPoint, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QSize, Qt, Signal, QTimer
 from PySide6.QtGui import QMouseEvent, QPixmap, QWheelEvent
 from PySide6.QtWidgets import (
     QFrame,
@@ -71,12 +71,32 @@ class ImageViewer(QWidget):
             self._label.clear()
             self._label.setMinimumSize(0, 0)
             self._base_size = None
+            # Notify observers that the zoom factor has reset along with the pixmap
+            # content so UI controls (such as sliders) stay in sync with the cleared
+            # state.
             self._zoom_factor = 1.0
             self.zoomChanged.emit(self._zoom_factor)
             return
 
+        # Reset the derived rendering state so the next resize cycle recomputes
+        # a baseline size for the new pixmap.
+        self._base_size = None
         self._zoom_factor = 1.0
-        self._render_pixmap()
+
+        # Clearing the label prevents the previous, potentially undersized pixmap
+        # from lingering on screen while we wait for the viewport to settle on its
+        # final geometry.
+        self._label.clear()
+
+        # Request a fresh layout pass so Qt recalculates the scroll area's viewport
+        # using the intrinsic size of the new pixmap.
+        self.updateGeometry()
+
+        # Defer the actual rendering until Qt finishes processing the current event
+        # queue. By the time this single-shot timer fires, the layout system will have
+        # provided a stable viewport size, allowing ``_render_pixmap`` to compute the
+        # correct scaling on the first paint.
+        QTimer.singleShot(0, self._render_pixmap)
         self.zoomChanged.emit(self._zoom_factor)
 
     def clear(self) -> None:
