@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QModelIndex, QItemSelectionModel, QObject, QTimer, Signal
@@ -18,6 +19,12 @@ from ..widgets.player_bar import PlayerBar
 from .header_controller import HeaderController
 from .player_view_controller import PlayerViewController
 from .view_controller import ViewController
+from ...io.metadata import read_image_meta
+from ...utils.logging import get_logger
+
+
+_LOGGER = get_logger()
+"""Module level logger used for debug and fallback metadata warnings."""
 
 
 class DetailUIController(QObject):
@@ -387,6 +394,7 @@ class DetailUIController(QObject):
             rel_candidate = index.data(Roles.REL)
             if isinstance(rel_candidate, str) and rel_candidate:
                 payload["rel"] = rel_candidate
+        payload = self._enrich_metadata_if_needed(payload, index)
         self._cached_info = payload
         if self._info_panel.isVisible():
             self._info_panel.set_asset_metadata(self._cached_info)
@@ -426,6 +434,83 @@ class DetailUIController(QObject):
 
         if self._info_panel.isVisible():
             self._info_panel.close()
+
+    def _enrich_metadata_if_needed(
+        self, payload: dict[str, object], index: QModelIndex
+    ) -> dict[str, object]:
+        """Populate exposure related fields when the cached payload lacks them.
+
+        Older ``index.jsonl`` snapshots may have been generated before the
+        enriched EXIF pipeline existed.  In that scenario the info panel would
+        permanently show the fallback "no metadata" message.  This helper keeps
+        the UI responsive by reading the metadata directly from disk when the
+        cached payload offers no useful exposure information.
+        """
+
+        exposure_keys = (
+            "iso",
+            "f_number",
+            "exposure_time",
+            "exposure_compensation",
+            "focal_length",
+        )
+
+        # Bail out quickly when at least one exposure value is present.  This
+        # ensures the happy path remains inexpensive and we avoid touching the
+        # filesystem for every selection change in the filmstrip.
+        if any(payload.get(key) not in (None, "") for key in exposure_keys):
+            return payload
+
+        abs_path = payload.get("abs")
+        if not isinstance(abs_path, str) or not abs_path:
+            # Older index rows may not include an absolute path, so fall back to
+            # the model role to recover it and remember the resolved path for
+            # future lookups.
+            abs_candidate = index.data(Roles.ABS)
+            if isinstance(abs_candidate, str) and abs_candidate:
+                abs_path = abs_candidate
+                payload.setdefault("abs", abs_path)
+
+        if not isinstance(abs_path, str) or not abs_path:
+            return payload
+
+        try:
+            fresh_meta = read_image_meta(Path(abs_path))
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            _LOGGER.debug("Failed to enrich metadata for %s: %s", abs_path, exc)
+            return payload
+
+        # Copy the newly parsed exposure values into the cached payload so the
+        # info panel can render the detailed line without requiring a rescan.
+        for key in exposure_keys:
+            value = fresh_meta.get(key)
+            if value not in (None, ""):
+                payload[key] = value
+
+        # Supplementary EXIF fields improve the camera and lens sections; keep
+        # the existing cached values when they already exist.
+        for ancillary_key in ("lens", "make", "model"):
+            value = fresh_meta.get(ancillary_key)
+            if value not in (None, ""):
+                payload.setdefault(ancillary_key, value)
+
+        # Mirror width/height/file size when the cached payload has gaps so the
+        # summary line can show dimensions and an accurate file size.
+        if "w" not in payload or payload.get("w") in (None, 0):
+            width = fresh_meta.get("w")
+            if isinstance(width, int) and width > 0:
+                payload["w"] = width
+        if "h" not in payload or payload.get("h") in (None, 0):
+            height = fresh_meta.get("h")
+            if isinstance(height, int) and height > 0:
+                payload["h"] = height
+
+        if payload.get("bytes") in (None, 0):
+            size = fresh_meta.get("bytes")
+            if isinstance(size, (int, float)) and size > 0:
+                payload["bytes"] = size
+
+        return payload
 
     def _wire_zoom_controls(self) -> None:
         """Connect the zoom toolbar to the image viewer."""

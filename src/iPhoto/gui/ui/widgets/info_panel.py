@@ -302,7 +302,11 @@ class InfoPanel(QWidget):
             unit_index += 1
         if unit_index == 0:
             return f"{int(size)} {units[unit_index]}"
-        return f"{size:.1f} {units[unit_index]}"
+
+        rounded = round(size, 1)
+        if float(rounded).is_integer():
+            return f"{int(rounded)} {units[unit_index]}"
+        return f"{rounded:.1f} {units[unit_index]}"
 
     def _format_format(self, info: Mapping[str, Any]) -> str:
         """Return a short label describing the image format."""
@@ -311,10 +315,15 @@ class InfoPanel(QWidget):
         if name:
             suffix = Path(name).suffix
             if suffix:
-                return suffix.lstrip(".").upper()
+                extension = suffix.lstrip(".")
+                if extension.lower() in {"heic", "heif"}:
+                    return "HEIF"
+                return extension.upper()
         mime = info.get("mime") if isinstance(info.get("mime"), str) else None
         if mime:
             subtype = mime.split("/")[-1]
+            if subtype.lower() in {"heic", "heif"}:
+                return "HEIF"
             return subtype.upper()
         return ""
 
