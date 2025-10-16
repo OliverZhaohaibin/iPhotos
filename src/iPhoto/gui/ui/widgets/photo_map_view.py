@@ -329,12 +329,18 @@ class PhotoMapView(QWidget):
         return super().eventFilter(watched, event)
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
-        """Ensure the clustering thread shuts down before the widget closes."""
+        """Ensure background workers shut down before the widget closes."""
 
         if self._last_tooltip_text:
             QToolTip.hideText()
             self._last_tooltip_text = ""
+        # ``MarkerController`` maintains a worker thread that aggregates marker clusters.
+        # Explicitly shutting it down prevents the Qt event loop from waiting indefinitely.
         self._marker_controller.shutdown()
+        # The map widget owns a ``TileManager`` that runs in a separate ``QThread`` to
+        # stream map tiles.  If the thread is not told to exit, the application process
+        # keeps running after the window closes, so we must always shut it down here.
+        self._map_widget.shutdown()
         super().closeEvent(event)
 
     def _handle_city_annotations(self, cities: Iterable[CityAnnotation]) -> None:
