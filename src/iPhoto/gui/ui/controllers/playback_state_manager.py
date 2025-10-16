@@ -113,6 +113,7 @@ class PlaybackStateManager(QObject):
         self._detail_ui.hide_live_badge()
         self._detail_ui.set_live_replay_enabled(False)
         self._detail_ui.show_detail_view()
+        self._detail_ui.show_zoom_controls()
         self._detail_ui.reset_player_bar()
         self._detail_ui.set_player_bar_enabled(False)
         self._detail_ui.update_header(row if row is not None else None)
@@ -142,6 +143,7 @@ class PlaybackStateManager(QObject):
             self._detail_ui.player_view.show_video_surface(interactive=False)
             self._detail_ui.set_player_bar_enabled(False)
             self._detail_ui.player_view.set_live_replay_enabled(False)
+            self._detail_ui.hide_zoom_controls()
         else:
             if self.is_live_context(state=previous_state):
                 self._media.set_muted(self._original_mute_state)
@@ -152,6 +154,7 @@ class PlaybackStateManager(QObject):
             self._pending_live_photo_still = None
             self._active_live_motion = None
             self._active_live_still = None
+            self._detail_ui.hide_zoom_controls()
         self._detail_ui.show_detail_view()
         self._media.play()
         if is_live_photo:
@@ -265,6 +268,7 @@ class PlaybackStateManager(QObject):
         self._detail_ui.reset_player_bar()
         self._detail_ui.set_player_bar_enabled(False)
         self._detail_ui.player_view.set_live_replay_enabled(True)
+        self._detail_ui.show_zoom_controls()
 
         current_row = self._playlist.current_row()
         if current_row is not None and current_row >= 0:
