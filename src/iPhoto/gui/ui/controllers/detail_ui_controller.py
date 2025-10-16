@@ -19,8 +19,8 @@ from ..widgets.player_bar import PlayerBar
 from .header_controller import HeaderController
 from .player_view_controller import PlayerViewController
 from .view_controller import ViewController
-from ...io.metadata import read_image_meta
-from ...utils.logging import get_logger
+from ....io.metadata import read_image_meta
+from ....utils.logging import get_logger
 
 
 _LOGGER = get_logger()
