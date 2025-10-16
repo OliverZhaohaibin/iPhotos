@@ -134,7 +134,12 @@ class _MarkerLayer(QWidget):
 
     def _paint_cluster(self, painter: QPainter, cluster: _MarkerCluster) -> None:
         width = float(self.MARKER_SIZE)
-        height = float(self.MARKER_SIZE)
+        body_height = float(self.THUMBNAIL_DISPLAY_SIZE)
+        # ``height`` includes the triangular pointer whereas ``body_height`` represents the
+        # rounded rectangle that houses the thumbnail.  Using the display size for the body
+        # makes the callout vertically symmetrical so the white border has a consistent
+        # thickness on every edge.
+        height = body_height + float(self.POINTER_HEIGHT)
         x = cluster.screen_pos.x() - width / 2.0
         y = cluster.screen_pos.y() - height
         rect = QRectF(x, y, width, height)
@@ -157,7 +162,7 @@ class _MarkerLayer(QWidget):
             display_edge = float(self.THUMBNAIL_DISPLAY_SIZE)
             thumb_rect = QRectF(
                 x + (width - display_edge) / 2.0,
-                y + (height - self.POINTER_HEIGHT - display_edge) / 2.0,
+                y + (body_height - display_edge) / 2.0,
                 display_edge,
                 display_edge,
             )
