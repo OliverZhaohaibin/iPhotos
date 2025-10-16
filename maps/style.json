@@ -522,7 +522,6 @@
             },
             "source": "maplibre",
             "maxzoom": 24,
-            "minzoom": 2,
             "source-layer": "centroids"
         },
         {

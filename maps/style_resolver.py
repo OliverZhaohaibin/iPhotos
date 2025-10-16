@@ -324,6 +324,12 @@ class StyleResolver:
             return None
 
         operator = expression[0]
+        if not isinstance(operator, str):
+            # Literal lists such as dash arrays are represented as plain
+            # sequences without an operator token. In that case we simply
+            # return the raw list so the caller can interpret the numeric
+            # values without the resolver emitting misleading warnings.
+            return expression
         if operator == "match":
             input_value = self._evaluate(expression[1], zoom, properties)
             index = 2

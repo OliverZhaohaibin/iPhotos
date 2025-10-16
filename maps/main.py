@@ -220,6 +220,11 @@ def main() -> int:
     """Application entry point used by ``python main.py``."""
 
     app = QApplication(sys.argv)
+
+    # Prefer the GPU accelerated widget when possible because it removes a
+    # substantial amount of per-frame work from the CPU.  Falling back to the
+    # software widget keeps the application functional on systems that lack
+    # OpenGL support, but users should expect a higher CPU load in that mode.
     use_opengl = check_opengl_support()
     widget_cls: type[MapWidgetBase] = MapGLWidget if use_opengl else MapWidget
     if use_opengl:
@@ -227,7 +232,12 @@ def main() -> int:
     else:
         print("OpenGL support unavailable. Falling back to CPU rendering.")
 
-    window = MainWindow(widget_class=widget_cls)
+    try:
+        window = MainWindow(widget_class=widget_cls)
+    except (StyleLoadError, TileLoadingError) as exc:
+        QMessageBox.critical(None, "Error", f"Failed to initialize map:\n{exc}")
+        return 1
+
     window.show()
     return app.exec()
 

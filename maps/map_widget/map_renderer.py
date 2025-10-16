@@ -81,6 +81,12 @@ class MapRenderer:
         # mouse move event.
         self._cities: list[CityAnnotation] = []
         self._city_labels: list[_RenderedCityLabel] = []
+        # ``_label_collision_boxes`` tracks the rectangles of text labels that
+        # were successfully drawn in the current frame.  Keeping the rectangles
+        # grouped by layer enables lightweight collision detection so that we can
+        # suppress overlapping country names when zoomed far out while still
+        # letting close-up views render every label.
+        self._label_collision_boxes: dict[str, list[QRectF]] = {}
 
     # ------------------------------------------------------------------
     def set_cities(self, cities: Iterable[CityAnnotation]) -> None:
@@ -110,6 +116,9 @@ class MapRenderer:
         painter.fillRect(0, 0, width, height, QColor("#88a8c2"))
 
         view_state = self._compute_view_state(center_x, center_y, zoom, width, height)
+        # Collision tracking must start fresh for every paint pass because the
+        # widget rerenders the entire viewport each time.
+        self._label_collision_boxes.clear()
         tiles_to_draw, tiles_to_request = self._collect_tiles(view_state)
         self._request_tiles(tiles_to_request)
         self._render_tiles(painter, tiles_to_draw, view_state)
@@ -573,7 +582,16 @@ class MapRenderer:
             return
 
         scale = scaled_tile_size / float(extent)
-        for feature in features:
+        collision_rects = self._label_collision_boxes.setdefault(style_layer, [])
+        features_to_draw: list[dict] = list(features)
+        if style_layer == "countries-label" and zoom < 4.0:
+            # Natural Earth tiles expose label priority metadata (for example
+            # ``scalerank``).  Sorting once per layer ensures that larger or more
+            # important countries claim space first when the viewport is zoomed
+            # out and screen real estate is limited.
+            features_to_draw = self._prioritize_country_labels(features_to_draw)
+
+        for feature in features_to_draw:
             geom_type, coordinates = extract_geometry(
                 feature,
                 extent,
@@ -610,6 +628,17 @@ class MapRenderer:
             half_width = rect.width() / 2.0
             baseline_offset = rect.height() / 2.0 - metrics.descent()
 
+            allow_overlap_value = self._style.get_layout(
+                style_layer, "text-allow-overlap", zoom, properties
+            )
+            ignore_placement_value = self._style.get_layout(
+                style_layer, "text-ignore-placement", zoom, properties
+            )
+            allow_overlap = bool(allow_overlap_value) if isinstance(allow_overlap_value, bool) else False
+            ignore_placement = (
+                bool(ignore_placement_value) if isinstance(ignore_placement_value, bool) else False
+            )
+
             for point in points:
                 tile_x_unit = float(point[0])
                 tile_y_unit = float(point[1])
@@ -619,6 +648,26 @@ class MapRenderer:
 
                 baseline_x = screen_center_x - half_width
                 baseline_y = screen_center_y + baseline_offset
+
+                text_bounds = rect.translated(baseline_x, baseline_y)
+                halo_padding = text_style.halo_width if text_style.halo_width > 0 else 0.0
+                if halo_padding > 0.0:
+                    text_bounds = text_bounds.adjusted(
+                        -halo_padding,
+                        -halo_padding,
+                        halo_padding,
+                        halo_padding,
+                    )
+
+                enforce_collisions = (
+                    style_layer == "countries-label" and zoom < 4.0 and not allow_overlap and not ignore_placement
+                )
+                if enforce_collisions and self._rectangle_intersects_any(collision_rects, text_bounds):
+                    # Skip labels that would overlap previously accepted ones so
+                    # distant views remain legible.  When zooming in, every
+                    # label is allowed to draw because there is enough screen
+                    # space for the full set of country names.
+                    continue
 
                 if text_style.halo_color and text_style.halo_width > 0:
                     halo_path = QPainterPath()
@@ -635,6 +684,8 @@ class MapRenderer:
                 painter.setPen(label_pen)
                 painter.setBrush(Qt.NoBrush)
                 painter.drawText(QPointF(baseline_x, baseline_y), text_style.text)
+
+                collision_rects.append(text_bounds)
 
             painter.restore()
 
@@ -693,6 +744,35 @@ class MapRenderer:
             return [points[middle_index]]
 
         return points
+
+    # ------------------------------------------------------------------
+    def _prioritize_country_labels(self, features: Sequence[dict]) -> list[dict]:
+        """Sort country label features so higher-priority names render first."""
+
+        def priority(feature: dict) -> tuple[float, float]:
+            properties = feature.get("properties", {}) if isinstance(feature, dict) else {}
+            # Smaller ``scalerank``/``labelrank`` values correspond to more
+            # prominent countries in the Natural Earth dataset.  Falling back to
+            # ``inf`` preserves the original ordering when metadata is missing.
+            for key in ("scalerank", "labelrank", "LABELRANK"):
+                value = properties.get(key)
+                if isinstance(value, (int, float)):
+                    return float(value), 0.0
+            return float("inf"), 0.0
+
+        enumerated = list(enumerate(features))
+        enumerated.sort(key=lambda item: (priority(item[1]), item[0]))
+        return [item[1] for item in enumerated]
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _rectangle_intersects_any(existing: Sequence[QRectF], candidate: QRectF) -> bool:
+        """Return ``True`` when *candidate* intersects any rectangle in *existing*."""
+
+        for rect in existing:
+            if rect.intersects(candidate):
+                return True
+        return False
 
     # ------------------------------------------------------------------
     @staticmethod

@@ -64,8 +64,15 @@ class MapWidgetController:
     """Encapsulate rendering, tile management, and input handling logic."""
 
     TILE_SIZE = 256
-    MIN_ZOOM = 0.0
-    MAX_ZOOM = 8.0
+    # MapLibre's baked vector tiles only provide meaningful detail between zoom
+    # levels roughly two and six.  Clamping the interaction range keeps the
+    # world from repeating at extremely low zoom values while still allowing
+    # users to zoom in far enough to inspect individual countries and regions.
+    # A minimum zoom of ``2.0`` also guarantees the virtual map is taller than a
+    # typical desktop viewport so the poles never expose blank background
+    # padding.
+    MIN_ZOOM = 2.0
+    MAX_ZOOM = 6.0
 
     def __init__(
         self,
@@ -312,7 +319,8 @@ class MapWidgetController:
         world_x, world_y = world_position
         world_size = self._world_size()
         self._center_x = (world_x / world_size) % 1.0
-        self._center_y = min(max(world_y / world_size, 0.0), 1.0)
+        self._center_y = world_y / world_size
+        self._wrap_center()
         self._widget.update()
         self._notify_view_changed()
 
@@ -421,7 +429,25 @@ class MapWidgetController:
         """Ensure the virtual camera remains within sensible bounds."""
 
         self._center_x %= 1.0
-        self._center_y = min(max(self._center_y, 0.0), 1.0)
+
+        world_size = self._world_size()
+        viewport_height = max(1, self._widget.height())
+        half_view_ratio = viewport_height / (2.0 * world_size)
+
+        if half_view_ratio >= 0.5:
+            # When the viewport is taller than the projected map, the most
+            # natural presentation is to centre the poles vertically.  Clamping
+            # to the midpoint also prevents the user from dragging the map into
+            # empty background at either extreme.
+            self._center_y = 0.5
+            return
+
+        min_center = half_view_ratio
+        max_center = 1.0 - half_view_ratio
+        # ``center_y`` is now limited so the visible viewport never crosses the
+        # poles, eliminating the blank gutters shown previously when dragging to
+        # the Arctic or Antarctic regions.
+        self._center_y = min(max(self._center_y, min_center), max_center)
 
     # ------------------------------------------------------------------
     def _notify_view_changed(self) -> None:

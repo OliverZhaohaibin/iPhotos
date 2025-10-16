@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from logging import getLogger
 from pathlib import Path
 from typing import Dict, Iterable, Optional, cast
 
@@ -10,6 +11,8 @@ from PySide6.QtGui import (
     QColor,
     QFont,
     QMouseEvent,
+    QOffscreenSurface,
+    QOpenGLContext,
     QPaintEvent,
     QPainter,
     QPainterPath,
@@ -18,12 +21,44 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QToolTip, QVBoxLayout, QWidget
 
+from iPhotos.maps.map_widget.map_gl_widget import MapGLWidget
 from iPhotos.maps.map_widget.map_widget import MapWidget
 from iPhotos.maps.map_widget.map_renderer import CityAnnotation
 
 from ....library.manager import GeotaggedAsset
 from ..tasks.thumbnail_loader import ThumbnailLoader
 from .marker_controller import MarkerController, _MarkerCluster
+
+
+logger = getLogger(__name__)
+
+
+def check_opengl_support() -> bool:
+    """Return ``True`` when the system can create a basic OpenGL context."""
+
+    try:
+        # ``QOffscreenSurface`` keeps the detection lightweight by avoiding any
+        # visible windows while still exercising the platform specific OpenGL
+        # plumbing that the accelerated widget relies on.
+        surface = QOffscreenSurface()
+        surface.create()
+        if not surface.isValid():
+            return False
+
+        context = QOpenGLContext()
+        if not context.create():
+            return False
+
+        if not context.makeCurrent(surface):
+            return False
+
+        context.doneCurrent()
+        return True
+    except Exception:  # noqa: BLE001 - fall back gracefully on any Qt failure
+        # Creating the surface or context can fail in virtualised or
+        # misconfigured environments.  Returning ``False`` ensures the view
+        # falls back to the CPU renderer instead of crashing.
+        return False
 
 
 class _MarkerLayer(QWidget):
@@ -99,7 +134,14 @@ class _MarkerLayer(QWidget):
 
     def _paint_cluster(self, painter: QPainter, cluster: _MarkerCluster) -> None:
         width = float(self.MARKER_SIZE)
-        height = float(self.MARKER_SIZE)
+        display_edge = float(self.THUMBNAIL_DISPLAY_SIZE)
+        # The callout should surround the thumbnail with an equal white border on all sides.
+        # Deriving the border from the configured marker size keeps the geometry consistent
+        # when designers tweak either constant while ensuring horizontal and vertical padding
+        # always match.
+        border = (width - display_edge) / 2.0
+        body_height = display_edge + 2.0 * border
+        height = body_height + float(self.POINTER_HEIGHT)
         x = cluster.screen_pos.x() - width / 2.0
         y = cluster.screen_pos.y() - height
         rect = QRectF(x, y, width, height)
@@ -119,10 +161,9 @@ class _MarkerLayer(QWidget):
         if thumbnail is None:
             thumbnail = self._placeholder
         if not thumbnail.isNull():
-            display_edge = float(self.THUMBNAIL_DISPLAY_SIZE)
             thumb_rect = QRectF(
-                x + (width - display_edge) / 2.0,
-                y + (height - self.POINTER_HEIGHT - display_edge) / 2.0,
+                rect.left() + border,
+                rect.top() + border,
                 display_edge,
                 display_edge,
             )
@@ -200,7 +241,19 @@ class PhotoMapView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self._map_widget = MapWidget(self)
+        self._map_widget: MapWidget | MapGLWidget
+
+        if check_opengl_support():
+            # Prefer the GPU accelerated widget when the platform exposes the
+            # necessary OpenGL capabilities.  This dramatically improves pan and
+            # zoom smoothness for larger libraries.
+            self._map_widget = MapGLWidget(self)
+            logger.info("Photo map initialised with GPU acceleration enabled.")
+        else:
+            # Fall back to the CPU implementation to keep the feature usable on
+            # systems where OpenGL is unavailable or unstable.
+            self._map_widget = MapWidget(self)
+            logger.info("Photo map using CPU rendering because OpenGL is unavailable.")
         layout.addWidget(self._map_widget)
 
         self._overlay = _MarkerLayer(self)
@@ -229,8 +282,8 @@ class PhotoMapView(QWidget):
         self._marker_controller.thumbnailsInvalidated.connect(self._overlay.clear_pixmaps)
         self._last_tooltip_text = ""
 
-    def map_widget(self) -> MapWidget:
-        """Expose the underlying :class:`MapWidget` for integration tests."""
+    def map_widget(self) -> MapWidget | MapGLWidget:
+        """Expose the underlying map widget for integration tests."""
 
         return self._map_widget
 
@@ -282,12 +335,18 @@ class PhotoMapView(QWidget):
         return super().eventFilter(watched, event)
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
-        """Ensure the clustering thread shuts down before the widget closes."""
+        """Ensure background workers shut down before the widget closes."""
 
         if self._last_tooltip_text:
             QToolTip.hideText()
             self._last_tooltip_text = ""
+        # ``MarkerController`` maintains a worker thread that aggregates marker clusters.
+        # Explicitly shutting it down prevents the Qt event loop from waiting indefinitely.
         self._marker_controller.shutdown()
+        # The map widget owns a ``TileManager`` that runs in a separate ``QThread`` to
+        # stream map tiles.  If the thread is not told to exit, the application process
+        # keeps running after the window closes, so we must always shut it down here.
+        self._map_widget.shutdown()
         super().closeEvent(event)
 
     def _handle_city_annotations(self, cities: Iterable[CityAnnotation]) -> None:
