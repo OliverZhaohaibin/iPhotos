@@ -313,15 +313,46 @@ class VideoArea(QWidget):
     def _update_bar_geometry(self) -> None:
         if not self.isVisible():
             return
-        rect = self.rect()
-        available_width = max(0, rect.width() - (2 * self._overlay_margin))
+        # ``QVideoWidget.geometry()`` reports the video surface after aspect ratio
+        # corrections.  Using that rectangle ensures the floating controls align
+        # with the actual picture instead of stretching across the letterboxed
+        # padding that ``VideoArea`` uses to keep colour parity with the photo
+        # viewer.  When no clip is active ``geometry()`` may still be empty, in
+        # which case the logic falls back to the full container bounds to mimic
+        # the legacy behaviour and keep the controls reachable.
+        video_rect = self._video_widget.geometry()
+        if video_rect.isEmpty():
+            video_rect = self.rect()
+
+        # ``_video_size`` is ``None`` until metadata arrives.  During that
+        # period the surface temporarily fills the container, so the controls
+        # should follow suit to avoid awkward jumps when the first frame plays.
+        if self._video_size is None or self._video_size.isEmpty():
+            video_rect = self.rect()
+
+        # Derive the bar's width from the usable video width while respecting
+        # the overlay margin.  ``sizeHint`` often exceeds the constrained width
+        # for narrow clips, so we clamp to prevent the controls from spilling
+        # into the themed padding columns.
+        available_width = max(0, video_rect.width() - (2 * self._overlay_margin))
         bar_hint = self._player_bar.sizeHint()
         bar_width = min(bar_hint.width(), available_width)
         bar_height = bar_hint.height()
-        x = (rect.width() - bar_width) // 2
-        y = rect.height() - bar_height - self._overlay_margin
-        if y < self._overlay_margin:
-            y = max(0, rect.height() - bar_height)
+
+        # Horizontally centre the bar beneath the picture.  ``geometry`` uses
+        # parent-relative coordinates, so we offset from ``left()`` rather than
+        # assuming the video starts at ``x == 0``.
+        x = video_rect.left() + (video_rect.width() - bar_width) // 2
+
+        # Anchor the controls to the bottom of the video with a configurable
+        # margin.  The ``max`` keeps the bar inside the clip even when the
+        # overlay margin would otherwise push it above the top edge (for
+        # example, with very small videos or extreme UI scaling).
+        y = video_rect.bottom() - bar_height - self._overlay_margin
+        min_y = video_rect.top() + self._overlay_margin
+        if y < min_y:
+            y = max(video_rect.top(), video_rect.bottom() - bar_height)
+
         self._player_bar.setGeometry(x, y, bar_width, bar_height)
         self._player_bar.raise_()
 
