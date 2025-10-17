@@ -100,7 +100,22 @@ def _extract_with_ffmpeg(
         "-vsync",
         "0",
     ]
-    filters: list[str] = []
+    filters: list[str] = [
+        # Convert HDR material into a linear light buffer before tonemapping so the
+        # following steps operate on a predictable signal. The neutral peak level keeps
+        # highlights within a practical range for SDR conversion.
+        "zscale=t=linear:npl=100",
+        # Work in full-precision RGB while tone mapping to avoid precision loss.
+        "format=gbrpf32le",
+        # Normalize the primaries to BT.709 to match the application's SDR display target.
+        "zscale=p=bt709",
+        # Apply a filmic tonemap curve that keeps contrast in bright regions without
+        # clipping. Desaturation is disabled so strong colors are retained.
+        "tonemap=tonemap=hable:desat=0",
+        # Return to the standard transfer function and range expected by SDR displays.
+        "zscale=t=bt709:m=bt709:r=tv",
+    ]
+
     if scale is not None:
         width, height = scale
         if width > 0 and height > 0:
@@ -110,11 +125,14 @@ def _extract_with_ffmpeg(
                     h=height,
                 )
             )
+
     if format == "jpeg":
-        if not filters:
-            filters.append("scale=iw:ih")
+        # JPEG encoders expect even dimensions and typically operate on YUV data. The
+        # extra scaling step enforces an even size while keeping aspect ratio untouched.
         filters.append("scale=max(2,trunc(iw/2)*2):max(2,trunc(ih/2)*2)")
-    if format == "png":
+        filters.append("format=yuv420p")
+    elif format == "png":
+        # Preserve the alpha channel for PNG outputs to avoid losing transparency.
         filters.append("format=rgba")
     else:
         filters.append("format=yuv420p")
