@@ -101,12 +101,12 @@ class VideoArea(QWidget):
         self._player_bar.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self._player_bar.hide()
         self._player_bar.setMouseTracking(True)
-
-        # ``QVideoWidget`` can render through a platform overlay that ignores the
-        # usual QWidget stacking rules.  Establish the desired order right away
-        # so the floating controls are drawn above the video surface even before
-        # any geometry updates occur.
-        self._video_widget.stackUnder(self._player_bar)
+        # Avoid mixing the native-window overlay approach with QWidget stacking
+        # helpers such as :meth:`stackUnder`.  Once the controls obtain a
+        # platform window handle the usual sibling ordering calls become a no-op
+        # at best and can even race with the compositor.  All ordering is now
+        # handled in :meth:`_sync_player_bar_overlay`, which ensures the player
+        # bar stays above the accelerated video surface on every platform.
 
         self._controls_visible = False
         self._target_opacity = 0.0
@@ -393,8 +393,9 @@ class VideoArea(QWidget):
 
         # ``raise_`` remains useful when the player bar falls back to the
         # classic QWidget code path (for example during unit tests where native
-        # handles may not be created).
-        self._video_widget.stackUnder(self._player_bar)
+        # handles may not be created).  When a native window handle exists the
+        # call becomes a harmless no-op because stacking is managed via
+        # :meth:`_sync_player_bar_overlay` instead.
         self._player_bar.raise_()
 
     def _update_video_geometry(self) -> None:
