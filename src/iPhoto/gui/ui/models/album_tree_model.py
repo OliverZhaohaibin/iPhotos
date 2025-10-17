@@ -78,11 +78,14 @@ class AlbumTreeModel(QAbstractItemModel):
 
     TRAILING_STATIC_NODES: tuple[str, ...] = ("Recently Deleted",)
 
+    # Store the icon *base* names so the delegate can decide whether to append
+    # the ``.fill`` suffix depending on the selection state. This keeps the
+    # model responsible only for supplying the default, unselected icon.
     _STATIC_ICON_MAP: dict[str, str] = {
         "all photos": "photo.on.rectangle",
-        "videos": "video.fill",
+        "videos": "video",
         "live photos": "livephoto",
-        "favorites": "suit.heart.fill",
+        "favorites": "suit.heart",
         "location": "mappin.and.ellipse",
         "recently deleted": "trash",
     }
@@ -232,8 +235,10 @@ class AlbumTreeModel(QAbstractItemModel):
             icon_name = self._STATIC_ICON_MAP.get(item.title.casefold())
             if icon_name:
                 # Static entries mirror the macOS sidebar styling, so we tint the
-                # SF Symbols inspired SVGs with the shared blue accent colour.
-                return load_icon(icon_name, color=SIDEBAR_ICON_COLOR_HEX)
+                # SF Symbols inspired SVGs with the shared blue accent colour. We
+                # defer fill selection to the delegate, therefore the base icon is
+                # always loaded without the ".fill" suffix at this stage.
+                return load_icon(f"{icon_name}.svg", color=SIDEBAR_ICON_COLOR_HEX)
         if item.node_type in {NodeType.ALBUM, NodeType.SUBALBUM}:
             return load_icon("rectangle.stack")
         if item.node_type == NodeType.HEADER:
