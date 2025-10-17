@@ -89,6 +89,15 @@ class VideoArea(QWidget):
 
         self._overlay_margin = 48
         self._player_bar = PlayerBar(self)
+        self._player_bar.hide()
+        self._player_bar.setMouseTracking(True)
+        # ``QVideoWidget`` owns a platform-specific surface that can ignore
+        # Qt's notion of sibling order.  Before we promote the controls to a
+        # native window we therefore record the intended layering explicitly so
+        # the toolkit never has to guess whether the video or the overlay should
+        # appear on top.  Establishing this baseline while the widgets are still
+        # regular children avoids races once the compositor takes over.
+        self._video_widget.stackUnder(self._player_bar)
         # Promote the controls to a native child window so they can render on
         # top of the platform-specific video overlay.  Without this promotion
         # the hardware-backed surface owned by ``QVideoWidget`` can permanently
@@ -99,14 +108,10 @@ class VideoArea(QWidget):
         self._player_bar.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
         self._player_bar.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self._player_bar.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
-        self._player_bar.hide()
-        self._player_bar.setMouseTracking(True)
-        # Avoid mixing the native-window overlay approach with QWidget stacking
-        # helpers such as :meth:`stackUnder`.  Once the controls obtain a
-        # platform window handle the usual sibling ordering calls become a no-op
-        # at best and can even race with the compositor.  All ordering is now
-        # handled in :meth:`_sync_player_bar_overlay`, which ensures the player
-        # bar stays above the accelerated video surface on every platform.
+        # After promotion the operating system manages z-ordering.  Additional
+        # ``raise_`` or ``stackUnder`` calls would at best do nothing and at
+        # worst fight the compositor, so future adjustments route through
+        # :meth:`_sync_player_bar_overlay` instead.
 
         self._controls_visible = False
         self._target_opacity = 0.0
