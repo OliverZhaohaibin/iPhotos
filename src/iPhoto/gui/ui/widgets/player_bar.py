@@ -67,11 +67,17 @@ class PlayerBar(QWidget):
 
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 16, 18, 16)
+        # The outer layout now owns the visual background padding.  The
+        # previous implementation delegated the rounded, translucent chrome to
+        # a child ``QWidget``.  That approach fails once the bar becomes a
+        # native window because the compositor may decide a fully transparent
+        # top-level window has nothing to paint.  By moving the padding and
+        # background responsibility to ``PlayerBar`` itself we guarantee the
+        # platform window always exposes an opaque-ish region for the graphics
+        # stack to blend, preventing the bar from disappearing while retaining
+        # the original visual spacing.
+        layout.setContentsMargins(16, 12, 16, 12)
         layout.setSpacing(12)
-
-        self._progress_frame = QWidget(self)
-        self._progress_frame.setObjectName("progressFrame")
 
         slider_row = QHBoxLayout()
         slider_row.setContentsMargins(0, 0, 0, 0)
@@ -90,13 +96,8 @@ class PlayerBar(QWidget):
         controls_row.addWidget(self._volume_slider)
         controls_row.addStretch(1)
 
-        frame_layout = QVBoxLayout(self._progress_frame)
-        frame_layout.setContentsMargins(16, 12, 16, 12)
-        frame_layout.setSpacing(12)
-        frame_layout.addLayout(slider_row)
-        frame_layout.addLayout(controls_row)
-
-        layout.addWidget(self._progress_frame)
+        layout.addLayout(slider_row)
+        layout.addLayout(controls_row)
 
         self._apply_palette()
 
@@ -289,17 +290,18 @@ class PlayerBar(QWidget):
         )
         label_style = "color: #d7d8da; font-size: 12px;"
 
+        # Apply the translucent chrome directly to the ``PlayerBar``.  The bar
+        # now draws its own rounded background so the compositor always renders
+        # the native window even when the underlying video widget claims the
+        # majority of the airspace.  Styling the parent widget also simplifies
+        # the layout tree by removing the redundant ``progressFrame`` layer.
         self.setStyleSheet(
             "PlayerBar {"
-            " background-color: transparent;"
-            " border: none;"
-            " color: #d7d8da;"
-            "}\n"
-            "PlayerBar #progressFrame {"
             " background-color: rgba(18, 18, 22, 190);"
             " border-radius: 14px;"
             " border: 1px solid rgba(255, 255, 255, 36);"
-            " }\n"
+            " color: #d7d8da;"
+            "}\n"
             + button_style
         )
         self._position_slider.setStyleSheet(slider_style)
