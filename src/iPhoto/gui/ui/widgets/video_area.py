@@ -8,6 +8,7 @@ from PySide6.QtCore import (
     QEasingCurve,
     QEvent,
     QObject,
+    QPoint,
     QPropertyAnimation,
     QSize,
     QTimer,
@@ -88,6 +89,16 @@ class VideoArea(QWidget):
 
         self._overlay_margin = 48
         self._player_bar = PlayerBar(self)
+        # Promote the controls to a native child window so they can render on
+        # top of the platform-specific video overlay.  Without this promotion
+        # the hardware-backed surface owned by ``QVideoWidget`` can permanently
+        # occlude the translucent bar even when Qt believes the widget ordering
+        # is correct.  Using a native window also allows us to attach the bar to
+        # the main window as a transient child, which keeps it above the video
+        # content while still moving in sync with the parent ``VideoArea``.
+        self._player_bar.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
+        self._player_bar.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self._player_bar.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self._player_bar.hide()
         self._player_bar.setMouseTracking(True)
 
@@ -320,6 +331,8 @@ class VideoArea(QWidget):
         if not self.isVisible():
             return
 
+        self._sync_player_bar_overlay()
+
         # ``QVideoWidget.geometry()`` reflects the letterboxed video surface
         # after aspect-ratio corrections.  Aligning the playback controls with
         # that rectangle keeps them visually anchored to the visible clip rather
@@ -366,10 +379,21 @@ class VideoArea(QWidget):
         if y < video_rect.top():
             y = video_rect.top()
 
-        self._player_bar.setGeometry(x, y, bar_width, bar_height)
-        # ``raise_`` alone is not sufficient when ``QVideoWidget`` promotes
-        # itself to a native overlay, so we also force the stack order to ensure
-        # the controls remain visible during playback.
+        top_left = QPoint(x, y)
+        if self._player_bar.testAttribute(Qt.WidgetAttribute.WA_NativeWindow):
+            global_top_left = self.mapToGlobal(top_left)
+            self._player_bar.setGeometry(
+                global_top_left.x(),
+                global_top_left.y(),
+                bar_width,
+                bar_height,
+            )
+        else:
+            self._player_bar.setGeometry(x, y, bar_width, bar_height)
+
+        # ``raise_`` remains useful when the player bar falls back to the
+        # classic QWidget code path (for example during unit tests where native
+        # handles may not be created).
         self._video_widget.stackUnder(self._player_bar)
         self._player_bar.raise_()
 
@@ -394,6 +418,26 @@ class VideoArea(QWidget):
         x = (available.width() - target.width()) // 2
         y = (available.height() - target.height()) // 2
         self._video_widget.setGeometry(x, y, target.width(), target.height())
+
+    def _sync_player_bar_overlay(self) -> None:
+        """Ensure the floating controls stay above native video overlays."""
+
+        handle = self._player_bar.windowHandle()
+        if handle is None:
+            return
+
+        desired_flags = (
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+        )
+        if (handle.flags() & desired_flags) != desired_flags:
+            handle.setFlags(handle.flags() | desired_flags)
+
+        window = self.window()
+        parent_handle = window.windowHandle() if window is not None else None
+        if parent_handle is not None and handle.transientParent() is not parent_handle:
+            handle.setTransientParent(parent_handle)
 
     # ------------------------------------------------------------------
     # Live Photo helpers
