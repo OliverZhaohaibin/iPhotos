@@ -16,6 +16,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..palette import VIEWER_SURFACE_COLOR_HEX
+
 
 class ImageViewer(QWidget):
     """Simple viewer that centers, zooms, and scrolls a ``QPixmap``."""
@@ -40,9 +42,13 @@ class ImageViewer(QWidget):
         self._scroll_area.setWidgetResizable(False)
         self._scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         self._scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        # Render the scroll area's viewport with a white background so photos sit on a
-        # neutral surface that matches the rest of the light-themed viewer chrome.
-        self._scroll_area.setStyleSheet("background-color: white; border: none;")
+        # Render the scroll area's viewport with the shared viewer surface colour so
+        # the photo canvas aligns with the rest of the interface instead of falling
+        # back to a stark pure white.  The neutral tone keeps the media prominent
+        # while visually integrating with the surrounding chrome.
+        self._scroll_area.setStyleSheet(
+            f"background-color: {VIEWER_SURFACE_COLOR_HEX}; border: none;"
+        )
         self._scroll_area.setWidget(self._label)
         self._scroll_area.viewport().installEventFilter(self)
 
@@ -50,9 +56,9 @@ class ImageViewer(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._scroll_area)
 
-        # Mirror the scroll area's white backdrop on the containing widget to avoid
-        # sudden colour changes at the edges when the layout exposes parent padding.
-        self.setStyleSheet("background-color: white;")
+        # Mirror the scroll area's backdrop on the container widget to avoid sudden
+        # colour changes when layout spacing exposes the parent's palette.
+        self.setStyleSheet(f"background-color: {VIEWER_SURFACE_COLOR_HEX};")
 
         self._live_replay_enabled = False
         self._zoom_factor = 1.0

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QCoreApplication, QMetaObject, QSize, Qt
-from PySide6.QtGui import QAction, QFont
+from PySide6.QtGui import QAction, QColor, QFont
 from PySide6.QtWidgets import (
     QFrame,
+    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from .icons import load_icon
+from .palette import VIEWER_SURFACE_COLOR_HEX
 from .widgets import (
     AlbumSidebar,
     FilmstripView,
@@ -119,10 +121,11 @@ class Ui_MainWindow(object):
         self.image_viewer = ImageViewer()
         self.player_placeholder = QLabel("Select a photo or video to preview.")
         self.player_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        # Present the placeholder on a white background so the transition to real media
-        # feels seamless when the viewer swaps in photo or video content.
+        # Present the placeholder on the shared viewer surface colour so the transition
+        # to actual photo or video content feels seamless and visually cohesive.
         self.player_placeholder.setStyleSheet(
-            "background-color: white; color: black; font-size: 16px;"
+            f"background-color: {VIEWER_SURFACE_COLOR_HEX}; "
+            "color: black; font-size: 16px;"
         )
         self.player_placeholder.setMinimumHeight(320)
         self.player_stack = QStackedWidget()
@@ -263,11 +266,27 @@ class Ui_MainWindow(object):
         header_layout.addWidget(actions_container)
         detail_layout.addWidget(header)
 
-        # Insert a subtle separator between the metadata header and the media area so the
-        # hierarchy reads clearly without resorting to heavy borders.
+        # Insert a custom separator between the metadata header and the media area.
+        # A soft drop shadow coupled with a light-toned line delivers the requested
+        # subtle depth cue without overwhelming the surrounding chrome.
         header_separator = QFrame()
+        header_separator.setObjectName("detailHeaderSeparator")
         header_separator.setFrameShape(QFrame.Shape.HLine)
-        header_separator.setFrameShadow(QFrame.Shadow.Sunken)
+        header_separator.setFrameShadow(QFrame.Shadow.Plain)
+        header_separator.setFixedHeight(2)
+        separator_tint = QColor(VIEWER_SURFACE_COLOR_HEX)
+        separator_tint = separator_tint.darker(108)
+        header_separator.setStyleSheet(
+            "QFrame#detailHeaderSeparator {"
+            f"  background-color: {separator_tint.name()};"
+            "  border: none;"
+            "}"
+        )
+        separator_shadow = QGraphicsDropShadowEffect(header_separator)
+        separator_shadow.setBlurRadius(14)
+        separator_shadow.setColor(QColor(0, 0, 0, 45))
+        separator_shadow.setOffset(0, 1)
+        header_separator.setGraphicsEffect(separator_shadow)
         detail_layout.addWidget(header_separator)
 
         player_container = QWidget()
