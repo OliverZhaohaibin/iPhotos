@@ -68,12 +68,18 @@ def load_icon(
     if normalized_color is not None:
         tint = QColor.fromRgb(*normalized_color)
         tinted = QPixmap(pixmap.size())
+        tinted.setDevicePixelRatio(pixmap.devicePixelRatio())
         tinted.fill(Qt.GlobalColor.transparent)
         painter = QPainter(tinted)
-        painter.fillRect(tinted.rect(), tint)
-        painter.setCompositionMode(QPainter.CompositionMode_DestinationIn)
-        painter.drawPixmap(0, 0, pixmap)
-        painter.end()
+        try:
+            # Painting the original glyph first preserves its alpha mask. The
+            # SourceIn composition that follows then injects the requested tint
+            # while keeping crisp edges even for supersampled pixmaps.
+            painter.drawPixmap(0, 0, pixmap)
+            painter.setCompositionMode(QPainter.CompositionMode_SourceIn)
+            painter.fillRect(tinted.rect(), tint)
+        finally:
+            painter.end()
         pixmap = tinted
 
     if mirror_horizontal:

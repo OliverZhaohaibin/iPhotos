@@ -13,7 +13,6 @@ from PySide6.QtGui import QIcon
 from ....library.manager import LibraryManager
 from ....library.tree import AlbumNode
 from ..icon import load_icon
-from .. import palette
 
 
 class AlbumTreeRole(int, Enum):
@@ -231,10 +230,10 @@ class AlbumTreeModel(QAbstractItemModel):
         if item.node_type == NodeType.STATIC:
             icon_name = self._STATIC_ICON_MAP.get(item.title.casefold())
             if icon_name:
-                # Static library entries use the macOS accent colour so preload the
-                # tinted icon here; this keeps the delegate's rendering path simple
-                # and ensures every view receives identically styled icons.
-                return load_icon(icon_name, color=palette.SIDEBAR_ICON_ACCENT.name())
+                # Static library entries share the same base glyphs as albums. The
+                # delegate is responsible for applying the macOS accent tint so the
+                # model only needs to provide the neutral asset here.
+                return load_icon(icon_name)
         if item.node_type in {NodeType.ALBUM, NodeType.SUBALBUM}:
             return load_icon("rectangle.stack")
         if item.node_type == NodeType.HEADER:

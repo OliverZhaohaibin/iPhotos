@@ -15,7 +15,16 @@ from PySide6.QtCore import (
     QVariantAnimation,
     QPersistentModelIndex,
 )
-from PySide6.QtGui import QFont, QFontMetrics, QPainter, QPainterPath, QPen
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontMetrics,
+    QIcon,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import QStyledItemDelegate, QStyle, QStyleOptionViewItem, QTreeView
 
 from ..models.album_tree_model import AlbumTreeRole, NodeType
@@ -25,6 +34,11 @@ ROW_HEIGHT = 36
 ROW_RADIUS = 10
 LEFT_PADDING = 14
 ICON_TEXT_GAP = 10
+# Sidebar glyphs are designed around an 18×18 logical square. Rendering them at
+# a fixed supersample factor keeps strokes crisp even when Qt downscales for
+# standard-density displays.
+ICON_LOGICAL_SIZE = 18
+ICON_SUPERSAMPLE_FACTOR = 4.0
 INDENT_PER_LEVEL = 22
 INDICATOR_SLOT_WIDTH = 22
 INDICATOR_SIZE = 16
@@ -246,24 +260,16 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         # ------------------------------------------------------------------
         # Icon rendering
         # ------------------------------------------------------------------
-        # Every icon is now pre-tinted and cached by the model, so the delegate
-        # can rely on Qt's ``QIcon.paint`` helper. The helper renders scalable
-        # SVG assets at the ideal resolution for the target device, which keeps
-        # the glyphs tack sharp without forcing the delegate to manage explicit
-        # supersampling buffers or device pixel ratios.
         if icon is not None and not icon.isNull():
-            icon_size = 18
             icon_rect = QRect(
                 x,
-                rect.top() + (rect.height() - icon_size) // 2,
-                icon_size,
-                icon_size,
+                rect.top() + (rect.height() - ICON_LOGICAL_SIZE) // 2,
+                ICON_LOGICAL_SIZE,
+                ICON_LOGICAL_SIZE,
             )
-            icon.paint(
-                painter,
-                icon_rect,
-                Qt.AlignmentFlag.AlignCenter,
-            )
+
+            pixmap = self._render_icon_pixmap(icon, node_type, is_enabled)
+            painter.drawPixmap(icon_rect, pixmap)
             x = icon_rect.right() + ICON_TEXT_GAP
 
         painter.setPen(text_color)
@@ -286,6 +292,65 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
             depth += 1
             parent = parent.parent()
         return depth
+
+    def _render_icon_pixmap(
+        self,
+        icon: QIcon,
+        node_type: NodeType,
+        is_enabled: bool,
+    ) -> QPixmap:
+        """Render *icon* to a high-resolution pixmap and apply sidebar tinting.
+
+        The helper mirrors the behaviour of :meth:`QIcon.paint`—which keeps
+        vector glyphs sharp on HiDPI displays—but returns a :class:`QPixmap`
+        that we can further process. Rendering at a fixed 4× supersample ensures
+        crisp downscaling, and the optional tint step recolours static entries
+        without mutating the shared :class:`QIcon` instance cached by the model.
+        """
+
+        physical_side = int(ICON_LOGICAL_SIZE * ICON_SUPERSAMPLE_FACTOR)
+        physical_size = QSize(physical_side, physical_side)
+
+        pixmap = QPixmap(physical_size)
+        pixmap.setDevicePixelRatio(ICON_SUPERSAMPLE_FACTOR)
+        pixmap.fill(Qt.GlobalColor.transparent)
+
+        painter = QPainter(pixmap)
+        try:
+            # We explicitly paint into the supersampled rect so that Qt applies
+            # its own SVG-aware scaling logic before we touch the pixel buffer.
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            icon.paint(
+                painter,
+                QRect(0, 0, physical_size.width(), physical_size.height()),
+                Qt.AlignmentFlag.AlignCenter,
+            )
+        finally:
+            painter.end()
+
+        if node_type == NodeType.STATIC:
+            tint = palette.SIDEBAR_ICON_ACCENT if is_enabled else palette.SIDEBAR_DISABLED_TEXT
+            pixmap = self._tint_pixmap(pixmap, tint)
+
+        return pixmap
+
+    @staticmethod
+    def _tint_pixmap(pixmap: QPixmap, tint: QColor) -> QPixmap:
+        """Return a tinted copy of *pixmap* while preserving device DPI info."""
+
+        tinted = QPixmap(pixmap.size())
+        tinted.setDevicePixelRatio(pixmap.devicePixelRatio())
+        tinted.fill(Qt.GlobalColor.transparent)
+
+        painter = QPainter(tinted)
+        try:
+            painter.drawPixmap(0, 0, pixmap)
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+            painter.fillRect(tinted.rect(), tint)
+        finally:
+            painter.end()
+
+        return tinted
 
 
 __all__ = [
