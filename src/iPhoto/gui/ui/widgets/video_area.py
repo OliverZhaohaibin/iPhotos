@@ -390,13 +390,12 @@ class VideoArea(QWidget):
             )
         else:
             self._player_bar.setGeometry(x, y, bar_width, bar_height)
-
-        # ``raise_`` remains useful when the player bar falls back to the
-        # classic QWidget code path (for example during unit tests where native
-        # handles may not be created).  When a native window handle exists the
-        # call becomes a harmless no-op because stacking is managed via
-        # :meth:`_sync_player_bar_overlay` instead.
-        self._player_bar.raise_()
+            # ``raise_`` only applies when the controls remain a classic child
+            # widget.  In that fallback mode there is no native window handle,
+            # so we must explicitly elevate the bar above the video surface to
+            # keep the buttons clickable during tests or on platforms without
+            # overlay promotion.
+            self._player_bar.raise_()
 
     def _update_video_geometry(self) -> None:
         """Resize the video surface to match the reported clip dimensions."""
