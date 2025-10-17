@@ -35,7 +35,7 @@ from ....config import (
     PLAYER_FADE_OUT_MS,
 )
 from .player_bar import PlayerBar
-from ..palette import viewer_surface_color
+from ..palette import VIEWER_SURFACE_COLOR_HEX
 
 
 class VideoArea(QWidget):
@@ -65,13 +65,12 @@ class VideoArea(QWidget):
         self._video_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._video_view.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         # Match the photo viewer's light-toned surface so letterboxed video frames sit
-        # on the same neutral backdrop.  Using the shared palette value keeps the
-        # photo and video experiences visually consistent while avoiding harsh
-        # contrast against the surrounding chrome.
-        # Mirror the palette-driven detail background so letterboxed frames do not
-        # sit on a subtly different tone compared to the surrounding widgets.
-        surface_color = viewer_surface_color(self)
-        self._video_view.setStyleSheet(f"background: {surface_color}; border: none;")
+        # on the same neutral backdrop.  The constant avoids palette-dependent colour
+        # shifts that caused HDR footage to appear desaturated while still keeping the
+        # white surface introduced in the current design.
+        self._video_view.setStyleSheet(
+            f"background: {VIEWER_SURFACE_COLOR_HEX}; border: none;"
+        )
         # --- End Graphics View Setup ---
 
         self._overlay_margin = 48

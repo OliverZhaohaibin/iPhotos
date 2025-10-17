@@ -5,6 +5,11 @@ from __future__ import annotations
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QWidget
 
+# Neutral backdrop used for photo and video canvases.  The pure white tone avoids
+# tinting high-dynamic-range footage, which would otherwise look desaturated when
+# rendered against a slightly coloured surface.
+VIEWER_SURFACE_COLOR_HEX = "#ffffff"
+
 # --- Sidebar colour palette -------------------------------------------------
 # The macOS-inspired blue used for key sidebar affordances and icon tinting.
 SIDEBAR_ICON_COLOR_HEX = "#1e73ff"
@@ -96,5 +101,6 @@ __all__ = [
     "SIDEBAR_TREE_STYLESHEET",
     "SIDEBAR_LAYOUT_MARGIN",
     "SIDEBAR_LAYOUT_SPACING",
+    "VIEWER_SURFACE_COLOR_HEX",
     "viewer_surface_color",
 ]
