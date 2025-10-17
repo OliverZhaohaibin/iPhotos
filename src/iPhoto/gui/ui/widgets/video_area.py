@@ -91,6 +91,12 @@ class VideoArea(QWidget):
         self._player_bar.hide()
         self._player_bar.setMouseTracking(True)
 
+        # ``QVideoWidget`` can render through a platform overlay that ignores the
+        # usual QWidget stacking rules.  Establish the desired order right away
+        # so the floating controls are drawn above the video surface even before
+        # any geometry updates occur.
+        self._video_widget.stackUnder(self._player_bar)
+
         self._controls_visible = False
         self._target_opacity = 0.0
         self._controls_enabled = True
@@ -361,6 +367,10 @@ class VideoArea(QWidget):
             y = video_rect.top()
 
         self._player_bar.setGeometry(x, y, bar_width, bar_height)
+        # ``raise_`` alone is not sufficient when ``QVideoWidget`` promotes
+        # itself to a native overlay, so we also force the stack order to ensure
+        # the controls remain visible during playback.
+        self._video_widget.stackUnder(self._player_bar)
         self._player_bar.raise_()
 
     def _update_video_geometry(self) -> None:
