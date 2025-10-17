@@ -21,13 +21,22 @@ from ..models.album_tree_model import AlbumTreeModel, NodeType
 from ..delegates.album_sidebar_delegate import (
     AlbumSidebarDelegate,
     BranchIndicatorController,
-    BG_COLOR,
-    TEXT_COLOR,
-    LEFT_PADDING,
-    INDENT_PER_LEVEL,
-    INDICATOR_SIZE,
 )
 from ..menus.album_sidebar_menu import show_context_menu
+from ..palette import (
+    SIDEBAR_BACKGROUND_COLOR,
+    SIDEBAR_ICON_SIZE,
+    SIDEBAR_INDENT_PER_LEVEL,
+    SIDEBAR_INDICATOR_HOTZONE_MARGIN,
+    SIDEBAR_INDICATOR_SIZE,
+    SIDEBAR_LEFT_PADDING,
+    SIDEBAR_LAYOUT_MARGIN,
+    SIDEBAR_LAYOUT_SPACING,
+    SIDEBAR_TEXT_COLOR,
+    SIDEBAR_TITLE_COLOR_HEX,
+    SIDEBAR_TREE_MIN_WIDTH,
+    SIDEBAR_TREE_STYLESHEET,
+)
 
 
 class _DropAwareTree(QTreeView):
@@ -151,8 +160,8 @@ class AlbumSidebar(QWidget):
         self._current_static_selection: str | None = None
 
         palette = self.palette()
-        palette.setColor(QPalette.ColorRole.Window, BG_COLOR)
-        palette.setColor(QPalette.ColorRole.Base, BG_COLOR)
+        palette.setColor(QPalette.ColorRole.Window, SIDEBAR_BACKGROUND_COLOR)
+        palette.setColor(QPalette.ColorRole.Base, SIDEBAR_BACKGROUND_COLOR)
         self.setPalette(palette)
         self.setAutoFillBackground(True)
 
@@ -164,7 +173,7 @@ class AlbumSidebar(QWidget):
         title_font.setPointSizeF(title_font.pointSizeF() + 0.5)
         title_font.setBold(True)
         self._title.setFont(title_font)
-        self._title.setStyleSheet("color: #1b1b1b;")
+        self._title.setStyleSheet(f"color: {SIDEBAR_TITLE_COLOR_HEX};")
 
         self._tree = _DropAwareTree(self)
         self._tree.setObjectName("albumSidebarTree")
@@ -178,9 +187,9 @@ class AlbumSidebar(QWidget):
         self._tree.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self._tree.doubleClicked.connect(self._on_double_clicked)
         self._tree.clicked.connect(self._on_clicked)
-        self._tree.setMinimumWidth(220)
+        self._tree.setMinimumWidth(SIDEBAR_TREE_MIN_WIDTH)
         self._tree.setIndentation(0)
-        self._tree.setIconSize(QSize(18, 18))
+        self._tree.setIconSize(QSize(SIDEBAR_ICON_SIZE, SIDEBAR_ICON_SIZE))
         self._tree.setMouseTracking(True)
         self._tree.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         self._tree.setItemDelegate(AlbumSidebarDelegate(self._tree))
@@ -191,21 +200,17 @@ class AlbumSidebar(QWidget):
         self._tree.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         tree_palette = self._tree.palette()
-        tree_palette.setColor(QPalette.ColorRole.Base, BG_COLOR)
-        tree_palette.setColor(QPalette.ColorRole.Window, BG_COLOR)
+        tree_palette.setColor(QPalette.ColorRole.Base, SIDEBAR_BACKGROUND_COLOR)
+        tree_palette.setColor(QPalette.ColorRole.Window, SIDEBAR_BACKGROUND_COLOR)
         tree_palette.setColor(QPalette.ColorRole.Highlight, Qt.GlobalColor.transparent)
-        tree_palette.setColor(QPalette.ColorRole.HighlightedText, TEXT_COLOR)
+        tree_palette.setColor(QPalette.ColorRole.HighlightedText, SIDEBAR_TEXT_COLOR)
         self._tree.setPalette(tree_palette)
         self._tree.setAutoFillBackground(True)
-        self._tree.setStyleSheet(
-            "QTreeView { background: transparent; border: none; }"
-            "QTreeView::item { border: 0px; padding: 0px; margin: 0px; }"
-            "QTreeView::branch { image: none; }"
-        )
+        self._tree.setStyleSheet(SIDEBAR_TREE_STYLESHEET)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(*SIDEBAR_LAYOUT_MARGIN)
+        layout.setSpacing(SIDEBAR_LAYOUT_SPACING)
         layout.addWidget(self._title)
         layout.addWidget(self._tree, stretch=1)
 
@@ -296,16 +301,21 @@ class AlbumSidebar(QWidget):
             return
 
         depth = delegate._depth_for_index(index)
-        indentation = depth * INDENT_PER_LEVEL
-        indicator_left = item_rect.left() + LEFT_PADDING + indentation
+        indentation = depth * SIDEBAR_INDENT_PER_LEVEL
+        indicator_left = item_rect.left() + SIDEBAR_LEFT_PADDING + indentation
         indicator_rect = QRect(
             indicator_left,
-            item_rect.top() + (item_rect.height() - INDICATOR_SIZE) // 2,
-            INDICATOR_SIZE,
-            INDICATOR_SIZE,
+            item_rect.top() + (item_rect.height() - SIDEBAR_INDICATOR_SIZE) // 2,
+            SIDEBAR_INDICATOR_SIZE,
+            SIDEBAR_INDICATOR_SIZE,
         )
 
-        hot_zone = indicator_rect.adjusted(-4, -4, 4, 4)
+        hot_zone = indicator_rect.adjusted(
+            -SIDEBAR_INDICATOR_HOTZONE_MARGIN,
+            -SIDEBAR_INDICATOR_HOTZONE_MARGIN,
+            SIDEBAR_INDICATOR_HOTZONE_MARGIN,
+            SIDEBAR_INDICATOR_HOTZONE_MARGIN,
+        )
         cursor_pos = QCursor.pos()
         viewport_pos = self._tree.viewport().mapFromGlobal(cursor_pos)
         if not hot_zone.contains(viewport_pos):
