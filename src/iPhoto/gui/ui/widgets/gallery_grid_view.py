@@ -20,7 +20,6 @@ class GalleryGridView(AssetGrid):
         self.setSelectionMode(QListView.SelectionMode.SingleSelection)
         self.setViewMode(QListView.ViewMode.IconMode)
         self.setIconSize(self._base_icon_size)
-        self.setGridSize(self._base_icon_size)
         self.setSpacing(6)
         self.setUniformItemSizes(True)
         self.setResizeMode(QListView.ResizeMode.Adjust)
@@ -32,17 +31,20 @@ class GalleryGridView(AssetGrid):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.setWordWrap(False)
+        # Provide an initial grid size that roughly matches the base icon size.
+        # The resize handler will immediately refine this value when the widget
+        # receives its first resize event.
+        self.setGridSize(self._base_icon_size + QSize(self.spacing(), self.spacing()))
 
     def resizeEvent(self, event: QResizeEvent) -> None:  # type: ignore[override]
         """Resize icons so they always fill the available horizontal space."""
-        super().resizeEvent(event)
-
         viewport_width = self.viewport().width()
         spacing = self.spacing()
 
         # Abort early if the viewport is not ready yet. A zero width can happen
         # during initialization when Qt performs the first layout pass.
         if viewport_width <= 0:
+            super().resizeEvent(event)
             return
 
         # Determine how many columns *should* be visible for the current width.
@@ -68,3 +70,9 @@ class GalleryGridView(AssetGrid):
         if self.iconSize() != new_size:
             self.setIconSize(new_size)
             self.setGridSize(new_size)
+        elif self.gridSize() != new_size:
+            # Keep the grid cell tightly aligned with the icon so Qt does not
+            # attempt to compensate by stretching the inter-item spacing.
+            self.setGridSize(new_size)
+
+        super().resizeEvent(event)
