@@ -324,15 +324,19 @@ class VideoArea(QWidget):
         # The geometry query occasionally races ahead of the layout pass that
         # gives ``QVideoWidget`` its final size.  During that short window the
         # widget reports a ``1x1`` placeholder rectangle which is technically
-        # non-empty, so a simple ``isEmpty`` check is insufficient.  Falling back
-        # to the full container whenever the surface is suspiciously small—or
-        # when the clip dimensions have not yet been reported—keeps the controls
-        # visible until the real geometry is ready.
+        # non-empty, so a simple ``isEmpty`` check is insufficient.  When that
+        # happens the computed width collapses to zero and the controls become
+        # invisible.  To guard against that race we validate both dimensions and
+        # fall back to the container whenever the surface looks suspiciously
+        # small or when we lack reliable clip metadata.  Using a threshold of
+        # ``150`` pixels avoids flicker while still honouring legitimately small
+        # previews such as tiny Picture-in-Picture windows.
         if (
             self._video_size is None
             or self._video_size.isEmpty()
             or video_rect.isEmpty()
-            or video_rect.width() < 100
+            or video_rect.width() < 150
+            or video_rect.height() < 150
         ):
             video_rect = self.rect()
 
