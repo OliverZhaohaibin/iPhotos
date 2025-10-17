@@ -64,10 +64,6 @@ class VideoArea(QWidget):
         self._video_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._video_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._video_view.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        # Enable high quality pixmap scaling so tone-mapped video frames keep their
-        # intended contrast instead of appearing washed out compared to the preview
-        # window, which already applies this render hint.
-        self._video_view.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         # Match the photo viewer's light-toned surface so letterboxed video frames sit
         # on the same neutral backdrop.  Using the shared palette value keeps the
         # photo and video experiences visually consistent while avoiding harsh
