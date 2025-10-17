@@ -144,6 +144,7 @@ class MainController(QObject):
         self._configure_views()
         self._restore_playback_preferences()
         self._restore_share_preference()
+        self._restore_wheel_preference()
         self._playlist.bind_model(self._asset_model)
         self._connect_signals()
         self._connect_share_signals()
@@ -242,6 +243,24 @@ class MainController(QObject):
         else:
             self._window.ui.share_action_reveal_file.setChecked(True)
 
+    def _restore_wheel_preference(self) -> None:
+        """Restore the saved wheel action and update the interactive widgets."""
+
+        wheel_action = self._context.settings.get("ui.wheel_action", "navigate")
+        if wheel_action == "zoom":
+            self._window.ui.wheel_action_zoom.setChecked(True)
+        else:
+            wheel_action = "navigate"
+            self._window.ui.wheel_action_navigate.setChecked(True)
+        self._apply_wheel_action(wheel_action)
+
+    def _apply_wheel_action(self, action: str) -> None:
+        """Propagate the chosen wheel behaviour to the viewer and filmstrip widgets."""
+
+        mode = "zoom" if action == "zoom" else "navigate"
+        self._window.ui.image_viewer.set_wheel_action(mode)
+        self._window.ui.filmstrip_view.set_wheel_action(mode)
+
     # -----------------------------------------------------------------
     # Signal wiring
     def _connect_signals(self) -> None:
@@ -265,6 +284,9 @@ class MainController(QObject):
         # instantly when the user flips the preference.
         self._window.ui.toggle_filmstrip_action.toggled.connect(
             self._handle_toggle_filmstrip
+        )
+        self._window.ui.wheel_action_group.triggered.connect(
+            self._handle_wheel_action_changed
         )
 
         # Global error reporting
@@ -462,6 +484,17 @@ class MainController(QObject):
         self._window.ui.filmstrip_view.setVisible(show_filmstrip)
         if self._context.settings.get("ui.show_filmstrip") != show_filmstrip:
             self._context.settings.set("ui.show_filmstrip", show_filmstrip)
+
+    def _handle_wheel_action_changed(self, action: QAction) -> None:
+        """Persist the selected wheel action and refresh dependent widgets."""
+
+        if action is self._window.ui.wheel_action_zoom:
+            selected = "zoom"
+        else:
+            selected = "navigate"
+        if self._context.settings.get("ui.wheel_action") != selected:
+            self._context.settings.set("ui.wheel_action", selected)
+        self._apply_wheel_action(selected)
 
     def _handle_share_button_clicked(self) -> None:
         """Execute the configured share behaviour for the active playlist item."""

@@ -31,6 +31,10 @@ SETTINGS_SCHEMA: dict[str, Any] = {
                     "enum": ["copy_file", "copy_path", "reveal_file"],
                 },
                 "show_filmstrip": {"type": "boolean"},
+                "wheel_action": {
+                    "type": "string",
+                    "enum": ["navigate", "zoom"],
+                },
             },
             "additionalProperties": True,
         },
@@ -52,6 +56,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "is_muted": False,
         "share_action": "reveal_file",
         "show_filmstrip": True,
+        "wheel_action": "navigate",
     },
     "last_open_albums": [],
 }

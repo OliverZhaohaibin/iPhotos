@@ -102,6 +102,17 @@ class Ui_MainWindow(object):
         self.share_action_group.addAction(self.share_action_reveal_file)
         self.share_action_reveal_file.setChecked(True)
 
+        # The wheel action group mirrors the share action group: it lets the user pick a single
+        # behaviour that will be mirrored across the viewer and filmstrip. Keeping the actions in
+        # a dedicated group guarantees that only one option can be checked at a time and the UI can
+        # simply inspect ``checkedAction`` when persisting the preference.
+        self.wheel_action_group = QActionGroup(MainWindow)
+        self.wheel_action_navigate = QAction("Navigate", MainWindow, checkable=True)
+        self.wheel_action_zoom = QAction("Zoom", MainWindow, checkable=True)
+        self.wheel_action_group.addAction(self.wheel_action_navigate)
+        self.wheel_action_group.addAction(self.wheel_action_zoom)
+        self.wheel_action_navigate.setChecked(True)
+
         file_menu = self.menu_bar.addMenu("&File")
         for action in (
             self.open_album_action,
@@ -134,6 +145,9 @@ class Ui_MainWindow(object):
         settings_menu.addSeparator()
         settings_menu.addAction(self.toggle_filmstrip_action)
         settings_menu.addSeparator()
+        wheel_menu = settings_menu.addMenu("Wheel Action")
+        wheel_menu.addAction(self.wheel_action_navigate)
+        wheel_menu.addAction(self.wheel_action_zoom)
         share_menu = settings_menu.addMenu("Share Action")
         share_menu.addAction(self.share_action_copy_file)
         share_menu.addAction(self.share_action_copy_path)
