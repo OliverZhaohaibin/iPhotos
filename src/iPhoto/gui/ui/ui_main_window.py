@@ -5,6 +5,7 @@ from __future__ import annotations
 from PySide6.QtCore import QCoreApplication, QMetaObject, QSize, Qt
 from PySide6.QtGui import QAction, QFont
 from PySide6.QtWidgets import (
+    QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -118,8 +119,10 @@ class Ui_MainWindow(object):
         self.image_viewer = ImageViewer()
         self.player_placeholder = QLabel("Select a photo or video to preview.")
         self.player_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Present the placeholder on a white background so the transition to real media
+        # feels seamless when the viewer swaps in photo or video content.
         self.player_placeholder.setStyleSheet(
-            "background-color: black; color: white; font-size: 16px;"
+            "background-color: white; color: black; font-size: 16px;"
         )
         self.player_placeholder.setMinimumHeight(320)
         self.player_stack = QStackedWidget()
@@ -259,6 +262,13 @@ class Ui_MainWindow(object):
         header_layout.addWidget(info_container, 1)
         header_layout.addWidget(actions_container)
         detail_layout.addWidget(header)
+
+        # Insert a subtle separator between the metadata header and the media area so the
+        # hierarchy reads clearly without resorting to heavy borders.
+        header_separator = QFrame()
+        header_separator.setFrameShape(QFrame.Shape.HLine)
+        header_separator.setFrameShadow(QFrame.Shadow.Sunken)
+        detail_layout.addWidget(header_separator)
 
         player_container = QWidget()
         player_layout = QVBoxLayout(player_container)

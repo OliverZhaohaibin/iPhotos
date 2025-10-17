@@ -40,7 +40,9 @@ class ImageViewer(QWidget):
         self._scroll_area.setWidgetResizable(False)
         self._scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         self._scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._scroll_area.setStyleSheet("background-color: black; border: none;")
+        # Render the scroll area's viewport with a white background so photos sit on a
+        # neutral surface that matches the rest of the light-themed viewer chrome.
+        self._scroll_area.setStyleSheet("background-color: white; border: none;")
         self._scroll_area.setWidget(self._label)
         self._scroll_area.viewport().installEventFilter(self)
 
@@ -48,7 +50,9 @@ class ImageViewer(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._scroll_area)
 
-        self.setStyleSheet("background-color: black;")
+        # Mirror the scroll area's white backdrop on the containing widget to avoid
+        # sudden colour changes at the edges when the layout exposes parent padding.
+        self.setStyleSheet("background-color: white;")
 
         self._live_replay_enabled = False
         self._zoom_factor = 1.0

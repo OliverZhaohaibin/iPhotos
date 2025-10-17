@@ -63,7 +63,9 @@ class VideoArea(QWidget):
         self._video_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._video_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._video_view.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        self._video_view.setStyleSheet("background: black; border: none;")
+        # Match the photo viewer's light theme so video frames render over a consistent
+        # white canvas when letterboxed or pillarboxed by the aspect ratio handling.
+        self._video_view.setStyleSheet("background: white; border: none;")
         # --- End Graphics View Setup ---
 
         self._overlay_margin = 48
