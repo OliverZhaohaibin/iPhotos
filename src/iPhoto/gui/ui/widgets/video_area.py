@@ -27,7 +27,7 @@ from ....config import (
     PLAYER_FADE_OUT_MS,
 )
 from .player_bar import PlayerBar
-from ..palette import VIEWER_SURFACE_COLOR_HEX
+from ..palette import VIEWER_SURFACE_COLOR_HEX, viewer_surface_color
 
 
 class VideoArea(QWidget):
@@ -55,9 +55,22 @@ class VideoArea(QWidget):
         # previously introduced subtle tinting.
         self._video_widget.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._video_widget.setAutoFillBackground(True)
+        # Derive the surface colour from the active palette so the video canvas
+        # always matches the photo viewer and surrounding detail panel, even when a
+        # future theme customises the base window colour.  Falling back to the
+        # constant ensures the widget still renders against the intended bright
+        # backdrop if the palette has not been initialised yet (which can happen when
+        # the widget is created off-screen).
+        surface_color = viewer_surface_color(self)
+        if not surface_color:
+            surface_color = VIEWER_SURFACE_COLOR_HEX
         self._video_widget.setStyleSheet(
-            f"background: {VIEWER_SURFACE_COLOR_HEX}; border: none;"
+            f"background: {surface_color}; border: none;"
         )
+        # Mirror the palette-derived colour on the container widget to prevent the
+        # layout from revealing a darker parent background around the video surface
+        # during resize animations or when the floating controls slide in.
+        self.setStyleSheet(f"background-color: {surface_color};")
         # --- End Video Widget Setup --------------------------------------------
 
         self._overlay_margin = 48
