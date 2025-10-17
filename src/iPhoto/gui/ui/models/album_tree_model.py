@@ -173,7 +173,18 @@ class AlbumTreeModel(QAbstractItemModel):
 
         header = AlbumTreeItem("📚 Basic Library", NodeType.HEADER)
         self._root_item.add_child(header)
-        self._add_static_nodes(header)
+        # The smart collections belong directly under the "Basic Library" header,
+        # however they do not require an inline separator anymore because the
+        # divider is now rendered at the root level (see below). Therefore we
+        # suppress the trailing separator that :meth:`_add_static_nodes` used to
+        # inject automatically.
+        self._add_static_nodes(header, add_separator=False)
+
+        # Insert the separator as a root-level item so the break between the
+        # system smart albums and the user-created collections stays exactly where
+        # it lived before the hierarchy change. Rendering it at this level keeps
+        # the visual grouping intact regardless of how many custom albums exist.
+        self._root_item.add_child(AlbumTreeItem("──────────", NodeType.SEPARATOR))
 
         # Promote the Albums section to a header-level entry so that it shares the
         # same visual hierarchy, font weight, and font size as the "Basic Library"
@@ -187,7 +198,11 @@ class AlbumTreeModel(QAbstractItemModel):
             for child in self._library.list_children(album):
                 child_item = self._create_album_item(child, NodeType.SUBALBUM)
                 album_item.add_child(child_item)
-        self._add_trailing_static_nodes(header)
+        # Append the housekeeping entries to the root so "Recently Deleted"
+        # continues to anchor the very bottom of the sidebar even after Albums was
+        # promoted to a top-level header. The helper also restores the divider that
+        # separated the smart collections from the trash entry in the original UI.
+        self._add_trailing_static_nodes(self._root_item)
         self.endResetModel()
 
     def index_for_path(self, path: Path) -> QModelIndex:
@@ -215,17 +230,27 @@ class AlbumTreeModel(QAbstractItemModel):
                 return item
         return self._root_item
 
-    def _add_static_nodes(self, header: AlbumTreeItem) -> None:
+    def _add_static_nodes(self, header: AlbumTreeItem, *, add_separator: bool = True) -> None:
+        """Populate *header* with the built-in smart collections.
+
+        The ``add_separator`` flag controls whether a separator row should be
+        appended after the smart albums. Callers can disable it when the
+        separator is rendered elsewhere (for example, at the root level) to
+        avoid drawing duplicate dividers.
+        """
+
         for title in self.STATIC_NODES:
             header.add_child(AlbumTreeItem(title, NodeType.STATIC))
-        if self.STATIC_NODES:
+        if add_separator and self.STATIC_NODES:
             header.add_child(AlbumTreeItem("──────────", NodeType.SEPARATOR))
 
-    def _add_trailing_static_nodes(self, header: AlbumTreeItem) -> None:
+    def _add_trailing_static_nodes(self, parent: AlbumTreeItem) -> None:
+        """Append the trailing static entries (e.g. "Recently Deleted")."""
+
         if self.TRAILING_STATIC_NODES:
-            header.add_child(AlbumTreeItem("──────────", NodeType.SEPARATOR))
+            parent.add_child(AlbumTreeItem("──────────", NodeType.SEPARATOR))
         for title in self.TRAILING_STATIC_NODES:
-            header.add_child(AlbumTreeItem(title, NodeType.STATIC))
+            parent.add_child(AlbumTreeItem(title, NodeType.STATIC))
 
     def _create_album_item(self, album: AlbumNode, node_type: NodeType) -> AlbumTreeItem:
         item = AlbumTreeItem(album.title, node_type, album=album)
