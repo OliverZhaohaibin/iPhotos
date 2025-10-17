@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence
 
@@ -17,6 +18,272 @@ except Exception:  # pragma: no cover - OpenCV not available or broken
     cv2 = None  # type: ignore[assignment]
 
 _FFMPEG_LOG_LEVEL = "error"
+
+_HDR_TRANSFERS = {"smpte2084", "arib-std-b67"}
+_HDR_PRIMARIES = {"bt2020", "smpte431", "smpte432"}
+_HDR_MATRICES = {"bt2020ncl", "bt2020cl"}
+_HDR_SIDE_DATA = {
+    "Mastering display metadata",
+    "Content light level metadata",
+    "HDR Dynamic Metadata (HDR10+)",
+    "HDR10+ Dynamic Metadata",
+}
+
+
+@dataclass(frozen=True)
+class VideoColorProfile:
+    """Snapshot of the colour configuration advertised by a video stream."""
+
+    primaries: Optional[str]
+    transfer: Optional[str]
+    matrix: Optional[str]
+    range: Optional[str]
+    peak_luminance: Optional[float]
+    has_hdr_metadata: bool
+
+    @property
+    def is_hdr(self) -> bool:
+        """Return ``True`` when the stream exposes HDR-specific metadata."""
+
+        return self.has_hdr_metadata
+
+
+def _normalise_primaries(value: Optional[str]) -> Optional[str]:
+    """Translate ffprobe colour primaries into names accepted by ``zscale``."""
+
+    if not value:
+        return None
+    mapping = {
+        "bt709": "bt709",
+        "bt470bg": "bt470bg",
+        "smpte170m": "smpte170m",
+        "smpte240m": "smpte240m",
+        "film": "film",
+        "smpte431": "smpte431",
+        "smpte432": "smpte432",
+        "bt2020": "bt2020",
+    }
+    return mapping.get(value.lower())
+
+
+def _normalise_transfer(value: Optional[str]) -> Optional[str]:
+    """Translate ffprobe transfer characteristics into ``zscale`` names."""
+
+    if not value:
+        return None
+    mapping = {
+        "bt709": "bt709",
+        "gamma22": "bt709",
+        "gamma28": "gamma28",
+        "smpte170m": "smpte170m",
+        "smpte240m": "smpte240m",
+        "linear": "linear",
+        "log": "log",
+        "log-sqrt": "log_sqrt",
+        "iec61966-2-4": "iec61966-2-4",
+        "iec61966-2-1": "iec61966-2-1",
+        "bt1361": "bt1361",
+        "smpte2084": "smpte2084",
+        "arib-std-b67": "arib-std-b67",
+    }
+    return mapping.get(value.lower())
+
+
+def _normalise_matrix(value: Optional[str]) -> Optional[str]:
+    """Translate ffprobe matrix coefficients into ``zscale`` names."""
+
+    if not value:
+        return None
+    mapping = {
+        "bt709": "bt709",
+        "fcc": "fcc",
+        "smpte170m": "smpte170m",
+        "bt470bg": "bt470bg",
+        "smpte240m": "smpte240m",
+        "ycgco": "ycgco",
+        "bt2020nc": "bt2020ncl",
+        "bt2020c": "bt2020cl",
+        "rgb": "rgb",
+    }
+    return mapping.get(value.lower())
+
+
+def _normalise_range(value: Optional[str]) -> Optional[str]:
+    """Return the value when ffprobe exposes a supported colour range name."""
+
+    if not value:
+        return None
+    lower = value.lower()
+    if lower in {"tv", "pc", "limited", "full"}:
+        # ``zscale`` understands ``tv``/``pc`` and the synonyms ``limited``/``full``.
+        if lower == "limited":
+            return "tv"
+        if lower == "full":
+            return "pc"
+        return lower
+    return None
+
+
+def _parse_fraction(value: Any) -> Optional[float]:
+    """Parse ``value`` into a float, accepting ffprobe's rational strings."""
+
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if "/" in text:
+            numerator, denominator = text.split("/", 1)
+            try:
+                num = float(numerator)
+                denom = float(denominator)
+            except ValueError:
+                return None
+            if denom == 0:
+                return None
+            return num / denom
+        try:
+            return float(text)
+        except ValueError:
+            return None
+    return None
+
+
+def _video_color_profile(source: Path) -> VideoColorProfile:
+    """Return the advertised colour metadata for the first video stream."""
+
+    try:
+        metadata = probe_media(source)
+    except ExternalToolError:
+        # Without ffprobe we have no reliable metadata.  Assume SDR so we do not
+        # perform unnecessary tone mapping while still returning a valid profile.
+        return VideoColorProfile(None, None, None, None, None, False)
+
+    streams = metadata.get("streams")
+    stream_data: Optional[Dict[str, Any]] = None
+    if isinstance(streams, list):
+        for stream in streams:
+            if isinstance(stream, dict) and stream.get("codec_type") == "video":
+                stream_data = stream
+                break
+
+    if stream_data is None:
+        return VideoColorProfile(None, None, None, None, None, False)
+
+    primaries = _normalise_primaries(stream_data.get("color_primaries"))
+    transfer = _normalise_transfer(stream_data.get("color_transfer"))
+    matrix = _normalise_matrix(stream_data.get("color_space"))
+    colour_range = _normalise_range(stream_data.get("color_range"))
+
+    raw_primaries = str(stream_data.get("color_primaries") or "").lower()
+    raw_transfer = str(stream_data.get("color_transfer") or "").lower()
+    raw_matrix = str(stream_data.get("color_space") or "").lower()
+
+    has_hdr = False
+    if transfer in _HDR_TRANSFERS or raw_transfer in _HDR_TRANSFERS:
+        has_hdr = True
+    elif primaries in _HDR_PRIMARIES or raw_primaries in _HDR_PRIMARIES:
+        has_hdr = True
+    elif matrix in _HDR_MATRICES or raw_matrix in _HDR_MATRICES:
+        has_hdr = True
+
+    peak_luminance: Optional[float] = None
+    side_data = stream_data.get("side_data_list")
+    if isinstance(side_data, list):
+        for entry in side_data:
+            if not isinstance(entry, dict):
+                continue
+            side_type = entry.get("side_data_type")
+            if isinstance(side_type, str):
+                lower_type = side_type.lower()
+                if (
+                    side_type in _HDR_SIDE_DATA
+                    or "hdr" in lower_type
+                    or "dolby vision" in lower_type
+                ):
+                    has_hdr = True
+                if side_type == "Mastering display metadata":
+                    parsed = _parse_fraction(entry.get("max_luminance"))
+                    if parsed is not None:
+                        peak_luminance = max(parsed, peak_luminance or 0.0)
+                elif side_type == "Content light level metadata":
+                    parsed = _parse_fraction(entry.get("max_content"))
+                    if parsed is not None:
+                        peak_luminance = max(parsed, peak_luminance or 0.0)
+
+    if peak_luminance is None and has_hdr:
+        # HDR10 content commonly masters at 1000 nits, so that serves as a
+        # sensible default when the container omits explicit metadata.
+        peak_luminance = 1000.0
+
+    if matrix is None:
+        if primaries == "bt2020":
+            matrix = "bt2020ncl"
+        elif primaries in {"smpte431", "smpte432"}:
+            matrix = "rgb"
+        else:
+            matrix = "bt709"
+
+    if transfer is None and has_hdr:
+        # Prefer PQ as a fallback because most HDR10 clips encode with SMPTE ST 2084.
+        transfer = "smpte2084"
+
+    if colour_range is None and has_hdr:
+        colour_range = "tv"
+
+    return VideoColorProfile(primaries, transfer, matrix, colour_range, peak_luminance, has_hdr)
+
+
+def _build_zscale_filter(options: Sequence[tuple[str, Optional[str]]]) -> str:
+    """Return a ``zscale`` filter description excluding ``None`` assignments."""
+
+    assignments = [f"{key}={value}" for key, value in options if value is not None]
+    if not assignments:
+        return "zscale"
+    return "zscale=" + ":".join(assignments)
+
+
+def _build_hdr_tonemap_filters(profile: VideoColorProfile) -> list[str]:
+    """Construct a filter chain that tone maps HDR frames into SDR."""
+
+    primaries = profile.primaries or "bt2020"
+    matrix = profile.matrix or ("bt2020ncl" if primaries == "bt2020" else "bt709")
+    transfer = profile.transfer or "smpte2084"
+    colour_range = profile.range or "tv"
+
+    pre_tonemap = _build_zscale_filter(
+        [
+            ("pin", primaries),
+            ("tin", transfer),
+            ("min", matrix),
+            ("rin", colour_range),
+            ("p", primaries),
+            ("t", "linear"),
+            ("m", matrix),
+            ("r", colour_range),
+            ("npl", "100"),
+        ]
+    )
+
+    tonemap_parts = ["tonemap=tonemap=hable", "desat=0"]
+    if profile.peak_luminance is not None:
+        tonemap_parts.append(f"peak={profile.peak_luminance:.4g}")
+    tonemap_filter = ":".join(tonemap_parts)
+
+    post_tonemap = _build_zscale_filter(
+        [
+            ("p", "bt709"),
+            ("t", "bt709"),
+            ("m", "bt709"),
+            ("r", "tv"),
+            ("dither", "none"),
+        ]
+    )
+
+    return [pre_tonemap, "format=gbrpf32le", tonemap_filter, post_tonemap]
 
 
 def _run_command(command: Sequence[str]) -> subprocess.CompletedProcess[bytes]:
@@ -44,34 +311,7 @@ def is_hdr_video(source: Path) -> bool:
     or transfer functions (for example PQ or HLG).
     """
 
-    try:
-        metadata = probe_media(source)
-    except ExternalToolError:
-        # When ffprobe is unavailable we silently fall back to SDR processing,
-        # ensuring callers still get a frame even though colour accuracy may be
-        # reduced for true HDR sources.
-        return False
-
-    streams = metadata.get("streams")
-    if not isinstance(streams, list):
-        return False
-
-    for stream in streams:
-        if not isinstance(stream, dict) or stream.get("codec_type") != "video":
-            continue
-
-        # HDR videos typically expose either the BT.2020 colour primaries or an
-        # HDR transfer curve such as PQ (SMPTE ST 2084) or HLG
-        # (ARIB STD-B67).  Detecting either signal is sufficient to warrant
-        # tone mapping.
-        color_transfer = stream.get("color_transfer")
-        color_space = stream.get("color_space")
-        if color_transfer in {"smpte2084", "arib-std-b67"}:
-            return True
-        if color_space in {"bt2020", "bt2020nc"}:
-            return True
-
-    return False
+    return _video_color_profile(source).is_hdr
 
 
 def extract_video_frame(
@@ -118,6 +358,7 @@ def _extract_with_ffmpeg(
     scale: Optional[tuple[int, int]],
     format: str,
 ) -> bytes:
+    profile = _video_color_profile(source)
     suffix = ".png" if format == "png" else ".jpg"
     codec = "png" if format == "png" else "mjpeg"
 
@@ -141,20 +382,8 @@ def _extract_with_ffmpeg(
         "0",
     ]
     filters: list[str] = []
-    if is_hdr_video(source):
-        # HDR-only processing path: the filter chain linearises the image,
-        # performs tone mapping into the BT.709 gamut, and re-encodes the signal
-        # for standard dynamic range output.  SDR sources bypass this expensive
-        # conversion to preserve their original colours.
-        filters.extend(
-            [
-                "zscale=t=linear:npl=100",
-                "format=gbrpf32le",
-                "zscale=p=bt709",
-                "tonemap=tonemap=hable:desat=0",
-                "zscale=t=bt709:m=bt709:r=tv",
-            ]
-        )
+    if profile.is_hdr:
+        filters.extend(_build_hdr_tonemap_filters(profile))
 
     if scale is not None:
         width, height = scale
@@ -163,10 +392,7 @@ def _extract_with_ffmpeg(
                 w=width,
                 h=height,
             )
-            if filters:
-                filters.append(scale_filter)
-            else:
-                filters.insert(0, scale_filter)
+            filters.append(scale_filter)
 
     if format == "jpeg":
         # JPEG encoders expect even dimensions and typically operate on YUV data. The
