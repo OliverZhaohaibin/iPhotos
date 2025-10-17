@@ -12,6 +12,7 @@ from .video_area import VideoArea
 from .preview_window import PreviewWindow
 from .photo_map_view import PhotoMapView
 from .live_badge import LiveBadge
+from .notification_toast import NotificationToast
 
 __all__ = [
     "AlbumSidebar",
@@ -26,4 +27,5 @@ __all__ = [
     "PreviewWindow",
     "LiveBadge",
     "PhotoMapView",
+    "NotificationToast",
 ]

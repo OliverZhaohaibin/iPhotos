@@ -22,7 +22,7 @@ from ....media_classifier import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 from ..media import MediaController, PlaylistController
 from ..models.asset_model import AssetModel, Roles
 from ..models.spacer_proxy_model import SpacerProxyModel
-from ..widgets import AssetGridDelegate, InfoPanel
+from ..widgets import AssetGridDelegate, InfoPanel, NotificationToast
 from .detail_ui_controller import DetailUIController
 from .dialog_controller import DialogController
 from .header_controller import HeaderController
@@ -136,6 +136,10 @@ class MainController(QObject):
             window.ui.progress_bar,
             window.ui.rescan_action,
         )
+        # The notification toast confirms clipboard interactions without cluttering
+        # the status bar.  It is instantiated once and reused to minimise
+        # allocations and keep the animations silky-smooth when triggered rapidly.
+        self._notification_toast = NotificationToast(window)
 
         self._configure_views()
         self._restore_playback_preferences()
@@ -467,19 +471,13 @@ class MainController(QObject):
         mime_data = QMimeData()
         mime_data.setUrls([QUrl.fromLocalFile(str(path))])
         QGuiApplication.clipboard().setMimeData(mime_data)
-        self._status_bar.show_message(
-            f"Copied {path.name} to clipboard.",
-            3000,
-        )
+        self._notification_toast.show_toast("Copied to Clipboard")
 
     def _copy_path_to_clipboard(self, path: Path) -> None:
         """Copy the textual representation of *path* onto the clipboard."""
 
         QGuiApplication.clipboard().setText(str(path))
-        self._status_bar.show_message(
-            f"Copied path for {path.name} to clipboard.",
-            3000,
-        )
+        self._notification_toast.show_toast("Copied to Clipboard")
 
     def _reveal_in_file_manager(self, path: Path) -> None:
         """Reveal *path* in the native file manager for the host operating system."""
