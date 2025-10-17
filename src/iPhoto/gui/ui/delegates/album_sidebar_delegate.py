@@ -15,10 +15,11 @@ from PySide6.QtCore import (
     QVariantAnimation,
     QPersistentModelIndex,
 )
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QStyledItemDelegate, QStyleOptionViewItem, QTreeView
 
-from ..models.album_tree_model import AlbumTreeRole, NodeType
+from ..icon import load_icon
+from ..models.album_tree_model import AlbumTreeModel, AlbumTreeRole, NodeType
 from ..palette import (
     SIDEBAR_BRANCH_CONTENT_GAP,
     SIDEBAR_DISABLED_TEXT_COLOR,
@@ -186,10 +187,34 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
 
         x = rect.left() + SIDEBAR_LEFT_PADDING + state.indentation
         x = self._draw_branch_indicator(painter, state, x)
-        x = self._draw_icon(painter, option, index, x)
+        icon = self._get_icon_for_paint_state(index, state)
+        x = self._draw_icon(painter, option, icon, x)
         self._draw_text(painter, rect, font, index, state, x)
 
         painter.restore()
+
+    def _get_icon_for_paint_state(self, index: QModelIndex, state: _PaintState) -> QIcon:
+        """Return the correct icon for *index* based on the current paint *state*."""
+
+        icon = index.data(Qt.ItemDataRole.DecorationRole)
+        if icon is None or icon.isNull():
+            return QIcon()
+
+        if state.node_type == NodeType.STATIC:
+            title = str(index.data(Qt.ItemDataRole.DisplayRole) or "").casefold()
+
+            model = index.model()
+            if isinstance(model, AlbumTreeModel):
+                icon_base = model._STATIC_ICON_MAP.get(title)
+                if icon_base in {"video", "suit.heart"}:
+                    # The sidebar mirrors macOS behaviour where select states swap
+                    # the regular outline icon for a filled version. We perform the
+                    # decision here because the delegate has access to the selection
+                    # state while the model intentionally does not.
+                    suffix = ".fill" if state.is_selected else ""
+                    return load_icon(f"{icon_base}{suffix}.svg", color=SIDEBAR_ICON_COLOR_HEX)
+
+        return icon
 
     @staticmethod
     def _depth_for_index(index: QModelIndex) -> int:
@@ -330,13 +355,12 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         self,
         painter: QPainter,
         option: QStyleOptionViewItem,
-        index: QModelIndex,
+        icon: QIcon,
         x: int,
     ) -> int:
-        """Render the optional decoration icon and return the next x coordinate."""
+        """Render *icon* and return the x coordinate following the glyph."""
 
-        icon = index.data(Qt.ItemDataRole.DecorationRole)
-        if icon is None or icon.isNull():
+        if icon.isNull():
             return x
 
         icon_rect = QRect(
