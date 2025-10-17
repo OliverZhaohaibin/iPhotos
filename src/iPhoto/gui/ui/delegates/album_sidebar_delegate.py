@@ -304,6 +304,11 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         """
 
         tinted = QPixmap(pixmap.size())
+        # Copy the device pixel ratio from the source pixmap before performing any
+        # drawing so Qt keeps treating this buffer as the supersampled variant of
+        # the 18×18 logical glyph. Without this line Qt would assume the pixmap is
+        # backed by standard-resolution pixels, causing a blurry downscale.
+        tinted.setDevicePixelRatio(pixmap.devicePixelRatio())
         tinted.fill(Qt.GlobalColor.transparent)
 
         painter = QPainter(tinted)
@@ -311,11 +316,6 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
         painter.fillRect(tinted.rect(), tint)
         painter.end()
-
-        # Preserve the source device pixel ratio so the supersampled glyph stays
-        # aligned with the 18×18 logical rectangle when Qt scales the pixmap
-        # back down during painting.
-        tinted.setDevicePixelRatio(pixmap.devicePixelRatio())
 
         return tinted
 
