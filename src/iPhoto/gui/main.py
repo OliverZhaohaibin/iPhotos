@@ -11,8 +11,13 @@ if __package__ is None or __package__ == "":  # pragma: no cover - script mode
     package_root = Path(__file__).resolve().parents[2]
     if str(package_root) not in sys.path:
         sys.path.insert(0, str(package_root))
-    from iPhotos.src.iPhoto.appctx import AppContext
-    from iPhotos.src.iPhoto.gui.ui.main_window import MainWindow
+    # Import from the actual package root when launched as ``python main.py``.
+    # The previous path mistakenly referenced ``iPhotos`` (with a trailing ``s``),
+    # which only exists as the repository name.  The incorrect import silently
+    # failed to resolve the application context and main window classes,
+    # preventing the Qt shell from initialising properly.
+    from iPhoto.appctx import AppContext
+    from iPhoto.gui.ui.main_window import MainWindow
 else:  # pragma: no cover - normal package execution
     from ..appctx import AppContext
     from .ui.main_window import MainWindow
