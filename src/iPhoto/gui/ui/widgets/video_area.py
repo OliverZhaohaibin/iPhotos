@@ -28,6 +28,10 @@ try:  # pragma: no cover - optional Qt module
     from PySide6.QtMultimediaWidgets import QGraphicsVideoItem
 except (ModuleNotFoundError, ImportError):  # pragma: no cover - handled by main window guard
     QGraphicsVideoItem = None  # type: ignore[assignment, misc]
+try:  # pragma: no cover - optional Qt module
+    from PySide6.QtMultimedia import QVideoFrameFormat
+except (ModuleNotFoundError, ImportError):  # pragma: no cover - handled by main window guard
+    QVideoFrameFormat = None  # type: ignore[assignment]
 
 from ....config import (
     PLAYER_CONTROLS_HIDE_DELAY_MS,
@@ -36,6 +40,7 @@ from ....config import (
 )
 from .player_bar import PlayerBar
 from ..palette import viewer_surface_color
+from ..media.hdr_processor import HdrVideoFrameProcessor
 
 
 class VideoArea(QWidget):
@@ -84,6 +89,7 @@ class VideoArea(QWidget):
         self._host_widget: QWidget | None = self._video_view
         self._window_host: QWidget | None = None
         self._controls_enabled = True
+        self._hdr_processor: HdrVideoFrameProcessor | None = None
 
         effect = QGraphicsOpacityEffect(self._player_bar)
         effect.setOpacity(0.0)
@@ -100,6 +106,7 @@ class VideoArea(QWidget):
 
         self._install_activity_filters()
         self._wire_player_bar()
+        self._install_hdr_processor()
 
     # ------------------------------------------------------------------
     # Public API
@@ -220,6 +227,22 @@ class VideoArea(QWidget):
         self._player_bar.seekRequested.connect(lambda _value: self._on_mouse_activity())
         self._player_bar.volumeChanged.connect(lambda _value: self._on_mouse_activity())
         self._player_bar.muteToggled.connect(lambda _state: self._on_mouse_activity())
+
+    def _install_hdr_processor(self) -> None:
+        """Enable HDR tone mapping when QtMultimedia exposes video metadata."""
+
+        if QVideoFrameFormat is None:
+            return
+        sink_getter = getattr(self._video_item, "videoSink", None)
+        if not callable(sink_getter):
+            return
+        sink = sink_getter()
+        if sink is None:
+            return
+        # Store the processor so it stays alive for the widget's lifetime.  Without
+        # the reference Qt would garbage collect the helper and disconnect the
+        # signal bridge.
+        self._hdr_processor = HdrVideoFrameProcessor(sink, self)
 
     def _on_mouse_activity(self) -> None:
         if not self._controls_enabled:

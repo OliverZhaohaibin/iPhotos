@@ -25,6 +25,7 @@ from ....config import (
     PREVIEW_WINDOW_MUTED,
 )
 from ..media import MediaController, require_multimedia
+from ..media.hdr_processor import HdrVideoFrameProcessor
 
 if importlib.util.find_spec("PySide6.QtMultimediaWidgets") is not None:
     from PySide6.QtMultimediaWidgets import QGraphicsVideoItem
@@ -222,6 +223,12 @@ class PreviewWindow(QWidget):
         self._media = MediaController(self)
         self._media.set_video_output(self._frame.video_item())
         self._media.set_muted(PREVIEW_WINDOW_MUTED)
+        sink = getattr(self._frame.video_item(), "videoSink", None)
+        self._hdr_processor: HdrVideoFrameProcessor | None = None
+        if callable(sink):
+            video_sink = sink()
+            if video_sink is not None:
+                self._hdr_processor = HdrVideoFrameProcessor(video_sink, self)
 
         self._close_timer = QTimer(self)
         self._close_timer.setSingleShot(True)
