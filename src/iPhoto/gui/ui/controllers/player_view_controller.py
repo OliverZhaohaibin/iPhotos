@@ -45,6 +45,9 @@ class PlayerViewController(QObject):
         """Display the placeholder widget and clear any previous image."""
 
         self._video_area.hide_controls(animate=False)
+        # Reset the cached video dimensions so the next clip is free to resize
+        # the surface from a neutral baseline.
+        self._video_area.set_video_size(None, None)
         self.hide_live_badge()
         if self._player_stack.currentWidget() is not self._placeholder:
             self._player_stack.setCurrentWidget(self._placeholder)
@@ -56,6 +59,9 @@ class PlayerViewController(QObject):
         """Reveal the still-image viewer surface."""
 
         self._video_area.hide_controls(animate=False)
+        # Clear any stale video sizing so the widget returns to full-bleed mode
+        # while the still-image viewer is active.
+        self._video_area.set_video_size(None, None)
         if self._player_stack.currentWidget() is not self._image_viewer:
             self._player_stack.setCurrentWidget(self._image_viewer)
         if not self._player_stack.isVisible():

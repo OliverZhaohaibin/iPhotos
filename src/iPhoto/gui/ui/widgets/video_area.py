@@ -9,6 +9,7 @@ from PySide6.QtCore import (
     QEvent,
     QObject,
     QPropertyAnimation,
+    QSize,
     QTimer,
     Qt,
     Signal,
@@ -27,7 +28,7 @@ from ....config import (
     PLAYER_FADE_OUT_MS,
 )
 from .player_bar import PlayerBar
-from ..palette import VIEWER_SURFACE_COLOR_HEX
+from ..palette import VIEWER_SURFACE_COLOR_HEX, viewer_surface_color
 
 
 class VideoArea(QWidget):
@@ -52,8 +53,9 @@ class VideoArea(QWidget):
 
         # Adopt the shared viewer surface colour on the container so any padding
         # around the video matches the still-photo viewer and the surrounding UI.
+        surface_color = viewer_surface_color(self) or VIEWER_SURFACE_COLOR_HEX
         self.setStyleSheet(
-            f"background: {VIEWER_SURFACE_COLOR_HEX}; border: none;"
+            f"background: {surface_color}; border: none;"
         )
 
         # ``QVideoWidget`` composites decoded frames on a renderer-specific
@@ -68,6 +70,12 @@ class VideoArea(QWidget):
         self._video_widget.setPalette(palette)
         self._video_widget.setStyleSheet("background: black; border: none;")
         # --- End Video Widget Setup --------------------------------------------
+
+        # Cache the active video dimensions so the widget can be centred with a
+        # matching aspect ratio.  ``None`` denotes that the surface should fill
+        # the entire container, mirroring the legacy behaviour when no metadata
+        # is available.
+        self._video_size: Optional[QSize] = None
 
         self._overlay_margin = 48
         self._player_bar = PlayerBar(self)
@@ -114,6 +122,34 @@ class VideoArea(QWidget):
         """Return the floating :class:`PlayerBar`."""
 
         return self._player_bar
+
+    def set_video_size(self, width: Optional[int], height: Optional[int]) -> None:
+        """Record the active clip dimensions and relayout the video surface.
+
+        ``width`` and ``height`` are expected to be pixel dimensions for the
+        decoded video stream.  Passing ``None`` for either value clears any
+        cached size so the video widget falls back to filling the container.  A
+        no-op occurs when the normalised dimensions have not changed, avoiding
+        redundant layout work while scrubbing through clips that share the same
+        resolution.
+        """
+
+        normalized: Optional[QSize]
+        if (
+            width is None
+            or height is None
+            or int(width) <= 0
+            or int(height) <= 0
+        ):
+            normalized = None
+        else:
+            normalized = QSize(int(width), int(height))
+
+        if self._video_size == normalized:
+            return
+
+        self._video_size = normalized
+        self._update_video_geometry()
 
     def show_controls(self, *, animate: bool = True) -> None:
         """Reveal the playback controls and restart the hide timer."""
@@ -163,9 +199,16 @@ class VideoArea(QWidget):
         """Manually layout child widgets."""
 
         super().resizeEvent(event)
-        rect = self.rect()
-        self._video_widget.setGeometry(rect)
+        self._update_video_geometry()
         self._update_bar_geometry()
+
+    def changeEvent(self, event: QEvent) -> None:  # pragma: no cover - palette updates
+        """Refresh palette-derived styling when the widget theme changes."""
+
+        if event.type() == QEvent.Type.PaletteChange:
+            surface_color = viewer_surface_color(self) or VIEWER_SURFACE_COLOR_HEX
+            self.setStyleSheet(f"background: {surface_color}; border: none;")
+        super().changeEvent(event)
 
     def enterEvent(self, event) -> None:  # pragma: no cover - GUI behaviour
         super().enterEvent(event)
@@ -286,6 +329,28 @@ class VideoArea(QWidget):
             y = max(0, rect.height() - bar_height)
         self._player_bar.setGeometry(x, y, bar_width, bar_height)
         self._player_bar.raise_()
+
+    def _update_video_geometry(self) -> None:
+        """Size and centre the ``QVideoWidget`` according to the clip aspect."""
+
+        rect = self.rect()
+        if rect.isNull() or rect.width() <= 0 or rect.height() <= 0:
+            return
+
+        if not self._video_size or self._video_size.isEmpty():
+            self._video_widget.setGeometry(rect)
+            return
+
+        target = self._video_size.scaled(rect.size(), Qt.AspectRatioMode.KeepAspectRatio)
+        width = target.width()
+        height = target.height()
+        if width <= 0 or height <= 0:
+            self._video_widget.setGeometry(rect)
+            return
+
+        x = rect.x() + (rect.width() - width) // 2
+        y = rect.y() + (rect.height() - height) // 2
+        self._video_widget.setGeometry(x, y, width, height)
 
     # ------------------------------------------------------------------
     # Live Photo helpers

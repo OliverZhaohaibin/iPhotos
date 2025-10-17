@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional, Tuple
 
 from PySide6.QtCore import QModelIndex
 
@@ -107,6 +108,7 @@ class PlaybackController:
         self._detail_ui.update_header(current_row if current_row != -1 else None)
         self._preview_controller.close_preview(False)
 
+        video_dimensions: Tuple[Optional[int], Optional[int]] = (None, None)
         is_video = False
         is_live_photo = False
         still_path: Path | None = None
@@ -115,16 +117,21 @@ class PlaybackController:
             if index.isValid():
                 is_video = bool(index.data(Roles.IS_VIDEO))
                 is_live_photo = bool(index.data(Roles.IS_LIVE))
+                video_dimensions = self._extract_video_dimensions(index.data(Roles.INFO))
                 if is_live_photo:
                     still_raw = index.data(Roles.ABS)
                     if still_raw:
                         still_path = Path(str(still_raw))
 
         if not is_video and not is_live_photo:
+            # Clear the cached video geometry so the next clip can recalculate
+            # its layout from scratch.
+            self._detail_ui.player_view.video_area.set_video_size(None, None)
             self._state_manager.display_image_asset(source, current_row if current_row != -1 else None)
             self._clear_scrub_state()
             return
 
+        self._detail_ui.player_view.video_area.set_video_size(*video_dimensions)
         self._state_manager.start_media_playback(
             source,
             is_live_photo=is_live_photo,
@@ -191,6 +198,45 @@ class PlaybackController:
 
         is_featured = self._facade.toggle_featured(rel)
         self._detail_ui.update_favorite_button(current_row, is_featured=is_featured)
+
+    @staticmethod
+    def _extract_video_dimensions(info: object) -> Tuple[Optional[int], Optional[int]]:
+        """Return normalised ``(width, height)`` values from metadata payloads."""
+
+        width: Optional[int] = None
+        height: Optional[int] = None
+        if isinstance(info, dict):
+            width = PlaybackController._normalise_dimension(info.get("w"))
+            height = PlaybackController._normalise_dimension(info.get("h"))
+            if width is None or height is None:
+                width = width or PlaybackController._normalise_dimension(info.get("width"))
+                height = height or PlaybackController._normalise_dimension(info.get("height"))
+            if width is None or height is None:
+                size = info.get("size")
+                if isinstance(size, (tuple, list)) and len(size) >= 2:
+                    if width is None:
+                        width = PlaybackController._normalise_dimension(size[0])
+                    if height is None:
+                        height = PlaybackController._normalise_dimension(size[1])
+                elif isinstance(size, dict):
+                    width = width or PlaybackController._normalise_dimension(size.get("w"))
+                    height = height or PlaybackController._normalise_dimension(size.get("h"))
+        return width, height
+
+    @staticmethod
+    def _normalise_dimension(value: object) -> Optional[int]:
+        """Convert metadata values to positive integers when possible."""
+
+        if isinstance(value, (int, float)):
+            candidate = int(round(float(value)))
+            return candidate if candidate > 0 else None
+        if isinstance(value, str):
+            try:
+                candidate = int(round(float(value)))
+            except ValueError:
+                return None
+            return candidate if candidate > 0 else None
+        return None
 
     # ------------------------------------------------------------------
     # Internal helpers
