@@ -19,6 +19,7 @@ from PySide6.QtGui import QCursor, QPainter, QResizeEvent
 from PySide6.QtWidgets import (
     QFrame,
     QGraphicsOpacityEffect,
+    QGraphicsRectItem,
     QGraphicsScene,
     QGraphicsView,
     QWidget,
@@ -53,10 +54,21 @@ class VideoArea(QWidget):
             raise RuntimeError("PySide6.QtMultimediaWidgets is required for video playback.")
 
         # --- Graphics View Setup ---
+        # The dedicated black rectangle lives directly behind the video surface and is kept in
+        # sync with the rendered frame geometry.  This avoids altering the neutral UI chrome
+        # colour while ensuring the darkest pixels inside the video appear truly black.
+        self._black_backing: QGraphicsRectItem = QGraphicsRectItem()
+        self._black_backing.setBrush(Qt.black)
+        self._black_backing.setPen(Qt.NoPen)
+        self._black_backing.setZValue(0)
+
         self._video_item = QGraphicsVideoItem()
+        self._video_item.setZValue(1)
         self._video_item.setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
+        self._video_item.nativeSizeChanged.connect(self._update_black_backing_geometry)
 
         self._scene = QGraphicsScene(self)
+        self._scene.addItem(self._black_backing)
         self._scene.addItem(self._video_item)
 
         self._video_view = QGraphicsView(self._scene, self)
@@ -170,6 +182,7 @@ class VideoArea(QWidget):
         self._video_item.setSize(self._scene.sceneRect().size())
         self._video_item.setPos(QPointF())
         self._update_bar_geometry()
+        self._update_black_backing_geometry()
 
     def enterEvent(self, event) -> None:  # pragma: no cover - GUI behaviour
         super().enterEvent(event)
@@ -275,6 +288,37 @@ class VideoArea(QWidget):
             y = max(0, rect.height() - bar_height)
         self._player_bar.setGeometry(x, y, bar_width, bar_height)
         self._player_bar.raise_()
+
+    def _update_black_backing_geometry(self) -> None:
+        """Keep the black backing rectangle aligned with the rendered video frame."""
+
+        video_native_size = self._video_item.nativeSize()
+        if video_native_size.isEmpty():
+            # Collapse the rectangle when no video is loaded so the neutral UI background stays
+            # visible.  This avoids showing a stray black patch before playback starts.
+            self._black_backing.setRect(QRectF())
+            return
+
+        item_size = self._video_item.size()
+        if item_size.isEmpty():
+            # Skip updates until the view establishes a non-zero drawing area.  Attempting to
+            # scale into a zero-sized surface would lead to divisions by zero inside Qt.
+            self._black_backing.setRect(QRectF())
+            return
+
+        # Determine the aspect-ratio preserving rectangle that Qt will use to present the video.
+        # We start with the native pixel size and scale it into the current video item bounds while
+        # maintaining the user's configured aspect mode.
+        scaled_size = video_native_size.scaled(item_size, Qt.AspectRatioMode.KeepAspectRatio)
+        scaled_rect = QRectF(QPointF(), scaled_size)
+
+        # Position the scaled rectangle so it is centred inside the video item, matching the
+        # placement of the actual media frame.
+        item_bounds = QRectF(QPointF(), item_size)
+        scaled_rect.moveCenter(item_bounds.center())
+
+        self._black_backing.setPos(self._video_item.pos())
+        self._black_backing.setRect(scaled_rect)
 
     # ------------------------------------------------------------------
     # Live Photo helpers
