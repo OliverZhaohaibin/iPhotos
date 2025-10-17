@@ -13,7 +13,7 @@ from PySide6.QtCore import (
     Qt,
     Signal,
 )
-from PySide6.QtGui import QCursor, QResizeEvent
+from PySide6.QtGui import QColor, QCursor, QPalette, QResizeEvent
 from PySide6.QtWidgets import QGraphicsOpacityEffect, QWidget
 
 try:  # pragma: no cover - optional Qt module
@@ -61,16 +61,22 @@ class VideoArea(QWidget):
         # constant ensures the widget still renders against the intended bright
         # backdrop if the palette has not been initialised yet (which can happen when
         # the widget is created off-screen).
-        surface_color = viewer_surface_color(self)
-        if not surface_color:
-            surface_color = VIEWER_SURFACE_COLOR_HEX
+        surface_color_name = viewer_surface_color(self) or VIEWER_SURFACE_COLOR_HEX
+        surface_color = QColor(surface_color_name)
+        # ``QVideoWidget`` renders using a platform-specific surface that can ignore
+        # pure stylesheet changes.  Updating the palette ensures the compositing
+        # surface itself receives the requested colour, while the stylesheet keeps
+        # child widgets (such as the floating controls) visually consistent.
+        palette = self._video_widget.palette()
+        palette.setColor(QPalette.ColorRole.Window, surface_color)
+        self._video_widget.setPalette(palette)
         self._video_widget.setStyleSheet(
-            f"background: {surface_color}; border: none;"
+            f"background: {surface_color_name}; border: none;"
         )
         # Mirror the palette-derived colour on the container widget to prevent the
         # layout from revealing a darker parent background around the video surface
         # during resize animations or when the floating controls slide in.
-        self.setStyleSheet(f"background-color: {surface_color};")
+        self.setStyleSheet(f"background-color: {surface_color_name};")
         # --- End Video Widget Setup --------------------------------------------
 
         self._overlay_margin = 48
