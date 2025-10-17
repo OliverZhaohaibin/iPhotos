@@ -12,6 +12,7 @@ from PySide6.QtCore import (
     Qt,
     QTimer,
 )
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath
 from PySide6.QtWidgets import QWidget
 
@@ -64,17 +65,10 @@ class NotificationToast(QWidget):
         # animation.  The SVG asset is supplied externally and may be tinted by the
         # shared icon loader so the toast appearance stays consistent with the rest
         # of the UI chrome.
-        # Tint the checkmark SVG so it always matches the caption colour.  Using the
-        # shared icon loader keeps the widget visually aligned with the broader UI and
-        # avoids modifying the source asset directly.
-        self._checkmark_icon = load_icon(
-            "checkmark.svg",
-            color=self._text_color.name(),
-        )
+        self._checkmark_icon = load_icon("checkmark.svg")
         self._checkmark_progress = 0.0
         self._checkmark_animation = QPropertyAnimation(self, b"checkmark_progress")
-        # Slow the stroke reveal so the motion feels more deliberate and readable.
-        self._checkmark_animation.setDuration(600)
+        self._checkmark_animation.setDuration(500)
         self._checkmark_animation.setStartValue(0.0)
         self._checkmark_animation.setEndValue(1.0)
         self._checkmark_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
