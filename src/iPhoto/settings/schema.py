@@ -26,6 +26,10 @@ SETTINGS_SCHEMA: dict[str, Any] = {
                     "maximum": 100,
                 },
                 "is_muted": {"type": "boolean"},
+                "share_action": {
+                    "type": "string",
+                    "enum": ["copy_file", "copy_path", "reveal_file"],
+                },
             },
             "additionalProperties": True,
         },
@@ -45,6 +49,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "sidebar_width": 280,
         "volume": 75,
         "is_muted": False,
+        "share_action": "reveal_file",
     },
     "last_open_albums": [],
 }

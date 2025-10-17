@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 from typing import Iterable, List, Optional, TYPE_CHECKING
 
-from PySide6.QtCore import QModelIndex, QObject, QThreadPool
+from PySide6.QtCore import QModelIndex, QObject, QThreadPool, QMimeData, QUrl
+from PySide6.QtGui import QGuiApplication, QAction
 
 # ``main_controller`` shares the same import caveat as ``main_window``.  The
 # fallback ensures running the module as a script still locates ``AppContext``.
@@ -19,7 +22,7 @@ from ....media_classifier import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 from ..media import MediaController, PlaylistController
 from ..models.asset_model import AssetModel, Roles
 from ..models.spacer_proxy_model import SpacerProxyModel
-from ..widgets import AssetGridDelegate, InfoPanel
+from ..widgets import AssetGridDelegate, InfoPanel, NotificationToast
 from .detail_ui_controller import DetailUIController
 from .dialog_controller import DialogController
 from .header_controller import HeaderController
@@ -133,11 +136,17 @@ class MainController(QObject):
             window.ui.progress_bar,
             window.ui.rescan_action,
         )
+        # The notification toast confirms clipboard interactions without cluttering
+        # the status bar.  It is instantiated once and reused to minimise
+        # allocations and keep the animations silky-smooth when triggered rapidly.
+        self._notification_toast = NotificationToast(window)
 
         self._configure_views()
         self._restore_playback_preferences()
+        self._restore_share_preference()
         self._playlist.bind_model(self._asset_model)
         self._connect_signals()
+        self._connect_share_signals()
 
     def shutdown(self) -> None:
         """Stop worker threads and background jobs before the app exits."""
@@ -206,6 +215,17 @@ class MainController(QObject):
         self._media.set_muted(initial_muted)
         self._window.ui.player_bar.set_volume(self._media.volume())
         self._window.ui.player_bar.set_muted(self._media.is_muted())
+
+    def _restore_share_preference(self) -> None:
+        """Restore the saved share option so it mirrors the persisted settings value."""
+
+        share_action = self._context.settings.get("ui.share_action", "reveal_file")
+        if share_action == "copy_file":
+            self._window.ui.share_action_copy_file.setChecked(True)
+        elif share_action == "copy_path":
+            self._window.ui.share_action_copy_path.setChecked(True)
+        else:
+            self._window.ui.share_action_reveal_file.setChecked(True)
 
     # -----------------------------------------------------------------
     # Signal wiring
@@ -323,6 +343,14 @@ class MainController(QObject):
             self._view_controller.show_gallery_view
         )
 
+    def _connect_share_signals(self) -> None:
+        """Wire the share menu and toolbar button to their respective handlers."""
+
+        self._window.ui.share_action_group.triggered.connect(
+            self._handle_share_action_changed
+        )
+        self._window.ui.share_button.clicked.connect(self._handle_share_button_clicked)
+
     # -----------------------------------------------------------------
     # Slots
     def _handle_open_album_dialog(self) -> None:
@@ -396,6 +424,79 @@ class MainController(QObject):
         self._window.ui.player_bar.set_muted(is_muted)
         if self._context.settings.get("ui.is_muted") != is_muted:
             self._context.settings.set("ui.is_muted", is_muted)
+
+    def _handle_share_action_changed(self, action: QAction) -> None:
+        """Persist the selected share behaviour so the choice survives restarts."""
+
+        if action is self._window.ui.share_action_copy_file:
+            self._context.settings.set("ui.share_action", "copy_file")
+        elif action is self._window.ui.share_action_copy_path:
+            self._context.settings.set("ui.share_action", "copy_path")
+        elif action is self._window.ui.share_action_reveal_file:
+            self._context.settings.set("ui.share_action", "reveal_file")
+
+    def _handle_share_button_clicked(self) -> None:
+        """Execute the configured share behaviour for the active playlist item."""
+
+        current_row = self._playlist.current_row()
+        if current_row < 0:
+            self._status_bar.show_message("No item selected to share.", 3000)
+            return
+
+        index = self._asset_model.index(current_row, 0)
+        if not index.isValid():
+            return
+
+        file_path_str = index.data(Roles.ABS)
+        if not file_path_str:
+            return
+
+        file_path = Path(file_path_str)
+        share_action = self._context.settings.get("ui.share_action", "reveal_file")
+
+        if share_action == "copy_file":
+            self._copy_file_to_clipboard(file_path)
+        elif share_action == "copy_path":
+            self._copy_path_to_clipboard(file_path)
+        else:
+            self._reveal_in_file_manager(file_path)
+
+    def _copy_file_to_clipboard(self, path: Path) -> None:
+        """Copy *path* as a file reference to the system clipboard."""
+
+        if not path.exists():
+            self._status_bar.show_message(f"File not found: {path.name}", 3000)
+            return
+
+        mime_data = QMimeData()
+        mime_data.setUrls([QUrl.fromLocalFile(str(path))])
+        QGuiApplication.clipboard().setMimeData(mime_data)
+        self._notification_toast.show_toast("Copied to Clipboard")
+
+    def _copy_path_to_clipboard(self, path: Path) -> None:
+        """Copy the textual representation of *path* onto the clipboard."""
+
+        QGuiApplication.clipboard().setText(str(path))
+        self._notification_toast.show_toast("Copied to Clipboard")
+
+    def _reveal_in_file_manager(self, path: Path) -> None:
+        """Reveal *path* in the native file manager for the host operating system."""
+
+        if not path.exists():
+            self._status_bar.show_message(f"File not found: {path.name}", 3000)
+            return
+
+        # Tailor the command to each supported platform so the action works universally.
+        if sys.platform == "win32":
+            subprocess.run(["explorer", "/select,", str(path)], check=False)
+        elif sys.platform == "darwin":
+            subprocess.run(["open", "-R", str(path)], check=False)
+        else:
+            subprocess.run(["xdg-open", str(path.parent)], check=False)
+        self._status_bar.show_message(
+            f"Revealed {path.name} in file manager.",
+            3000,
+        )
 
     def _prioritize_filmstrip_rows(self, first: int, last: int) -> None:
         """Prioritise asset loading to match filmstrip visibility."""
