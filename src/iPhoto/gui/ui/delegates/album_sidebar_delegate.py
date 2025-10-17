@@ -282,18 +282,20 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
 
         The delegate receives monochrome SF Symbol inspired icons from the model
         so it can apply platform-appropriate colours during painting. This helper
-        renders the supplied ``QPixmap`` into a transparent buffer, fills it with
-        the requested tint, and masks the result with the original alpha channel.
-        The approach mirrors how AppKit tints template images.
+        first draws the original ``QPixmap`` into a transparent buffer so the
+        icon's alpha channel becomes the active mask. It then switches to
+        ``CompositionMode_SourceIn`` and floods the buffer with the requested
+        tint, which recolours only the opaque pixels. The approach mirrors how
+        AppKit tints template images while preserving crisp edges.
         """
 
         tinted = QPixmap(pixmap.size())
         tinted.fill(Qt.GlobalColor.transparent)
 
         painter = QPainter(tinted)
-        painter.fillRect(tinted.rect(), tint)
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
         painter.drawPixmap(0, 0, pixmap)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+        painter.fillRect(tinted.rect(), tint)
         painter.end()
 
         return tinted
