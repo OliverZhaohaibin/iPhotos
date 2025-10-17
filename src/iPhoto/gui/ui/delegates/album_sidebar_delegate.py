@@ -15,7 +15,7 @@ from PySide6.QtCore import (
     QVariantAnimation,
     QPersistentModelIndex,
 )
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QFont, QFontMetrics, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QStyledItemDelegate, QStyle, QStyleOptionViewItem, QTreeView
 
 from ..models.album_tree_model import AlbumTreeRole, NodeType
@@ -28,14 +28,6 @@ ICON_TEXT_GAP = 10
 INDENT_PER_LEVEL = 22
 INDICATOR_SLOT_WIDTH = 22
 INDICATOR_SIZE = 16
-# Rendering icons at a much higher device resolution before scaling them back
-# down keeps strokes crisp on both standard and high-density displays. A 4×
-# supersample factor renders the 18×18 logical glyphs into 72×72 physical
-# pixels, which gives Qt plenty of data to anti-alias without introducing
-# visible blur.
-ICON_SUPERSAMPLE_FACTOR = 4.0
-
-
 @dataclass(slots=True)
 class _IndicatorState:
     """Track the rendering state for a branch indicator."""
@@ -252,14 +244,13 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
             x += INDICATOR_SLOT_WIDTH
 
         # ------------------------------------------------------------------
-        # Unified icon rendering logic
+        # Icon rendering
         # ------------------------------------------------------------------
-        # Qt's ``QIcon.paint`` helper is convenient but obscures the pixmap
-        # resolution that ends up on screen, which makes it hard to guarantee
-        # that tinted icons stay crisp on high-density displays. Rendering the
-        # icon into a supersampled ``QPixmap`` ourselves lets us tint the glyph
-        # while preserving the original vector detail and guarantees consistent
-        # output for every node type.
+        # Every icon is now pre-tinted and cached by the model, so the delegate
+        # can rely on Qt's ``QIcon.paint`` helper. The helper renders scalable
+        # SVG assets at the ideal resolution for the target device, which keeps
+        # the glyphs tack sharp without forcing the delegate to manage explicit
+        # supersampling buffers or device pixel ratios.
         if icon is not None and not icon.isNull():
             icon_size = 18
             icon_rect = QRect(
@@ -268,22 +259,11 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
                 icon_size,
                 icon_size,
             )
-
-            upscale_factor = ICON_SUPERSAMPLE_FACTOR
-            physical_size = QSize(
-                int(icon_size * upscale_factor),
-                int(icon_size * upscale_factor),
+            icon.paint(
+                painter,
+                icon_rect,
+                Qt.AlignmentFlag.AlignCenter,
             )
-            pixmap = icon.pixmap(physical_size)
-            pixmap.setDevicePixelRatio(upscale_factor)
-
-            if node_type == NodeType.STATIC:
-                tint = palette.SIDEBAR_ICON_ACCENT
-                if not is_enabled:
-                    tint = palette.SIDEBAR_DISABLED_TEXT
-                pixmap = self._tint_pixmap(pixmap, tint)
-
-            painter.drawPixmap(icon_rect, pixmap)
             x = icon_rect.right() + ICON_TEXT_GAP
 
         painter.setPen(text_color)
@@ -297,35 +277,6 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         )
 
         painter.restore()
-
-    @staticmethod
-    def _tint_pixmap(pixmap: QPixmap, tint: QColor) -> QPixmap:
-        """Return a version of *pixmap* recoloured with *tint*.
-
-        The delegate receives monochrome SF Symbol inspired icons from the model
-        so it can apply platform-appropriate colours during painting. This helper
-        first draws the original ``QPixmap`` into a transparent buffer so the
-        icon's alpha channel becomes the active mask. It then switches to
-        ``CompositionMode_SourceIn`` and floods the buffer with the requested
-        tint, which recolours only the opaque pixels. The approach mirrors how
-        AppKit tints template images while preserving crisp edges.
-        """
-
-        tinted = QPixmap(pixmap.size())
-        # Copy the device pixel ratio from the source pixmap before performing any
-        # drawing so Qt keeps treating this buffer as the supersampled variant of
-        # the 18×18 logical glyph. Without this line Qt would assume the pixmap is
-        # backed by standard-resolution pixels, causing a blurry downscale.
-        tinted.setDevicePixelRatio(pixmap.devicePixelRatio())
-        tinted.fill(Qt.GlobalColor.transparent)
-
-        painter = QPainter(tinted)
-        painter.drawPixmap(0, 0, pixmap)
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-        painter.fillRect(tinted.rect(), tint)
-        painter.end()
-
-        return tinted
 
     @staticmethod
     def _depth_for_index(index: QModelIndex) -> int:
