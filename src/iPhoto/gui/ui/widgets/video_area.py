@@ -9,25 +9,17 @@ from PySide6.QtCore import (
     QEvent,
     QObject,
     QPropertyAnimation,
-    QPointF,
-    QRectF,
     QTimer,
     Qt,
     Signal,
 )
-from PySide6.QtGui import QCursor, QPainter, QResizeEvent
-from PySide6.QtWidgets import (
-    QFrame,
-    QGraphicsOpacityEffect,
-    QGraphicsScene,
-    QGraphicsView,
-    QWidget,
-)
+from PySide6.QtGui import QCursor, QResizeEvent
+from PySide6.QtWidgets import QGraphicsOpacityEffect, QWidget
 
 try:  # pragma: no cover - optional Qt module
-    from PySide6.QtMultimediaWidgets import QGraphicsVideoItem
+    from PySide6.QtMultimediaWidgets import QVideoWidget
 except (ModuleNotFoundError, ImportError):  # pragma: no cover - handled by main window guard
-    QGraphicsVideoItem = None  # type: ignore[assignment, misc]
+    QVideoWidget = None  # type: ignore[assignment, misc]
 
 from ....config import (
     PLAYER_CONTROLS_HIDE_DELAY_MS,
@@ -49,29 +41,24 @@ class VideoArea(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setMouseTracking(True)
 
-        if QGraphicsVideoItem is None:
+        if QVideoWidget is None:
             raise RuntimeError("PySide6.QtMultimediaWidgets is required for video playback.")
 
-        # --- Graphics View Setup ---
-        self._video_item = QGraphicsVideoItem()
-        self._video_item.setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
-
-        self._scene = QGraphicsScene(self)
-        self._scene.addItem(self._video_item)
-
-        self._video_view = QGraphicsView(self._scene, self)
-        self._video_view.setFrameShape(QFrame.Shape.NoFrame)
-        self._video_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._video_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._video_view.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        # Match the photo viewer's light-toned surface so letterboxed video frames sit
-        # on the same neutral backdrop.  The constant avoids palette-dependent colour
-        # shifts that caused HDR footage to appear desaturated while still keeping the
-        # white surface introduced in the current design.
-        self._video_view.setStyleSheet(
+        # --- Video Widget Setup -------------------------------------------------
+        self._video_widget = QVideoWidget(self)
+        self._video_widget.setMouseTracking(True)
+        self._video_widget.setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
+        self._video_widget.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        # Keep the bright surface introduced in the new design while relying on the
+        # legacy QVideoWidget pipeline that renders HDR material without desaturating
+        # the frames.  Styling the widget directly avoids palette lookups that
+        # previously introduced subtle tinting.
+        self._video_widget.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._video_widget.setAutoFillBackground(True)
+        self._video_widget.setStyleSheet(
             f"background: {VIEWER_SURFACE_COLOR_HEX}; border: none;"
         )
-        # --- End Graphics View Setup ---
+        # --- End Video Widget Setup --------------------------------------------
 
         self._overlay_margin = 48
         self._player_bar = PlayerBar(self)
@@ -80,8 +67,6 @@ class VideoArea(QWidget):
 
         self._controls_visible = False
         self._target_opacity = 0.0
-        self._host_widget: QWidget | None = self._video_view
-        self._window_host: QWidget | None = None
         self._controls_enabled = True
 
         effect = QGraphicsOpacityEffect(self._player_bar)
@@ -104,10 +89,16 @@ class VideoArea(QWidget):
     # Public API
     # ------------------------------------------------------------------
     @property
-    def video_item(self) -> QGraphicsVideoItem:
-        """Return the embedded :class:`QGraphicsVideoItem` for media output."""
+    def video_item(self) -> QVideoWidget:
+        """Return the embedded :class:`QVideoWidget` used for media playback.
 
-        return self._video_item
+        The method name is kept for backwards compatibility with older call
+        sites that expect a ``video_item`` attribute while the underlying
+        implementation has switched back to ``QVideoWidget`` to restore proper
+        HDR rendering behaviour.
+        """
+
+        return self._video_widget
 
     @property
     def player_bar(self) -> PlayerBar:
@@ -164,10 +155,7 @@ class VideoArea(QWidget):
 
         super().resizeEvent(event)
         rect = self.rect()
-        self._video_view.setGeometry(rect)
-        self._scene.setSceneRect(QRectF(rect))
-        self._video_item.setSize(self._scene.sceneRect().size())
-        self._video_item.setPos(QPointF())
+        self._video_widget.setGeometry(rect)
         self._update_bar_geometry()
 
     def enterEvent(self, event) -> None:  # pragma: no cover - GUI behaviour
@@ -188,18 +176,32 @@ class VideoArea(QWidget):
         self.hide_controls(animate=False)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # pragma: no cover - GUI behaviour
-        if event.type() in {
-            QEvent.Type.MouseMove,
-            QEvent.Type.HoverMove,
-            QEvent.Type.MouseButtonPress,
-            QEvent.Type.Wheel,
-        }:
-            self._on_mouse_activity()
-
-        if watched is self._player_bar and event.type() == QEvent.Type.Leave:
-            cursor_pos = QCursor.pos()
-            if not self.rect().contains(self.mapFromGlobal(cursor_pos)):
+        if watched is self._video_widget:
+            if event.type() in {
+                QEvent.Type.MouseMove,
+                QEvent.Type.HoverMove,
+                QEvent.Type.HoverEnter,
+                QEvent.Type.MouseButtonPress,
+                QEvent.Type.Wheel,
+            }:
+                self._on_mouse_activity()
+            if event.type() == QEvent.Type.Enter:
+                self.show_controls()
+            if event.type() == QEvent.Type.Leave and not self._player_bar.underMouse():
                 self.hide_controls()
+        elif watched is self._player_bar:
+            if event.type() in {
+                QEvent.Type.MouseMove,
+                QEvent.Type.HoverMove,
+                QEvent.Type.HoverEnter,
+                QEvent.Type.MouseButtonPress,
+                QEvent.Type.Wheel,
+            }:
+                self._on_mouse_activity()
+            if event.type() == QEvent.Type.Leave:
+                cursor_pos = QCursor.pos()
+                if not self.rect().contains(self.mapFromGlobal(cursor_pos)):
+                    self.hide_controls()
 
         return super().eventFilter(watched, event)
 
@@ -207,6 +209,7 @@ class VideoArea(QWidget):
     # Helpers
     # ------------------------------------------------------------------
     def _install_activity_filters(self) -> None:
+        self._video_widget.installEventFilter(self)
         self._player_bar.installEventFilter(self)
 
     def _wire_player_bar(self) -> None:
@@ -288,6 +291,5 @@ class VideoArea(QWidget):
             self.hide_controls(animate=False)
         else:
             self._controls_visible = False
-            self._overlay.hide()
             self._player_bar.hide()
 
