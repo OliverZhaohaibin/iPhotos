@@ -16,7 +16,7 @@ from PySide6.QtCore import (
     Signal,
 )
 from PySide6.QtGui import QColor, QCursor, QPalette, QResizeEvent
-from PySide6.QtWidgets import QGraphicsOpacityEffect, QWidget
+from PySide6.QtWidgets import QWidget
 
 try:  # pragma: no cover - optional Qt module
     from PySide6.QtMultimediaWidgets import QVideoWidget
@@ -117,11 +117,16 @@ class VideoArea(QWidget):
         self._target_opacity = 0.0
         self._controls_enabled = True
 
-        effect = QGraphicsOpacityEffect(self._player_bar)
-        effect.setOpacity(0.0)
-        self._player_bar.setGraphicsEffect(effect)
+        # ``QGraphicsOpacityEffect`` does not always cooperate with native
+        # windows, especially when the underlying platform composites video
+        # overlays in a separate scene graph.  Animating the dedicated
+        # ``windowOpacity`` property keeps the compositor in the loop and avoids
+        # situations where the effect renders to an off-screen texture that
+        # never reaches the display.  We initialise the value to ``0`` so the
+        # controls stay hidden until the first explicit fade-in request.
+        self._player_bar.setWindowOpacity(0.0)
 
-        self._fade_anim = QPropertyAnimation(effect, b"opacity", self)
+        self._fade_anim = QPropertyAnimation(self._player_bar, b"windowOpacity", self)
         self._fade_anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
         self._fade_anim.finished.connect(self._on_fade_finished)
 
@@ -320,13 +325,18 @@ class VideoArea(QWidget):
             self._on_fade_finished()
 
     def _current_opacity(self) -> float:
-        effect = self._player_bar.graphicsEffect()
-        return effect.opacity() if isinstance(effect, QGraphicsOpacityEffect) else 1.0
+        """Return the opacity currently applied to the floating controls."""
+
+        # ``windowOpacity`` reflects the compositor-managed alpha and therefore
+        # matches what the user actually sees on screen.  Querying the property
+        # directly avoids assumptions about any intermediate graphics effects or
+        # backing textures.
+        return self._player_bar.windowOpacity()
 
     def _set_opacity(self, value: float) -> None:
-        effect = self._player_bar.graphicsEffect()
-        if isinstance(effect, QGraphicsOpacityEffect):
-            effect.setOpacity(max(0.0, min(1.0, value)))
+        """Clamp and apply the requested opacity to the controls overlay."""
+
+        self._player_bar.setWindowOpacity(max(0.0, min(1.0, value)))
 
     def _on_fade_finished(self) -> None:
         if self._target_opacity <= 0.0:
