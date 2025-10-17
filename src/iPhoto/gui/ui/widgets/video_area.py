@@ -28,7 +28,7 @@ from ....config import (
     PLAYER_FADE_OUT_MS,
 )
 from .player_bar import PlayerBar
-from ..palette import VIEWER_SURFACE_COLOR_HEX
+from ..palette import viewer_surface_color
 
 
 class VideoArea(QWidget):
@@ -52,11 +52,12 @@ class VideoArea(QWidget):
         self._video_widget.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         # The parent ``VideoArea`` fills the gaps that appear when the video is
         # letterboxed or pillarboxed, so it adopts the shared viewer surface
-        # colour.  This keeps the photo and video experiences visually aligned
-        # without disturbing the dedicated rendering surface used by
-        # ``QVideoWidget``.
+        # colour.  The tone previously matched a constant fallback, but now the
+        # widget queries :func:`viewer_surface_color` so the fill color updates
+        # alongside theme or palette changes while keeping full parity with the
+        # photo viewer background.
         self.setStyleSheet(
-            f"background: {VIEWER_SURFACE_COLOR_HEX}; border: none;"
+            f"background: {viewer_surface_color(self)}; border: none;"
         )
 
         # ``QVideoWidget`` internally composites frames on a platform-specific
