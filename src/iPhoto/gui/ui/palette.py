@@ -34,7 +34,10 @@ SIDEBAR_INDICATOR_HOTZONE_MARGIN = 4
 SIDEBAR_INDENT_PER_LEVEL = 22
 SIDEBAR_INDICATOR_SLOT_WIDTH = 22
 SIDEBAR_INDICATOR_SIZE = 16
-SIDEBAR_ICON_SIZE = 18
+# Enlarging the icon size keeps the sidebar feeling balanced against the
+# macOS reference chrome while also giving the thicker SVG strokes room to
+# render crisply at standard display scale.
+SIDEBAR_ICON_SIZE = 22
 
 # Margins around the rounded selection pill.
 SIDEBAR_HIGHLIGHT_MARGIN_X = 6

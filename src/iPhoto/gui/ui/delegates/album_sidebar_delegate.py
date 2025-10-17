@@ -335,7 +335,10 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         indicator_colour = SIDEBAR_TEXT_COLOR if state.is_enabled else SIDEBAR_DISABLED_TEXT_COLOR
         pen = QPen(indicator_colour)
-        pen.setWidth(2)
+        # The float-based width preserves the softened macOS aesthetic while
+        # making the disclosure triangle more legible next to the larger
+        # sidebar glyphs.
+        pen.setWidthF(2.5)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(pen)
         painter.translate(branch_rect.center())
