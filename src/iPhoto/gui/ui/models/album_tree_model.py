@@ -39,10 +39,18 @@ class NodeType(Enum):
 
 @dataclass(slots=True)
 class AlbumTreeItem:
-    """Internal tree item used to back the Qt model."""
+    """Internal tree item used to back the Qt model.
+
+    The optional ``icon_name`` attribute lets callers opt into bespoke icons
+    when the generic node-type look-up is insufficient. This keeps icon
+    selection centralised while still allowing special cases (such as the
+    folder glyph requested for the promoted "Albums" header) to reuse the same
+    tree representation logic.
+    """
 
     title: str
     node_type: NodeType
+    icon_name: Optional[str] = None
     album: Optional[AlbumNode] = None
     parent: Optional["AlbumTreeItem"] = None
     children: List["AlbumTreeItem"] = field(default_factory=list)
@@ -171,7 +179,11 @@ class AlbumTreeModel(QAbstractItemModel):
             self.endResetModel()
             return
 
-        header = AlbumTreeItem("📚 Basic Library", NodeType.HEADER)
+        header = AlbumTreeItem(
+            "📚 Basic Library",
+            NodeType.HEADER,
+            icon_name="photo.on.rectangle.svg",
+        )
         self._root_item.add_child(header)
         # The smart collections belong directly under the "Basic Library" header,
         # however they do not require an inline separator anymore because the
@@ -188,9 +200,14 @@ class AlbumTreeModel(QAbstractItemModel):
 
         # Promote the Albums section to a header-level entry so that it shares the
         # same visual hierarchy, font weight, and font size as the "Basic Library"
-        # group. The folder emoji mirrors the bookshelf icon used above so the UI
-        # remains visually balanced.
-        albums_section = AlbumTreeItem("📁 Albums", NodeType.HEADER)
+        # group. Assigning the dedicated folder SVG keeps the bespoke iconography
+        # request intact while the emoji prefix maintains parity with the existing
+        # bookshelf glyph for the library header.
+        albums_section = AlbumTreeItem(
+            "📁 Albums",
+            NodeType.HEADER,
+            icon_name="folder.svg",
+        )
         self._root_item.add_child(albums_section)
         for album in self._library.list_albums():
             album_item = self._create_album_item(album, NodeType.ALBUM)
@@ -261,6 +278,12 @@ class AlbumTreeModel(QAbstractItemModel):
     def _icon_for_item(self, item: AlbumTreeItem, stroke_width: float | None = None) -> QIcon:
         """Return the icon representing *item*, optionally adjusting stroke width."""
 
+        if item.icon_name:
+            # When an item declares a dedicated icon we respect it verbatim. This
+            # is used by the promoted headers so they can reference bespoke SVG
+            # assets (for example, the folder icon requested for the Albums
+            # section) without overloading the generic header styling below.
+            return load_icon(item.icon_name, stroke_width=stroke_width)
         if item.node_type == NodeType.ACTION:
             return load_icon("plus.circle", stroke_width=stroke_width)
         if item.node_type == NodeType.STATIC:

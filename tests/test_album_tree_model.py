@@ -78,6 +78,12 @@ def test_model_populates_albums(tmp_path: Path, qapp: QApplication) -> None:
     # weight and icon treatment associated with header entries, which was the
     # original motivation for promoting the section.
     assert model.data(albums_index, AlbumTreeRole.NODE_TYPE) == NodeType.HEADER
+    albums_item = model.item_from_index(albums_index)
+    assert albums_item is not None
+    # The Albums header must reference the dedicated folder SVG so the sidebar
+    # renders the platform-consistent icon instead of the generic bookshelf used
+    # by the "Basic Library" header.
+    assert albums_item.icon_name == "folder.svg"
     trip_index = _find_child(model, albums_index, "Trip")
     assert trip_index is not None
     assert model.data(trip_index, AlbumTreeRole.NODE_TYPE) == NodeType.ALBUM
