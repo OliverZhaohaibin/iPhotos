@@ -191,7 +191,7 @@ class MainController(QObject):
         self._window.ui.player_bar.setEnabled(False)
 
     def _restore_playback_preferences(self) -> None:
-        """Restore persisted volume and mute state."""
+        """Restore persisted volume, mute state, and filmstrip visibility."""
 
         stored_volume = self._context.settings.get("ui.volume", 75)
         try:
@@ -211,10 +211,25 @@ class MainController(QObject):
         else:
             initial_muted = bool(stored_muted)
 
+        stored_filmstrip = self._context.settings.get("ui.show_filmstrip", True)
+        if isinstance(stored_filmstrip, str):
+            show_filmstrip = stored_filmstrip.strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+        else:
+            show_filmstrip = bool(stored_filmstrip)
+
         self._media.set_volume(initial_volume)
         self._media.set_muted(initial_muted)
         self._window.ui.player_bar.set_volume(self._media.volume())
         self._window.ui.player_bar.set_muted(self._media.is_muted())
+        # Ensure the detail layout reflects the stored preference immediately so the widgets
+        # are in the desired state before any album is opened.
+        self._window.ui.filmstrip_view.setVisible(show_filmstrip)
+        self._window.ui.toggle_filmstrip_action.setChecked(show_filmstrip)
 
     def _restore_share_preference(self) -> None:
         """Restore the saved share option so it mirrors the persisted settings value."""
@@ -245,6 +260,11 @@ class MainController(QObject):
         )
         self._window.ui.bind_library_action.triggered.connect(
             self._dialog.bind_library_dialog
+        )
+        # Keep the filmstrip toggle and widget visibility aligned so the interface reacts
+        # instantly when the user flips the preference.
+        self._window.ui.toggle_filmstrip_action.toggled.connect(
+            self._handle_toggle_filmstrip
         )
 
         # Global error reporting
@@ -434,6 +454,14 @@ class MainController(QObject):
             self._context.settings.set("ui.share_action", "copy_path")
         elif action is self._window.ui.share_action_reveal_file:
             self._context.settings.set("ui.share_action", "reveal_file")
+
+    def _handle_toggle_filmstrip(self, checked: bool) -> None:
+        """Persist and apply the filmstrip visibility preference."""
+
+        show_filmstrip = bool(checked)
+        self._window.ui.filmstrip_view.setVisible(show_filmstrip)
+        if self._context.settings.get("ui.show_filmstrip") != show_filmstrip:
+            self._context.settings.set("ui.show_filmstrip", show_filmstrip)
 
     def _handle_share_button_clicked(self) -> None:
         """Execute the configured share behaviour for the active playlist item."""

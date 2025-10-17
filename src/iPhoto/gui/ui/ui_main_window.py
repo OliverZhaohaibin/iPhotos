@@ -85,6 +85,10 @@ class Ui_MainWindow(object):
         self.rescan_action = QAction("Rescan", MainWindow)
         self.rebuild_links_action = QAction("Rebuild Live Links", MainWindow)
         self.bind_library_action = QAction("Set Basic Library…", MainWindow)
+        # Provide a persistent toggle so users can hide the filmstrip when they want to focus
+        # solely on the large preview while still being able to restore it later.
+        self.toggle_filmstrip_action = QAction("Show Filmstrip", MainWindow, checkable=True)
+        self.toggle_filmstrip_action.setChecked(True)
 
         # Group share actions so only one preferred behaviour can be active at a time.
         self.share_action_group = QActionGroup(MainWindow)
@@ -123,6 +127,8 @@ class Ui_MainWindow(object):
             self.main_toolbar.addAction(action)
 
         settings_menu = self.menu_bar.addMenu("&Settings")
+        settings_menu.addAction(self.toggle_filmstrip_action)
+        settings_menu.addSeparator()
         share_menu = settings_menu.addMenu("Share Action")
         share_menu.addAction(self.share_action_copy_file)
         share_menu.addAction(self.share_action_copy_path)
