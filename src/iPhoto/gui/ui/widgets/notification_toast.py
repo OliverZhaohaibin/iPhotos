@@ -5,14 +5,17 @@ from __future__ import annotations
 from PySide6.QtCore import (
     QEasingCurve,
     QEvent,
+    Property,
     QPropertyAnimation,
     QRect,
     QRectF,
     Qt,
     QTimer,
 )
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath
 from PySide6.QtWidgets import QWidget
+
+from ..icons import load_icon
 
 
 class NotificationToast(QWidget):
@@ -52,11 +55,22 @@ class NotificationToast(QWidget):
 
         self._background_color = QColor(0, 0, 0, 190)
         self._text_color = QColor(Qt.GlobalColor.white)
-        self._icon_color = QColor(Qt.GlobalColor.white)
         self._corner_radius = 16.0
         self._text = ""
 
         self.setFixedSize(self._DEFAULT_WIDTH, self._DEFAULT_HEIGHT)
+
+        # Load the checkmark icon once so we can simply repaint it with a clipping
+        # animation.  The SVG asset is supplied externally and may be tinted by the
+        # shared icon loader so the toast appearance stays consistent with the rest
+        # of the UI chrome.
+        self._checkmark_icon = load_icon("checkmark.svg")
+        self._checkmark_progress = 0.0
+        self._checkmark_animation = QPropertyAnimation(self, b"checkmark_progress")
+        self._checkmark_animation.setDuration(300)
+        self._checkmark_animation.setStartValue(0.0)
+        self._checkmark_animation.setEndValue(1.0)
+        self._checkmark_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
 
         # Prepare fade animations once so subsequent toasts simply restart them.
         self._fade_in_animation = QPropertyAnimation(self, b"windowOpacity")
@@ -80,6 +94,19 @@ class NotificationToast(QWidget):
         self._hide_timer.setInterval(self._DEFAULT_DWELL_MS)
         self._hide_timer.timeout.connect(self._fade_out_animation.start)
 
+    def _get_checkmark_progress(self) -> float:
+        """Return the current left-to-right reveal ratio for the icon stroke."""
+
+        return self._checkmark_progress
+
+    def _set_checkmark_progress(self, value: float) -> None:
+        """Update the icon reveal progress and schedule a repaint."""
+
+        self._checkmark_progress = max(0.0, min(1.0, float(value)))
+        self.update()
+
+    checkmark_progress = Property(float, _get_checkmark_progress, _set_checkmark_progress)
+
     def event(self, event: QEvent) -> bool:  # type: ignore[override]
         """Ignore close requests while we are animating.
 
@@ -100,10 +127,19 @@ class NotificationToast(QWidget):
         self.update()
 
         # If animations are mid-flight we stop them to avoid abrupt opacity jumps.
-        for animation in (self._fade_in_animation, self._fade_out_animation):
+        for animation in (
+            self._fade_in_animation,
+            self._fade_out_animation,
+            self._checkmark_animation,
+        ):
             if animation.state():
                 animation.stop()
         self._hide_timer.stop()
+
+        # Reset the checkmark so each toast replays the drawing animation from the
+        # beginning.  ``setProperty`` ensures the Qt animation framework sees the
+        # updated baseline before the next ``start`` call.
+        self.setProperty("checkmark_progress", 0.0)
 
         parent = self.parentWidget()
         if parent is not None:
@@ -113,6 +149,7 @@ class NotificationToast(QWidget):
         self.setWindowOpacity(0.0)
         self.show()
         self._fade_in_animation.start()
+        self._checkmark_animation.start()
         self._hide_timer.start()
 
     def paintEvent(self, event) -> None:  # type: ignore[override]
@@ -130,37 +167,24 @@ class NotificationToast(QWidget):
         path.addRoundedRect(QRectF(rect), self._corner_radius, self._corner_radius)
         painter.fillPath(path, self._background_color)
 
-        # Compose a stylised checkmark using a stroke-based path.  Keeping the
-        # geometry proportional to the widget size allows future layout tweaks to
-        # reuse the same drawing code without adjustments.
+        # Paint the checkmark SVG while progressively revealing it from left to
+        # right.  Clipping the painter is significantly cheaper than attempting to
+        # sample the SVG path geometry and keeps the animation compatible with any
+        # future icon redesigns.
         icon_rect = QRect(
             0,
             int(self.height() * 0.15),
             self.width(),
             int(self.height() * 0.4),
         )
-        pen = QPen(
-            self._icon_color,
-            12,
-            Qt.PenStyle.SolidLine,
-            Qt.PenCapStyle.RoundCap,
-            Qt.PenJoinStyle.RoundJoin,
-        )
-        painter.setPen(pen)
-        checkmark = QPainterPath()
-        checkmark.moveTo(
-            icon_rect.left() + icon_rect.width() * 0.25,
-            icon_rect.top() + icon_rect.height() * 0.55,
-        )
-        checkmark.lineTo(
-            icon_rect.left() + icon_rect.width() * 0.45,
-            icon_rect.top() + icon_rect.height() * 0.72,
-        )
-        checkmark.lineTo(
-            icon_rect.left() + icon_rect.width() * 0.75,
-            icon_rect.top() + icon_rect.height() * 0.35,
-        )
-        painter.drawPath(checkmark)
+        clip_width = int(icon_rect.width() * self._checkmark_progress)
+        if clip_width > 0 and not self._checkmark_icon.isNull():
+            painter.save()
+            painter.setClipRect(
+                QRect(icon_rect.left(), icon_rect.top(), clip_width, icon_rect.height())
+            )
+            self._checkmark_icon.paint(painter, icon_rect, Qt.AlignmentFlag.AlignCenter)
+            painter.restore()
 
         # Render the caption beneath the icon using a bold sans-serif font.
         font = QFont(self.font())
