@@ -39,6 +39,7 @@ class VideoArea(QWidget):
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
+        self.setObjectName("videoArea")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setMouseTracking(True)
 
@@ -55,9 +56,13 @@ class VideoArea(QWidget):
         # colour.  The tone previously matched a constant fallback, but now the
         # widget queries :func:`viewer_surface_color` so the fill color updates
         # alongside theme or palette changes while keeping full parity with the
-        # photo viewer background.
+        # photo viewer background.  Applying the stylesheet through an ID
+        # selector confines the background colour to the container only and
+        # prevents child widgets such as ``PlayerBar`` from inheriting the solid
+        # fill that would otherwise obscure their translucent design.
+        surface_color = viewer_surface_color(self)
         self.setStyleSheet(
-            f"background: {viewer_surface_color(self)}; border: none;"
+            f"VideoArea#videoArea {{ background: {surface_color}; border: none; }}"
         )
 
         # ``QVideoWidget`` internally composites frames on a platform-specific
@@ -77,8 +82,8 @@ class VideoArea(QWidget):
         # asset.  ``None`` indicates that either no clip is active or that the
         # metadata did not include dimensions.  The value is used to manually
         # size the ``QVideoWidget`` so that the black surface only covers the
-        # actual video content while the surrounding padding inherits the white
-        # container background.
+        # actual video content while the surrounding padding inherits the
+        # theme-aware container background.
         self._video_size: Optional[QSize] = None
 
         self._overlay_margin = 48
