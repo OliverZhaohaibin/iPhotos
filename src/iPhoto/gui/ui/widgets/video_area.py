@@ -15,7 +15,7 @@ from PySide6.QtCore import (
     Qt,
     Signal,
 )
-from PySide6.QtGui import QCursor, QPainter, QResizeEvent
+from PySide6.QtGui import QCursor, QPainter, QPalette, QColor, QResizeEvent
 from PySide6.QtWidgets import (
     QFrame,
     QGraphicsOpacityEffect,
@@ -97,14 +97,31 @@ class VideoArea(QWidget):
         self._video_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._video_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._video_view.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        # Match the photo viewer's light-toned surface so letterboxed video frames sit
-        # on the same neutral backdrop.  Using the shared palette value keeps the
-        # photo and video experiences visually consistent while avoiding harsh
-        # contrast against the surrounding chrome.
-        # Mirror the palette-driven detail background so letterboxed frames do not
-        # sit on a subtly different tone compared to the surrounding widgets.
-        surface_color = viewer_surface_color(self)
-        self._video_view.setStyleSheet(f"background: {surface_color}; border: none;")
+        self._video_view.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        # ``QGraphicsView`` fills its viewport via an intermediate image whenever a
+        # stylesheet background is in play.  That off-screen hop dropped the colour
+        # metadata HDR sources rely on, so tone mapping silently fell back to an SDR
+        # approximation.  Keeping the viewport translucent avoids the extra surface and
+        # lets Qt composite the frames directly with the window using the correct
+        # colour space.
+        self._video_view.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self._video_view.viewport().setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self._video_view.setAutoFillBackground(False)
+        self._video_view.viewport().setAutoFillBackground(False)
+        self._video_view.setStyleSheet("background: transparent; border: none;")
+
+        # Preserve the light-toned surround expected by the rest of the viewer by
+        # tinting the parent widget instead of the graphics view.  This keeps the
+        # multimedia pipeline untouched while still matching the palette-driven UI.
+        surface_color_name = viewer_surface_color(self)
+        surface_color = QColor(surface_color_name)
+        background_role = self.backgroundRole()
+        if background_role == QPalette.ColorRole.NoRole:
+            background_role = QPalette.ColorRole.Window
+        palette = self.palette()
+        palette.setColor(background_role, surface_color)
+        self.setPalette(palette)
+        self.setAutoFillBackground(True)
         # --- End Graphics View Setup ---
 
         self._overlay_margin = 48
