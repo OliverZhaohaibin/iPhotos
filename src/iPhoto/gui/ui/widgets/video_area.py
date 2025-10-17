@@ -15,7 +15,7 @@ from PySide6.QtCore import (
     Qt,
     Signal,
 )
-from PySide6.QtGui import QCursor, QPainter, QResizeEvent
+from PySide6.QtGui import QColor, QCursor, QPainter, QResizeEvent
 from PySide6.QtWidgets import (
     QFrame,
     QGraphicsOpacityEffect,
@@ -35,7 +35,7 @@ from ....config import (
     PLAYER_FADE_OUT_MS,
 )
 from .player_bar import PlayerBar
-from ..palette import VIEWER_SURFACE_COLOR_HEX
+from ..palette import viewer_surface_color
 
 
 class VideoArea(QWidget):
@@ -76,14 +76,18 @@ class VideoArea(QWidget):
         self._video_view.viewport().setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._video_view.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         self._video_view.viewport().setAttribute(Qt.WidgetAttribute.WA_Hover, True)
-        self._video_view.viewport().setAutoFillBackground(True)
-        # Apply the white background to the viewport itself; Qt paints the scene
-        # onto this child widget, so ensuring it shares the neutral tone prevents
-        # any residual black bars or flashes when videos switch between assets.
-        self._video_view.viewport().setStyleSheet(
-            f"background: {VIEWER_SURFACE_COLOR_HEX}; border: none;"
-        )
+        self._video_view.viewport().setAutoFillBackground(False)
+        # Keep the graphics view transparent and paint the palette-derived colour as
+        # the scene background instead.  This preserves HDR fidelity because the
+        # video frames render directly into the viewport while letterboxed regions
+        # inherit the same neutral tone as still photos.
+        surface_color = viewer_surface_color(self)
+        self.setStyleSheet(f"background-color: {surface_color};")
+        surface_qcolor = QColor(surface_color)
+        self._scene.setBackgroundBrush(surface_qcolor)
+        self._video_view.setBackgroundBrush(surface_qcolor)
         self._video_view.setStyleSheet("background: transparent; border: none;")
+        self._video_view.viewport().setStyleSheet("background: transparent; border: none;")
         # --- End Graphics View Setup -------------------------------------------
 
         self._overlay_margin = 48
