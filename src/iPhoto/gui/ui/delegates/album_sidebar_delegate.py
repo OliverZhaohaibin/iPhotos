@@ -28,6 +28,12 @@ ICON_TEXT_GAP = 10
 INDENT_PER_LEVEL = 22
 INDICATOR_SLOT_WIDTH = 22
 INDICATOR_SIZE = 16
+# Rendering icons at a much higher device resolution before scaling them back
+# down keeps strokes crisp on both standard and high-density displays. A 4×
+# supersample factor renders the 18×18 logical glyphs into 72×72 physical
+# pixels, which gives Qt plenty of data to anti-alias without introducing
+# visible blur.
+ICON_SUPERSAMPLE_FACTOR = 4.0
 
 
 @dataclass(slots=True)
@@ -253,7 +259,15 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
                 icon_size,
                 icon_size,
             )
-            pixmap = icon.pixmap(QSize(icon_size, icon_size))
+            # Render the icon into a high-resolution pixmap so the subsequent
+            # downscaling into the 18×18 logical rectangle stays razor sharp.
+            upscale_factor = ICON_SUPERSAMPLE_FACTOR
+            physical_size = QSize(
+                int(icon_size * upscale_factor),
+                int(icon_size * upscale_factor),
+            )
+            pixmap = icon.pixmap(physical_size)
+            pixmap.setDevicePixelRatio(upscale_factor)
 
             if node_type == NodeType.STATIC:
                 tint = palette.SIDEBAR_ICON_ACCENT
@@ -297,6 +311,11 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
         painter.fillRect(tinted.rect(), tint)
         painter.end()
+
+        # Preserve the source device pixel ratio so the supersampled glyph stays
+        # aligned with the 18×18 logical rectangle when Qt scales the pixmap
+        # back down during painting.
+        tinted.setDevicePixelRatio(pixmap.devicePixelRatio())
 
         return tinted
 
