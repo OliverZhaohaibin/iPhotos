@@ -34,6 +34,46 @@ def _run_command(command: Sequence[str]) -> subprocess.CompletedProcess[bytes]:
     return process
 
 
+def is_hdr_video(source: Path) -> bool:
+    """Return ``True`` when *source* is tagged with HDR transfer characteristics.
+
+    The helper inspects ``ffprobe`` metadata because SDR and HDR assets require
+    different handling when extracting representative thumbnails.  Applying tone
+    mapping to every video would wash out SDR footage, so we only do the
+    expensive conversion when the stream advertises modern HDR colour primaries
+    or transfer functions (for example PQ or HLG).
+    """
+
+    try:
+        metadata = probe_media(source)
+    except ExternalToolError:
+        # When ffprobe is unavailable we silently fall back to SDR processing,
+        # ensuring callers still get a frame even though colour accuracy may be
+        # reduced for true HDR sources.
+        return False
+
+    streams = metadata.get("streams")
+    if not isinstance(streams, list):
+        return False
+
+    for stream in streams:
+        if not isinstance(stream, dict) or stream.get("codec_type") != "video":
+            continue
+
+        # HDR videos typically expose either the BT.2020 colour primaries or an
+        # HDR transfer curve such as PQ (SMPTE ST 2084) or HLG
+        # (ARIB STD-B67).  Detecting either signal is sufficient to warrant
+        # tone mapping.
+        color_transfer = stream.get("color_transfer")
+        color_space = stream.get("color_space")
+        if color_transfer in {"smpte2084", "arib-std-b67"}:
+            return True
+        if color_space in {"bt2020", "bt2020nc"}:
+            return True
+
+    return False
+
+
 def extract_video_frame(
     source: Path,
     *,
@@ -100,31 +140,33 @@ def _extract_with_ffmpeg(
         "-vsync",
         "0",
     ]
-    filters: list[str] = [
-        # Convert HDR material into a linear light buffer before tonemapping so the
-        # following steps operate on a predictable signal. The neutral peak level keeps
-        # highlights within a practical range for SDR conversion.
-        "zscale=t=linear:npl=100",
-        # Work in full-precision RGB while tone mapping to avoid precision loss.
-        "format=gbrpf32le",
-        # Normalize the primaries to BT.709 to match the application's SDR display target.
-        "zscale=p=bt709",
-        # Apply a filmic tonemap curve that keeps contrast in bright regions without
-        # clipping. Desaturation is disabled so strong colors are retained.
-        "tonemap=tonemap=hable:desat=0",
-        # Return to the standard transfer function and range expected by SDR displays.
-        "zscale=t=bt709:m=bt709:r=tv",
-    ]
+    filters: list[str] = []
+    if is_hdr_video(source):
+        # HDR-only processing path: the filter chain linearises the image,
+        # performs tone mapping into the BT.709 gamut, and re-encodes the signal
+        # for standard dynamic range output.  SDR sources bypass this expensive
+        # conversion to preserve their original colours.
+        filters.extend(
+            [
+                "zscale=t=linear:npl=100",
+                "format=gbrpf32le",
+                "zscale=p=bt709",
+                "tonemap=tonemap=hable:desat=0",
+                "zscale=t=bt709:m=bt709:r=tv",
+            ]
+        )
 
     if scale is not None:
         width, height = scale
         if width > 0 and height > 0:
-            filters.append(
-                "scale=min({w},iw):min({h},ih):force_original_aspect_ratio=decrease".format(
-                    w=width,
-                    h=height,
-                )
+            scale_filter = "scale=min({w},iw):min({h},ih):force_original_aspect_ratio=decrease".format(
+                w=width,
+                h=height,
             )
+            if filters:
+                filters.append(scale_filter)
+            else:
+                filters.insert(0, scale_filter)
 
     if format == "jpeg":
         # JPEG encoders expect even dimensions and typically operate on YUV data. The
