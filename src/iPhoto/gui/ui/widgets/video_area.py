@@ -9,6 +9,7 @@ from PySide6.QtCore import (
     QEvent,
     QObject,
     QPropertyAnimation,
+    QSize,
     QTimer,
     Qt,
     Signal,
@@ -70,6 +71,14 @@ class VideoArea(QWidget):
         self._video_widget.setPalette(palette)
         self._video_widget.setStyleSheet("background: black; border: none;")
         # --- End Video Widget Setup --------------------------------------------
+
+        # Track the logical video resolution reported by the currently playing
+        # asset.  ``None`` indicates that either no clip is active or that the
+        # metadata did not include dimensions.  The value is used to manually
+        # size the ``QVideoWidget`` so that the black surface only covers the
+        # actual video content while the surrounding padding inherits the white
+        # container background.
+        self._video_size: Optional[QSize] = None
 
         self._overlay_margin = 48
         self._player_bar = PlayerBar(self)
@@ -158,6 +167,28 @@ class VideoArea(QWidget):
         else:
             self.show_controls()
 
+    def set_video_size(self, width: Optional[int], height: Optional[int]) -> None:
+        """Update the logical video resolution driving the surface layout."""
+
+        if (
+            width is None
+            or height is None
+            or int(width) <= 0
+            or int(height) <= 0
+        ):
+            target_size: Optional[QSize] = None
+        else:
+            target_size = QSize(int(width), int(height))
+
+        if self._video_size == target_size:
+            return
+
+        self._video_size = target_size
+        # Immediately adjust the geometry so transitions between assets do not
+        # wait for a resize event (which may never arrive if the widget keeps
+        # the same outer dimensions).
+        self._update_video_geometry()
+
     # ------------------------------------------------------------------
     # QWidget overrides
     # ------------------------------------------------------------------
@@ -165,8 +196,7 @@ class VideoArea(QWidget):
         """Manually layout child widgets."""
 
         super().resizeEvent(event)
-        rect = self.rect()
-        self._video_widget.setGeometry(rect)
+        self._update_video_geometry()
         self._update_bar_geometry()
 
     def enterEvent(self, event) -> None:  # pragma: no cover - GUI behaviour
@@ -288,6 +318,28 @@ class VideoArea(QWidget):
             y = max(0, rect.height() - bar_height)
         self._player_bar.setGeometry(x, y, bar_width, bar_height)
         self._player_bar.raise_()
+
+    def _update_video_geometry(self) -> None:
+        """Resize the video surface to match the reported clip dimensions."""
+
+        rect = self.rect()
+        if rect.isEmpty():
+            self._video_widget.setGeometry(rect)
+            return
+
+        if self._video_size is None or self._video_size.isEmpty():
+            # Without metadata fall back to the legacy behaviour where the
+            # surface fills the entire area.  The ``QVideoWidget`` will apply its
+            # own aspect ratio constraints, which recreates the previous
+            # letterboxed look while still supporting theme-aligned padding.
+            self._video_widget.setGeometry(rect)
+            return
+
+        available = rect.size()
+        target = self._video_size.scaled(available, Qt.AspectRatioMode.KeepAspectRatio)
+        x = (available.width() - target.width()) // 2
+        y = (available.height() - target.height()) // 2
+        self._video_widget.setGeometry(x, y, target.width(), target.height())
 
     # ------------------------------------------------------------------
     # Live Photo helpers

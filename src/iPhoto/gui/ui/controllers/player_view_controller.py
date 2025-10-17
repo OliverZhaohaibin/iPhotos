@@ -44,6 +44,7 @@ class PlayerViewController(QObject):
     def show_placeholder(self) -> None:
         """Display the placeholder widget and clear any previous image."""
 
+        self._video_area.set_video_size(None, None)
         self._video_area.hide_controls(animate=False)
         self.hide_live_badge()
         if self._player_stack.currentWidget() is not self._placeholder:
@@ -55,6 +56,7 @@ class PlayerViewController(QObject):
     def show_image_surface(self) -> None:
         """Reveal the still-image viewer surface."""
 
+        self._video_area.set_video_size(None, None)
         self._video_area.hide_controls(animate=False)
         if self._player_stack.currentWidget() is not self._image_viewer:
             self._player_stack.setCurrentWidget(self._image_viewer)
@@ -80,6 +82,7 @@ class PlayerViewController(QObject):
     def display_image(self, source: Path) -> bool:
         """Load ``source`` into the image viewer, returning success."""
 
+        self._video_area.set_video_size(None, None)
         pixmap = image_loader.load_qpixmap(source)
         if pixmap is None:
             return False
