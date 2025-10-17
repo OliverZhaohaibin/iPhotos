@@ -27,7 +27,7 @@ from ....config import (
     PLAYER_FADE_OUT_MS,
 )
 from .player_bar import PlayerBar
-from ..palette import VIEWER_SURFACE_COLOR_HEX, viewer_surface_color
+from ..palette import VIEWER_SURFACE_COLOR_HEX
 
 
 class VideoArea(QWidget):
@@ -49,34 +49,26 @@ class VideoArea(QWidget):
         self._video_widget.setMouseTracking(True)
         self._video_widget.setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
         self._video_widget.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
-        # Keep the bright surface introduced in the new design while relying on the
-        # legacy QVideoWidget pipeline that renders HDR material without desaturating
-        # the frames.  Styling the widget directly avoids palette lookups that
-        # previously introduced subtle tinting.
+        # The parent ``VideoArea`` fills the gaps that appear when the video is
+        # letterboxed or pillarboxed, so it adopts the shared viewer surface
+        # colour.  This keeps the photo and video experiences visually aligned
+        # without disturbing the dedicated rendering surface used by
+        # ``QVideoWidget``.
+        self.setStyleSheet(
+            f"background: {VIEWER_SURFACE_COLOR_HEX}; border: none;"
+        )
+
+        # ``QVideoWidget`` internally composites frames on a platform-specific
+        # surface.  Setting that surface to pure black avoids blending artefacts
+        # that would otherwise brighten shadows or wash out tone-mapped HDR
+        # content.  The widget therefore keeps a black background even though its
+        # container is bright.
         self._video_widget.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._video_widget.setAutoFillBackground(True)
-        # Derive the surface colour from the active palette so the video canvas
-        # always matches the photo viewer and surrounding detail panel, even when a
-        # future theme customises the base window colour.  Falling back to the
-        # constant ensures the widget still renders against the intended bright
-        # backdrop if the palette has not been initialised yet (which can happen when
-        # the widget is created off-screen).
-        surface_color_name = viewer_surface_color(self) or VIEWER_SURFACE_COLOR_HEX
-        surface_color = QColor(surface_color_name)
-        # ``QVideoWidget`` renders using a platform-specific surface that can ignore
-        # pure stylesheet changes.  Updating the palette ensures the compositing
-        # surface itself receives the requested colour, while the stylesheet keeps
-        # child widgets (such as the floating controls) visually consistent.
         palette = self._video_widget.palette()
-        palette.setColor(QPalette.ColorRole.Window, surface_color)
+        palette.setColor(QPalette.ColorRole.Window, QColor("black"))
         self._video_widget.setPalette(palette)
-        self._video_widget.setStyleSheet(
-            f"background: {surface_color_name}; border: none;"
-        )
-        # Mirror the palette-derived colour on the container widget to prevent the
-        # layout from revealing a darker parent background around the video surface
-        # during resize animations or when the floating controls slide in.
-        self.setStyleSheet(f"background-color: {surface_color_name};")
+        self._video_widget.setStyleSheet("background: black; border: none;")
         # --- End Video Widget Setup --------------------------------------------
 
         self._overlay_margin = 48
