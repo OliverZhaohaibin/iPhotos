@@ -13,6 +13,7 @@ from PySide6.QtGui import QIcon
 from ....library.manager import LibraryManager
 from ....library.tree import AlbumNode
 from ..icon import load_icon
+from ..palette import SIDEBAR_ICON_COLOR_HEX
 
 
 class AlbumTreeRole(int, Enum):
@@ -230,7 +231,9 @@ class AlbumTreeModel(QAbstractItemModel):
         if item.node_type == NodeType.STATIC:
             icon_name = self._STATIC_ICON_MAP.get(item.title.casefold())
             if icon_name:
-                return load_icon(icon_name)
+                # Static entries mirror the macOS sidebar styling, so we tint the
+                # SF Symbols inspired SVGs with the shared blue accent colour.
+                return load_icon(icon_name, color=SIDEBAR_ICON_COLOR_HEX)
         if item.node_type in {NodeType.ALBUM, NodeType.SUBALBUM}:
             return load_icon("rectangle.stack")
         if item.node_type == NodeType.HEADER:

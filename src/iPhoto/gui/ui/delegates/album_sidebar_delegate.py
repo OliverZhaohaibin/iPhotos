@@ -19,10 +19,13 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, Q
 from PySide6.QtWidgets import QStyledItemDelegate, QStyle, QStyleOptionViewItem, QTreeView
 
 from ..models.album_tree_model import AlbumTreeRole, NodeType
+from ..palette import SIDEBAR_ICON_COLOR_HEX
 
 BG_COLOR = QColor("#eef3f6")
 TEXT_COLOR = QColor("#2b2b2b")
-ICON_COLOR = QColor("#1e73ff")
+# Keep the delegate palette in sync with other sidebar components by sourcing the
+# shared colour constant instead of duplicating the literal value.
+ICON_COLOR = QColor(SIDEBAR_ICON_COLOR_HEX)
 HOVER_BG = QColor(0, 0, 0, 24)
 SELECT_BG = QColor(0, 0, 0, 56)
 DISABLED_TEXT = QColor(0, 0, 0, 90)
