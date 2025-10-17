@@ -127,6 +127,11 @@ class Ui_MainWindow(object):
             self.main_toolbar.addAction(action)
 
         settings_menu = self.menu_bar.addMenu("&Settings")
+        # Reuse the same action instance in both menus so the user can discover the
+        # library binding workflow from either File or Settings without duplicating
+        # business logic or state handling.
+        settings_menu.addAction(self.bind_library_action)
+        settings_menu.addSeparator()
         settings_menu.addAction(self.toggle_filmstrip_action)
         settings_menu.addSeparator()
         share_menu = settings_menu.addMenu("Share Action")
