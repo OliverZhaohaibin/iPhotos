@@ -20,7 +20,10 @@ class GalleryGridView(AssetGrid):
         self.setSelectionMode(QListView.SelectionMode.SingleSelection)
         self.setViewMode(QListView.ViewMode.IconMode)
         self.setIconSize(self._base_icon_size)
-        self.setSpacing(6)
+        # ``QListView`` may tweak the spacing when operating in ``Adjust`` mode.
+        # Record the intended gap so we can reapply it on every resize event.
+        self._base_spacing = 6
+        self.setSpacing(self._base_spacing)
         self.setUniformItemSizes(True)
         self.setResizeMode(QListView.ResizeMode.Adjust)
         self.setMovement(QListView.Movement.Static)
@@ -34,12 +37,14 @@ class GalleryGridView(AssetGrid):
         # Provide an initial grid size that roughly matches the base icon size.
         # The resize handler will immediately refine this value when the widget
         # receives its first resize event.
-        self.setGridSize(self._base_icon_size + QSize(self.spacing(), self.spacing()))
+        self.setGridSize(
+            self._base_icon_size + QSize(self._base_spacing, self._base_spacing)
+        )
 
     def resizeEvent(self, event: QResizeEvent) -> None:  # type: ignore[override]
         """Resize icons so they always fill the available horizontal space."""
         viewport_width = self.viewport().width()
-        spacing = self.spacing()
+        spacing = self._base_spacing
 
         # Abort early if the viewport is not ready yet. A zero width can happen
         # during initialization when Qt performs the first layout pass.
@@ -60,8 +65,17 @@ class GalleryGridView(AssetGrid):
         # fill the viewport. The grid uses uniform spacing, therefore we only
         # need to remove the total spacing footprint and divide the remainder
         # by the number of columns. Icons stay square to avoid letterboxing.
-        new_icon_width = (viewport_width - (num_columns - 1) * spacing) / num_columns
-        new_dimension = max(1, int(new_icon_width))
+        available_width = viewport_width - (num_columns - 1) * spacing
+        ideal_icon_width = available_width / num_columns
+
+        # Use rounded icon dimensions for a smoother visual progression while
+        # ensuring the total width of all columns never exceeds the viewport.
+        new_dimension = max(1, int(round(ideal_icon_width)))
+        while ((new_dimension + spacing) * num_columns) - spacing > viewport_width:
+            if new_dimension <= 1:
+                new_dimension = 1
+                break
+            new_dimension -= 1
         new_size = QSize(new_dimension, new_dimension)
 
         # Update icon and grid dimensions only when they actually change. This
@@ -69,10 +83,16 @@ class GalleryGridView(AssetGrid):
         # icon size and the QListView internals.
         if self.iconSize() != new_size:
             self.setIconSize(new_size)
-            self.setGridSize(new_size)
-        elif self.gridSize() != new_size:
-            # Keep the grid cell tightly aligned with the icon so Qt does not
-            # attempt to compensate by stretching the inter-item spacing.
-            self.setGridSize(new_size)
+            self.setGridSize(new_size + QSize(spacing, spacing))
+        elif self.gridSize() != new_size + QSize(spacing, spacing):
+            # Keep the grid cell tightly aligned with the icon plus the fixed
+            # spacing. This prevents Qt from stretching the inter-item gap when
+            # reflowing the layout.
+            self.setGridSize(new_size + QSize(spacing, spacing))
+
+        # Reinstate the intended spacing in case ``Adjust`` mode attempted to
+        # compensate for rounding by modifying the gap between items.
+        if self.spacing() != spacing:
+            self.setSpacing(spacing)
 
         super().resizeEvent(event)
