@@ -34,7 +34,9 @@ SIDEBAR_INDICATOR_HOTZONE_MARGIN = 4
 SIDEBAR_INDENT_PER_LEVEL = 22
 SIDEBAR_INDICATOR_SLOT_WIDTH = 22
 SIDEBAR_INDICATOR_SIZE = 16
-SIDEBAR_ICON_SIZE = 18
+# A 22px glyph closely matches the generous proportions used by macOS and keeps
+# the icon legible on high-density displays without overwhelming the label.
+SIDEBAR_ICON_SIZE = 22
 
 # Margins around the rounded selection pill.
 SIDEBAR_HIGHLIGHT_MARGIN_X = 6

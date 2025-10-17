@@ -18,7 +18,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QStyledItemDelegate, QStyleOptionViewItem, QTreeView, QStyle
 
-from ..icon import load_icon
+from ..icon import icon_path, load_icon
 from ..models.album_tree_model import AlbumTreeModel, AlbumTreeRole, NodeType
 from ..palette import (
     SIDEBAR_BRANCH_CONTENT_GAP,
@@ -156,6 +156,19 @@ class BranchIndicatorController(QObject):
 class AlbumSidebarDelegate(QStyledItemDelegate):
     """Custom delegate painting the sidebar with a macOS inspired style."""
 
+    def __init__(self, tree: QTreeView) -> None:
+        """Initialise the delegate and prepare icon metadata caches.
+
+        The parent ``tree`` is forwarded to :class:`QStyledItemDelegate` so Qt can
+        manage lifetimes as usual. A small cache tracks which static sidebar
+        entries ship with filled icon variants, allowing the paint routine to
+        avoid repeated ``Path.exists`` checks during rapid hover/selection
+        changes.
+        """
+
+        super().__init__(tree)
+        self._fill_icon_availability: dict[str, bool] = {}
+
     def sizeHint(  # noqa: D401 - inherited docstring
         self, option: QStyleOptionViewItem, _index: QModelIndex
     ) -> QSize:
@@ -206,15 +219,41 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
             model = index.model()
             if isinstance(model, AlbumTreeModel):
                 icon_base = model._STATIC_ICON_MAP.get(title)
-                if icon_base in {"video", "suit.heart"}:
-                    # The sidebar mirrors macOS behaviour where select states swap
-                    # the regular outline icon for a filled version. We perform the
-                    # decision here because the delegate has access to the selection
-                    # state while the model intentionally does not.
-                    suffix = ".fill" if state.is_selected else ""
-                    return load_icon(f"{icon_base}{suffix}.svg", color=SIDEBAR_ICON_COLOR_HEX)
+                if icon_base:
+                    icon_name = self._resolve_static_icon_name(icon_base, state.is_selected)
+                    return load_icon(icon_name, color=SIDEBAR_ICON_COLOR_HEX)
 
         return icon
+
+    def _resolve_static_icon_name(self, icon_base: str, is_selected: bool) -> str:
+        """Return the appropriate icon filename for a static sidebar entry.
+
+        Static entries can optionally ship with ``.fill`` variants that mirror
+        the macOS sidebar behaviour of swapping the glyph when a row becomes
+        selected. The helper keeps the selection handling isolated from the
+        model, which intentionally has no knowledge about the view state.
+        """
+
+        if is_selected and self._has_fill_variant(icon_base):
+            return f"{icon_base}.fill.svg"
+        return f"{icon_base}.svg"
+
+    def _has_fill_variant(self, icon_base: str) -> bool:
+        """Return ``True`` when a ``.fill`` asset exists for *icon_base*.
+
+        The lookup result is cached because the delegate can be invoked multiple
+        times per frame while the user is interacting with the sidebar. Avoiding
+        repeated disk access keeps painting responsive even on slower storage.
+        """
+
+        cached = self._fill_icon_availability.get(icon_base)
+        if cached is not None:
+            return cached
+
+        candidate = icon_path(f"{icon_base}.fill.svg")
+        has_variant = candidate.exists()
+        self._fill_icon_availability[icon_base] = has_variant
+        return has_variant
 
     @staticmethod
     def _depth_for_index(index: QModelIndex) -> int:

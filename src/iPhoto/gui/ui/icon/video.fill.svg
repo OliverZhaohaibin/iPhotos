@@ -3,7 +3,7 @@
 -->
 <svg width='62.240234375px' height='38.02734375px' direction='ltr' xmlns='http://www.w3.org/2000/svg' version='1.1'>
 <g fill-rule='nonzero' transform='scale(1,-1) translate(0,-38.02734375)'>
-<path fill='black' stroke='black' fill-opacity='1.0' stroke-width='1.0' d='
+<path fill='black' stroke='black' fill-opacity='1.0' stroke-width='1.8' stroke-linejoin='round' d='
     M 12.267578125,1.76171875
     L 36.416015625,1.76171875
     C 40.970703125,1.76171875 43.44140625,4.232421875 43.44140625,8.765625
