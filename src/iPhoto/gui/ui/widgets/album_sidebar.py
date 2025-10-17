@@ -18,11 +18,10 @@ from PySide6.QtWidgets import (
 
 from ....library.manager import LibraryManager
 from ..models.album_tree_model import AlbumTreeModel, NodeType
+from .. import palette
 from ..delegates.album_sidebar_delegate import (
     AlbumSidebarDelegate,
     BranchIndicatorController,
-    BG_COLOR,
-    TEXT_COLOR,
     LEFT_PADDING,
     INDENT_PER_LEVEL,
     INDICATOR_SIZE,
@@ -150,10 +149,10 @@ class AlbumSidebar(QWidget):
         self._current_selection: Path | None = None
         self._current_static_selection: str | None = None
 
-        palette = self.palette()
-        palette.setColor(QPalette.ColorRole.Window, BG_COLOR)
-        palette.setColor(QPalette.ColorRole.Base, BG_COLOR)
-        self.setPalette(palette)
+        palette_obj = self.palette()
+        palette_obj.setColor(QPalette.ColorRole.Window, palette.SIDEBAR_BACKGROUND)
+        palette_obj.setColor(QPalette.ColorRole.Base, palette.SIDEBAR_BACKGROUND)
+        self.setPalette(palette_obj)
         self.setAutoFillBackground(True)
 
         self._title = QLabel("Basic Library")
@@ -164,7 +163,9 @@ class AlbumSidebar(QWidget):
         title_font.setPointSizeF(title_font.pointSizeF() + 0.5)
         title_font.setBold(True)
         self._title.setFont(title_font)
-        self._title.setStyleSheet("color: #1b1b1b;")
+        # Apply the shared sidebar text colour so the heading aligns with delegate
+        # rendering and future theme tweaks remain centralised in ``palette``.
+        self._title.setStyleSheet(f"color: {palette.SIDEBAR_TEXT.name()};")
 
         self._tree = _DropAwareTree(self)
         self._tree.setObjectName("albumSidebarTree")
@@ -191,10 +192,10 @@ class AlbumSidebar(QWidget):
         self._tree.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         tree_palette = self._tree.palette()
-        tree_palette.setColor(QPalette.ColorRole.Base, BG_COLOR)
-        tree_palette.setColor(QPalette.ColorRole.Window, BG_COLOR)
+        tree_palette.setColor(QPalette.ColorRole.Base, palette.SIDEBAR_BACKGROUND)
+        tree_palette.setColor(QPalette.ColorRole.Window, palette.SIDEBAR_BACKGROUND)
         tree_palette.setColor(QPalette.ColorRole.Highlight, Qt.GlobalColor.transparent)
-        tree_palette.setColor(QPalette.ColorRole.HighlightedText, TEXT_COLOR)
+        tree_palette.setColor(QPalette.ColorRole.HighlightedText, palette.SIDEBAR_TEXT)
         self._tree.setPalette(tree_palette)
         self._tree.setAutoFillBackground(True)
         self._tree.setStyleSheet(

@@ -15,22 +15,11 @@ from PySide6.QtCore import (
     QVariantAnimation,
     QPersistentModelIndex,
 )
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QStyledItemDelegate, QStyle, QStyleOptionViewItem, QTreeView
 
 from ..models.album_tree_model import AlbumTreeRole, NodeType
-from ..palette import SIDEBAR_ICON_COLOR_HEX
-
-BG_COLOR = QColor("#eef3f6")
-TEXT_COLOR = QColor("#2b2b2b")
-# Keep the delegate palette in sync with other sidebar components by sourcing the
-# shared colour constant instead of duplicating the literal value.
-ICON_COLOR = QColor(SIDEBAR_ICON_COLOR_HEX)
-HOVER_BG = QColor(0, 0, 0, 24)
-SELECT_BG = QColor(0, 0, 0, 56)
-DISABLED_TEXT = QColor(0, 0, 0, 90)
-SECTION_TEXT = QColor(0, 0, 0, 160)
-SEPARATOR_COLOR = QColor(0, 0, 0, 40)
+from .. import palette
 
 ROW_HEIGHT = 36
 ROW_RADIUS = 10
@@ -163,7 +152,7 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
             tree_view = self.parent()
 
         if node_type == NodeType.SEPARATOR:
-            pen = QPen(SEPARATOR_COLOR)
+            pen = QPen(palette.SIDEBAR_SEPARATOR)
             pen.setWidth(1)
             painter.setPen(pen)
             y = rect.center().y()
@@ -178,9 +167,9 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         highlight_color = None
         if node_type not in {NodeType.SECTION, NodeType.SEPARATOR}:
             if is_selected:
-                highlight_color = SELECT_BG
+                highlight_color = palette.SIDEBAR_SELECTION_BACKGROUND
             elif is_hover and is_enabled:
-                highlight_color = HOVER_BG
+                highlight_color = palette.SIDEBAR_HOVER_BACKGROUND
 
         if highlight_color is not None:
             background_rect = rect.adjusted(6, 4, -6, -4)
@@ -200,11 +189,11 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
             font.setItalic(True)
         painter.setFont(font)
 
-        text_color = TEXT_COLOR if is_enabled else DISABLED_TEXT
+        text_color = palette.SIDEBAR_TEXT if is_enabled else palette.SIDEBAR_DISABLED_TEXT
         if node_type == NodeType.SECTION:
-            text_color = SECTION_TEXT
+            text_color = palette.SIDEBAR_SECTION_TEXT
         elif node_type == NodeType.ACTION:
-            text_color = ICON_COLOR
+            text_color = palette.SIDEBAR_ICON_ACCENT
 
         text = index.data(Qt.ItemDataRole.DisplayRole) or ""
         icon = index.data(Qt.ItemDataRole.DecorationRole)
@@ -233,7 +222,9 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
 
             painter.save()
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-            indicator_color = TEXT_COLOR if is_enabled else DISABLED_TEXT
+            indicator_color = (
+                palette.SIDEBAR_TEXT if is_enabled else palette.SIDEBAR_DISABLED_TEXT
+            )
             pen = QPen(indicator_color)
             pen.setWidth(2)
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
@@ -262,11 +253,15 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
                 icon_size,
                 icon_size,
             )
-            icon.paint(
-                painter,
-                icon_rect,
-                Qt.AlignmentFlag.AlignCenter,
-            )
+            pixmap = icon.pixmap(QSize(icon_size, icon_size))
+
+            if node_type == NodeType.STATIC:
+                tint = palette.SIDEBAR_ICON_ACCENT
+                if not is_enabled:
+                    tint = palette.SIDEBAR_DISABLED_TEXT
+                pixmap = self._tint_pixmap(pixmap, tint)
+
+            painter.drawPixmap(icon_rect, pixmap)
             x = icon_rect.right() + ICON_TEXT_GAP
 
         painter.setPen(text_color)
@@ -282,6 +277,28 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         painter.restore()
 
     @staticmethod
+    def _tint_pixmap(pixmap: QPixmap, tint: QColor) -> QPixmap:
+        """Return a version of *pixmap* recoloured with *tint*.
+
+        The delegate receives monochrome SF Symbol inspired icons from the model
+        so it can apply platform-appropriate colours during painting. This helper
+        renders the supplied ``QPixmap`` into a transparent buffer, fills it with
+        the requested tint, and masks the result with the original alpha channel.
+        The approach mirrors how AppKit tints template images.
+        """
+
+        tinted = QPixmap(pixmap.size())
+        tinted.fill(Qt.GlobalColor.transparent)
+
+        painter = QPainter(tinted)
+        painter.fillRect(tinted.rect(), tint)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+        painter.drawPixmap(0, 0, pixmap)
+        painter.end()
+
+        return tinted
+
+    @staticmethod
     def _depth_for_index(index: QModelIndex) -> int:
         depth = 0
         parent = index.parent()
@@ -294,12 +311,6 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
 __all__ = [
     "AlbumSidebarDelegate",
     "BranchIndicatorController",
-    "BG_COLOR",
-    "TEXT_COLOR",
-    "ICON_COLOR",
-    "HOVER_BG",
-    "SELECT_BG",
-    "DISABLED_TEXT",
     "LEFT_PADDING",
     "INDENT_PER_LEVEL",
     "INDICATOR_SIZE",
