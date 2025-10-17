@@ -19,7 +19,7 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPainter
 from PySide6.QtWidgets import QStyledItemDelegate, QStyleOptionViewItem, QTreeView, QStyle
 
 from ..icon import load_icon
-from ..models.album_tree_model import AlbumTreeModel, AlbumTreeRole, NodeType
+from ..models.album_tree_model import AlbumTreeItem, AlbumTreeModel, AlbumTreeRole, NodeType
 from ..palette import (
     SIDEBAR_BRANCH_CONTENT_GAP,
     SIDEBAR_DISABLED_TEXT_COLOR,
@@ -153,6 +153,10 @@ class BranchIndicatorController(QObject):
                 state.animation.stop()
 
 
+# Shared stroke width override applied to sidebar icons to reduce visual aliasing.
+SIDEBAR_ICON_STROKE_WIDTH = 2.0
+
+
 class AlbumSidebarDelegate(QStyledItemDelegate):
     """Custom delegate painting the sidebar with a macOS inspired style."""
 
@@ -196,23 +200,36 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
     def _get_icon_for_paint_state(self, index: QModelIndex, state: _PaintState) -> QIcon:
         """Return the correct icon for *index* based on the current paint *state*."""
 
-        icon = index.data(Qt.ItemDataRole.DecorationRole)
-        if icon is None or icon.isNull():
+        model = index.model()
+        item = index.internalPointer()
+
+        icon = QIcon()
+        if isinstance(model, AlbumTreeModel) and isinstance(item, AlbumTreeItem):
+            # Re-fetch the icon so we can enforce a consistent stroke width override.
+            icon = model._icon_for_item(item, stroke_width=SIDEBAR_ICON_STROKE_WIDTH)
+        else:
+            # Fallback to whatever the model exposed if the expected types differ.
+            data = index.data(Qt.ItemDataRole.DecorationRole)
+            if isinstance(data, QIcon):
+                icon = data
+
+        if icon.isNull():
             return QIcon()
 
-        if state.node_type == NodeType.STATIC:
-            title = str(index.data(Qt.ItemDataRole.DisplayRole) or "").casefold()
-
-            model = index.model()
-            if isinstance(model, AlbumTreeModel):
-                icon_base = model._STATIC_ICON_MAP.get(title)
+        if isinstance(model, AlbumTreeModel) and isinstance(item, AlbumTreeItem):
+            if state.node_type == NodeType.STATIC:
+                icon_base = model._STATIC_ICON_MAP.get(item.title.casefold())
                 if icon_base in {"video", "suit.heart"}:
                     # The sidebar mirrors macOS behaviour where select states swap
                     # the regular outline icon for a filled version. We perform the
                     # decision here because the delegate has access to the selection
                     # state while the model intentionally does not.
                     suffix = ".fill" if state.is_selected else ""
-                    return load_icon(f"{icon_base}{suffix}.svg", color=SIDEBAR_ICON_COLOR_HEX)
+                    return load_icon(
+                        f"{icon_base}{suffix}.svg",
+                        color=SIDEBAR_ICON_COLOR_HEX,
+                        stroke_width=SIDEBAR_ICON_STROKE_WIDTH,
+                    )
 
         return icon
 

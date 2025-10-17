@@ -30,13 +30,15 @@ def load_icon(
     color: str | Tuple[int, int, int] | Tuple[int, int, int, int] | None = None,
     size: Tuple[int, int] | None = None,
     mirror_horizontal: bool = False,
+    stroke_width: float | None = None,
 ) -> QIcon:
     """Return a cached :class:`~PySide6.QtGui.QIcon` for the given asset name.
 
     The adapter keeps backwards compatibility with legacy call sites that omit
-    the ``.svg`` suffix while still exposing the richer tinting and scaling
-    options implemented in :mod:`iPhoto.gui.ui.icons`. ``lru_cache`` is retained
-    so repeated calls remain cheap even when recolouring is requested.
+    the ``.svg`` suffix while still exposing the richer tinting, scaling, and
+    stroke customisation options implemented in :mod:`iPhoto.gui.ui.icons`.
+    ``lru_cache`` is retained so repeated calls remain cheap even when
+    recolouring is requested.
     """
 
     filename = name if name.casefold().endswith(".svg") else f"{name}.svg"
@@ -45,6 +47,7 @@ def load_icon(
         color=color,
         size=size,
         mirror_horizontal=mirror_horizontal,
+        stroke_width=stroke_width,
     )
 
 

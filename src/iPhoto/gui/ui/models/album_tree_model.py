@@ -228,9 +228,11 @@ class AlbumTreeModel(QAbstractItemModel):
         self._path_map[album.path.resolve()] = item
         return item
 
-    def _icon_for_item(self, item: AlbumTreeItem) -> QIcon:
+    def _icon_for_item(self, item: AlbumTreeItem, stroke_width: float | None = None) -> QIcon:
+        """Return the icon representing *item*, optionally adjusting stroke width."""
+
         if item.node_type == NodeType.ACTION:
-            return load_icon("plus.circle")
+            return load_icon("plus.circle", stroke_width=stroke_width)
         if item.node_type == NodeType.STATIC:
             icon_name = self._STATIC_ICON_MAP.get(item.title.casefold())
             if icon_name:
@@ -238,11 +240,15 @@ class AlbumTreeModel(QAbstractItemModel):
                 # SF Symbols inspired SVGs with the shared blue accent colour. We
                 # defer fill selection to the delegate, therefore the base icon is
                 # always loaded without the ".fill" suffix at this stage.
-                return load_icon(f"{icon_name}.svg", color=SIDEBAR_ICON_COLOR_HEX)
+                return load_icon(
+                    f"{icon_name}.svg",
+                    color=SIDEBAR_ICON_COLOR_HEX,
+                    stroke_width=stroke_width,
+                )
         if item.node_type in {NodeType.ALBUM, NodeType.SUBALBUM}:
-            return load_icon("rectangle.stack")
+            return load_icon("rectangle.stack", stroke_width=stroke_width)
         if item.node_type == NodeType.HEADER:
-            return load_icon("photo.on.rectangle")
+            return load_icon("photo.on.rectangle", stroke_width=stroke_width)
         return QIcon()
 
 
