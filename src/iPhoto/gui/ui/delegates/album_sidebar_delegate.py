@@ -251,6 +251,15 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         elif depth > 0:
             x += INDICATOR_SLOT_WIDTH
 
+        # ------------------------------------------------------------------
+        # Unified icon rendering logic
+        # ------------------------------------------------------------------
+        # Qt's ``QIcon.paint`` helper is convenient but obscures the pixmap
+        # resolution that ends up on screen, which makes it hard to guarantee
+        # that tinted icons stay crisp on high-density displays. Rendering the
+        # icon into a supersampled ``QPixmap`` ourselves lets us tint the glyph
+        # while preserving the original vector detail and guarantees consistent
+        # output for every node type.
         if icon is not None and not icon.isNull():
             icon_size = 18
             icon_rect = QRect(
@@ -259,8 +268,7 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
                 icon_size,
                 icon_size,
             )
-            # Render the icon into a high-resolution pixmap so the subsequent
-            # downscaling into the 18×18 logical rectangle stays razor sharp.
+
             upscale_factor = ICON_SUPERSAMPLE_FACTOR
             physical_size = QSize(
                 int(icon_size * upscale_factor),
