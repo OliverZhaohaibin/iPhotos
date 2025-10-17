@@ -16,29 +16,29 @@ from PySide6.QtCore import (
     QPersistentModelIndex,
 )
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import QStyledItemDelegate, QStyle, QStyleOptionViewItem, QTreeView
+from PySide6.QtWidgets import QStyledItemDelegate, QStyleOptionViewItem, QTreeView
 
 from ..models.album_tree_model import AlbumTreeRole, NodeType
-from ..palette import SIDEBAR_ICON_COLOR_HEX
-
-BG_COLOR = QColor("#eef3f6")
-TEXT_COLOR = QColor("#2b2b2b")
-# Keep the delegate palette in sync with other sidebar components by sourcing the
-# shared colour constant instead of duplicating the literal value.
-ICON_COLOR = QColor(SIDEBAR_ICON_COLOR_HEX)
-HOVER_BG = QColor(0, 0, 0, 24)
-SELECT_BG = QColor(0, 0, 0, 56)
-DISABLED_TEXT = QColor(0, 0, 0, 90)
-SECTION_TEXT = QColor(0, 0, 0, 160)
-SEPARATOR_COLOR = QColor(0, 0, 0, 40)
-
-ROW_HEIGHT = 36
-ROW_RADIUS = 10
-LEFT_PADDING = 14
-ICON_TEXT_GAP = 10
-INDENT_PER_LEVEL = 22
-INDICATOR_SLOT_WIDTH = 22
-INDICATOR_SIZE = 16
+from ..palette import (
+    SIDEBAR_BRANCH_CONTENT_GAP,
+    SIDEBAR_DISABLED_TEXT_COLOR,
+    SIDEBAR_HIGHLIGHT_MARGIN_X,
+    SIDEBAR_HIGHLIGHT_MARGIN_Y,
+    SIDEBAR_HOVER_BACKGROUND,
+    SIDEBAR_ICON_COLOR,
+    SIDEBAR_ICON_SIZE,
+    SIDEBAR_ICON_TEXT_GAP,
+    SIDEBAR_INDENT_PER_LEVEL,
+    SIDEBAR_INDICATOR_SIZE,
+    SIDEBAR_INDICATOR_SLOT_WIDTH,
+    SIDEBAR_LEFT_PADDING,
+    SIDEBAR_ROW_HEIGHT,
+    SIDEBAR_ROW_RADIUS,
+    SIDEBAR_SECTION_TEXT_COLOR,
+    SIDEBAR_SELECTED_BACKGROUND,
+    SIDEBAR_SEPARATOR_COLOR,
+    SIDEBAR_TEXT_COLOR,
+)
 
 
 @dataclass(slots=True)
@@ -47,6 +47,20 @@ class _IndicatorState:
 
     angle: float = 0.0
     animation: QVariantAnimation | None = None
+
+
+@dataclass(slots=True)
+class _PaintState:
+    """Hold derived data needed to render a single tree row."""
+
+    index: QModelIndex
+    rect: QRect
+    node_type: NodeType
+    tree_view: QTreeView | None
+    is_enabled: bool
+    is_selected: bool
+    is_hover: bool
+    indentation: int
 
 
 class BranchIndicatorController(QObject):
@@ -147,7 +161,7 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         width = option.rect.width()
         if width <= 0:
             width = 200
-        return QSize(width, ROW_HEIGHT)
+        return QSize(width, SIDEBAR_ROW_HEIGHT)
 
     def paint(
         self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex
@@ -156,128 +170,24 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         rect = option.rect
         node_type = index.data(AlbumTreeRole.NODE_TYPE) or NodeType.ALBUM
 
-        tree_view: QTreeView | None = None
-        if isinstance(option.widget, QTreeView):
-            tree_view = option.widget
-        elif isinstance(self.parent(), QTreeView):
-            tree_view = self.parent()
-
         if node_type == NodeType.SEPARATOR:
-            pen = QPen(SEPARATOR_COLOR)
-            pen.setWidth(1)
-            painter.setPen(pen)
-            y = rect.center().y()
-            painter.drawLine(rect.left() + LEFT_PADDING, y, rect.right() - LEFT_PADDING, y)
+            self._draw_separator(painter, rect)
             painter.restore()
             return
 
-        is_enabled = bool(option.state & QStyle.StateFlag.State_Enabled)
-        is_selected = bool(option.state & QStyle.StateFlag.State_Selected)
-        is_hover = bool(option.state & QStyle.StateFlag.State_MouseOver)
+        state = self._build_paint_state(option, index, rect, node_type)
 
-        highlight_color = None
-        if node_type not in {NodeType.SECTION, NodeType.SEPARATOR}:
-            if is_selected:
-                highlight_color = SELECT_BG
-            elif is_hover and is_enabled:
-                highlight_color = HOVER_BG
+        highlight = self._resolve_highlight_colour(state)
+        if highlight is not None:
+            self._draw_background(painter, rect, highlight)
 
-        if highlight_color is not None:
-            background_rect = rect.adjusted(6, 4, -6, -4)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(highlight_color)
-            painter.drawRoundedRect(background_rect, ROW_RADIUS, ROW_RADIUS)
-
-        font = QFont(option.font)
-        if node_type == NodeType.HEADER:
-            font.setPointSizeF(font.pointSizeF() + 1.0)
-            font.setBold(True)
-        elif node_type == NodeType.SECTION:
-            font.setPointSizeF(font.pointSizeF() - 0.5)
-            font.setCapitalization(QFont.Capitalization.SmallCaps)
-        if node_type == NodeType.ACTION:
-            font.setItalic(True)
+        font = self._font_for_node(option.font, node_type)
         painter.setFont(font)
 
-        text_color = TEXT_COLOR if is_enabled else DISABLED_TEXT
-        if node_type == NodeType.SECTION:
-            text_color = SECTION_TEXT
-        elif node_type == NodeType.ACTION:
-            text_color = ICON_COLOR
-
-        text = index.data(Qt.ItemDataRole.DisplayRole) or ""
-        icon = index.data(Qt.ItemDataRole.DecorationRole)
-
-        depth = self._depth_for_index(index)
-        indentation = depth * INDENT_PER_LEVEL
-        x = rect.left() + LEFT_PADDING + indentation
-
-        model = index.model()
-        has_children = bool(model is not None and model.hasChildren(index))
-
-        if tree_view is not None and has_children:
-            branch_rect = QRect(
-                x,
-                rect.top() + (rect.height() - INDICATOR_SIZE) // 2,
-                INDICATOR_SIZE,
-                INDICATOR_SIZE,
-            )
-
-            controller = getattr(tree_view, "branch_indicator_controller", None)
-            angle = (
-                controller.angle_for_index(index)
-                if controller is not None
-                else (90.0 if tree_view.isExpanded(index) else 0.0)
-            )
-
-            painter.save()
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-            indicator_color = TEXT_COLOR if is_enabled else DISABLED_TEXT
-            pen = QPen(indicator_color)
-            pen.setWidth(2)
-            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            painter.setPen(pen)
-
-            painter.translate(branch_rect.center())
-            painter.rotate(angle)
-
-            path = QPainterPath()
-            path.moveTo(-2, -4)
-            path.lineTo(2, 0)
-            path.lineTo(-2, 4)
-            painter.drawPath(path)
-
-            painter.restore()
-
-            x = branch_rect.right() + 6
-        elif depth > 0:
-            x += INDICATOR_SLOT_WIDTH
-
-        if icon is not None and not icon.isNull():
-            icon_size = 18
-            icon_rect = QRect(
-                x,
-                rect.top() + (rect.height() - icon_size) // 2,
-                icon_size,
-                icon_size,
-            )
-            icon.paint(
-                painter,
-                icon_rect,
-                Qt.AlignmentFlag.AlignCenter,
-            )
-            x = icon_rect.right() + ICON_TEXT_GAP
-
-        painter.setPen(text_color)
-        metrics = QFontMetrics(font)
-        text_rect = rect.adjusted(x - rect.left(), 0, -8, 0)
-        elided = metrics.elidedText(text, Qt.TextElideMode.ElideRight, text_rect.width())
-        painter.drawText(
-            text_rect,
-            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-            elided,
-        )
+        x = rect.left() + SIDEBAR_LEFT_PADDING + state.indentation
+        x = self._draw_branch_indicator(painter, state, x)
+        x = self._draw_icon(painter, option, index, x)
+        self._draw_text(painter, rect, font, index, state, x)
 
         painter.restore()
 
@@ -290,17 +200,201 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
             parent = parent.parent()
         return depth
 
+    def _build_paint_state(
+        self,
+        option: QStyleOptionViewItem,
+        index: QModelIndex,
+        rect: QRect,
+        node_type: NodeType,
+    ) -> _PaintState:
+        """Compute the immutable rendering state for the current index."""
+
+        tree_view = self._resolve_tree_view(option)
+        is_enabled = bool(option.state & QStyle.StateFlag.State_Enabled)
+        is_selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        is_hover = bool(option.state & QStyle.StateFlag.State_MouseOver)
+        depth = self._depth_for_index(index)
+        indentation = depth * SIDEBAR_INDENT_PER_LEVEL
+
+        return _PaintState(
+            index=index,
+            rect=rect,
+            node_type=node_type,
+            tree_view=tree_view,
+            is_enabled=is_enabled,
+            is_selected=is_selected,
+            is_hover=is_hover,
+            indentation=indentation,
+        )
+
+    def _resolve_tree_view(self, option: QStyleOptionViewItem) -> QTreeView | None:
+        """Locate the owning :class:`QTreeView` if one is available."""
+
+        if isinstance(option.widget, QTreeView):
+            return option.widget
+        parent = self.parent()
+        if isinstance(parent, QTreeView):
+            return parent
+        return None
+
+    def _resolve_highlight_colour(self, state: _PaintState) -> QColor | None:
+        """Return the hover or selection colour, if the item supports it."""
+
+        if state.node_type in {NodeType.SECTION, NodeType.SEPARATOR}:
+            return None
+        if state.is_selected:
+            return SIDEBAR_SELECTED_BACKGROUND
+        if state.is_hover and state.is_enabled:
+            return SIDEBAR_HOVER_BACKGROUND
+        return None
+
+    def _draw_background(self, painter: QPainter, rect: QRect, colour: QColor) -> None:
+        """Paint the rounded selection background using *colour*."""
+
+        background_rect = rect.adjusted(
+            SIDEBAR_HIGHLIGHT_MARGIN_X,
+            SIDEBAR_HIGHLIGHT_MARGIN_Y,
+            -SIDEBAR_HIGHLIGHT_MARGIN_X,
+            -SIDEBAR_HIGHLIGHT_MARGIN_Y,
+        )
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(colour)
+        painter.drawRoundedRect(background_rect, SIDEBAR_ROW_RADIUS, SIDEBAR_ROW_RADIUS)
+
+    def _font_for_node(self, base_font: QFont, node_type: NodeType) -> QFont:
+        """Return a correctly styled font for *node_type*."""
+
+        font = QFont(base_font)
+        if node_type == NodeType.HEADER:
+            font.setPointSizeF(font.pointSizeF() + 1.0)
+            font.setBold(True)
+        elif node_type == NodeType.SECTION:
+            font.setPointSizeF(font.pointSizeF() - 0.5)
+            font.setCapitalization(QFont.Capitalization.SmallCaps)
+        if node_type == NodeType.ACTION:
+            font.setItalic(True)
+        return font
+
+    def _draw_branch_indicator(self, painter: QPainter, state: _PaintState, x: int) -> int:
+        """Draw the disclosure triangle and return the next text origin."""
+
+        tree_view = state.tree_view
+        index = state.index
+        model = index.model()
+        has_children = bool(model is not None and model.hasChildren(index))
+
+        if tree_view is None:
+            return x + (SIDEBAR_INDICATOR_SLOT_WIDTH if state.indentation > 0 else 0)
+
+        if not has_children:
+            if state.indentation > 0:
+                return x + SIDEBAR_INDICATOR_SLOT_WIDTH
+            return x
+
+        branch_rect = QRect(
+            x,
+            state.rect.top() + (state.rect.height() - SIDEBAR_INDICATOR_SIZE) // 2,
+            SIDEBAR_INDICATOR_SIZE,
+            SIDEBAR_INDICATOR_SIZE,
+        )
+
+        controller = getattr(tree_view, "branch_indicator_controller", None)
+        angle = (
+            controller.angle_for_index(index)
+            if controller is not None
+            else (90.0 if tree_view.isExpanded(index) else 0.0)
+        )
+
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        indicator_colour = SIDEBAR_TEXT_COLOR if state.is_enabled else SIDEBAR_DISABLED_TEXT_COLOR
+        pen = QPen(indicator_colour)
+        pen.setWidth(2)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        painter.translate(branch_rect.center())
+        painter.rotate(angle)
+
+        path = QPainterPath()
+        path.moveTo(-2, -4)
+        path.lineTo(2, 0)
+        path.lineTo(-2, 4)
+        painter.drawPath(path)
+
+        painter.restore()
+
+        return branch_rect.right() + SIDEBAR_BRANCH_CONTENT_GAP
+
+    def _draw_icon(
+        self,
+        painter: QPainter,
+        option: QStyleOptionViewItem,
+        index: QModelIndex,
+        x: int,
+    ) -> int:
+        """Render the optional decoration icon and return the next x coordinate."""
+
+        icon = index.data(Qt.ItemDataRole.DecorationRole)
+        if icon is None or icon.isNull():
+            return x
+
+        icon_rect = QRect(
+            x,
+            option.rect.top() + (option.rect.height() - SIDEBAR_ICON_SIZE) // 2,
+            SIDEBAR_ICON_SIZE,
+            SIDEBAR_ICON_SIZE,
+        )
+        icon.paint(painter, icon_rect, Qt.AlignmentFlag.AlignCenter)
+        return icon_rect.right() + SIDEBAR_ICON_TEXT_GAP
+
+    def _draw_text(
+        self,
+        painter: QPainter,
+        rect: QRect,
+        font: QFont,
+        index: QModelIndex,
+        state: _PaintState,
+        x: int,
+    ) -> None:
+        """Draw the item text with elision if required."""
+
+        text_colour = self._text_colour_for_state(state)
+        painter.setPen(text_colour)
+
+        text = index.data(Qt.ItemDataRole.DisplayRole) or ""
+        metrics = QFontMetrics(font)
+        text_rect = rect.adjusted(x - rect.left(), 0, -8, 0)
+        elided = metrics.elidedText(text, Qt.TextElideMode.ElideRight, text_rect.width())
+        painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, elided)
+
+    def _text_colour_for_state(self, state: _PaintState) -> QColor:
+        """Return the correct foreground colour for the row."""
+
+        if state.node_type == NodeType.SECTION:
+            return SIDEBAR_SECTION_TEXT_COLOR
+        if state.node_type == NodeType.ACTION:
+            return SIDEBAR_ICON_COLOR
+        if not state.is_enabled:
+            return SIDEBAR_DISABLED_TEXT_COLOR
+        return SIDEBAR_TEXT_COLOR
+
+    def _draw_separator(self, painter: QPainter, rect: QRect) -> None:
+        """Render a horizontal rule used to group tree sections."""
+
+        pen = QPen(SIDEBAR_SEPARATOR_COLOR)
+        pen.setWidth(1)
+        painter.setPen(pen)
+        y = rect.center().y()
+        painter.drawLine(
+            rect.left() + SIDEBAR_LEFT_PADDING,
+            y,
+            rect.right() - SIDEBAR_LEFT_PADDING,
+            y,
+        )
+
 
 __all__ = [
     "AlbumSidebarDelegate",
     "BranchIndicatorController",
-    "BG_COLOR",
-    "TEXT_COLOR",
-    "ICON_COLOR",
-    "HOVER_BG",
-    "SELECT_BG",
-    "DISABLED_TEXT",
-    "LEFT_PADDING",
-    "INDENT_PER_LEVEL",
-    "INDICATOR_SIZE",
 ]
