@@ -38,6 +38,36 @@ from .player_bar import PlayerBar
 from ..palette import viewer_surface_color
 
 
+if QGraphicsVideoItem is not None:
+
+    class _VideoSurfaceItem(QGraphicsVideoItem):
+        """Video item that keeps Qt's high quality sampling path enabled."""
+
+        def paint(self, painter: QPainter, option, widget=None) -> None:  # type: ignore[override]
+            """Ensure smooth scaling before deferring to Qt's native renderer."""
+
+            # The default ``QGraphicsVideoItem`` implementation does not explicitly enable
+            # ``SmoothPixmapTransform``.  On a subset of graphics backends this causes Qt
+            # to pick a fast-path scaler that bypasses the tone-mapping shader used for
+            # HDR material, resulting in the washed out frames reported by users.
+            # Toggling the render hint on the painter guarantees the high quality
+            # pipeline is used for every frame, matching the behaviour of the
+            # long-press preview window.
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+            super().paint(painter, option, widget)
+
+else:  # pragma: no cover - optional Qt module
+
+    class _VideoSurfaceItem:  # type: ignore[too-many-ancestors]
+        """Placeholder used when QtMultimediaWidgets is unavailable."""
+
+        def __init__(self) -> None:
+            raise RuntimeError(
+                "PySide6.QtMultimediaWidgets is required for video playback surfaces."
+            )
+
+
 class VideoArea(QWidget):
     """Present a video surface with auto-hiding playback controls."""
 
@@ -53,7 +83,10 @@ class VideoArea(QWidget):
             raise RuntimeError("PySide6.QtMultimediaWidgets is required for video playback.")
 
         # --- Graphics View Setup ---
-        self._video_item = QGraphicsVideoItem()
+        # ``_VideoSurfaceItem`` mirrors the preview window's surface configuration so the
+        # primary player benefits from the same high quality scaling path that preserves
+        # HDR tone mapping.
+        self._video_item = _VideoSurfaceItem()
         self._video_item.setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
 
         self._scene = QGraphicsScene(self)
