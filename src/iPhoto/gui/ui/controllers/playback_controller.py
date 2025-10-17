@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
-from PySide6.QtCore import QModelIndex, QSize
+from PySide6.QtCore import QModelIndex
 
 from ...facade import AppFacade
 from ..media import MediaController, PlaylistController
@@ -111,23 +110,15 @@ class PlaybackController:
         is_video = False
         is_live_photo = False
         still_path: Path | None = None
-        video_width: Optional[int] = None
-        video_height: Optional[int] = None
         if current_row != -1:
             index = self._model.index(current_row, 0)
             if index.isValid():
                 is_video = bool(index.data(Roles.IS_VIDEO))
                 is_live_photo = bool(index.data(Roles.IS_LIVE))
-                if is_video:
-                    video_width, video_height = self._extract_video_dimensions(index)
                 if is_live_photo:
                     still_raw = index.data(Roles.ABS)
                     if still_raw:
                         still_path = Path(str(still_raw))
-
-        if not is_video:
-            video_width = video_height = None
-        self._detail_ui.player_view.video_area.set_video_size(video_width, video_height)
 
         if not is_video and not is_live_photo:
             self._state_manager.display_image_asset(source, current_row if current_row != -1 else None)
@@ -238,44 +229,3 @@ class PlaybackController:
         """Ensure scrub-related state does not leak across transitions."""
 
         self._resume_playback_after_scrub = False
-
-    def _extract_video_dimensions(self, index: QModelIndex) -> tuple[Optional[int], Optional[int]]:
-        """Return the pixel width and height stored for *index* if available."""
-
-        width: Optional[int] = None
-        height: Optional[int] = None
-
-        size_data = index.data(Roles.SIZE)
-        if isinstance(size_data, QSize):
-            width = size_data.width()
-            height = size_data.height()
-        elif isinstance(size_data, (tuple, list)) and len(size_data) >= 2:
-            width = self._normalize_dimension(size_data[0])
-            height = self._normalize_dimension(size_data[1])
-        elif isinstance(size_data, dict):
-            width = self._normalize_dimension(size_data.get("width"))
-            if width is None:
-                width = self._normalize_dimension(size_data.get("w"))
-            height = self._normalize_dimension(size_data.get("height"))
-            if height is None:
-                height = self._normalize_dimension(size_data.get("h"))
-
-        if width is None or height is None:
-            info_data = index.data(Roles.INFO)
-            if isinstance(info_data, dict):
-                if width is None:
-                    width = self._normalize_dimension(info_data.get("w"))
-                if height is None:
-                    height = self._normalize_dimension(info_data.get("h"))
-
-        return width, height
-
-    @staticmethod
-    def _normalize_dimension(value: object) -> Optional[int]:
-        """Coerce ``value`` into a strictly positive integer dimension."""
-
-        if isinstance(value, (int, float)):
-            candidate = int(round(float(value)))
-            if candidate > 0:
-                return candidate
-        return None
