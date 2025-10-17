@@ -16,7 +16,7 @@ from PySide6.QtCore import (
     QPersistentModelIndex,
 )
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import QStyledItemDelegate, QStyleOptionViewItem, QTreeView
+from PySide6.QtWidgets import QStyledItemDelegate, QStyleOptionViewItem, QTreeView, QStyle
 
 from ..icon import load_icon
 from ..models.album_tree_model import AlbumTreeModel, AlbumTreeRole, NodeType
@@ -38,7 +38,7 @@ from ..palette import (
     SIDEBAR_SECTION_TEXT_COLOR,
     SIDEBAR_SELECTED_BACKGROUND,
     SIDEBAR_SEPARATOR_COLOR,
-    SIDEBAR_TEXT_COLOR,
+    SIDEBAR_TEXT_COLOR, SIDEBAR_ICON_COLOR_HEX,
 )
 
 
