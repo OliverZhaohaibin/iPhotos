@@ -174,8 +174,13 @@ class AlbumTreeModel(QAbstractItemModel):
         header = AlbumTreeItem("📚 Basic Library", NodeType.HEADER)
         self._root_item.add_child(header)
         self._add_static_nodes(header)
-        albums_section = AlbumTreeItem("Albums", NodeType.SECTION)
-        header.add_child(albums_section)
+
+        # Promote the Albums section to a header-level entry so that it shares the
+        # same visual hierarchy, font weight, and font size as the "Basic Library"
+        # group. The folder emoji mirrors the bookshelf icon used above so the UI
+        # remains visually balanced.
+        albums_section = AlbumTreeItem("📁 Albums", NodeType.HEADER)
+        self._root_item.add_child(albums_section)
         for album in self._library.list_albums():
             album_item = self._create_album_item(album, NodeType.ALBUM)
             albums_section.add_child(album_item)
