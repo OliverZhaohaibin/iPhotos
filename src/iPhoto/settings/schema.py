@@ -30,6 +30,7 @@ SETTINGS_SCHEMA: dict[str, Any] = {
                     "type": "string",
                     "enum": ["copy_file", "copy_path", "reveal_file"],
                 },
+                "show_filmstrip": {"type": "boolean"},
             },
             "additionalProperties": True,
         },
@@ -50,6 +51,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "volume": 75,
         "is_muted": False,
         "share_action": "reveal_file",
+        "show_filmstrip": True,
     },
     "last_open_albums": [],
 }
