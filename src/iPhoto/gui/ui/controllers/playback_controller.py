@@ -49,6 +49,12 @@ class PlaybackController:
         self._detail_ui.player_view.liveReplayRequested.connect(self.replay_live_photo)
         self._detail_ui.filmstrip_view.nextItemRequested.connect(self._request_next_item)
         self._detail_ui.filmstrip_view.prevItemRequested.connect(self._request_previous_item)
+        viewer = self._detail_ui.player_view.image_viewer
+        # Mirror the filmstrip wheel navigation on the main image viewer.
+        # This keeps the gesture consistent regardless of which part of the
+        # detail view currently has focus.
+        viewer.nextItemRequested.connect(self._request_next_item)
+        viewer.prevItemRequested.connect(self._request_previous_item)
         self._detail_ui.favorite_button.clicked.connect(self._toggle_favorite)
         self._view_controller.galleryViewShown.connect(self._handle_gallery_view_shown)
         self._detail_ui.scrubbingStarted.connect(self.on_scrub_started)
@@ -121,7 +127,8 @@ class PlaybackController:
                         still_path = Path(str(still_raw))
 
         if not is_video and not is_live_photo:
-            self._state_manager.display_image_asset(source, current_row if current_row != -1 else None)
+            target_row = current_row if current_row != -1 else None
+            self._state_manager.display_image_asset(source, target_row)
             self._clear_scrub_state()
             return
 

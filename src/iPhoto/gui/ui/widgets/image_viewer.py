@@ -28,6 +28,12 @@ class ImageViewer(QWidget):
     zoomChanged = Signal(float)
     """Emitted whenever the zoom factor changes via UI or programmatic control."""
 
+    nextItemRequested = Signal()
+    """Emitted when a wheel gesture requests navigation to the next asset."""
+
+    prevItemRequested = Signal()
+    """Emitted when a wheel gesture requests navigation to the previous asset."""
+
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._pixmap: Optional[QPixmap] = None
@@ -73,6 +79,9 @@ class ImageViewer(QWidget):
         self._base_size: Optional[QSize] = None
         self._is_panning = False
         self._pan_start_pos = QPoint()
+        # ``_wheel_action`` allows the controller to toggle between zooming and delegating the
+        # gesture to a parent widget that might interpret the wheel as navigation.
+        self._wheel_action = "navigate"
 
     # ------------------------------------------------------------------
     # Public API
@@ -122,6 +131,20 @@ class ImageViewer(QWidget):
         self._base_size = None
         self._zoom_factor = 1.0
         self.zoomChanged.emit(self._zoom_factor)
+
+    def set_wheel_action(self, action: str) -> None:
+        """Control how the viewer reacts to wheel gestures.
+
+        Parameters
+        ----------
+        action:
+            Either ``"zoom"`` to keep the existing pinch-to-zoom style behaviour or
+            ``"navigate"`` to allow parent widgets to treat the wheel as a next/previous
+            request. Any unexpected value falls back to ``"navigate"`` so the UI remains
+            predictable even if settings files are edited manually.
+        """
+
+        self._wheel_action = "zoom" if action == "zoom" else "navigate"
 
     def set_live_replay_enabled(self, enabled: bool) -> None:
         """Allow emitting replay requests when the still frame is shown."""
@@ -206,9 +229,26 @@ class ImageViewer(QWidget):
     def eventFilter(self, obj, event):  # type: ignore[override]
         if obj is self._scroll_area.viewport():
             if event.type() == QEvent.Type.Wheel:
+                wheel_event = cast(QWheelEvent, event)
+                if self._wheel_action != "zoom":
+                    # Interpret wheel deltas as navigation requests. The same threshold logic as
+                    # the filmstrip is reused so trackpad users who generate pixel deltas still
+                    # receive responsive behaviour.
+                    delta = wheel_event.angleDelta()
+                    step = delta.y() or delta.x()
+                    if step == 0:
+                        pixel_delta = wheel_event.pixelDelta()
+                        step = pixel_delta.y() or pixel_delta.x()
+                    if step == 0:
+                        return False
+                    if step < 0:
+                        self.nextItemRequested.emit()
+                    else:
+                        self.prevItemRequested.emit()
+                    wheel_event.accept()
+                    return True
                 if self._pixmap is None or self._pixmap.isNull():
                     return False
-                wheel_event = cast(QWheelEvent, event)
                 if self._handle_wheel_event(wheel_event):
                     return True
 
