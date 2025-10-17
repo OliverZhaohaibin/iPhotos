@@ -39,10 +39,18 @@ class NodeType(Enum):
 
 @dataclass(slots=True)
 class AlbumTreeItem:
-    """Internal tree item used to back the Qt model."""
+    """Internal tree item used to back the Qt model.
+
+    The optional ``icon_name`` attribute lets callers opt into bespoke icons
+    when the generic node-type look-up is insufficient. This keeps icon
+    selection centralised while still allowing special cases (such as the
+    folder glyph requested for the promoted "Albums" header) to reuse the same
+    tree representation logic.
+    """
 
     title: str
     node_type: NodeType
+    icon_name: Optional[str] = None
     album: Optional[AlbumNode] = None
     parent: Optional["AlbumTreeItem"] = None
     children: List["AlbumTreeItem"] = field(default_factory=list)
@@ -171,18 +179,47 @@ class AlbumTreeModel(QAbstractItemModel):
             self.endResetModel()
             return
 
-        header = AlbumTreeItem("📚 Basic Library", NodeType.HEADER)
+        header = AlbumTreeItem(
+            "📚 Basic Library",
+            NodeType.HEADER,
+            icon_name="photo.on.rectangle.svg",
+        )
         self._root_item.add_child(header)
-        self._add_static_nodes(header)
-        albums_section = AlbumTreeItem("Albums", NodeType.SECTION)
-        header.add_child(albums_section)
+        # The smart collections belong directly under the "Basic Library" header,
+        # however they do not require an inline separator anymore because the
+        # divider is now rendered at the root level (see below). Therefore we
+        # suppress the trailing separator that :meth:`_add_static_nodes` used to
+        # inject automatically.
+        self._add_static_nodes(header, add_separator=False)
+
+        # Insert the separator as a root-level item so the break between the
+        # system smart albums and the user-created collections stays exactly where
+        # it lived before the hierarchy change. Rendering it at this level keeps
+        # the visual grouping intact regardless of how many custom albums exist.
+        self._root_item.add_child(AlbumTreeItem("──────────", NodeType.SEPARATOR))
+
+        # Promote the Albums section to a header-level entry so that it shares the
+        # same visual hierarchy, font weight, and font size as the "Basic Library"
+        # group. Assigning the dedicated folder SVG keeps the bespoke iconography
+        # request intact while the emoji prefix maintains parity with the existing
+        # bookshelf glyph for the library header.
+        albums_section = AlbumTreeItem(
+            "📁 Albums",
+            NodeType.HEADER,
+            icon_name="folder.svg",
+        )
+        self._root_item.add_child(albums_section)
         for album in self._library.list_albums():
             album_item = self._create_album_item(album, NodeType.ALBUM)
             albums_section.add_child(album_item)
             for child in self._library.list_children(album):
                 child_item = self._create_album_item(child, NodeType.SUBALBUM)
                 album_item.add_child(child_item)
-        self._add_trailing_static_nodes(header)
+        # Append the housekeeping entries to the root so "Recently Deleted"
+        # continues to anchor the very bottom of the sidebar even after Albums was
+        # promoted to a top-level header. The helper also restores the divider that
+        # separated the smart collections from the trash entry in the original UI.
+        self._add_trailing_static_nodes(self._root_item)
         self.endResetModel()
 
     def index_for_path(self, path: Path) -> QModelIndex:
@@ -210,17 +247,27 @@ class AlbumTreeModel(QAbstractItemModel):
                 return item
         return self._root_item
 
-    def _add_static_nodes(self, header: AlbumTreeItem) -> None:
+    def _add_static_nodes(self, header: AlbumTreeItem, *, add_separator: bool = True) -> None:
+        """Populate *header* with the built-in smart collections.
+
+        The ``add_separator`` flag controls whether a separator row should be
+        appended after the smart albums. Callers can disable it when the
+        separator is rendered elsewhere (for example, at the root level) to
+        avoid drawing duplicate dividers.
+        """
+
         for title in self.STATIC_NODES:
             header.add_child(AlbumTreeItem(title, NodeType.STATIC))
-        if self.STATIC_NODES:
+        if add_separator and self.STATIC_NODES:
             header.add_child(AlbumTreeItem("──────────", NodeType.SEPARATOR))
 
-    def _add_trailing_static_nodes(self, header: AlbumTreeItem) -> None:
+    def _add_trailing_static_nodes(self, parent: AlbumTreeItem) -> None:
+        """Append the trailing static entries (e.g. "Recently Deleted")."""
+
         if self.TRAILING_STATIC_NODES:
-            header.add_child(AlbumTreeItem("──────────", NodeType.SEPARATOR))
+            parent.add_child(AlbumTreeItem("──────────", NodeType.SEPARATOR))
         for title in self.TRAILING_STATIC_NODES:
-            header.add_child(AlbumTreeItem(title, NodeType.STATIC))
+            parent.add_child(AlbumTreeItem(title, NodeType.STATIC))
 
     def _create_album_item(self, album: AlbumNode, node_type: NodeType) -> AlbumTreeItem:
         item = AlbumTreeItem(album.title, node_type, album=album)
@@ -231,6 +278,12 @@ class AlbumTreeModel(QAbstractItemModel):
     def _icon_for_item(self, item: AlbumTreeItem, stroke_width: float | None = None) -> QIcon:
         """Return the icon representing *item*, optionally adjusting stroke width."""
 
+        if item.icon_name:
+            # When an item declares a dedicated icon we respect it verbatim. This
+            # is used by the promoted headers so they can reference bespoke SVG
+            # assets (for example, the folder icon requested for the Albums
+            # section) without overloading the generic header styling below.
+            return load_icon(item.icon_name, stroke_width=stroke_width)
         if item.node_type == NodeType.ACTION:
             return load_icon("plus.circle", stroke_width=stroke_width)
         if item.node_type == NodeType.STATIC:
