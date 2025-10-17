@@ -126,14 +126,7 @@ class HdrVideoFrameProcessor(QObject):
             return None
 
         working = image
-        if working.format() not in {
-            QImage.Format.Format_RGBA64,
-            QImage.Format.Format_RGBA16,
-            QImage.Format.Format_RGBA8888,
-            QImage.Format.Format_RGBA8888_Premultiplied,
-            QImage.Format.Format_ARGB32,
-            QImage.Format.Format_ARGB32_Premultiplied,
-        }:
+        if working.format() not in self._linear_working_formats():
             try:
                 working = image.convertToFormat(QImage.Format.Format_RGBA64)
             except Exception:
@@ -176,6 +169,34 @@ class HdrVideoFrameProcessor(QObject):
             converted = converted.convertToFormat(QImage.Format.Format_ARGB32)
 
         return converted
+
+    @staticmethod
+    def _linear_working_formats() -> set[QImage.Format]:
+        """Return the set of ``QImage`` formats that already hold linear RGBA data.
+
+        Qt's enum changed between releases, so some formats (such as
+        ``Format_RGBA16``) only exist on newer versions.  The helper filters out
+        any missing attributes to avoid ``AttributeError`` at runtime while still
+        preferring high-precision storage when the symbols are available.
+        """
+
+        formats: set[QImage.Format] = {
+            QImage.Format.Format_RGBA64,
+            QImage.Format.Format_RGBA8888,
+            QImage.Format.Format_RGBA8888_Premultiplied,
+            QImage.Format.Format_ARGB32,
+            QImage.Format.Format_ARGB32_Premultiplied,
+        }
+
+        rgba16 = getattr(QImage.Format, "Format_RGBA16", None)
+        if rgba16 is not None:
+            formats.add(rgba16)
+
+        rgba16p = getattr(QImage.Format, "Format_RGBA16_Premultiplied", None)
+        if rgba16p is not None:
+            formats.add(rgba16p)
+
+        return formats
 
     @staticmethod
     def _named_color_space(
