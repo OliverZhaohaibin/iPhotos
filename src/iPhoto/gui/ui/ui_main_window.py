@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QCoreApplication, QMetaObject, QSize, Qt
-from PySide6.QtGui import QAction, QColor, QFont
+from PySide6.QtGui import QAction, QActionGroup, QColor, QFont
 from PySide6.QtWidgets import (
     QFrame,
     QGraphicsDropShadowEffect,
@@ -86,6 +86,18 @@ class Ui_MainWindow(object):
         self.rebuild_links_action = QAction("Rebuild Live Links", MainWindow)
         self.bind_library_action = QAction("Set Basic Library…", MainWindow)
 
+        # Group share actions so only one preferred behaviour can be active at a time.
+        self.share_action_group = QActionGroup(MainWindow)
+        self.share_action_copy_file = QAction("Copy File", MainWindow, checkable=True)
+        self.share_action_copy_path = QAction("Copy Path", MainWindow, checkable=True)
+        self.share_action_reveal_file = QAction(
+            "Reveal in File Manager", MainWindow, checkable=True
+        )
+        self.share_action_group.addAction(self.share_action_copy_file)
+        self.share_action_group.addAction(self.share_action_copy_path)
+        self.share_action_group.addAction(self.share_action_reveal_file)
+        self.share_action_reveal_file.setChecked(True)
+
         file_menu = self.menu_bar.addMenu("&File")
         for action in (
             self.open_album_action,
@@ -109,6 +121,12 @@ class Ui_MainWindow(object):
             self.rebuild_links_action,
         ):
             self.main_toolbar.addAction(action)
+
+        settings_menu = self.menu_bar.addMenu("&Settings")
+        share_menu = settings_menu.addMenu("Share Action")
+        share_menu.addAction(self.share_action_copy_file)
+        share_menu.addAction(self.share_action_copy_path)
+        share_menu.addAction(self.share_action_reveal_file)
 
         self.sidebar = AlbumSidebar(library, MainWindow)
         self.album_label = QLabel("Open a folder to browse your photos.")
