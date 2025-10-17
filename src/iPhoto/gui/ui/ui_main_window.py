@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from .icons import load_icon
-from .palette import VIEWER_SURFACE_COLOR_HEX
+from .palette import viewer_surface_color
 from .widgets import (
     AlbumSidebar,
     FilmstripView,
@@ -123,9 +123,11 @@ class Ui_MainWindow(object):
         self.player_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         # Present the placeholder on the shared viewer surface colour so the transition
         # to actual photo or video content feels seamless and visually cohesive.
+        # Delegate both the background and text colour to the active palette so the
+        # placeholder looks indistinguishable from the fully rendered viewer.
         self.player_placeholder.setStyleSheet(
-            f"background-color: {VIEWER_SURFACE_COLOR_HEX}; "
-            "color: black; font-size: 16px;"
+            "background-color: palette(window); "
+            "color: palette(window-text); font-size: 16px;"
         )
         self.player_placeholder.setMinimumHeight(320)
         self.player_stack = QStackedWidget()
@@ -274,8 +276,11 @@ class Ui_MainWindow(object):
         header_separator.setFrameShape(QFrame.Shape.HLine)
         header_separator.setFrameShadow(QFrame.Shadow.Plain)
         header_separator.setFixedHeight(2)
-        separator_tint = QColor(VIEWER_SURFACE_COLOR_HEX)
-        separator_tint = separator_tint.darker(108)
+        # Sample the surrounding detail page palette so the separator tint is
+        # derived from the exact window background rather than a guessed hex
+        # value.  This keeps the subtle depth cue consistent across styles.
+        base_surface = viewer_surface_color(detail_page)
+        separator_tint = QColor(base_surface).darker(108)
         header_separator.setStyleSheet(
             "QFrame#detailHeaderSeparator {"
             f"  background-color: {separator_tint.name()};"

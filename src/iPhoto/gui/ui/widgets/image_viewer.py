@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..palette import VIEWER_SURFACE_COLOR_HEX
+from ..palette import viewer_surface_color
 
 
 class ImageViewer(QWidget):
@@ -46,8 +46,12 @@ class ImageViewer(QWidget):
         # the photo canvas aligns with the rest of the interface instead of falling
         # back to a stark pure white.  The neutral tone keeps the media prominent
         # while visually integrating with the surrounding chrome.
+        # Query the palette-derived window colour so the viewer canvas perfectly
+        # matches the rest of the detail panel instead of relying on a fixed hex
+        # value that might drift from the active theme.
+        surface_color = viewer_surface_color(self)
         self._scroll_area.setStyleSheet(
-            f"background-color: {VIEWER_SURFACE_COLOR_HEX}; border: none;"
+            f"background-color: {surface_color}; border: none;"
         )
         self._scroll_area.setWidget(self._label)
         self._scroll_area.viewport().installEventFilter(self)
@@ -58,7 +62,7 @@ class ImageViewer(QWidget):
 
         # Mirror the scroll area's backdrop on the container widget to avoid sudden
         # colour changes when layout spacing exposes the parent's palette.
-        self.setStyleSheet(f"background-color: {VIEWER_SURFACE_COLOR_HEX};")
+        self.setStyleSheet(f"background-color: {surface_color};")
 
         self._live_replay_enabled = False
         self._zoom_factor = 1.0
