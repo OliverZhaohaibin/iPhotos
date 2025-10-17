@@ -178,6 +178,7 @@ class MainController(QObject):
 
         self._window.ui.video_area.hide_controls(animate=False)
         self._media.set_video_output(self._window.ui.video_area.video_item)
+        self._window.ui.video_area.refresh_hdr_processing()
 
         self._window.ui.player_bar.setEnabled(False)
 

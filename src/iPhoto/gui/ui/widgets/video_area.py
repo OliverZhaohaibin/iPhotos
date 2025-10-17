@@ -29,9 +29,10 @@ try:  # pragma: no cover - optional Qt module
 except (ModuleNotFoundError, ImportError):  # pragma: no cover - handled by main window guard
     QGraphicsVideoItem = None  # type: ignore[assignment, misc]
 try:  # pragma: no cover - optional Qt module
-    from PySide6.QtMultimedia import QVideoFrameFormat
+    from PySide6.QtMultimedia import QVideoFrameFormat, QVideoSink
 except (ModuleNotFoundError, ImportError):  # pragma: no cover - handled by main window guard
     QVideoFrameFormat = None  # type: ignore[assignment]
+    QVideoSink = None  # type: ignore[assignment]
 
 from ....config import (
     PLAYER_CONTROLS_HIDE_DELAY_MS,
@@ -90,6 +91,7 @@ class VideoArea(QWidget):
         self._window_host: QWidget | None = None
         self._controls_enabled = True
         self._hdr_processor: HdrVideoFrameProcessor | None = None
+        self._hdr_sink: QVideoSink | None = None
 
         effect = QGraphicsOpacityEffect(self._player_bar)
         effect.setOpacity(0.0)
@@ -107,6 +109,11 @@ class VideoArea(QWidget):
         self._install_activity_filters()
         self._wire_player_bar()
         self._install_hdr_processor()
+        # ``QGraphicsVideoItem`` initialises its internal ``QVideoSink`` lazily.
+        # Kicking the installation once the event loop is running ensures the
+        # sink is ready even when a media output is attached immediately after
+        # construction.
+        QTimer.singleShot(0, self._install_hdr_processor)
 
     # ------------------------------------------------------------------
     # Public API
@@ -228,6 +235,11 @@ class VideoArea(QWidget):
         self._player_bar.volumeChanged.connect(lambda _value: self._on_mouse_activity())
         self._player_bar.muteToggled.connect(lambda _state: self._on_mouse_activity())
 
+    def refresh_hdr_processing(self) -> None:
+        """Re-run HDR sink detection after attaching a media output."""
+
+        self._install_hdr_processor()
+
     def _install_hdr_processor(self) -> None:
         """Enable HDR tone mapping when QtMultimedia exposes video metadata."""
 
@@ -237,9 +249,10 @@ class VideoArea(QWidget):
         if not callable(sink_getter):
             return
         sink = sink_getter()
-        if sink is None:
+        if sink is None or sink is self._hdr_sink:
             return
-        # Store the processor so it stays alive for the widget's lifetime.  Without
+        self._hdr_sink = sink
+        # Store the processor so it stays alive for the widget's lifetime. Without
         # the reference Qt would garbage collect the helper and disconnect the
         # signal bridge.
         self._hdr_processor = HdrVideoFrameProcessor(sink, self)

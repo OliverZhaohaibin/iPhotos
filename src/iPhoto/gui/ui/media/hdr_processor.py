@@ -6,6 +6,11 @@ from typing import Optional
 
 from PySide6.QtCore import QObject
 from PySide6.QtGui import QColorSpace, QImage
+
+try:  # pragma: no cover - optional on older Qt releases
+    from PySide6.QtGui import QColorTransform
+except ImportError:  # pragma: no cover - Qt < 6.4 lacks QColorTransform
+    QColorTransform = None  # type: ignore[assignment]
 from PySide6.QtMultimedia import QVideoFrame, QVideoFrameFormat, QVideoSink
 
 
@@ -115,24 +120,60 @@ class HdrVideoFrameProcessor(QObject):
     def _convert_to_sdr(self, image: QImage) -> Optional[QImage]:
         """Convert *image* to the configured SDR target space."""
 
-        try:
-            converted = image.convertedToColorSpace(self._target_space)
-        except Exception:
-            converted = None
+        source_space = image.colorSpace()
+        if not source_space.isValid():
+            # Without a valid source profile the conversion becomes ambiguous.
+            return None
+
+        working = image
+        if working.format() not in {
+            QImage.Format.Format_RGBA64,
+            QImage.Format.Format_RGBA16,
+            QImage.Format.Format_RGBA8888,
+            QImage.Format.Format_RGBA8888_Premultiplied,
+            QImage.Format.Format_ARGB32,
+            QImage.Format.Format_ARGB32_Premultiplied,
+        }:
+            try:
+                working = image.convertToFormat(QImage.Format.Format_RGBA64)
+            except Exception:
+                working = QImage(image)
+
+        converted: Optional[QImage] = None
+
+        transform = None
+        if QColorTransform is not None:
+            try:
+                transform = QColorTransform.fromColorSpaces(source_space, self._target_space)
+            except Exception:
+                transform = None
+
+        if transform is not None:
+            try:
+                converted = transform.map(working)
+            except Exception:
+                converted = None
 
         if converted is None or converted.isNull():
-            # ``convertedToColorSpace`` can fail on some platforms when the
-            # source lacks colour space metadata.  Fall back to tagging the
-            # original image as sRGB so downstream rendering still treats the
-            # data as SDR.
-            converted = QImage(image)
+            try:
+                converted = working.convertedToColorSpace(self._target_space)
+            except Exception:
+                converted = None
+
+        if converted is None or converted.isNull():
+            return None
+
+        if not converted.colorSpace().isValid():
             try:
                 converted.setColorSpace(self._target_space)
             except Exception:
                 pass
 
-        if converted.format() != QImage.Format.Format_RGBA8888:
-            converted = converted.convertToFormat(QImage.Format.Format_RGBA8888)
+        if converted.format() not in {
+            QImage.Format.Format_ARGB32,
+            QImage.Format.Format_ARGB32_Premultiplied,
+        }:
+            converted = converted.convertToFormat(QImage.Format.Format_ARGB32)
 
         return converted
 
