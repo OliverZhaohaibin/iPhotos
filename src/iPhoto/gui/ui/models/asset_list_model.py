@@ -348,6 +348,8 @@ class AssetListModel(QAbstractListModel):
             return row["is_video"]
         if role == Roles.IS_LIVE:
             return row["is_live"]
+        if role == Roles.IS_PANO:
+            return row.get("is_pano", False)
         if role == Roles.LIVE_GROUP_ID:
             return row["live_group_id"]
         if role == Roles.LIVE_MOTION_REL:
