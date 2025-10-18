@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import importlib.util
+from enum import IntEnum
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Type
 
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, QUrl, Signal, Slot
 
@@ -12,6 +13,39 @@ if importlib.util.find_spec("PySide6.QtMultimedia") is not None:
     from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 else:  # pragma: no cover - requires optional Qt module
     QAudioOutput = QMediaPlayer = None  # type: ignore[assignment]
+
+
+class _PlaybackStateFallback(IntEnum):
+    """Lightweight stand-in when QtMultimedia is unavailable during import."""
+
+    StoppedState = 0
+    PlayingState = 1
+    PausedState = 2
+
+
+class _MediaStatusFallback(IntEnum):
+    """Fallback enum mirroring the Qt media status values accessed at runtime."""
+
+    UnknownMediaStatus = 0
+    NoMedia = 1
+    LoadingMedia = 2
+    LoadedMedia = 3
+    StalledMedia = 4
+    BufferingMedia = 5
+    BufferedMedia = 6
+    EndOfMedia = 7
+    InvalidMedia = 8
+
+
+PlaybackStateType: Type[object]
+MediaStatusType: Type[object]
+
+if QMediaPlayer is not None:  # pragma: no branch - depends on Qt installation
+    PlaybackStateType = QMediaPlayer.PlaybackState
+    MediaStatusType = QMediaPlayer.MediaStatus
+else:  # pragma: no cover - executed only on systems without QtMultimedia
+    PlaybackStateType = _PlaybackStateFallback
+    MediaStatusType = _MediaStatusFallback
 
 from iPhotos.src.iPhoto.config import VIDEO_MEMORY_CACHE_MAX_BYTES
 
@@ -38,8 +72,8 @@ class MediaController(QObject):
     errorOccurred = Signal(str)
     positionChanged = Signal(int)
     durationChanged = Signal(int)
-    playbackStateChanged = Signal(object)
-    mediaStatusChanged = Signal(object)
+    playbackStateChanged = Signal(PlaybackStateType)
+    mediaStatusChanged = Signal(MediaStatusType)
     mutedChanged = Signal(bool)
     volumeChanged = Signal(int)
 
@@ -159,7 +193,7 @@ class MediaController(QObject):
 
         return self._audio.isMuted()
 
-    def playback_state(self) -> object:
+    def playback_state(self) -> PlaybackStateType:
         """Return the current playback state."""
 
         return self._player.playbackState()
@@ -195,14 +229,14 @@ class MediaController(QObject):
         self._memory_buffer = None
         self._memory_data = None
 
-    @Slot(object)
-    def _on_playback_state_changed(self, state: object) -> None:
+    @Slot(PlaybackStateType)
+    def _on_playback_state_changed(self, state: PlaybackStateType) -> None:
         """Emit :attr:`playbackStateChanged` while complying with Nuitka's slot checks."""
 
         self.playbackStateChanged.emit(state)
 
-    @Slot(object)
-    def _on_media_status_changed(self, status: object) -> None:
+    @Slot(MediaStatusType)
+    def _on_media_status_changed(self, status: MediaStatusType) -> None:
         """Emit :attr:`mediaStatusChanged` after receiving player status updates."""
 
         self.mediaStatusChanged.emit(status)

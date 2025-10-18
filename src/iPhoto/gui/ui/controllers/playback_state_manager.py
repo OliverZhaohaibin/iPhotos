@@ -10,6 +10,7 @@ from PySide6.QtCore import QObject, Signal
 
 from ....config import VIDEO_COMPLETE_HOLD_BACKSTEP_MS
 from ..media import MediaController, PlaylistController
+from ..media.media_controller import MediaStatusType
 from ..models.asset_model import AssetModel, Roles
 from .detail_ui_controller import DetailUIController
 from .dialog_controller import DialogController
@@ -169,7 +170,7 @@ class PlaybackStateManager(QObject):
             label = f"Playing {source.name}"
         self._detail_ui.show_status_message(label)
 
-    def handle_media_status_changed(self, status: object) -> None:
+    def handle_media_status_changed(self, status: MediaStatusType) -> None:
         """React to status changes emitted by the media backend."""
 
         name = getattr(status, "name", None)

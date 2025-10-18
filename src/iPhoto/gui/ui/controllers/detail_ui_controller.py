@@ -22,6 +22,7 @@ from ..icons import load_icon
 from ..models.asset_model import AssetModel, Roles
 from ..widgets.asset_grid import AssetGrid
 from ..widgets.info_panel import InfoPanel
+from ..media.media_controller import PlaybackStateType
 from ..widgets.player_bar import PlayerBar
 from .header_controller import HeaderController
 from .player_view_controller import PlayerViewController
@@ -283,7 +284,7 @@ class DetailUIController(QObject):
 
         self._player_bar.set_duration(duration_ms)
 
-    def set_playback_state(self, state: object) -> None:
+    def set_playback_state(self, state: PlaybackStateType) -> None:
         """Synchronise the player bar's play/pause affordance."""
 
         self._player_bar.set_playback_state(state)

@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 
 
 from ..icon import load_icon
+from ..media.media_controller import PlaybackStateType
 
 
 class PlayerBar(QWidget):
@@ -140,7 +141,7 @@ class PlayerBar(QWidget):
 
         return self._position_slider.value()
 
-    def set_playback_state(self, state: object) -> None:
+    def set_playback_state(self, state: PlaybackStateType) -> None:
         """Switch the play button icon based on *state*."""
 
         name = getattr(state, "name", None)

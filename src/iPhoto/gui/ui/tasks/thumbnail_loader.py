@@ -57,7 +57,8 @@ class ThumbnailJob(QRunnable):
 
     def run(self) -> None:  # pragma: no cover - executed in worker thread
         image = self._render_media()
-        if image is not None:
+        success = image is not None
+        if success and image is not None:
             self._write_cache(image)
         loader = getattr(self, "_loader", None)
         if loader is None:
@@ -65,8 +66,9 @@ class ThumbnailJob(QRunnable):
         try:
             loader._delivered.emit(
                 loader._make_key(self._rel, self._size, self._stamp),
-                image,
+                image if image is not None else QImage(),
                 self._rel,
+                success,
             )
         except RuntimeError:  # pragma: no cover - race with QObject deletion
             pass
@@ -181,7 +183,12 @@ class ThumbnailLoader(QObject):
     # rest of the GUI layer and prevents Nuitka from flagging the connection as
     # type-unsafe during compilation.
     ready = Signal(Path, str, QPixmap)
-    _delivered = Signal(object, object, str)
+    # ``_delivered`` is internal to the loader but still needs precise typing so
+    # Nuitka can reason about the worker-to-main-thread hop.  The signal conveys
+    # the cache key, the rendered :class:`QImage` (or an empty placeholder when
+    # rendering failed), the asset's relative path, and a boolean flag
+    # indicating success.
+    _delivered = Signal(tuple, QImage, str, bool)
 
     class Priority(IntEnum):
         """Simple priority values recognised by the loader."""
@@ -343,11 +350,12 @@ class ThumbnailLoader(QObject):
     def _handle_result(
         self,
         key: Tuple[str, str, int, int, int],
-        image: Optional[QImage],
+        image: QImage,
         rel: str,
+        success: bool,
     ) -> None:
         self._pending.discard(key)
-        if image is None:
+        if not success or image.isNull():
             self._failures.add(key)
             self._drain_video_queue()
             return

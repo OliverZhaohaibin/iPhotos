@@ -105,7 +105,7 @@ class DragDropController(QObject):
     # ------------------------------------------------------------------
     # Sidebar drop handlers
     # ------------------------------------------------------------------
-    def _handle_sidebar_drop(self, target: Path, payload: object) -> None:
+    def _handle_sidebar_drop(self, target: Path, payload: list[Path]) -> None:
         paths = self._coerce_path_list(payload)
         if not paths:
             return

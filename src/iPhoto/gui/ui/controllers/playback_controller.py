@@ -8,10 +8,11 @@ from PySide6.QtCore import QModelIndex, QTimer
 
 from ...facade import AppFacade
 from ..media import MediaController, PlaylistController
+from ..media.media_controller import MediaStatusType
 from ..models.asset_model import AssetModel, Roles
 from ..widgets.asset_grid import AssetGrid
 from .detail_ui_controller import DetailUIController
-from .playback_state_manager import PlaybackStateManager
+from .playback_state_manager import PlaybackStateManager, PlayerState
 from .preview_controller import PreviewController
 from .view_controller import ViewController
 
@@ -127,7 +128,7 @@ class PlaybackController:
         # so quick successive selections keep the UI responsive.
         QTimer.singleShot(0, lambda: self._load_new_source(source, previous_state))
 
-    def _load_new_source(self, source: Path, previous_state: object) -> None:
+    def _load_new_source(self, source: Path, previous_state: PlayerState) -> None:
         """Carry out the deferred media loading after debouncing completes."""
 
         self._state_manager.reset(previous_state=previous_state, set_idle_state=False)
@@ -167,7 +168,7 @@ class PlaybackController:
     # ------------------------------------------------------------------
     # Media callbacks
     # ------------------------------------------------------------------
-    def handle_media_status_changed(self, status: object) -> None:
+    def handle_media_status_changed(self, status: MediaStatusType) -> None:
         """Forward media status changes to the state manager."""
 
         name = getattr(status, "name", None)

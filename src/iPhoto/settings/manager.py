@@ -34,7 +34,11 @@ def default_settings_path() -> Path:
 class SettingsManager(QObject):
     """Load, validate and persist user settings for the application."""
 
-    settingsChanged = Signal(str, object)
+    # ``QVariant`` allows propagating primitive JSON-compatible types without
+    # falling back to the overly generic ``object`` signature that confuses
+    # Nuitka's signal type analysis.  The manager normalises paths to strings
+    # before emission, therefore every payload maps cleanly to a QVariant.
+    settingsChanged = Signal(str, "QVariant")
 
     def __init__(self, path: Path | None = None) -> None:
         super().__init__()

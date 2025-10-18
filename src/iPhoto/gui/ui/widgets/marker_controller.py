@@ -259,7 +259,12 @@ class MarkerController(QObject):
     assetActivated = Signal(str)
     thumbnailUpdated = Signal(str, QPixmap)
     thumbnailsInvalidated = Signal()
-    _clustering_requested = Signal(int, object, int, int, float, float, float, float, int, int)
+    # ``_clustering_requested`` keeps the worker thread interface strongly
+    # typed so Nuitka can trace the QVariant conversions for each positional
+    # argument.  The asset container is always a ``list`` of
+    # :class:`GeotaggedAsset` instances; Qt treats Python lists as a QVariant
+    # sequence which satisfies the worker slot signature during compilation.
+    _clustering_requested = Signal(int, list, int, int, float, float, float, float, int, int)
 
     # ``CITY_LABEL_FETCH_LEVEL`` mirrors the map renderer's tile pyramid.  When
     # the integer fetch level meets or exceeds this constant (i.e. zooming to

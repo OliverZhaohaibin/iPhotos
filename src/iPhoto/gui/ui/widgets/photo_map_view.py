@@ -232,6 +232,10 @@ class _MarkerLayer(QWidget):
 class PhotoMapView(QWidget):
     """Embed the map widget and manage geotagged photo markers."""
 
+    # ``assetActivated`` forwards the library-relative identifier of the asset
+    # behind the activated marker.  Declaring the payload type as ``str`` keeps
+    # Nuitka's signal analysis precise while documenting the contract for UI
+    # controllers that listen for map selections.
     assetActivated = Signal(str)
     """Signal emitted when the user activates a single asset marker."""
 

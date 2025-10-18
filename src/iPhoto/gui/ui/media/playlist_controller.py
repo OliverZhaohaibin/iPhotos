@@ -13,6 +13,11 @@ from ..models.asset_model import AssetModel, Roles
 class PlaylistController(QObject):
     """Coordinate playback order for assets exposed via :class:`AssetModel`."""
 
+    # ``currentChanged`` only needs to provide the proxy row index because
+    # :class:`PlaybackController` requests the absolute path separately via
+    # :attr:`sourceChanged`.  Keeping the signal strictly typed as ``int``
+    # ensures Nuitka can track the meta-type without falling back to the
+    # generic ``object`` descriptor that previously caused packaging errors.
     currentChanged = Signal(int)
     # ``sourceChanged`` always emits the absolute :class:`Path` of the selected
     # media file.  Using the explicit ``Path`` meta-type keeps the signature in

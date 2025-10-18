@@ -42,7 +42,10 @@ from ..palette import (
 class _DropAwareTree(QTreeView):
     """Tree view that accepts drops of external media files onto albums."""
 
-    filesDropped = Signal(Path, object)
+    # The second argument always contains a list of local file paths.  Using
+    # the explicit ``list`` meta-type keeps the Qt signature narrow so Nuitka
+    # can validate connections that forward the payload into controller slots.
+    filesDropped = Signal(Path, list)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -143,7 +146,10 @@ class AlbumSidebar(QWidget):
     allPhotosSelected = Signal()
     staticNodeSelected = Signal(str)
     bindLibraryRequested = Signal()
-    filesDropped = Signal(Path, object)
+    # Mirrors :class:`_DropAwareTree.filesDropped` so controllers receive the
+    # resolved album path alongside the list of dropped files without relying on
+    # the permissive ``object`` signature.
+    filesDropped = Signal(Path, list)
 
     ALL_PHOTOS_TITLE = (
         AlbumTreeModel.STATIC_NODES[0]

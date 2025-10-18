@@ -21,10 +21,14 @@ class _TaskRecord:
 class BackgroundTaskManager(QObject):
     """Coordinate QRunnable execution and watcher state on behalf of the facade."""
 
-    taskStarted = Signal(str, object)
+    # ``taskStarted`` and ``taskFinished`` broadcast arbitrary payloads whose
+    # shape depends on the worker implementation.  Declaring the parameters as
+    # ``QVariant`` preserves that flexibility while giving Nuitka a concrete
+    # meta-type instead of the Python ``object`` descriptor.
+    taskStarted = Signal(str, "QVariant")
     taskProgress = Signal(str, int, int)
     taskError = Signal(str, str)
-    taskFinished = Signal(str, object)
+    taskFinished = Signal(str, "QVariant")
 
     def __init__(
         self,
