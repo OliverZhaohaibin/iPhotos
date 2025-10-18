@@ -249,24 +249,30 @@ class AssetGrid(QListView):
         denominator = self._IDEAL_ICON_SIZE + spacing
         num_columns = max(1, math.floor(numerator / denominator))
 
-        # Reconstruct the exact icon width that will consume the entire row once
-        # we account for the inter-item spacing.  The icons are kept square to
-        # match the image thumbnails produced by the rest of the application.
-        available_width = width - (num_columns - 1) * spacing
-        new_icon_width = math.floor(available_width / num_columns)
+        # Calculate the grid cell width that allows the final column to align with
+        # the viewport edge.  Working in terms of the grid cell ensures we factor
+        # in the delegate-drawn border before deriving the actual icon size.
+        available_width_for_grids = width - (num_columns - 1) * spacing
+        new_grid_width = math.floor(available_width_for_grids / num_columns)
 
-        if new_icon_width <= 0:
+        if new_grid_width <= 0:
             return
 
-        new_size = QSize(new_icon_width, new_icon_width)
-        if new_size == self.iconSize():
-            return
+        # Icon pixmaps should remain slightly smaller than the cell to preserve
+        # the subtle border rendered by the delegate.  Clamping to at least one
+        # pixel avoids passing an invalid size to Qt when the view becomes very
+        # narrow.
+        new_icon_width = max(1, new_grid_width - 2)
 
-        self.setIconSize(new_size)
-        # ``gridSize`` includes the icon as well as the small decorative border
-        # drawn by the delegate; keeping this offset minimal avoids visual gaps.
-        self.setGridSize(QSize(new_icon_width + 2, new_icon_width + 2))
-        self._schedule_visible_rows_update()
+        new_grid_size = QSize(new_grid_width, new_grid_width)
+        new_icon_size = QSize(new_icon_width, new_icon_width)
+
+        # Only relayout when the geometry meaningfully changes; otherwise the
+        # view would emit redundant resize notifications during minor jiggles.
+        if self.gridSize() != new_grid_size:
+            self.setGridSize(new_grid_size)
+            self.setIconSize(new_icon_size)
+            self._schedule_visible_rows_update()
 
     def _reset_state(self) -> None:
         self._long_press_active = False
