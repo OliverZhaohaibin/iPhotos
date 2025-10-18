@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from functools import partial
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QObject, QPoint, QCoreApplication, QUrl, QMimeData
+from PySide6.QtCore import QCoreApplication, QMimeData, QObject, QPoint, QUrl
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QMenu
 
@@ -20,7 +22,7 @@ from .status_bar_controller import StatusBarController
 
 
 class ContextMenuController(QObject):
-    """Present copy and move actions when selection mode is active."""
+    """Manage the asset grid context menu and related clipboard interactions."""
 
     def __init__(
         self,
@@ -49,38 +51,60 @@ class ContextMenuController(QObject):
     # Context menu workflow
     # ------------------------------------------------------------------
     def _handle_context_menu(self, point: QPoint) -> None:
-        if not self._selection_controller.is_active():
-            return
-
-        selection_model = self._grid_view.selectionModel()
-        if selection_model is None or not selection_model.selectedIndexes():
-            return
+        """Construct and display a context menu based on where the user right-clicked."""
 
         index = self._grid_view.indexAt(point)
-        if not index.isValid() or not selection_model.isSelected(index):
-            return
-
         menu = QMenu(self._grid_view)
-        copy_action = menu.addAction(
-            QCoreApplication.translate("MainWindow", "Copy")
-        )
-        move_menu = menu.addMenu(
-            QCoreApplication.translate("MainWindow", "Move to")
-        )
+        selection_model = self._grid_view.selectionModel()
 
-        destinations = self._collect_move_targets()
-        if destinations:
-            for label, path in destinations:
-                action = move_menu.addAction(label)
-                action.triggered.connect(partial(self._execute_move_to_album, path))
+        # When the cursor is above an already selected item we expose actions that operate on
+        # the selection (copy, reveal, move). This mirrors native file explorer conventions and
+        # ensures that selection mode is not a prerequisite for quick actions.
+        if index.isValid() and selection_model and selection_model.isSelected(index):
+            copy_action = menu.addAction(
+                QCoreApplication.translate("MainWindow", "Copy")
+            )
+            reveal_action = menu.addAction(
+                QCoreApplication.translate(
+                    "MainWindow", "Reveal in File Manager"
+                )
+            )
+            move_menu = menu.addMenu(
+                QCoreApplication.translate("MainWindow", "Move to")
+            )
+
+            destinations = self._collect_move_targets()
+            if destinations:
+                for label, path in destinations:
+                    action = move_menu.addAction(label)
+                    action.triggered.connect(
+                        partial(self._execute_move_to_album, path)
+                    )
+            else:
+                move_menu.setEnabled(False)
+
+            copy_action.triggered.connect(self._copy_selection_to_clipboard)
+            reveal_action.triggered.connect(self._reveal_selection_in_file_manager)
+
+        # When the user invokes the context menu over an empty area we show album level actions
+        # so that the gallery still offers meaningful commands while nothing is selected.
         else:
-            move_menu.setEnabled(False)
+            paste_action = menu.addAction(
+                QCoreApplication.translate("MainWindow", "Paste")
+            )
+            open_folder_action = menu.addAction(
+                QCoreApplication.translate("MainWindow", "Open Folder Location")
+            )
 
-        copy_action.triggered.connect(self._copy_selection_to_clipboard)
+            paste_action.triggered.connect(self._paste_from_clipboard)
+            open_folder_action.triggered.connect(self._open_current_folder)
+
         global_pos = self._grid_view.viewport().mapToGlobal(point)
         menu.exec(global_pos)
 
     def _copy_selection_to_clipboard(self) -> None:
+        """Copy the selected asset file paths into the system clipboard."""
+
         paths = self._selected_asset_paths()
         if not paths:
             self._status_bar.show_message("Select items to copy first.", 3000)
@@ -97,7 +121,80 @@ class ContextMenuController(QObject):
         QGuiApplication.clipboard().setMimeData(mime_data)
         self._toast.show_toast("Copied to Clipboard")
 
+    def _reveal_selection_in_file_manager(self) -> None:
+        """Open the desktop file manager pointing to the first selected asset."""
+
+        paths = self._selected_asset_paths()
+        if not paths:
+            self._status_bar.show_message("Select items to reveal first.", 3000)
+            return
+
+        path = paths[0]
+        if not path.exists():
+            self._status_bar.show_message(f"File not found: {path.name}", 3000)
+            return
+
+        # The command used to reveal a file varies per operating system. Each branch uses the
+        # platform native tool to either highlight the file (Windows, macOS) or open the folder
+        # containing the file (Linux and other POSIX systems).
+        if sys.platform == "win32":
+            subprocess.run(["explorer", "/select,", str(path)], check=False)
+        elif sys.platform == "darwin":
+            subprocess.run(["open", "-R", str(path)], check=False)
+        else:
+            subprocess.run(["xdg-open", str(path.parent)], check=False)
+
+        self._status_bar.show_message(
+            f"Revealed {path.name} in file manager.",
+            3000,
+        )
+
+    def _paste_from_clipboard(self) -> None:
+        """Import files referenced in the clipboard into the currently opened album."""
+
+        clipboard = QGuiApplication.clipboard()
+        mime_data = clipboard.mimeData()
+        if not mime_data.hasUrls():
+            self._status_bar.show_message("No files to paste from clipboard.", 3000)
+            return
+
+        files = [Path(url.toLocalFile()) for url in mime_data.urls()]
+        album = self._facade.current_album
+        if not album:
+            self._status_bar.show_message("Open an album before pasting files.", 3000)
+            return
+
+        # Delegate importing to the facade so that all deduplication and bookkeeping logic is
+        # reused. The toast provides quick feedback because importing can take a noticeable
+        # amount of time on large selections.
+        self._facade.import_files(files, destination=album.root)
+        self._toast.show_toast("Pasting files...")
+
+    def _open_current_folder(self) -> None:
+        """Open the current album folder in the desktop file manager."""
+
+        album = self._facade.current_album
+        if not album:
+            self._status_bar.show_message("No album is currently open.", 3000)
+            return
+
+        path = album.root
+        if not path.exists():
+            self._status_bar.show_message(f"Folder not found: {path}", 3000)
+            return
+
+        # The command mirrors the implementation in ``_reveal_selection_in_file_manager`` but we
+        # open the folder itself, not a specific file.
+        if sys.platform == "win32":
+            subprocess.run(["explorer", str(path)], check=False)
+        elif sys.platform == "darwin":
+            subprocess.run(["open", str(path)], check=False)
+        else:
+            subprocess.run(["xdg-open", str(path)], check=False)
+
     def _execute_move_to_album(self, target: Path) -> None:
+        """Move the currently selected assets to ``target`` while updating the view."""
+
         selection_model = self._grid_view.selectionModel()
         selected_indexes = (
             list(selection_model.selectedIndexes()) if selection_model else []
@@ -133,6 +230,8 @@ class ContextMenuController(QObject):
     # Utilities
     # ------------------------------------------------------------------
     def _selected_asset_paths(self) -> list[Path]:
+        """Return absolute paths for all selected assets without duplicates."""
+
         selection_model = self._grid_view.selectionModel()
         if selection_model is None:
             return []
@@ -150,6 +249,8 @@ class ContextMenuController(QObject):
         return paths
 
     def _collect_move_targets(self) -> list[tuple[str, Path]]:
+        """Build a list of (label, path) destinations excluding the currently open album."""
+
         model = self._navigation.sidebar_model()
         entries = model.iter_album_entries()
         current_album = self._facade.current_album
