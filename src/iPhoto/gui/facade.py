@@ -162,6 +162,34 @@ class AppFacade(QObject):
 
         self._suppress_reload_after_move = suppress
 
+    def pause_library_watcher(self) -> None:
+        """Suspend the filesystem watcher while an internal move is in flight.
+
+        The :class:`~iPhoto.library.manager.LibraryManager` uses a
+        :class:`QFileSystemWatcher` to mirror external edits into the UI.  When a
+        move originates from the application itself we want to prevent those
+        notifications from immediately bouncing the gallery back to an empty
+        placeholder state.  Pausing the watcher here lets the controller shield
+        the UI from transient churn while the background worker performs the
+        actual filesystem operations.
+        """
+
+        if self._library_manager is not None:
+            self._library_manager.pause_watcher()
+
+    def resume_library_watcher(self) -> None:
+        """Re-enable filesystem monitoring after internal operations finish.
+
+        Resuming the watcher is slightly delayed to give the operating system a
+        chance to consolidate any outstanding notifications.  Without the delay
+        the watcher could fire immediately with stale events that pre-date the
+        move finishing, which would put us back into the disruptive reload
+        cycle the pause is trying to avoid.
+        """
+
+        if self._library_manager is not None:
+            QTimer.singleShot(500, self._library_manager.resume_watcher)
+
     def pair_live_current(self) -> List[dict]:
         """Rebuild Live Photo pairings for the active album."""
 
@@ -276,6 +304,11 @@ class AppFacade(QObject):
 
         album = self._require_album()
         if album is None:
+            # The controller pauses the watcher before invoking this method when
+            # it intends to schedule a move.  If no album is open we have to
+            # resume the watcher immediately because no worker will be queued to
+            # do it on our behalf.
+            self.resume_library_watcher()
             return
         source_root = album.root
 
@@ -283,12 +316,14 @@ class AppFacade(QObject):
             destination_root = Path(destination).resolve()
         except OSError as exc:
             self.errorRaised.emit(f"Invalid destination: {exc}")
+            self.resume_library_watcher()
             return
 
         if not destination_root.exists() or not destination_root.is_dir():
             self.errorRaised.emit(
                 f"Move destination is not a directory: {destination_root}"
             )
+            self.resume_library_watcher()
             return
 
         if destination_root == source_root:
@@ -298,6 +333,7 @@ class AppFacade(QObject):
                 False,
                 "Files are already located in this album.",
             )
+            self.resume_library_watcher()
             return
 
         normalized: list[Path] = []
@@ -336,6 +372,7 @@ class AppFacade(QObject):
                 False,
                 "No valid files were selected for moving.",
             )
+            self.resume_library_watcher()
             return
 
         signals = MoveSignals()
@@ -580,73 +617,78 @@ class AppFacade(QObject):
     ) -> None:
         """Handle completion of an asynchronous move operation."""
 
-        if worker in self._active_moves:
-            self._active_moves.remove(worker)
-        worker.signals.deleteLater()
+        try:
+            if worker in self._active_moves:
+                self._active_moves.remove(worker)
+            worker.signals.deleteLater()
 
-        if worker.cancelled:
-            self.moveFinished.emit(
-                source_root,
-                destination_root,
-                False,
-                "Move cancelled.",
-            )
-            # Reset the suppression flag so a cancelled task does not leak the
-            # deferred reload behaviour into future moves.
+            if worker.cancelled:
+                self.moveFinished.emit(
+                    source_root,
+                    destination_root,
+                    False,
+                    "Move cancelled.",
+                )
+                # Reset the suppression flag so a cancelled task does not leak
+                # the deferred reload behaviour into future moves.
+                self._suppress_reload_after_move = False
+                return
+
+            success = bool(moved) and source_ok and destination_ok
+
+            if moved:
+                refreshed: set[Path] = set()
+                should_reload_ui = not self._suppress_reload_after_move
+                if source_ok:
+                    resolved_source = source_root.resolve()
+                    if resolved_source not in refreshed:
+                        self.indexUpdated.emit(source_root)
+                        self.linksUpdated.emit(source_root)
+                        if (
+                            self._current_album is not None
+                            and self._current_album.root.resolve() == resolved_source
+                            and should_reload_ui
+                        ):
+                            self._restart_asset_load(source_root)
+                        refreshed.add(resolved_source)
+                if destination_ok:
+                    resolved_dest = destination_root.resolve()
+                    if resolved_dest not in refreshed:
+                        self.indexUpdated.emit(destination_root)
+                        self.linksUpdated.emit(destination_root)
+                        if (
+                            self._current_album is not None
+                            and self._current_album.root.resolve() == resolved_dest
+                            and should_reload_ui
+                        ):
+                            self._restart_asset_load(destination_root)
+                        refreshed.add(resolved_dest)
+
+            # The suppression flag only applies to the move that was just handled,
+            # so make sure subsequent operations fall back to the default
+            # eager-reload behaviour.
             self._suppress_reload_after_move = False
-            return
 
-        success = bool(moved) and source_ok and destination_ok
-
-        if moved:
-            refreshed: set[Path] = set()
-            should_reload_ui = not self._suppress_reload_after_move
-            if source_ok:
-                resolved_source = source_root.resolve()
-                if resolved_source not in refreshed:
-                    self.indexUpdated.emit(source_root)
-                    self.linksUpdated.emit(source_root)
-                    if (
-                        self._current_album is not None
-                        and self._current_album.root.resolve() == resolved_source
-                        and should_reload_ui
-                    ):
-                        self._restart_asset_load(source_root)
-                    refreshed.add(resolved_source)
-            if destination_ok:
-                resolved_dest = destination_root.resolve()
-                if resolved_dest not in refreshed:
-                    self.indexUpdated.emit(destination_root)
-                    self.linksUpdated.emit(destination_root)
-                    if (
-                        self._current_album is not None
-                        and self._current_album.root.resolve() == resolved_dest
-                        and should_reload_ui
-                    ):
-                        self._restart_asset_load(destination_root)
-                    refreshed.add(resolved_dest)
-
-        # The suppression flag only applies to the move that was just handled,
-        # so make sure subsequent operations fall back to the default
-        # eager-reload behaviour.
-        self._suppress_reload_after_move = False
-
-        if not moved:
-            message = "No files were moved."
-        else:
-            label = "file" if len(moved) == 1 else "files"
-            if source_ok and destination_ok:
-                message = f"Moved {len(moved)} {label}."
-            elif source_ok or destination_ok:
-                message = (
-                    f"Moved {len(moved)} {label}, but refreshing one album failed."
-                )
+            if not moved:
+                message = "No files were moved."
             else:
-                message = (
-                    f"Moved {len(moved)} {label}, but refreshing both albums failed."
-                )
+                label = "file" if len(moved) == 1 else "files"
+                if source_ok and destination_ok:
+                    message = f"Moved {len(moved)} {label}."
+                elif source_ok or destination_ok:
+                    message = (
+                        f"Moved {len(moved)} {label}, but refreshing one album failed."
+                    )
+                else:
+                    message = (
+                        f"Moved {len(moved)} {label}, but refreshing both albums failed."
+                    )
 
-        self.moveFinished.emit(source_root, destination_root, success, message)
+            self.moveFinished.emit(source_root, destination_root, success, message)
+        finally:
+            # Always resume the watcher once the background worker signals
+            # completion so external edits become visible again.
+            self.resume_library_watcher()
 
     def _save_manifest(self, album: Album, *, reload_view: bool = True) -> bool:
         manager = self._library_manager

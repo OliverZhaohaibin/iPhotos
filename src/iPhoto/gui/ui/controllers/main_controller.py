@@ -690,7 +690,17 @@ class MainController(QObject):
         # so the facade does not clear the grid before fresh metadata arrives
         # from the rescans triggered by the move worker.
         self._facade.suppress_ui_reload_on_next_move(is_all_photos_move)
-        self._facade.move_assets(paths, target)
+        # Pause the library watcher so the filesystem events triggered by the
+        # move do not race the UI refresh logic.  The facade will resume the
+        # watcher once the worker completes, but we also defend against
+        # exceptions by resuming in the ``except`` block below.
+        self._facade.pause_library_watcher()
+        try:
+            self._facade.move_assets(paths, target)
+        except Exception:
+            # Ensure the watcher comes back even if input validation raises.
+            self._facade.resume_library_watcher()
+            raise
         self._set_selection_mode(False)
 
     def _selected_asset_paths(self) -> list[Path]:
