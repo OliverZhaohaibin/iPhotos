@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
 from PySide6.QtCore import (
     QAbstractListModel,
@@ -52,6 +52,12 @@ class AssetListModel(QAbstractListModel):
         self._loader_signals: Optional[AssetLoaderSignals] = None
         self._pending_reload = False
         self._visible_rows: Set[int] = set()
+        # ``_pending_move_rows`` tracks optimistic UI updates performed when
+        # assets are moved out of the virtual "All Photos" collection.  The
+        # mapping allows the model to reconcile the optimistic path guesses
+        # with the final filesystem locations once the worker thread completes
+        # the move, or to roll back the changes if the operation fails.
+        self._pending_move_rows: Dict[str, Tuple[int, str]] = {}
 
     def album_root(self) -> Optional[Path]:
         """Return the path of the currently open album, if any."""
@@ -114,6 +120,161 @@ class AssetListModel(QAbstractListModel):
         self._row_lookup = {row["rel"]: index for index, row in enumerate(self._rows)}
         self._placeholder_cache.clear()
         self._visible_rows.clear()
+
+    def update_rows_for_move(
+        self, rels: list[str], destination_root: Path
+    ) -> None:
+        """Optimistically update moved rows to reflect their new location.
+
+        The gallery keeps the "All Photos" aggregate visually stable by
+        updating only the affected rows when files are moved into a concrete
+        album.  The method records enough bookkeeping to reconcile the final
+        filesystem locations once the worker thread finishes the move.
+        """
+
+        if not self._album_root or not rels:
+            return
+
+        album_root = self._album_root.resolve()
+        try:
+            destination_root = destination_root.resolve()
+            dest_prefix = destination_root.relative_to(album_root)
+        except OSError:
+            return
+        except ValueError:
+            # Ignore moves that target folders outside the currently open
+            # library root.  They are not visible in this model so an
+            # optimistic update would be misleading.
+            return
+
+        changed_rows: List[int] = []
+        for original_rel in {Path(rel).as_posix() for rel in rels}:
+            row_index = self._row_lookup.get(original_rel)
+            if row_index is None:
+                continue
+
+            row_data = self._rows[row_index]
+            file_name = Path(original_rel).name
+            if str(dest_prefix) in (".", ""):
+                guessed_rel = file_name
+            else:
+                guessed_rel = (dest_prefix / file_name).as_posix()
+            guessed_abs = destination_root / file_name
+
+            # Re-key caches and lookup tables before mutating the row so all
+            # helper structures stay consistent with the optimistic update.
+            self._row_lookup.pop(original_rel, None)
+            self._row_lookup[guessed_rel] = row_index
+            thumb = self._thumb_cache.pop(original_rel, None)
+            if thumb is not None:
+                self._thumb_cache[guessed_rel] = thumb
+            placeholder = self._placeholder_cache.pop(original_rel, None)
+            if placeholder is not None:
+                self._placeholder_cache[guessed_rel] = placeholder
+
+            row_data["rel"] = guessed_rel
+            row_data["abs"] = str(guessed_abs)
+            self._pending_move_rows[original_rel] = (row_index, guessed_rel)
+            changed_rows.append(row_index)
+
+        for row in changed_rows:
+            model_index = self.index(row, 0)
+            self.dataChanged.emit(
+                model_index,
+                model_index,
+                [Roles.REL, Roles.ABS, Qt.DecorationRole],
+            )
+
+    def finalise_move_results(self, moves: List[Tuple[Path, Path]]) -> None:
+        """Reconcile optimistic move updates with the worker results."""
+
+        if not self._album_root or not moves:
+            return
+
+        album_root = self._album_root.resolve()
+        updated_rows: List[int] = []
+        for original_path, target_path in moves:
+            try:
+                original_rel = original_path.resolve().relative_to(album_root).as_posix()
+            except OSError:
+                continue
+            except ValueError:
+                continue
+
+            pending = self._pending_move_rows.pop(original_rel, None)
+            if pending is None:
+                continue
+            row_index, guessed_rel = pending
+            row_data = self._rows[row_index]
+
+            try:
+                final_rel = target_path.resolve().relative_to(album_root).as_posix()
+            except OSError:
+                final_rel = guessed_rel
+            except ValueError:
+                final_rel = guessed_rel
+
+            self._row_lookup.pop(guessed_rel, None)
+            self._row_lookup[final_rel] = row_index
+            thumb = self._thumb_cache.pop(guessed_rel, None)
+            if thumb is not None:
+                self._thumb_cache[final_rel] = thumb
+            placeholder = self._placeholder_cache.pop(guessed_rel, None)
+            if placeholder is not None:
+                self._placeholder_cache[final_rel] = placeholder
+
+            row_data["rel"] = final_rel
+            row_data["abs"] = str(target_path.resolve())
+            updated_rows.append(row_index)
+
+        for row in updated_rows:
+            model_index = self.index(row, 0)
+            self.dataChanged.emit(
+                model_index,
+                model_index,
+                [Roles.REL, Roles.ABS, Qt.DecorationRole],
+            )
+
+    def rollback_pending_moves(self) -> None:
+        """Restore original metadata for moves that failed or were cancelled."""
+
+        if not self._album_root or not self._pending_move_rows:
+            return
+
+        album_root = self._album_root.resolve()
+        to_restore = list(self._pending_move_rows.items())
+        self._pending_move_rows.clear()
+
+        restored_rows: List[int] = []
+        for original_rel, (row_index, guessed_rel) in to_restore:
+            row_data = self._rows[row_index]
+            absolute = (album_root / original_rel).resolve()
+
+            self._row_lookup.pop(guessed_rel, None)
+            self._row_lookup[original_rel] = row_index
+            thumb = self._thumb_cache.pop(guessed_rel, None)
+            if thumb is not None:
+                self._thumb_cache[original_rel] = thumb
+            placeholder = self._placeholder_cache.pop(guessed_rel, None)
+            if placeholder is not None:
+                self._placeholder_cache[original_rel] = placeholder
+
+            row_data["rel"] = original_rel
+            row_data["abs"] = str(absolute)
+            restored_rows.append(row_index)
+
+        for row in restored_rows:
+            model_index = self.index(row, 0)
+            self.dataChanged.emit(
+                model_index,
+                model_index,
+                [Roles.REL, Roles.ABS, Qt.DecorationRole],
+            )
+
+    def has_pending_move_placeholders(self) -> bool:
+        """Return ``True`` when optimistic move updates are awaiting results."""
+
+        return bool(self._pending_move_rows)
 
     def populate_from_cache(self, *, max_index_bytes: int = 512 * 1024) -> bool:
         """Synchronously load cached index data when the file is small."""

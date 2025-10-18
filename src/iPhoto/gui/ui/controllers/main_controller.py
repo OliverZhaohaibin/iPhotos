@@ -678,28 +678,21 @@ class MainController(QObject):
         if not paths:
             self._status_bar.show_message("Select items to move first.", 3000)
             return
-        # Only remove thumbnails immediately when the user is browsing a concrete
-        # album.  The "All Photos" virtual collection should remain visually
-        # stable because the moved files continue to belong to that aggregate
-        # view until a rescan completes.
+
+        source_model = self._asset_model.source_model()
         is_all_photos_move = self._navigation.is_all_photos_view()
-        if not is_all_photos_move and selected_indexes:
-            source_model = self._asset_model.source_model()
+        if is_all_photos_move:
+            rels = [index.data(Roles.REL) for index in selected_indexes if index.isValid()]
+            source_model.update_rows_for_move([rel for rel in rels if isinstance(rel, str)], target)
+        elif selected_indexes:
             source_model.remove_rows(selected_indexes)
-        # Defer the model reload when we purposely keep the thumbnails visible
-        # so the facade does not clear the grid before fresh metadata arrives
-        # from the rescans triggered by the move worker.
-        self._facade.suppress_ui_reload_on_next_move(is_all_photos_move)
-        # Pause the library watcher so the filesystem events triggered by the
-        # move do not race the UI refresh logic.  The facade will resume the
-        # watcher once the worker completes, but we also defend against
-        # exceptions by resuming in the ``except`` block below.
+
         self._facade.pause_library_watcher()
         try:
             self._facade.move_assets(paths, target)
         except Exception:
-            # Ensure the watcher comes back even if input validation raises.
             self._facade.resume_library_watcher()
+            source_model.rollback_pending_moves()
             raise
         self._set_selection_mode(False)
 

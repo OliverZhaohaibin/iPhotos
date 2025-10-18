@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Tuple
 
 from PySide6.QtCore import QObject, QRunnable, Signal
 
 from .... import app as backend
 from ....errors import IPhotoError
+from ....cache.index_store import IndexStore
+from ....io.scanner import process_media_paths
+from ....media_classifier import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 
 
 class MoveSignals(QObject):
@@ -21,12 +24,15 @@ class MoveSignals(QObject):
     # when compiling the signal signature. Using the bare ``list`` type keeps the
     # signature compatible across PySide6 versions while still conveying that a Python
     # list containing :class:`pathlib.Path` objects will be emitted.
+    # ``finished`` now emits the source root, destination root, a list of
+    # ``(original, target)`` path tuples, and two booleans indicating whether the
+    # on-disk caches were updated successfully for the respective albums.
     finished = Signal(Path, Path, list, bool, bool)
     error = Signal(str)
 
 
 class MoveWorker(QRunnable):
-    """Move media files to a different album and trigger rescans."""
+    """Move media files to a different album and refresh index caches."""
 
     def __init__(
         self,
@@ -75,41 +81,45 @@ class MoveWorker(QRunnable):
             )
             return
 
-        moved: List[Path] = []
+        moved: List[Tuple[Path, Path]] = []
         for index, source in enumerate(self._sources, start=1):
             if self._cancel_requested:
                 break
             try:
-                target = self._move_into_destination(source)
+                try:
+                    source_path = source.resolve()
+                except OSError:
+                    source_path = source
+                target = self._move_into_destination(source_path)
             except FileNotFoundError:
                 self._signals.error.emit(f"File not found: {source}")
             except OSError as exc:
                 self._signals.error.emit(f"Could not move '{source}': {exc}")
             else:
-                moved.append(target)
+                moved.append((source_path, target))
             finally:
                 self._signals.progress.emit(self._source_root, index, total)
 
-        rescan_source_ok = True
-        rescan_destination_ok = True
+        source_index_ok = True
+        destination_index_ok = True
         if moved and not self._cancel_requested:
             try:
-                backend.rescan(self._source_root)
+                self._update_source_index(moved)
             except IPhotoError as exc:
-                rescan_source_ok = False
+                source_index_ok = False
                 self._signals.error.emit(str(exc))
             try:
-                backend.rescan(self._destination_root)
+                self._update_destination_index(moved)
             except IPhotoError as exc:
-                rescan_destination_ok = False
+                destination_index_ok = False
                 self._signals.error.emit(str(exc))
 
         self._signals.finished.emit(
             self._source_root,
             self._destination_root,
             moved,
-            rescan_source_ok,
-            rescan_destination_ok,
+            source_index_ok,
+            destination_index_ok,
         )
 
     def _move_into_destination(self, source: Path) -> Path:
@@ -129,6 +139,39 @@ class MoveWorker(QRunnable):
         target.parent.mkdir(parents=True, exist_ok=True)
         moved_path = shutil.move(str(source), str(target))
         return Path(moved_path).resolve()
+
+    def _update_source_index(self, moved: List[Tuple[Path, Path]]) -> None:
+        """Remove moved assets from the source album's index and links."""
+
+        store = IndexStore(self._source_root)
+        rels = []
+        for original, _ in moved:
+            try:
+                rels.append(original.resolve().relative_to(self._source_root).as_posix())
+            except ValueError:
+                continue
+        store.remove_rows(rels)
+        backend.pair(self._source_root)
+
+    def _update_destination_index(self, moved: List[Tuple[Path, Path]]) -> None:
+        """Append moved assets to the destination album's index and links."""
+
+        store = IndexStore(self._destination_root)
+        image_paths: List[Path] = []
+        video_paths: List[Path] = []
+        for _, target in moved:
+            suffix = target.suffix.lower()
+            if suffix in IMAGE_EXTENSIONS:
+                image_paths.append(target)
+            elif suffix in VIDEO_EXTENSIONS:
+                video_paths.append(target)
+            else:
+                image_paths.append(target)
+        new_rows = list(
+            process_media_paths(self._destination_root, image_paths, video_paths)
+        )
+        store.append_rows(new_rows)
+        backend.pair(self._destination_root)
 
 
 __all__ = ["MoveSignals", "MoveWorker"]

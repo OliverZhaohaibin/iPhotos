@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Iterable, List, Optional, Set, TYPE_CHECKING
+from typing import Iterable, List, Optional, Set, Tuple, TYPE_CHECKING
 
 from PySide6.QtCore import QObject, QThreadPool, QTimer, Signal
 
@@ -49,10 +49,6 @@ class AppFacade(QObject):
         self._scan_pending = False
         self._active_imports: list[ImportWorker] = []
         self._active_moves: list[MoveWorker] = []
-        # ``_suppress_reload_after_move`` flags the next move completion handler to skip
-        # the expensive ``_restart_asset_load`` refresh.  The flag is consumed once the
-        # move finalises so normal album updates continue to reload the UI eagerly.
-        self._suppress_reload_after_move = False
 
         from .ui.models.asset_list_model import AssetListModel
 
@@ -148,19 +144,6 @@ class AppFacade(QObject):
         self._scanner_worker = worker
         self._scan_pending = False
         self._scanner_pool.start(worker)
-
-    def suppress_ui_reload_on_next_move(self, suppress: bool) -> None:
-        """Control whether the next move completion should reload the asset list.
-
-        The gallery view stays visually stable when files are moved out of the
-        "All Photos" aggregate, so the controller asks the facade to defer the
-        heavy-handed model reset in that scenario.  Concrete album views, on the
-        other hand, rely on the immediate refresh to highlight that items were
-        removed.  Toggling the flag here allows the controller to opt out of the
-        reload without duplicating move orchestration logic.
-        """
-
-        self._suppress_reload_after_move = suppress
 
     def pause_library_watcher(self) -> None:
         """Suspend the filesystem watcher while an internal move is in flight.
@@ -308,6 +291,7 @@ class AppFacade(QObject):
             # it intends to schedule a move.  If no album is open we have to
             # resume the watcher immediately because no worker will be queued to
             # do it on our behalf.
+            self._asset_list_model.rollback_pending_moves()
             self.resume_library_watcher()
             return
         source_root = album.root
@@ -316,6 +300,7 @@ class AppFacade(QObject):
             destination_root = Path(destination).resolve()
         except OSError as exc:
             self.errorRaised.emit(f"Invalid destination: {exc}")
+            self._asset_list_model.rollback_pending_moves()
             self.resume_library_watcher()
             return
 
@@ -323,6 +308,7 @@ class AppFacade(QObject):
             self.errorRaised.emit(
                 f"Move destination is not a directory: {destination_root}"
             )
+            self._asset_list_model.rollback_pending_moves()
             self.resume_library_watcher()
             return
 
@@ -333,6 +319,7 @@ class AppFacade(QObject):
                 False,
                 "Files are already located in this album.",
             )
+            self._asset_list_model.rollback_pending_moves()
             self.resume_library_watcher()
             return
 
@@ -372,6 +359,7 @@ class AppFacade(QObject):
                 False,
                 "No valid files were selected for moving.",
             )
+            self._asset_list_model.rollback_pending_moves()
             self.resume_library_watcher()
             return
 
@@ -386,7 +374,7 @@ class AppFacade(QObject):
         def _handle_finished(
             src: Path,
             dest: Path,
-            moved: List[Path],
+            moved: List[Tuple[Path, Path]],
             source_ok: bool,
             destination_ok: bool,
             *,
@@ -610,7 +598,7 @@ class AppFacade(QObject):
         self,
         source_root: Path,
         destination_root: Path,
-        moved: List[Path],
+        moved: List[Tuple[Path, Path]],
         source_ok: bool,
         destination_ok: bool,
         worker: MoveWorker,
@@ -622,72 +610,50 @@ class AppFacade(QObject):
                 self._active_moves.remove(worker)
             worker.signals.deleteLater()
 
+            pairs = [(Path(src), Path(dst)) for src, dst in moved]
+
             if worker.cancelled:
+                self._asset_list_model.rollback_pending_moves()
                 self.moveFinished.emit(
                     source_root,
                     destination_root,
                     False,
                     "Move cancelled.",
                 )
-                # Reset the suppression flag so a cancelled task does not leak
-                # the deferred reload behaviour into future moves.
-                self._suppress_reload_after_move = False
                 return
 
-            success = bool(moved) and source_ok and destination_ok
+            success = bool(pairs) and source_ok and destination_ok
 
-            if moved:
-                refreshed: set[Path] = set()
-                should_reload_ui = not self._suppress_reload_after_move
+            if pairs:
+                self._asset_list_model.finalise_move_results(pairs)
+            if self._asset_list_model.has_pending_move_placeholders():
+                self._asset_list_model.rollback_pending_moves()
+
+            if pairs:
                 if source_ok:
-                    resolved_source = source_root.resolve()
-                    if resolved_source not in refreshed:
-                        self.indexUpdated.emit(source_root)
-                        self.linksUpdated.emit(source_root)
-                        if (
-                            self._current_album is not None
-                            and self._current_album.root.resolve() == resolved_source
-                            and should_reload_ui
-                        ):
-                            self._restart_asset_load(source_root)
-                        refreshed.add(resolved_source)
+                    self.indexUpdated.emit(source_root)
+                    self.linksUpdated.emit(source_root)
                 if destination_ok:
-                    resolved_dest = destination_root.resolve()
-                    if resolved_dest not in refreshed:
-                        self.indexUpdated.emit(destination_root)
-                        self.linksUpdated.emit(destination_root)
-                        if (
-                            self._current_album is not None
-                            and self._current_album.root.resolve() == resolved_dest
-                            and should_reload_ui
-                        ):
-                            self._restart_asset_load(destination_root)
-                        refreshed.add(resolved_dest)
+                    self.indexUpdated.emit(destination_root)
+                    self.linksUpdated.emit(destination_root)
 
-            # The suppression flag only applies to the move that was just handled,
-            # so make sure subsequent operations fall back to the default
-            # eager-reload behaviour.
-            self._suppress_reload_after_move = False
-
-            if not moved:
+            if not pairs:
                 message = "No files were moved."
             else:
-                label = "file" if len(moved) == 1 else "files"
+                label = "file" if len(pairs) == 1 else "files"
                 if source_ok and destination_ok:
-                    message = f"Moved {len(moved)} {label}."
+                    message = f"Moved {len(pairs)} {label}."
                 elif source_ok or destination_ok:
                     message = (
-                        f"Moved {len(moved)} {label}, but refreshing one album failed."
+                        f"Moved {len(pairs)} {label}, but refreshing one album failed."
                     )
                 else:
                     message = (
-                        f"Moved {len(moved)} {label}, but refreshing both albums failed."
+                        f"Moved {len(pairs)} {label}, but refreshing both albums failed."
                     )
 
             self.moveFinished.emit(source_root, destination_root, success, message)
         finally:
-            # Always resume the watcher once the background worker signals
-            # completion so external edits become visible again.
             self.resume_library_watcher()
 
     def _save_manifest(self, album: Album, *, reload_view: bool = True) -> bool:
