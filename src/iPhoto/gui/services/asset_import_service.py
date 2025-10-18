@@ -84,7 +84,7 @@ class AssetImportService(QObject):
                 rescan_ok,
                 mark_featured,
             ),
-            on_error=self.errorRaised.emit,
+            on_error=self._handle_worker_error,
             result_payload=lambda root, imported, rescan_ok: imported,
         )
 
@@ -177,6 +177,19 @@ class AssetImportService(QObject):
             message = "No files were imported."
 
         self.importFinished.emit(root, success, message)
+
+    @Slot(str)
+    def _handle_worker_error(self, message: str) -> None:
+        """Forward worker error messages through the public signal safely.
+
+        Nuitka disallows connecting Qt signals directly to
+        :py:meth:`Signal.emit`, so we surface a dedicated slot that performs the
+        forwarding.  The slot keeps the runtime behaviour unchanged while
+        ensuring that the compiled binary passes the connection validation
+        checks.
+        """
+
+        self.errorRaised.emit(message)
 
     @Slot(Path)
     def _on_import_started(self, root: Path) -> None:

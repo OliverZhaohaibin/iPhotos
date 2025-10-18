@@ -135,7 +135,7 @@ class AssetMoveService(QObject):
                 destination_ok,
                 move_worker,
             ),
-            on_error=self.errorRaised.emit,
+            on_error=self._handle_worker_error,
             result_payload=lambda src, dest, moved, *_: moved,
         )
 
@@ -197,6 +197,19 @@ class AssetMoveService(QObject):
         """Emit :attr:`moveProgress` for worker updates via a dedicated slot."""
 
         self.moveProgress.emit(root, current, total)
+
+    @Slot(str)
+    def _handle_worker_error(self, message: str) -> None:
+        """Relay worker errors while keeping Nuitka satisfied with the slot type.
+
+        Nuitka validates the callable passed to :func:`Signal.connect` eagerly and
+        refuses method descriptors such as :py:meth:`Signal.emit`.  Routing the
+        signal through a dedicated slot preserves the original behaviour—
+        forwarding the text message through :attr:`errorRaised`—without
+        triggering ``SystemError`` during compilation.
+        """
+
+        self.errorRaised.emit(message)
 
 
 __all__ = ["AssetMoveService"]
