@@ -48,7 +48,7 @@ class PlaybackController:
         # to the UI object tree.
         self._load_delay_timer = QTimer(detail_ui.filmstrip_view)
         self._load_delay_timer.setSingleShot(True)
-        self._load_delay_timer.setInterval(200)
+        self._load_delay_timer.setInterval(10)
         self._load_delay_timer.timeout.connect(self._perform_delayed_load)
         # ``_pending_load_row`` stores the row scheduled for deferred loading.
         # ``-1`` acts as a sentinel indicating that no deferred request exists.
