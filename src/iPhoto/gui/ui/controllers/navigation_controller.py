@@ -231,6 +231,11 @@ class NavigationController:
     def clear_static_selection(self) -> None:
         self._static_selection = None
 
+    def sidebar_model(self):
+        """Expose the sidebar tree model for auxiliary controllers."""
+
+        return self._sidebar.tree_model()
+
     def is_basic_library_virtual_view(self) -> bool:
         """Return ``True`` when a Basic Library virtual collection is active."""
 
