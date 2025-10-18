@@ -180,7 +180,7 @@ class AlbumTreeModel(QAbstractItemModel):
             return
 
         header = AlbumTreeItem(
-            "📚 Basic Library",
+            "Basic Library",
             NodeType.HEADER,
             icon_name="photo.on.rectangle.svg",
         )
@@ -204,7 +204,7 @@ class AlbumTreeModel(QAbstractItemModel):
         # request intact while the emoji prefix maintains parity with the existing
         # bookshelf glyph for the library header.
         albums_section = AlbumTreeItem(
-            "📁 Albums",
+            "Albums",
             NodeType.HEADER,
             icon_name="folder.svg",
         )
