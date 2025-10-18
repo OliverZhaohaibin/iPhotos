@@ -17,7 +17,11 @@ class MoveSignals(QObject):
 
     started = Signal(Path, Path)
     progress = Signal(Path, int, int)
-    finished = Signal(Path, Path, list[Path], bool, bool)
+    # NOTE: Qt's meta-object system cannot parse typing information such as ``list[Path]``
+    # when compiling the signal signature. Using the bare ``list`` type keeps the
+    # signature compatible across PySide6 versions while still conveying that a Python
+    # list containing :class:`pathlib.Path` objects will be emitted.
+    finished = Signal(Path, Path, list, bool, bool)
     error = Signal(str)
 
 
