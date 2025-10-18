@@ -6,7 +6,7 @@ import importlib.util
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, QUrl, Signal
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, QUrl, Signal, Slot
 
 if importlib.util.find_spec("PySide6.QtMultimedia") is not None:
     from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
@@ -58,10 +58,10 @@ class MediaController(QObject):
 
         self._player.positionChanged.connect(self._on_position_changed)
         self._player.durationChanged.connect(self._on_duration_changed)
-        self._player.playbackStateChanged.connect(self.playbackStateChanged.emit)
-        self._player.mediaStatusChanged.connect(self.mediaStatusChanged.emit)
+        self._player.playbackStateChanged.connect(self._on_playback_state_changed)
+        self._player.mediaStatusChanged.connect(self._on_media_status_changed)
         self._player.errorOccurred.connect(self._on_error)
-        self._audio.mutedChanged.connect(self.mutedChanged.emit)
+        self._audio.mutedChanged.connect(self._on_muted_changed)
         self._audio.volumeChanged.connect(self._on_volume_changed)
 
     # ------------------------------------------------------------------
@@ -194,3 +194,22 @@ class MediaController(QObject):
             self._memory_buffer.close()
         self._memory_buffer = None
         self._memory_data = None
+
+    @Slot(object)
+    def _on_playback_state_changed(self, state: object) -> None:
+        """Emit :attr:`playbackStateChanged` while complying with Nuitka's slot checks."""
+
+        self.playbackStateChanged.emit(state)
+
+    @Slot(object)
+    def _on_media_status_changed(self, status: object) -> None:
+        """Emit :attr:`mediaStatusChanged` after receiving player status updates."""
+
+        self.mediaStatusChanged.emit(status)
+
+    @Slot(bool)
+    def _on_muted_changed(self, muted: bool) -> None:
+        """Emit :attr:`mutedChanged` when the audio output toggles its mute state."""
+
+        self.mutedChanged.emit(muted)
+

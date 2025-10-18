@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional, Sequence
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Signal, Slot
 
 from ..background_task_manager import BackgroundTaskManager
 from ..ui.tasks.import_worker import ImportSignals, ImportWorker
@@ -62,8 +62,8 @@ class AssetImportService(QObject):
             return
 
         signals = ImportSignals()
-        signals.started.connect(self.importStarted.emit)
-        signals.progress.connect(self.importProgress.emit)
+        signals.started.connect(self._on_import_started)
+        signals.progress.connect(self._on_import_progress)
 
         worker = ImportWorker(normalized, target_root, self._copy_into_album, signals)
         unique_task_id = f"import:{target_root}:{uuid.uuid4().hex}"
@@ -177,6 +177,18 @@ class AssetImportService(QObject):
             message = "No files were imported."
 
         self.importFinished.emit(root, success, message)
+
+    @Slot(Path)
+    def _on_import_started(self, root: Path) -> None:
+        """Emit :attr:`importStarted` while satisfying Nuitka's slot requirements."""
+
+        self.importStarted.emit(root)
+
+    @Slot(Path, int, int)
+    def _on_import_progress(self, root: Path, current: int, total: int) -> None:
+        """Emit :attr:`importProgress` for worker updates via a dedicated slot."""
+
+        self.importProgress.emit(root, current, total)
 
 
 __all__ = ["AssetImportService"]

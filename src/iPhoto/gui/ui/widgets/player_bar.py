@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal, Slot
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -100,7 +100,7 @@ class PlayerBar(QWidget):
 
         self._apply_palette()
 
-        self._play_button.clicked.connect(self.playPauseRequested.emit)
+        self._play_button.clicked.connect(self._on_play_button_clicked)
         self._mute_button.toggled.connect(self._on_mute_button_toggled)
         self._volume_slider.valueChanged.connect(self._on_volume_changed)
         self._position_slider.sliderPressed.connect(self._on_slider_pressed)
@@ -158,6 +158,12 @@ class PlayerBar(QWidget):
         was_blocked = self._volume_slider.blockSignals(True)
         self._volume_slider.setValue(clamped)
         self._volume_slider.blockSignals(was_blocked)
+
+    @Slot()
+    def _on_play_button_clicked(self) -> None:
+        """Emit :attr:`playPauseRequested` in response to play button presses."""
+
+        self.playPauseRequested.emit()
 
     def set_muted(self, muted: bool) -> None:
         """Synchronise the mute toggle without re-emitting signals."""

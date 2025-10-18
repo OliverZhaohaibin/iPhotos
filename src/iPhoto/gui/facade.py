@@ -94,6 +94,19 @@ class AppFacade(QObject):
 
         self.errorRaised.emit(message)
 
+    @Slot(Path, int, int)
+    def _on_scan_progress(self, root: Path, current: int, total: int) -> None:
+        """Bridge worker progress updates back to the public ``scanProgress`` signal.
+
+        The worker emits native ``ScannerSignals.progressUpdated`` events which
+        Nuitka refuses to link directly to :py:meth:`Signal.emit`.  By providing
+        an explicit slot we guarantee that the connection targets a callable
+        object recognised by Qt's meta-object system and can therefore be
+        preserved during compilation.
+        """
+
+        self.scanProgress.emit(root, current, total)
+
     # ------------------------------------------------------------------
     # Album lifecycle
     # ------------------------------------------------------------------
@@ -191,7 +204,7 @@ class AppFacade(QObject):
         # before writing the index.  By keeping the signals parent-less we control the
         # lifetime explicitly and dispose of them once the worker finishes.
         signals = ScannerSignals()
-        signals.progressUpdated.connect(self.scanProgress.emit)
+        signals.progressUpdated.connect(self._on_scan_progress)
         worker = ScannerWorker(album.root, include, exclude, signals)
         self._scanner_worker = worker
         self._scan_pending = False
