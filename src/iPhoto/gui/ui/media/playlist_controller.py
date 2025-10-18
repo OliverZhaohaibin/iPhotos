@@ -83,6 +83,42 @@ class PlaylistController(QObject):
 
         return self._step(-1)
 
+    def peek_next_row(self, delta: int) -> Optional[int]:
+        """Return the next playable row without mutating controller state."""
+
+        if delta == 0:
+            return None
+        if self._model is None or self._model.rowCount() == 0:
+            return None
+        count = self._model.rowCount()
+        # Choose a starting point based on the direction and current focus so
+        # the lookup mirrors :meth:`_step` without altering selection state.
+        if self._current_row == -1:
+            start = 0 if delta > 0 else count - 1
+        else:
+            start = self._current_row + delta
+        step = 1 if delta > 0 else -1
+        row = start
+        while 0 <= row < count:
+            if self._is_playable(row):
+                return row
+            row += step
+        return None
+
+    def set_current_row_only(self, row: int) -> None:
+        """Update row bookkeeping and emit ``currentChanged`` without loading."""
+
+        if self._model is None or not (0 <= row < self._model.rowCount()):
+            return
+        if row == self._current_row:
+            return
+        if not self._is_playable(row):
+            return
+        self._previous_row = self._current_row
+        self._current_row = row
+        self._current_rel = self._resolve_rel(row)
+        self.currentChanged.emit(row)
+
     def current_row(self) -> int:
         """Return the currently selected row, or ``-1`` when unset."""
 
@@ -160,31 +196,10 @@ class PlaylistController(QObject):
         self._select_surrogate_row(count)
 
     def _step(self, delta: int) -> Optional[Path]:
-        if self._model is None or self._model.rowCount() == 0:
+        next_row = self.peek_next_row(delta)
+        if next_row is None:
             return None
-        count = self._model.rowCount()
-        if self._current_row == -1:
-            if delta > 0:
-                start = 0
-                end = count
-                step = 1
-            else:
-                start = count - 1
-                end = -1
-                step = -1
-        else:
-            if delta > 0:
-                start = self._current_row + 1
-                end = count
-                step = 1
-            else:
-                start = self._current_row - 1
-                end = -1
-                step = -1
-        for row in range(start, end, step):
-            if self._is_playable(row):
-                return self.set_current(row)
-        return None
+        return self.set_current(next_row)
 
     def _is_playable(self, row: int) -> bool:
         """Return ``True`` when *row* is within range of the bound model."""
