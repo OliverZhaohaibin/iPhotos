@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Callable, List, Optional
 
-from PySide6.QtCore import QPoint, QTimer, Qt, Signal
-from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent, QMouseEvent
+from PySide6.QtCore import QPoint, QSize, QTimer, Qt, Signal
+from PySide6.QtGui import (
+    QDragEnterEvent,
+    QDragMoveEvent,
+    QDropEvent,
+    QMouseEvent,
+    QResizeEvent,
+    QShowEvent,
+)
 from PySide6.QtWidgets import QListView
 
 from ....config import LONG_PRESS_THRESHOLD_MS
@@ -22,6 +30,7 @@ class AssetGrid(QListView):
     visibleRowsChanged = Signal(int, int)
 
     _DRAG_CANCEL_THRESHOLD = 6
+    _IDEAL_ICON_SIZE = 192
 
     def __init__(self, parent=None) -> None:  # type: ignore[override]
         super().__init__(parent)
@@ -85,9 +94,19 @@ class AssetGrid(QListView):
         self._cancel_pending_long_press()
         super().leaveEvent(event)
 
-    def showEvent(self, event) -> None:  # type: ignore[override]
+    def showEvent(self, event: QShowEvent) -> None:  # type: ignore[override]
+        """React to the grid becoming visible by synchronising the layout."""
+
         super().showEvent(event)
+        self._update_grid_size()
         QTimer.singleShot(0, self._schedule_visible_rows_update)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # type: ignore[override]
+        """Resize the grid while keeping thumbnails neatly aligned."""
+
+        super().resizeEvent(event)
+        self._update_grid_size()
+        self._schedule_visible_rows_update()
 
     # ------------------------------------------------------------------
     # External file drop configuration
@@ -121,10 +140,6 @@ class AssetGrid(QListView):
         # The visual items live inside the viewport object, so we must enable drops there
         # as well; otherwise Qt will refuse to deliver drag/drop events to the grid.
         self.viewport().setAcceptDrops(self._external_drop_enabled)
-
-    def resizeEvent(self, event) -> None:  # type: ignore[override]
-        super().resizeEvent(event)
-        self._schedule_visible_rows_update()
 
     def scrollContentsBy(self, dx: int, dy: int) -> None:  # type: ignore[override]
         super().scrollContentsBy(dx, dy)
@@ -201,6 +216,57 @@ class AssetGrid(QListView):
     def _cancel_pending_long_press(self) -> None:
         self._press_timer.stop()
         self._reset_state()
+
+    def _update_grid_size(self) -> None:
+        """Scale icon geometry to fill the available horizontal space.
+
+        The method computes how many square thumbnails can comfortably fit across
+        the viewport using :attr:`_IDEAL_ICON_SIZE` as the preferred baseline.
+        When the window grows large enough for an additional column we increase
+        the column count and shrink the individual icons slightly so the row is
+        filled edge-to-edge without leaving trailing gaps.
+        """
+
+        if self.viewMode() != QListView.ViewMode.IconMode:
+            # List mode delegates sizing to the item delegate so we do not apply
+            # any custom geometry adjustments here.
+            return
+
+        # A small padding compensates for the viewport's frame border, which
+        # helps prevent horizontal scrollbars from flickering during resize.
+        width = self.viewport().width() - 5
+        if width <= 0:
+            return
+
+        spacing = self.spacing()
+        if spacing < 0:  # pragma: no cover - Qt occasionally reports -1
+            spacing = 0
+
+        # Determine the maximum number of columns that still respects our ideal
+        # thumbnail size.  We always keep at least one column so the view never
+        # collapses to zero when the window becomes very narrow.
+        numerator = width + spacing
+        denominator = self._IDEAL_ICON_SIZE + spacing
+        num_columns = max(1, math.floor(numerator / denominator))
+
+        # Reconstruct the exact icon width that will consume the entire row once
+        # we account for the inter-item spacing.  The icons are kept square to
+        # match the image thumbnails produced by the rest of the application.
+        available_width = width - (num_columns - 1) * spacing
+        new_icon_width = math.floor(available_width / num_columns)
+
+        if new_icon_width <= 0:
+            return
+
+        new_size = QSize(new_icon_width, new_icon_width)
+        if new_size == self.iconSize():
+            return
+
+        self.setIconSize(new_size)
+        # ``gridSize`` includes the icon as well as the small decorative border
+        # drawn by the delegate; keeping this offset minimal avoids visual gaps.
+        self.setGridSize(QSize(new_icon_width + 2, new_icon_width + 2))
+        self._schedule_visible_rows_update()
 
     def _reset_state(self) -> None:
         self._long_press_active = False
