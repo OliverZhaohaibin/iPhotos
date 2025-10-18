@@ -40,6 +40,7 @@ class AssetGrid(QListView):
         self._external_drop_enabled = False
         self._drop_handler: Optional[Callable[[List[Path]], None]] = None
         self._drop_validator: Optional[Callable[[List[Path]], bool]] = None
+        self._preview_enabled = True
 
     # ------------------------------------------------------------------
     # Mouse event handling
@@ -52,7 +53,9 @@ class AssetGrid(QListView):
                 self._pressed_index = index
                 self._press_pos = QPoint(viewport_pos)
                 self._long_press_active = False
-                self._press_timer.start(LONG_PRESS_THRESHOLD_MS)
+                self._press_timer.stop()
+                if self._preview_enabled:
+                    self._press_timer.start(LONG_PRESS_THRESHOLD_MS)
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
@@ -88,6 +91,21 @@ class AssetGrid(QListView):
     def showEvent(self, event) -> None:  # type: ignore[override]
         super().showEvent(event)
         QTimer.singleShot(0, self._schedule_visible_rows_update)
+
+    # ------------------------------------------------------------------
+    # Preview configuration
+    # ------------------------------------------------------------------
+    def set_preview_enabled(self, enabled: bool) -> None:
+        """Enable or disable the long-press preview workflow."""
+
+        self._preview_enabled = bool(enabled)
+        if not self._preview_enabled:
+            self._cancel_pending_long_press()
+
+    def preview_enabled(self) -> bool:
+        """Return ``True`` when long-press previews are currently allowed."""
+
+        return self._preview_enabled
 
     # ------------------------------------------------------------------
     # External file drop configuration
@@ -208,6 +226,9 @@ class AssetGrid(QListView):
         self._press_pos = None
 
     def _on_long_press_timeout(self) -> None:
+        if not self._preview_enabled:
+            self._reset_state()
+            return
         if self._pressed_index is not None and self._pressed_index.isValid():
             self._long_press_active = True
             self.requestPreview.emit(self._pressed_index)

@@ -153,3 +153,42 @@ class StatusBarController(QObject):
             self._progress_context = None
         self.show_message(message, 5000)
 
+    def handle_move_started(self, source: Path, destination: Path) -> None:
+        """Display an indeterminate indicator while files are being moved."""
+
+        self._progress_context = "move"
+        self._progress_bar.setRange(0, 0)
+        self._progress_bar.setValue(0)
+        self._progress_bar.setVisible(True)
+        self.show_message("Starting move…")
+
+    def handle_move_progress(self, _source: Path, current: int, total: int) -> None:
+        """Update the progress bar while the move worker processes files."""
+
+        if self._progress_context != "move":
+            return
+        if total <= 0:
+            self._progress_bar.setRange(0, 0)
+        else:
+            self._progress_bar.setRange(0, total)
+            self._progress_bar.setValue(max(0, min(current, total)))
+        if 0 < current < total:
+            self.show_message(f"Moving… ({current}/{total})")
+        elif total > 0 and current >= total:
+            self.show_message("Finalising move by rescanning…")
+
+    def handle_move_finished(
+        self,
+        _source: Path,
+        _destination: Path,
+        _success: bool,
+        message: str,
+    ) -> None:
+        """Hide the progress bar and surface the worker's completion message."""
+
+        if self._progress_context == "move":
+            self._progress_bar.setVisible(False)
+            self._progress_bar.setRange(0, 0)
+            self._progress_context = None
+        self.show_message(message, 5000)
+

@@ -14,6 +14,7 @@ class GalleryGridView(AssetGrid):
     def __init__(self, parent=None) -> None:  # type: ignore[override]
         super().__init__(parent)
         icon_size = QSize(192, 192)
+        self._selection_mode_enabled = False
         self.setSelectionMode(QListView.SelectionMode.SingleSelection)
         self.setViewMode(QListView.ViewMode.IconMode)
         self.setIconSize(icon_size)
@@ -29,3 +30,30 @@ class GalleryGridView(AssetGrid):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.setWordWrap(False)
+        self.setSelectionRectVisible(False)
+
+    # ------------------------------------------------------------------
+    # Selection mode toggling
+    # ------------------------------------------------------------------
+    def selection_mode_active(self) -> bool:
+        """Return ``True`` when multi-selection mode is currently enabled."""
+
+        return self._selection_mode_enabled
+
+    def set_selection_mode_enabled(self, enabled: bool) -> None:
+        """Switch between the default single selection and multi-selection mode."""
+
+        desired_state = bool(enabled)
+        if self._selection_mode_enabled == desired_state:
+            return
+        self._selection_mode_enabled = desired_state
+        if desired_state:
+            self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+            self.setSelectionRectVisible(True)
+        else:
+            self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+            self.setSelectionRectVisible(False)
+        # Long-press previews interfere with multi-selection because the delayed
+        # activation steals focus from the selection rubber band. Disabling the
+        # preview gesture keeps the pointer interactions unambiguous.
+        self.set_preview_enabled(not desired_state)

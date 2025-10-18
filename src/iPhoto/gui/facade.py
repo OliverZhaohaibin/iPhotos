@@ -12,6 +12,7 @@ from .. import app as backend
 from ..errors import IPhotoError
 from ..models.album import Album
 from .ui.tasks.import_worker import ImportSignals, ImportWorker
+from .ui.tasks.move_worker import MoveSignals, MoveWorker
 from .ui.tasks.scanner_worker import ScannerSignals, ScannerWorker
 
 if TYPE_CHECKING:
@@ -34,6 +35,9 @@ class AppFacade(QObject):
     importStarted = Signal(object)
     importProgress = Signal(object, int, int)
     importFinished = Signal(object, bool, str)
+    moveStarted = Signal(object, object)
+    moveProgress = Signal(object, int, int)
+    moveFinished = Signal(object, object, bool, str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -44,6 +48,7 @@ class AppFacade(QObject):
         self._scanner_worker: Optional[ScannerWorker] = None
         self._scan_pending = False
         self._active_imports: list[ImportWorker] = []
+        self._active_moves: list[MoveWorker] = []
 
         from .ui.models.asset_list_model import AssetListModel
 
@@ -243,6 +248,103 @@ class AppFacade(QObject):
                 rescan_ok,
                 worker,
                 mark_featured,
+            )
+
+        signals.finished.connect(_handle_finished)
+
+        self._scanner_pool.start(worker)
+
+    def move_assets(self, sources: Iterable[Path], destination: Path) -> None:
+        """Move *sources* into *destination* and refresh the relevant albums."""
+
+        album = self._require_album()
+        if album is None:
+            return
+        source_root = album.root
+
+        try:
+            destination_root = Path(destination).resolve()
+        except OSError as exc:
+            self.errorRaised.emit(f"Invalid destination: {exc}")
+            return
+
+        if not destination_root.exists() or not destination_root.is_dir():
+            self.errorRaised.emit(
+                f"Move destination is not a directory: {destination_root}"
+            )
+            return
+
+        if destination_root == source_root:
+            self.moveFinished.emit(
+                source_root,
+                destination_root,
+                False,
+                "Files are already located in this album.",
+            )
+            return
+
+        normalized: list[Path] = []
+        seen: set[Path] = set()
+        for raw_path in sources:
+            candidate = Path(raw_path)
+            try:
+                resolved = candidate.resolve()
+            except OSError as exc:
+                self.errorRaised.emit(f"Could not resolve '{candidate}': {exc}")
+                continue
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            if not resolved.exists():
+                self.errorRaised.emit(f"File not found: {resolved}")
+                continue
+            if resolved.is_dir():
+                self.errorRaised.emit(
+                    f"Skipping directory move attempt: {resolved.name}"
+                )
+                continue
+            try:
+                resolved.relative_to(source_root)
+            except ValueError:
+                self.errorRaised.emit(
+                    f"Path '{resolved}' is not inside the active album."
+                )
+                continue
+            normalized.append(resolved)
+
+        if not normalized:
+            self.moveFinished.emit(
+                source_root,
+                destination_root,
+                False,
+                "No valid files were selected for moving.",
+            )
+            return
+
+        signals = MoveSignals()
+        signals.error.connect(self.errorRaised.emit)
+        signals.started.connect(self.moveStarted.emit)
+        signals.progress.connect(self.moveProgress.emit)
+
+        worker = MoveWorker(normalized, source_root, destination_root, signals)
+        self._active_moves.append(worker)
+
+        def _handle_finished(
+            src: Path,
+            dest: Path,
+            moved: List[Path],
+            source_ok: bool,
+            destination_ok: bool,
+            *,
+            move_worker: MoveWorker = worker,
+        ) -> None:
+            self._on_move_finished(
+                src,
+                dest,
+                moved,
+                source_ok,
+                destination_ok,
+                move_worker,
             )
 
         signals.finished.connect(_handle_finished)
@@ -449,6 +551,74 @@ class AppFacade(QObject):
             message = "No files were imported."
 
         self.importFinished.emit(root, success, message)
+
+    def _on_move_finished(
+        self,
+        source_root: Path,
+        destination_root: Path,
+        moved: List[Path],
+        source_ok: bool,
+        destination_ok: bool,
+        worker: MoveWorker,
+    ) -> None:
+        """Handle completion of an asynchronous move operation."""
+
+        if worker in self._active_moves:
+            self._active_moves.remove(worker)
+        worker.signals.deleteLater()
+
+        if worker.cancelled:
+            self.moveFinished.emit(
+                source_root,
+                destination_root,
+                False,
+                "Move cancelled.",
+            )
+            return
+
+        success = bool(moved) and source_ok and destination_ok
+
+        if moved:
+            refreshed: set[Path] = set()
+            if source_ok:
+                resolved_source = source_root.resolve()
+                if resolved_source not in refreshed:
+                    self.indexUpdated.emit(source_root)
+                    self.linksUpdated.emit(source_root)
+                    if (
+                        self._current_album is not None
+                        and self._current_album.root.resolve() == resolved_source
+                    ):
+                        self._restart_asset_load(source_root)
+                    refreshed.add(resolved_source)
+            if destination_ok:
+                resolved_dest = destination_root.resolve()
+                if resolved_dest not in refreshed:
+                    self.indexUpdated.emit(destination_root)
+                    self.linksUpdated.emit(destination_root)
+                    if (
+                        self._current_album is not None
+                        and self._current_album.root.resolve() == resolved_dest
+                    ):
+                        self._restart_asset_load(destination_root)
+                    refreshed.add(resolved_dest)
+
+        if not moved:
+            message = "No files were moved."
+        else:
+            label = "file" if len(moved) == 1 else "files"
+            if source_ok and destination_ok:
+                message = f"Moved {len(moved)} {label}."
+            elif source_ok or destination_ok:
+                message = (
+                    f"Moved {len(moved)} {label}, but refreshing one album failed."
+                )
+            else:
+                message = (
+                    f"Moved {len(moved)} {label}, but refreshing both albums failed."
+                )
+
+        self.moveFinished.emit(source_root, destination_root, success, message)
 
     def _save_manifest(self, album: Album, *, reload_view: bool = True) -> bool:
         manager = self._library_manager
