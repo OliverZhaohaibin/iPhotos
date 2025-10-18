@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional, Sequence, TYPE_CHECKING
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Signal, Slot
 
 from ..background_task_manager import BackgroundTaskManager
 from ..ui.tasks.move_worker import MoveSignals, MoveWorker
@@ -111,8 +111,8 @@ class AssetMoveService(QObject):
             return
 
         signals = MoveSignals()
-        signals.started.connect(self.moveStarted.emit)
-        signals.progress.connect(self.moveProgress.emit)
+        signals.started.connect(self._on_move_started)
+        signals.progress.connect(self._on_move_progress)
 
         worker = MoveWorker(normalized, source_root, destination_root, signals)
         unique_task_id = f"move:{source_root}->{destination_root}:{uuid.uuid4().hex}"
@@ -185,6 +185,18 @@ class AssetMoveService(QObject):
                 )
 
         self.moveFinished.emit(source_root, destination_root, success, message)
+
+    @Slot(Path, Path)
+    def _on_move_started(self, source: Path, destination: Path) -> None:
+        """Emit :attr:`moveStarted` while complying with Nuitka's slot validation."""
+
+        self.moveStarted.emit(source, destination)
+
+    @Slot(Path, int, int)
+    def _on_move_progress(self, root: Path, current: int, total: int) -> None:
+        """Emit :attr:`moveProgress` for worker updates via a dedicated slot."""
+
+        self.moveProgress.emit(root, current, total)
 
 
 __all__ = ["AssetMoveService"]

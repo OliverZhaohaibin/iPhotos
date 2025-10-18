@@ -5,7 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QModelIndex, QItemSelectionModel, QObject, QTimer, Signal
+from PySide6.QtCore import (
+    QModelIndex,
+    QItemSelectionModel,
+    QObject,
+    QTimer,
+    Signal,
+    Slot,
+)
 from PySide6.QtWidgets import QSlider, QStatusBar, QToolButton, QWidget
 
 ZOOM_SLIDER_DEFAULT = 100
@@ -329,8 +336,20 @@ class DetailUIController(QObject):
     def _wire_player_bar_events(self) -> None:
         """Translate player bar gestures into high-level controller signals."""
 
-        self._player_bar.scrubStarted.connect(self.scrubbingStarted.emit)
-        self._player_bar.scrubFinished.connect(self.scrubbingFinished.emit)
+        self._player_bar.scrubStarted.connect(self._on_player_bar_scrub_started)
+        self._player_bar.scrubFinished.connect(self._on_player_bar_scrub_finished)
+
+    @Slot()
+    def _on_player_bar_scrub_started(self) -> None:
+        """Forward scrub start events through :attr:`scrubbingStarted`."""
+
+        self.scrubbingStarted.emit()
+
+    @Slot()
+    def _on_player_bar_scrub_finished(self) -> None:
+        """Forward scrub completion events through :attr:`scrubbingFinished`."""
+
+        self.scrubbingFinished.emit()
 
     def _initialize_static_state(self) -> None:
         """Apply the default state expected when the controller is created."""

@@ -6,7 +6,7 @@ from logging import getLogger
 from pathlib import Path
 from typing import Dict, Iterable, Optional, cast
 
-from PySide6.QtCore import QObject, QRectF, Qt, QEvent, Signal
+from PySide6.QtCore import QObject, QRectF, Qt, QEvent, Signal, Slot
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -277,10 +277,16 @@ class PhotoMapView(QWidget):
         self._thumbnail_loader.ready.connect(self._marker_controller.handle_thumbnail_ready)
         self._marker_controller.clustersUpdated.connect(self._overlay.set_clusters)
         self._marker_controller.citiesUpdated.connect(self._handle_city_annotations)
-        self._marker_controller.assetActivated.connect(self.assetActivated.emit)
+        self._marker_controller.assetActivated.connect(self._on_marker_asset_activated)
         self._marker_controller.thumbnailUpdated.connect(self._overlay.set_thumbnail)
         self._marker_controller.thumbnailsInvalidated.connect(self._overlay.clear_pixmaps)
         self._last_tooltip_text = ""
+
+    @Slot(str)
+    def _on_marker_asset_activated(self, asset: str) -> None:
+        """Relay marker activation events through :attr:`assetActivated`."""
+
+        self.assetActivated.emit(asset)
 
     def map_widget(self) -> MapWidget | MapGLWidget:
         """Expose the underlying map widget for integration tests."""
