@@ -49,6 +49,10 @@ class AppFacade(QObject):
         self._scan_pending = False
         self._active_imports: list[ImportWorker] = []
         self._active_moves: list[MoveWorker] = []
+        # ``_suppress_reload_after_move`` flags the next move completion handler to skip
+        # the expensive ``_restart_asset_load`` refresh.  The flag is consumed once the
+        # move finalises so normal album updates continue to reload the UI eagerly.
+        self._suppress_reload_after_move = False
 
         from .ui.models.asset_list_model import AssetListModel
 
@@ -144,6 +148,19 @@ class AppFacade(QObject):
         self._scanner_worker = worker
         self._scan_pending = False
         self._scanner_pool.start(worker)
+
+    def suppress_ui_reload_on_next_move(self, suppress: bool) -> None:
+        """Control whether the next move completion should reload the asset list.
+
+        The gallery view stays visually stable when files are moved out of the
+        "All Photos" aggregate, so the controller asks the facade to defer the
+        heavy-handed model reset in that scenario.  Concrete album views, on the
+        other hand, rely on the immediate refresh to highlight that items were
+        removed.  Toggling the flag here allows the controller to opt out of the
+        reload without duplicating move orchestration logic.
+        """
+
+        self._suppress_reload_after_move = suppress
 
     def pair_live_current(self) -> List[dict]:
         """Rebuild Live Photo pairings for the active album."""
@@ -574,12 +591,16 @@ class AppFacade(QObject):
                 False,
                 "Move cancelled.",
             )
+            # Reset the suppression flag so a cancelled task does not leak the
+            # deferred reload behaviour into future moves.
+            self._suppress_reload_after_move = False
             return
 
         success = bool(moved) and source_ok and destination_ok
 
         if moved:
             refreshed: set[Path] = set()
+            should_reload_ui = not self._suppress_reload_after_move
             if source_ok:
                 resolved_source = source_root.resolve()
                 if resolved_source not in refreshed:
@@ -588,6 +609,7 @@ class AppFacade(QObject):
                     if (
                         self._current_album is not None
                         and self._current_album.root.resolve() == resolved_source
+                        and should_reload_ui
                     ):
                         self._restart_asset_load(source_root)
                     refreshed.add(resolved_source)
@@ -599,9 +621,15 @@ class AppFacade(QObject):
                     if (
                         self._current_album is not None
                         and self._current_album.root.resolve() == resolved_dest
+                        and should_reload_ui
                     ):
                         self._restart_asset_load(destination_root)
                     refreshed.add(resolved_dest)
+
+        # The suppression flag only applies to the move that was just handled,
+        # so make sure subsequent operations fall back to the default
+        # eager-reload behaviour.
+        self._suppress_reload_after_move = False
 
         if not moved:
             message = "No files were moved."

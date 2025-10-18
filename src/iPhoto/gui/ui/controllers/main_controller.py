@@ -682,9 +682,14 @@ class MainController(QObject):
         # album.  The "All Photos" virtual collection should remain visually
         # stable because the moved files continue to belong to that aggregate
         # view until a rescan completes.
-        if not self._navigation.is_all_photos_view() and selected_indexes:
+        is_all_photos_move = self._navigation.is_all_photos_view()
+        if not is_all_photos_move and selected_indexes:
             source_model = self._asset_model.source_model()
             source_model.remove_rows(selected_indexes)
+        # Defer the model reload when we purposely keep the thumbnails visible
+        # so the facade does not clear the grid before fresh metadata arrives
+        # from the rescans triggered by the move worker.
+        self._facade.suppress_ui_reload_on_next_move(is_all_photos_move)
         self._facade.move_assets(paths, target)
         self._set_selection_mode(False)
 
