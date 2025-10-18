@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import uuid
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional, Sequence
 
@@ -65,8 +66,12 @@ class AssetImportService(QObject):
         signals.progress.connect(self.importProgress.emit)
 
         worker = ImportWorker(normalized, target_root, self._copy_into_album, signals)
+        unique_task_id = f"import:{target_root}:{uuid.uuid4().hex}"
+        # The BackgroundTaskManager refuses duplicate task identifiers so we append a
+        # UUID suffix to ensure that repeated imports into the same album can be queued
+        # without tripping the collision guard.
         self._task_manager.submit_task(
-            task_id=f"import:{target_root}",
+            task_id=unique_task_id,
             worker=worker,
             started=signals.started,
             progress=signals.progress,

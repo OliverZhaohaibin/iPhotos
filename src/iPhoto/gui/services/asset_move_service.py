@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional, Sequence, TYPE_CHECKING
 
@@ -114,8 +115,12 @@ class AssetMoveService(QObject):
         signals.progress.connect(self.moveProgress.emit)
 
         worker = MoveWorker(normalized, source_root, destination_root, signals)
+        unique_task_id = f"move:{source_root}->{destination_root}:{uuid.uuid4().hex}"
+        # Move requests share their origin and target directories, so we need a unique
+        # suffix on the identifier to allow queuing multiple operations without the
+        # BackgroundTaskManager rejecting the submission as a duplicate.
         self._task_manager.submit_task(
-            task_id=f"move:{source_root}->{destination_root}",
+            task_id=unique_task_id,
             worker=worker,
             started=signals.started,
             progress=signals.progress,
