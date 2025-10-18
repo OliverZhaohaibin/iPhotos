@@ -24,6 +24,12 @@ dependencies = [
   "pyexiftool>=0.5.5",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-mock"
+]
+
 [project.scripts]
 iphoto = "iPhoto.cli:app"
 iphoto-gui = "iPhoto.gui.main:main"
