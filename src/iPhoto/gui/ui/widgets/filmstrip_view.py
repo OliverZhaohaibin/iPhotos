@@ -43,9 +43,6 @@ class FilmstripView(AssetGrid):
         self.setMinimumHeight(strip_height)
         self.setMaximumHeight(strip_height)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        # ``_wheel_action`` mirrors the viewer's behaviour so the controller can decide whether the
-        # wheel should request navigation or be left untouched for other widgets to interpret.
-        self._wheel_action = "navigate"
 
     def setModel(self, model) -> None:  # type: ignore[override]
         super().setModel(model)
@@ -188,24 +185,17 @@ class FilmstripView(AssetGrid):
             ratio = float(candidate)
         return ratio
 
-    def set_wheel_action(self, action: str) -> None:
-        """Control whether wheel gestures trigger navigation or default scrolling.
-
-        The filmstrip is the component that historically consumed the wheel to request
-        previous/next navigation. When the user switches to zoom-centric behaviour we simply
-        fall back to the ``QListView`` default so the gesture can bubble up to other widgets.
-        """
-
-        self._wheel_action = "zoom" if action == "zoom" else "navigate"
-
     # ------------------------------------------------------------------
     # Event handling
     # ------------------------------------------------------------------
     def wheelEvent(self, event: QWheelEvent) -> None:  # type: ignore[override]
-        if self._wheel_action != "navigate":
-            super().wheelEvent(event)
-            return
+        """Always request navigation when the user scrolls over the filmstrip.
 
+        The filmstrip acts as a lightweight transport control, so the wheel gesture should
+        consistently move to the previous or next asset regardless of the global wheel setting.
+        We only bypass this logic when the user explicitly performs a Ctrl-modified scroll so the
+        platform default zoom gesture can bubble up to other widgets.
+        """
         if event.modifiers() & Qt.ControlModifier:
             super().wheelEvent(event)
             return
