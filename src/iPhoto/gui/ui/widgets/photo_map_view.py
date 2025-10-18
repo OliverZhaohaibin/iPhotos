@@ -282,8 +282,8 @@ class PhotoMapView(QWidget):
         self._marker_controller.thumbnailsInvalidated.connect(self._overlay.clear_pixmaps)
         self._last_tooltip_text = ""
 
-    @Slot(Path)
-    def _on_marker_asset_activated(self, asset: Path) -> None:
+    @Slot(str)
+    def _on_marker_asset_activated(self, asset: str) -> None:
         """Relay marker activation events through :attr:`assetActivated`."""
 
         self.assetActivated.emit(asset)
