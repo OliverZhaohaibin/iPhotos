@@ -231,6 +231,25 @@ class NavigationController:
     def clear_static_selection(self) -> None:
         self._static_selection = None
 
+    def is_basic_library_virtual_view(self) -> bool:
+        """Return ``True`` when a Basic Library virtual collection is active."""
+
+        # ``_static_selection`` mirrors the last virtual node triggered from the
+        # sidebar.  Whenever one of the built-in Basic Library collections is
+        # active we want move operations to keep their optimistic updates, so
+        # normalise the title and compare it against the known set of virtual
+        # albums.
+        if not self._static_selection:
+            return False
+        normalized_title = self._static_selection.casefold()
+        virtual_views = {
+            AlbumSidebar.ALL_PHOTOS_TITLE.casefold(),
+            "videos",
+            "live photos",
+            "favorites",
+        }
+        return normalized_title in virtual_views
+
     def is_all_photos_view(self) -> bool:
         """Return ``True`` when the "All Photos" virtual collection is active."""
 

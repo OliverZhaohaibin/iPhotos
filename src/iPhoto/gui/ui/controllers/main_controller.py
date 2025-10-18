@@ -727,8 +727,13 @@ class MainController(QObject):
             return
 
         source_model = self._asset_model.source_model()
-        is_all_photos_move = self._navigation.is_all_photos_view()
-        if is_all_photos_move:
+        is_virtual_view_move = self._navigation.is_basic_library_virtual_view()
+        if is_virtual_view_move:
+            # Moving items from any Basic Library virtual collection (All Photos,
+            # Videos, Live Photos, Favorites) should behave like a read-only view
+            # over the master index.  Apply the optimistic update path so the
+            # thumbnails remain visible while the worker performs the actual
+            # filesystem updates.
             rels = [index.data(Roles.REL) for index in selected_indexes if index.isValid()]
             source_model.update_rows_for_move([rel for rel in rels if isinstance(rel, str)], target)
         elif selected_indexes:
