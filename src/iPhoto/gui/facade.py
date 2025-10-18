@@ -173,6 +173,17 @@ class AppFacade(QObject):
         if self._library_manager is not None:
             QTimer.singleShot(500, self._library_manager.resume_watcher)
 
+    def is_performing_background_operation(self) -> bool:
+        """Return ``True`` while imports or moves are still running."""
+
+        # The GUI reacts to several facade signals (sidebar tree rebuilds,
+        # playlist changes, etc.) by reopening the current album.  Doing so while
+        # a move or import worker is still adjusting on-disk state causes the
+        # freshly opened model to observe a transient, half-updated index.  By
+        # exposing this helper the controllers can defer those refreshes until
+        # the background job has wrapped up.
+        return bool(self._active_imports or self._active_moves)
+
     def pair_live_current(self) -> List[dict]:
         """Rebuild Live Photo pairings for the active album."""
 
@@ -610,7 +621,7 @@ class AppFacade(QObject):
                 self._active_moves.remove(worker)
             worker.signals.deleteLater()
 
-            pairs = [(Path(src), Path(dst)) for src, dst in moved]
+            moved_pairs = [(Path(src), Path(dst)) for src, dst in moved]
 
             if worker.cancelled:
                 self._asset_list_model.rollback_pending_moves()
@@ -622,34 +633,34 @@ class AppFacade(QObject):
                 )
                 return
 
-            success = bool(pairs) and source_ok and destination_ok
+            success = bool(moved_pairs) and source_ok and destination_ok
 
-            if pairs:
-                self._asset_list_model.finalise_move_results(pairs)
+            if moved_pairs:
+                self._asset_list_model.finalise_move_results(moved_pairs)
             if self._asset_list_model.has_pending_move_placeholders():
                 self._asset_list_model.rollback_pending_moves()
 
-            if pairs:
-                if source_ok:
-                    self.indexUpdated.emit(source_root)
-                    self.linksUpdated.emit(source_root)
-                if destination_ok:
-                    self.indexUpdated.emit(destination_root)
-                    self.linksUpdated.emit(destination_root)
+            # ``indexUpdated`` and ``linksUpdated`` intentionally remain quiet
+            # here.  The gallery already reflects the optimistic in-memory
+            # updates performed before the worker started.  Re-emitting the
+            # legacy refresh signals would re-trigger the heavy album reload
+            # logic we are trying to sidestep, causing visible flicker in "All
+            # Photos".  Controllers that need to react to the move can listen to
+            # :attr:`moveFinished` directly.
 
-            if not pairs:
+            if not moved_pairs:
                 message = "No files were moved."
             else:
-                label = "file" if len(pairs) == 1 else "files"
+                label = "file" if len(moved_pairs) == 1 else "files"
                 if source_ok and destination_ok:
-                    message = f"Moved {len(pairs)} {label}."
+                    message = f"Moved {len(moved_pairs)} {label}."
                 elif source_ok or destination_ok:
                     message = (
-                        f"Moved {len(pairs)} {label}, but refreshing one album failed."
+                        f"Moved {len(moved_pairs)} {label}, but refreshing one album failed."
                     )
                 else:
                     message = (
-                        f"Moved {len(pairs)} {label}, but refreshing both albums failed."
+                        f"Moved {len(moved_pairs)} {label}, but refreshing both albums failed."
                     )
 
             self.moveFinished.emit(source_root, destination_root, success, message)

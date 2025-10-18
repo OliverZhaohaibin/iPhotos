@@ -351,6 +351,13 @@ class MainController(QObject):
         # Global error reporting
         self._facade.errorRaised.connect(self._dialog.show_error)
         self._context.library.errorRaised.connect(self._dialog.show_error)
+        # ``treeUpdated`` fires whenever the filesystem watcher rebuilds the
+        # sidebar hierarchy.  Forward the notification so the navigation
+        # controller can decide whether the resulting selection changes should
+        # trigger a fresh navigation cycle.
+        self._context.library.treeUpdated.connect(
+            self._navigation.handle_tree_updated
+        )
 
         # Sidebar navigation
         self._window.ui.sidebar.albumSelected.connect(self.open_album_from_path)
@@ -375,9 +382,11 @@ class MainController(QObject):
         self._facade.importStarted.connect(self._status_bar.handle_import_started)
         self._facade.importProgress.connect(self._status_bar.handle_import_progress)
         self._facade.importFinished.connect(self._status_bar.handle_import_finished)
+        self._facade.importFinished.connect(self._handle_import_finished)
         self._facade.moveStarted.connect(self._status_bar.handle_move_started)
         self._facade.moveProgress.connect(self._status_bar.handle_move_progress)
         self._facade.moveFinished.connect(self._status_bar.handle_move_finished)
+        self._facade.moveFinished.connect(self._handle_move_finished)
         self._facade.indexUpdated.connect(self._map_controller.handle_index_update)
 
         # Model housekeeping
@@ -484,6 +493,11 @@ class MainController(QObject):
     def _handle_all_photos_selected(self) -> None:
         """Reset to the default gallery view when All Photos is selected."""
 
+        if (
+            self._navigation.should_suppress_tree_refresh()
+            and self._navigation.is_all_photos_view()
+        ):
+            return
         self._map_controller.hide_map_view()
         self._set_selection_mode(False)
         self._navigation.open_all_photos()
@@ -491,6 +505,10 @@ class MainController(QObject):
     def _handle_static_node_selected(self, title: str) -> None:
         """Dispatch sidebar selections, treating Location as a special case."""
 
+        if self._navigation.should_suppress_tree_refresh():
+            current_static = self._navigation.static_selection()
+            if current_static and current_static.casefold() == title.casefold():
+                return
         self._set_selection_mode(False)
         if title.casefold() == "location":
             self._navigation.open_location_view()
@@ -502,6 +520,35 @@ class MainController(QObject):
             return
         self._map_controller.hide_map_view()
         self._navigation.open_static_node(title)
+
+    def _handle_import_finished(
+        self,
+        _root: Path | None,
+        success: bool,
+        _message: str,
+    ) -> None:
+        """Drop tree-refresh guards and refresh caches after imports."""
+
+        self._navigation.clear_tree_refresh_suppression()
+        if success:
+            self._map_controller.refresh_assets()
+
+    def _handle_move_finished(
+        self,
+        _source: Path,
+        _destination: Path,
+        success: bool,
+        _message: str,
+    ) -> None:
+        """Release tree-refresh guards and refresh ancillary views after moves."""
+
+        self._navigation.clear_tree_refresh_suppression()
+        if success:
+            # The map controller caches geotagged entries across the entire
+            # library.  Refreshing here ensures moved assets immediately appear
+            # under their new album hierarchy without waiting for a manual
+            # rescan.
+            self._map_controller.refresh_assets()
 
     def _handle_album_opened(self, root: Path) -> None:
         """React to the facade opening a new or refreshed album."""
@@ -797,6 +844,17 @@ class MainController(QObject):
     def open_album_from_path(self, path: Path) -> None:
         """Forward album navigation requests to the navigation controller."""
 
+        if self._navigation.should_suppress_tree_refresh():
+            current_album = self._facade.current_album
+            if current_album is not None:
+                try:
+                    if current_album.root.resolve() == Path(path).resolve():
+                        return
+                except OSError:
+                    # If resolving either path fails we fall back to the
+                    # default behaviour so the navigation request is still
+                    # honoured for user-initiated selections.
+                    pass
         self._map_controller.hide_map_view()
         self._navigation.open_album(path)
 
