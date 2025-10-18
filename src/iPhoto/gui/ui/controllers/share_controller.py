@@ -12,9 +12,10 @@ from PySide6.QtGui import QAction, QGuiApplication
 from PySide6.QtWidgets import QPushButton
 from PySide6.QtGui import QActionGroup
 
+from ..media import PlaylistController
 from ..models.asset_model import AssetModel, Roles
 from ..widgets.notification_toast import NotificationToast
-from .playlist_controller import PlaylistController
+
 from .status_bar_controller import StatusBarController
 
 

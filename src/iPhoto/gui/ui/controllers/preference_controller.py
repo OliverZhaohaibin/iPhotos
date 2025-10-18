@@ -8,7 +8,7 @@ from PySide6.QtCore import QObject
 from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import QWidget
 
-from .media import MediaController
+from ..media import MediaController
 from ..widgets.player_bar import PlayerBar
 from ..widgets.image_viewer import ImageViewer
 

@@ -6,8 +6,8 @@ from functools import partial
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QObject, QPoint, QCoreApplication, QUrl
-from PySide6.QtGui import QGuiApplication, QMimeData
+from PySide6.QtCore import QObject, QPoint, QCoreApplication, QUrl, QMimeData
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QMenu
 
 from ...facade import AppFacade
