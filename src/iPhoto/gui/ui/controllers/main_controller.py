@@ -292,14 +292,18 @@ class MainController(QObject):
         self._facade.loadStarted.connect(self._status_bar.handle_load_started)
         self._facade.loadProgress.connect(self._status_bar.handle_load_progress)
         self._facade.loadFinished.connect(self._status_bar.handle_load_finished)
-        self._facade.importStarted.connect(self._status_bar.handle_import_started)
-        self._facade.importProgress.connect(self._status_bar.handle_import_progress)
-        self._facade.importFinished.connect(self._status_bar.handle_import_finished)
-        self._facade.importFinished.connect(self._handle_import_finished)
-        self._facade.moveStarted.connect(self._status_bar.handle_move_started)
-        self._facade.moveProgress.connect(self._status_bar.handle_move_progress)
-        self._facade.moveFinished.connect(self._status_bar.handle_move_finished)
-        self._facade.moveFinished.connect(self._handle_move_finished)
+
+        import_service = self._facade.import_service
+        import_service.importStarted.connect(self._status_bar.handle_import_started)
+        import_service.importProgress.connect(self._status_bar.handle_import_progress)
+        import_service.importFinished.connect(self._status_bar.handle_import_finished)
+        import_service.importFinished.connect(self._handle_import_finished)
+
+        move_service = self._facade.move_service
+        move_service.moveStarted.connect(self._status_bar.handle_move_started)
+        move_service.moveProgress.connect(self._status_bar.handle_move_progress)
+        move_service.moveFinished.connect(self._status_bar.handle_move_finished)
+        move_service.moveFinished.connect(self._handle_move_finished)
         self._facade.indexUpdated.connect(self._map_controller.handle_index_update)
 
         # Model housekeeping
