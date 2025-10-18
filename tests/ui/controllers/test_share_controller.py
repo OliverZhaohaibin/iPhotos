@@ -121,8 +121,13 @@ class StubToast:
 
 
 @pytest.fixture()
-def controller_factory():
+def controller_factory(qapp: QApplication):
     """Return a helper that creates a :class:`ShareController` for tests."""
+
+    # The ``qapp`` fixture ensures a QApplication exists before any QWidget is
+    # constructed.  Without this dependency the helper would instantiate
+    # buttons prior to QApplication initialisation which raises runtime errors
+    # in Qt.
 
     def factory(
         *,
@@ -161,7 +166,7 @@ def controller_factory():
     return factory
 
 
-def test_restore_preference_checks_expected_action(controller_factory) -> None:
+def test_restore_preference_checks_expected_action(controller_factory, qapp: QApplication) -> None:
     """Restoring the preference should check the matching QAction."""
 
     settings = StubSettings("copy_path")
@@ -174,7 +179,7 @@ def test_restore_preference_checks_expected_action(controller_factory) -> None:
     assert controller._copy_path_action.isChecked()
 
 
-def test_share_without_selection_shows_status_message(controller_factory) -> None:
+def test_share_without_selection_shows_status_message(controller_factory, qapp: QApplication) -> None:
     """Clicking the share button without a selection should inform the user."""
 
     settings = StubSettings("reveal_file")
@@ -187,7 +192,9 @@ def test_share_without_selection_shows_status_message(controller_factory) -> Non
     assert controller._status_bar.messages == [("No item selected to share.", 3000)]
 
 
-def test_share_uses_preferred_action(controller_factory, mocker, tmp_path: Path) -> None:
+def test_share_uses_preferred_action(
+    controller_factory, qapp: QApplication, mocker, tmp_path: Path
+) -> None:
     """The configured share action should determine which helper is invoked."""
 
     target = tmp_path / "photo.jpg"
@@ -207,7 +214,7 @@ def test_share_uses_preferred_action(controller_factory, mocker, tmp_path: Path)
     reveal.assert_not_called()
 
 
-def test_action_group_updates_preference(controller_factory) -> None:
+def test_action_group_updates_preference(controller_factory, qapp: QApplication) -> None:
     """Switching the QAction selection must persist the new preference."""
 
     settings = StubSettings("reveal_file")
