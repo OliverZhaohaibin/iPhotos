@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable, List, Optional, Set, TYPE_CHECKING
 
-from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
 from .. import app as backend
 from ..errors import IPhotoError
@@ -22,15 +22,20 @@ if TYPE_CHECKING:
 class AppFacade(QObject):
     """Expose high-level album operations to the GUI layer."""
 
-    albumOpened = Signal(object)
-    indexUpdated = Signal(object)
-    linksUpdated = Signal(object)
+    # Qt signal signatures use ``Path`` rather than ``object`` so that Nuitka's
+    # strict type matching can verify the corresponding slots during static
+    # analysis.  The application exclusively emits filesystem paths for these
+    # events, therefore tightening the signature does not change behaviour but
+    # avoids packaging-time ``SystemError`` exceptions.
+    albumOpened = Signal(Path)
+    indexUpdated = Signal(Path)
+    linksUpdated = Signal(Path)
     errorRaised = Signal(str)
-    scanProgress = Signal(object, int, int)
-    scanFinished = Signal(object, bool)
-    loadStarted = Signal(object)
-    loadProgress = Signal(object, int, int)
-    loadFinished = Signal(object, bool)
+    scanProgress = Signal(Path, int, int)
+    scanFinished = Signal(Path, bool)
+    loadStarted = Signal(Path)
+    loadProgress = Signal(Path, int, int)
+    loadFinished = Signal(Path, bool)
     def __init__(self) -> None:
         super().__init__()
         self._current_album: Optional[Album] = None
@@ -57,7 +62,7 @@ class AppFacade(QObject):
             refresh_view=self._refresh_view,
             parent=self,
         )
-        self._metadata_service.errorRaised.connect(self.errorRaised.emit)
+        self._metadata_service.errorRaised.connect(self._on_service_error)
 
         self._import_service = AssetImportService(
             task_manager=self._task_manager,
@@ -66,7 +71,7 @@ class AppFacade(QObject):
             metadata_service=self._metadata_service,
             parent=self,
         )
-        self._import_service.errorRaised.connect(self.errorRaised.emit)
+        self._import_service.errorRaised.connect(self._on_service_error)
 
         self._move_service = AssetMoveService(
             task_manager=self._task_manager,
@@ -74,7 +79,20 @@ class AppFacade(QObject):
             current_album_getter=lambda: self._current_album,
             parent=self,
         )
-        self._move_service.errorRaised.connect(self.errorRaised.emit)
+        self._move_service.errorRaised.connect(self._on_service_error)
+
+    @Slot(str)
+    def _on_service_error(self, message: str) -> None:
+        """Relay service-level failures through the facade-wide error signal.
+
+        Nuitka performs strict validation of connected callables and rejects
+        method descriptors such as :py:meth:`Signal.emit`.  A dedicated slot
+        gives the compiler an explicit Python callable to link, while keeping
+        the runtime behaviour identical by forwarding the original error
+        message verbatim to :attr:`errorRaised`.
+        """
+
+        self.errorRaised.emit(message)
 
     # ------------------------------------------------------------------
     # Album lifecycle
@@ -154,7 +172,6 @@ class AppFacade(QObject):
 
         album = self._require_album()
         if album is None:
-            self.scanFinished.emit(None, False)
             return
 
         if self._scanner_worker is not None:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, List, Optional
 
-from PySide6.QtCore import QPoint, QTimer, Qt, Signal
+from PySide6.QtCore import QModelIndex, QPoint, QTimer, Qt, Signal
 from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent, QMouseEvent
 from PySide6.QtWidgets import QListView
 
@@ -15,8 +15,11 @@ from ....config import LONG_PRESS_THRESHOLD_MS
 class AssetGrid(QListView):
     """Grid view that distinguishes between clicks and long presses."""
 
-    itemClicked = Signal(object)
-    requestPreview = Signal(object)
+    # ``QModelIndex`` provides a precise Qt meta-type that aligns with all
+    # slots consuming the signal.  Nuitka requires this explicit annotation so
+    # it can match the signal signature without falling back to ``object``.
+    itemClicked = Signal(QModelIndex)
+    requestPreview = Signal(QModelIndex)
     previewReleased = Signal()
     previewCancelled = Signal()
     visibleRowsChanged = Signal(int, int)
@@ -28,7 +31,7 @@ class AssetGrid(QListView):
         self._press_timer = QTimer(self)
         self._press_timer.setSingleShot(True)
         self._press_timer.timeout.connect(self._on_long_press_timeout)
-        self._pressed_index = None
+        self._pressed_index: Optional[QModelIndex] = None
         self._press_pos: Optional[QPoint] = None
         self._long_press_active = False
         self._update_timer = QTimer(self)

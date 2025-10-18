@@ -33,8 +33,12 @@ if TYPE_CHECKING:  # pragma: no cover - import only for type checking
 class AssetListModel(QAbstractListModel):
     """Expose album assets to Qt views."""
 
-    loadProgress = Signal(object, int, int)
-    loadFinished = Signal(object, bool)
+    # ``Path`` is used explicitly so that static compilers such as Nuitka can
+    # prove that the connected slots accept the same signature.  Relying on the
+    # generic ``object`` type confuses Nuitka's patched ``Signal.connect``
+    # implementation and results in runtime errors during packaging.
+    loadProgress = Signal(Path, int, int)
+    loadFinished = Signal(Path, bool)
 
     def __init__(self, facade: "AppFacade", parent=None) -> None:  # type: ignore[override]
         super().__init__(parent)
