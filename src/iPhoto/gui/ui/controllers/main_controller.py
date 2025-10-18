@@ -669,10 +669,22 @@ class MainController(QObject):
     def _execute_move_to_album(self, target: Path) -> None:
         """Initiate moving the current selection into *target*."""
 
+        view = self._window.ui.grid_view
+        selection_model = view.selectionModel()
+        selected_indexes = (
+            list(selection_model.selectedIndexes()) if selection_model else []
+        )
         paths = self._selected_asset_paths()
         if not paths:
             self._status_bar.show_message("Select items to move first.", 3000)
             return
+        # Only remove thumbnails immediately when the user is browsing a concrete
+        # album.  The "All Photos" virtual collection should remain visually
+        # stable because the moved files continue to belong to that aggregate
+        # view until a rescan completes.
+        if not self._navigation.is_all_photos_view() and selected_indexes:
+            source_model = self._asset_model.source_model()
+            source_model.remove_rows(selected_indexes)
         self._facade.move_assets(paths, target)
         self._set_selection_mode(False)
 

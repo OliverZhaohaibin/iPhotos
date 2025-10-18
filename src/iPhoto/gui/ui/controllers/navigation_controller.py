@@ -192,3 +192,17 @@ class NavigationController:
 
     def clear_static_selection(self) -> None:
         self._static_selection = None
+
+    def is_all_photos_view(self) -> bool:
+        """Return ``True`` when the "All Photos" virtual collection is active."""
+
+        # ``_static_selection`` mirrors the last sidebar node that activated a
+        # static collection.  Compare it against the well-known label using a
+        # case-insensitive check so localisation or theme adjustments that tweak
+        # the capitalisation do not affect the outcome.
+        if not self._static_selection:
+            return False
+        return (
+            self._static_selection.casefold()
+            == AlbumSidebar.ALL_PHOTOS_TITLE.casefold()
+        )

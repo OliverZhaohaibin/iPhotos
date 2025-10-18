@@ -58,6 +58,63 @@ class AssetListModel(QAbstractListModel):
 
         return self._album_root
 
+    def remove_rows(self, indexes: list[QModelIndex]) -> None:
+        """Remove assets referenced by *indexes*, tolerating proxy selections.
+
+        The gallery view exposes :class:`AssetModel`, so any selection reported
+        by the view may reference one or more proxy layers.  The helper performs
+        the necessary ``mapToSource`` hops before trimming ``self._rows`` so
+        callers do not have to special-case filtered or sorted presentations.
+        """
+
+        # Mapping proxy indices back to the source model is necessary because the
+        # gallery view operates on :class:`AssetModel`, which layers filtering on
+        # top of :class:`AssetListModel`.  Walk through any proxy chain by
+        # repeatedly invoking ``mapToSource`` until we arrive at indices owned by
+        # this model.  Invalid or foreign indices are ignored gracefully so the
+        # caller can forward the selection from a view without bespoke checks.
+        source_rows: set[int] = set()
+        for proxy_index in indexes:
+            if not proxy_index.isValid() or proxy_index.column() != 0:
+                continue
+            current_index = proxy_index
+            model = current_index.model()
+            while model is not self and hasattr(model, "mapToSource"):
+                mapped_index = model.mapToSource(current_index)
+                if not mapped_index.isValid():
+                    current_index = QModelIndex()
+                    break
+                current_index = mapped_index
+                model = current_index.model()
+            if not current_index.isValid() or model is not self:
+                continue
+            row_number = current_index.row()
+            if 0 <= row_number < len(self._rows):
+                source_rows.add(row_number)
+
+        if not source_rows:
+            return
+
+        # Removing rows in descending order prevents index shifts from
+        # invalidating pending deletions.  The thumbnail cache and lookup tables
+        # are updated to remain in sync with the trimmed dataset.
+        for row in sorted(source_rows, reverse=True):
+            row_data = self._rows[row]
+            rel_key = str(row_data["rel"])
+            self.beginRemoveRows(QModelIndex(), row, row)
+            self._rows.pop(row)
+            self.endRemoveRows()
+            self._row_lookup.pop(rel_key, None)
+            self._thumb_cache.pop(rel_key, None)
+
+        # Rebuild lookup tables so callers relying on ``_row_lookup`` continue to
+        # receive accurate mappings.  Clearing caches keeps the thumbnail loader
+        # aligned with the new model contents at the cost of recomputing a few
+        # placeholders lazily when they are next requested.
+        self._row_lookup = {row["rel"]: index for index, row in enumerate(self._rows)}
+        self._placeholder_cache.clear()
+        self._visible_rows.clear()
+
     def populate_from_cache(self, *, max_index_bytes: int = 512 * 1024) -> bool:
         """Synchronously load cached index data when the file is small."""
 
