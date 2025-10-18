@@ -230,6 +230,23 @@ class AlbumTreeModel(QAbstractItemModel):
             return QModelIndex()
         return self.createIndex(item.row(), 0, item)
 
+    def iter_album_entries(self) -> list[tuple[str, Path]]:
+        """Return a display-friendly list of ``(label, path)`` pairs for albums."""
+
+        entries: list[tuple[str, Path]] = []
+
+        def _walk(node: AlbumTreeItem, parents: list[str]) -> None:
+            for child in node.children:
+                if child.node_type in {NodeType.ALBUM, NodeType.SUBALBUM} and child.album is not None:
+                    labels = parents + [child.title]
+                    entries.append((" > ".join(labels), child.album.path))
+                    _walk(child, labels)
+                else:
+                    _walk(child, parents)
+
+        _walk(self._root_item, [])
+        return entries
+
     def item_from_index(self, index: QModelIndex) -> AlbumTreeItem | None:
         """Expose the internal item for testing and helper widgets."""
 

@@ -36,6 +36,8 @@ class AssetGridDelegate(QStyledItemDelegate):
         self._base_size = 192
         self._filmstrip_height = 120
         self._filmstrip_border_width = 2
+        self._selection_mode_active = False
+        self._selection_icon: QIcon = load_icon("checkmark.circle.svg")
 
     # ------------------------------------------------------------------
     # Painting
@@ -137,7 +139,19 @@ class AssetGridDelegate(QStyledItemDelegate):
         if bool(index.data(Roles.FEATURED)):
             self._draw_favorite_badge(painter, option, thumb_rect)
 
+        if (
+            self._selection_mode_active
+            and not self._filmstrip_mode
+            and option.state & QStyle.State_Selected
+        ):
+            self._draw_selection_badge(painter, thumb_rect)
+
         painter.restore()
+
+    def set_selection_mode_active(self, enabled: bool) -> None:
+        """Toggle the presence of the selection confirmation badge."""
+
+        self._selection_mode_active = bool(enabled)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -181,6 +195,25 @@ class AssetGridDelegate(QStyledItemDelegate):
         painter.setPen(QColor("white"))
         painter.setFont(font)
         painter.drawText(badge_rect, Qt.AlignCenter, text)
+        painter.restore()
+
+    def _draw_selection_badge(self, painter: QPainter, rect: QRect) -> None:
+        """Paint the blue circular selection badge requested for multi-select."""
+
+        if self._selection_icon.isNull():
+            return
+        margin = 10
+        badge_size = 30
+        badge_rect = QRect(
+            rect.right() - badge_size - margin,
+            rect.bottom() - badge_size - margin,
+            badge_size,
+            badge_size,
+        )
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        pixmap = self._selection_icon.pixmap(badge_rect.size())
+        painter.drawPixmap(badge_rect, pixmap)
         painter.restore()
 
     def _draw_live_badge(

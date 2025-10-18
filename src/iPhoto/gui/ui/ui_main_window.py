@@ -198,7 +198,17 @@ class Ui_MainWindow(object):
         right_layout.setContentsMargins(8, 8, 8, 8)
 
         self.album_label.setObjectName("albumLabel")
-        right_layout.addWidget(self.album_label)
+        album_header = QWidget()
+        album_header_layout = QHBoxLayout(album_header)
+        album_header_layout.setContentsMargins(0, 0, 0, 0)
+        album_header_layout.setSpacing(8)
+        album_header_layout.addWidget(self.album_label, 1)
+        self.selection_button = QToolButton()
+        self.selection_button.setObjectName("selectionButton")
+        self.selection_button.setAutoRaise(True)
+        self.selection_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        album_header_layout.addWidget(self.selection_button)
+        right_layout.addWidget(album_header)
 
         gallery_page = QWidget()
         gallery_layout = QVBoxLayout(gallery_page)
@@ -396,5 +406,15 @@ class Ui_MainWindow(object):
 
         MainWindow.setWindowTitle(
             QCoreApplication.translate("MainWindow", "iPhoto", None)
+        )
+        self.selection_button.setText(
+            QCoreApplication.translate("MainWindow", "Select", None)
+        )
+        self.selection_button.setToolTip(
+            QCoreApplication.translate(
+                "MainWindow",
+                "Toggle multi-selection mode",
+                None,
+            )
         )
 

@@ -47,6 +47,13 @@ class NavigationController:
         # reissued the currently open album.  When ``True`` the main window can
         # keep the detail pane visible rather than reverting to the gallery.
         self._last_open_was_refresh: bool = False
+        # ``_suppress_tree_refresh`` is toggled when the filesystem watcher
+        # rebuilds the sidebar tree while a background worker (move/import) is
+        # still shuffling files.  Those rebuilds re-select the current item in
+        # the ``QTreeView``, which in turn emits navigation signals.  Deferring
+        # the reaction keeps the gallery from reopening the album mid-operation
+        # and avoids replacing the thumbnail grid with placeholders.
+        self._suppress_tree_refresh: bool = False
 
     # ------------------------------------------------------------------
     # Album management
@@ -67,12 +74,12 @@ class NavigationController:
         )
         is_same_album = current_root == target_root
 
-        # Static collections ("All Photos", "Favorites", etc.) deliberately
-        # re-use the library root, so only treat the invocation as a refresh
-        # when no static node is active.  This keeps virtual collections using
-        # their gallery-first behaviour while allowing genuine album reloads to
-        # bypass the gallery reset.
-        is_refresh = bool(is_same_album and self._static_selection is None)
+        # Treat any re-opening of the current album as a refresh, regardless of
+        # whether the gallery is showing a virtual collection.  This ensures
+        # that filesystem watcher events triggered by move operations do not
+        # wipe the model and produce placeholder tiles while the asynchronous
+        # reload repopulates the data.
+        is_refresh = bool(is_same_album)
         self._last_open_was_refresh = is_refresh
 
         if is_refresh:
@@ -147,6 +154,13 @@ class NavigationController:
         if root is None:
             self._dialog.bind_library_dialog()
             return
+        # ``open_static_collection`` is always a user-driven navigation request
+        # (e.g. clicking "All Photos" or "Favorites"), so explicitly mark the
+        # transition as a fresh navigation instead of a passive refresh.  This
+        # prevents the caller that triggered the static switch from assuming
+        # the previous album remained visible.
+        self._last_open_was_refresh = False
+
         # Reset the detail pane whenever a static collection (All Photos,
         # Favorites, etc.) is opened so the UI consistently shows the grid as
         # its entry point for that virtual album.
@@ -168,6 +182,30 @@ class NavigationController:
         was_refresh = self._last_open_was_refresh
         self._last_open_was_refresh = False
         return was_refresh
+
+    def handle_tree_updated(self) -> None:
+        """Record tree rebuilds triggered while background jobs are running."""
+
+        if self._facade.is_performing_background_operation():
+            # ``AlbumSidebar`` rebuilds the model whenever the library tree is
+            # refreshed.  During a move/import this happens while the index is
+            # still in flux, so we flag the refresh and let the controller skip
+            # redundant navigation callbacks.
+            self._suppress_tree_refresh = True
+        else:
+            # The tree settled without a concurrent background job, therefore
+            # the controller can react to subsequent sidebar events normally.
+            self._suppress_tree_refresh = False
+
+    def should_suppress_tree_refresh(self) -> bool:
+        """Return ``True`` when sidebar callbacks should be ignored temporarily."""
+
+        return self._suppress_tree_refresh
+
+    def clear_tree_refresh_suppression(self) -> None:
+        """Allow sidebar selections to trigger navigation again."""
+
+        self._suppress_tree_refresh = False
 
     # ------------------------------------------------------------------
     # Status helpers
@@ -192,3 +230,17 @@ class NavigationController:
 
     def clear_static_selection(self) -> None:
         self._static_selection = None
+
+    def is_all_photos_view(self) -> bool:
+        """Return ``True`` when the "All Photos" virtual collection is active."""
+
+        # ``_static_selection`` mirrors the last sidebar node that activated a
+        # static collection.  Compare it against the well-known label using a
+        # case-insensitive check so localisation or theme adjustments that tweak
+        # the capitalisation do not affect the outcome.
+        if not self._static_selection:
+            return False
+        return (
+            self._static_selection.casefold()
+            == AlbumSidebar.ALL_PHOTOS_TITLE.casefold()
+        )

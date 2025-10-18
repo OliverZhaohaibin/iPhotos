@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Iterable, List, Optional, Set, TYPE_CHECKING
+from typing import Iterable, List, Optional, Set, Tuple, TYPE_CHECKING
 
 from PySide6.QtCore import QObject, QThreadPool, QTimer, Signal
 
@@ -12,6 +12,7 @@ from .. import app as backend
 from ..errors import IPhotoError
 from ..models.album import Album
 from .ui.tasks.import_worker import ImportSignals, ImportWorker
+from .ui.tasks.move_worker import MoveSignals, MoveWorker
 from .ui.tasks.scanner_worker import ScannerSignals, ScannerWorker
 
 if TYPE_CHECKING:
@@ -34,6 +35,9 @@ class AppFacade(QObject):
     importStarted = Signal(object)
     importProgress = Signal(object, int, int)
     importFinished = Signal(object, bool, str)
+    moveStarted = Signal(object, object)
+    moveProgress = Signal(object, int, int)
+    moveFinished = Signal(object, object, bool, str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -44,6 +48,7 @@ class AppFacade(QObject):
         self._scanner_worker: Optional[ScannerWorker] = None
         self._scan_pending = False
         self._active_imports: list[ImportWorker] = []
+        self._active_moves: list[MoveWorker] = []
 
         from .ui.models.asset_list_model import AssetListModel
 
@@ -139,6 +144,45 @@ class AppFacade(QObject):
         self._scanner_worker = worker
         self._scan_pending = False
         self._scanner_pool.start(worker)
+
+    def pause_library_watcher(self) -> None:
+        """Suspend the filesystem watcher while an internal move is in flight.
+
+        The :class:`~iPhoto.library.manager.LibraryManager` uses a
+        :class:`QFileSystemWatcher` to mirror external edits into the UI.  When a
+        move originates from the application itself we want to prevent those
+        notifications from immediately bouncing the gallery back to an empty
+        placeholder state.  Pausing the watcher here lets the controller shield
+        the UI from transient churn while the background worker performs the
+        actual filesystem operations.
+        """
+
+        if self._library_manager is not None:
+            self._library_manager.pause_watcher()
+
+    def resume_library_watcher(self) -> None:
+        """Re-enable filesystem monitoring after internal operations finish.
+
+        Resuming the watcher is slightly delayed to give the operating system a
+        chance to consolidate any outstanding notifications.  Without the delay
+        the watcher could fire immediately with stale events that pre-date the
+        move finishing, which would put us back into the disruptive reload
+        cycle the pause is trying to avoid.
+        """
+
+        if self._library_manager is not None:
+            QTimer.singleShot(500, self._library_manager.resume_watcher)
+
+    def is_performing_background_operation(self) -> bool:
+        """Return ``True`` while imports or moves are still running."""
+
+        # The GUI reacts to several facade signals (sidebar tree rebuilds,
+        # playlist changes, etc.) by reopening the current album.  Doing so while
+        # a move or import worker is still adjusting on-disk state causes the
+        # freshly opened model to observe a transient, half-updated index.  By
+        # exposing this helper the controllers can defer those refreshes until
+        # the background job has wrapped up.
+        return bool(self._active_imports or self._active_moves)
 
     def pair_live_current(self) -> List[dict]:
         """Rebuild Live Photo pairings for the active album."""
@@ -243,6 +287,117 @@ class AppFacade(QObject):
                 rescan_ok,
                 worker,
                 mark_featured,
+            )
+
+        signals.finished.connect(_handle_finished)
+
+        self._scanner_pool.start(worker)
+
+    def move_assets(self, sources: Iterable[Path], destination: Path) -> None:
+        """Move *sources* into *destination* and refresh the relevant albums."""
+
+        album = self._require_album()
+        if album is None:
+            # The controller pauses the watcher before invoking this method when
+            # it intends to schedule a move.  If no album is open we have to
+            # resume the watcher immediately because no worker will be queued to
+            # do it on our behalf.
+            self._asset_list_model.rollback_pending_moves()
+            self.resume_library_watcher()
+            return
+        source_root = album.root
+
+        try:
+            destination_root = Path(destination).resolve()
+        except OSError as exc:
+            self.errorRaised.emit(f"Invalid destination: {exc}")
+            self._asset_list_model.rollback_pending_moves()
+            self.resume_library_watcher()
+            return
+
+        if not destination_root.exists() or not destination_root.is_dir():
+            self.errorRaised.emit(
+                f"Move destination is not a directory: {destination_root}"
+            )
+            self._asset_list_model.rollback_pending_moves()
+            self.resume_library_watcher()
+            return
+
+        if destination_root == source_root:
+            self.moveFinished.emit(
+                source_root,
+                destination_root,
+                False,
+                "Files are already located in this album.",
+            )
+            self._asset_list_model.rollback_pending_moves()
+            self.resume_library_watcher()
+            return
+
+        normalized: list[Path] = []
+        seen: set[Path] = set()
+        for raw_path in sources:
+            candidate = Path(raw_path)
+            try:
+                resolved = candidate.resolve()
+            except OSError as exc:
+                self.errorRaised.emit(f"Could not resolve '{candidate}': {exc}")
+                continue
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            if not resolved.exists():
+                self.errorRaised.emit(f"File not found: {resolved}")
+                continue
+            if resolved.is_dir():
+                self.errorRaised.emit(
+                    f"Skipping directory move attempt: {resolved.name}"
+                )
+                continue
+            try:
+                resolved.relative_to(source_root)
+            except ValueError:
+                self.errorRaised.emit(
+                    f"Path '{resolved}' is not inside the active album."
+                )
+                continue
+            normalized.append(resolved)
+
+        if not normalized:
+            self.moveFinished.emit(
+                source_root,
+                destination_root,
+                False,
+                "No valid files were selected for moving.",
+            )
+            self._asset_list_model.rollback_pending_moves()
+            self.resume_library_watcher()
+            return
+
+        signals = MoveSignals()
+        signals.error.connect(self.errorRaised.emit)
+        signals.started.connect(self.moveStarted.emit)
+        signals.progress.connect(self.moveProgress.emit)
+
+        worker = MoveWorker(normalized, source_root, destination_root, signals)
+        self._active_moves.append(worker)
+
+        def _handle_finished(
+            src: Path,
+            dest: Path,
+            moved: List[Tuple[Path, Path]],
+            source_ok: bool,
+            destination_ok: bool,
+            *,
+            move_worker: MoveWorker = worker,
+        ) -> None:
+            self._on_move_finished(
+                src,
+                dest,
+                moved,
+                source_ok,
+                destination_ok,
+                move_worker,
             )
 
         signals.finished.connect(_handle_finished)
@@ -449,6 +604,68 @@ class AppFacade(QObject):
             message = "No files were imported."
 
         self.importFinished.emit(root, success, message)
+
+    def _on_move_finished(
+        self,
+        source_root: Path,
+        destination_root: Path,
+        moved: List[Tuple[Path, Path]],
+        source_ok: bool,
+        destination_ok: bool,
+        worker: MoveWorker,
+    ) -> None:
+        """Handle completion of an asynchronous move operation."""
+
+        try:
+            if worker in self._active_moves:
+                self._active_moves.remove(worker)
+            worker.signals.deleteLater()
+
+            moved_pairs = [(Path(src), Path(dst)) for src, dst in moved]
+
+            if worker.cancelled:
+                self._asset_list_model.rollback_pending_moves()
+                self.moveFinished.emit(
+                    source_root,
+                    destination_root,
+                    False,
+                    "Move cancelled.",
+                )
+                return
+
+            success = bool(moved_pairs) and source_ok and destination_ok
+
+            if moved_pairs:
+                self._asset_list_model.finalise_move_results(moved_pairs)
+            if self._asset_list_model.has_pending_move_placeholders():
+                self._asset_list_model.rollback_pending_moves()
+
+            # ``indexUpdated`` and ``linksUpdated`` intentionally remain quiet
+            # here.  The gallery already reflects the optimistic in-memory
+            # updates performed before the worker started.  Re-emitting the
+            # legacy refresh signals would re-trigger the heavy album reload
+            # logic we are trying to sidestep, causing visible flicker in "All
+            # Photos".  Controllers that need to react to the move can listen to
+            # :attr:`moveFinished` directly.
+
+            if not moved_pairs:
+                message = "No files were moved."
+            else:
+                label = "file" if len(moved_pairs) == 1 else "files"
+                if source_ok and destination_ok:
+                    message = f"Moved {len(moved_pairs)} {label}."
+                elif source_ok or destination_ok:
+                    message = (
+                        f"Moved {len(moved_pairs)} {label}, but refreshing one album failed."
+                    )
+                else:
+                    message = (
+                        f"Moved {len(moved_pairs)} {label}, but refreshing both albums failed."
+                    )
+
+            self.moveFinished.emit(source_root, destination_root, success, message)
+        finally:
+            self.resume_library_watcher()
 
     def _save_manifest(self, album: Album, *, reload_view: bool = True) -> bool:
         manager = self._library_manager

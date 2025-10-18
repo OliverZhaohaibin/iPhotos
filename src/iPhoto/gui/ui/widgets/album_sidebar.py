@@ -222,6 +222,11 @@ class AlbumSidebar(QWidget):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+    def tree_model(self) -> AlbumTreeModel:
+        """Expose the underlying model so controllers can query album metadata."""
+
+        return self._model
+
     def _expand_defaults(self) -> None:
         """Expand high-level nodes to match the reference layout."""
 

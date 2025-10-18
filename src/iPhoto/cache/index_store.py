@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, Iterable, Iterator
+from typing import Dict, Iterable, Iterator, List
 
 from ..config import WORK_DIR_NAME
 from .lock import FileLock
@@ -54,3 +54,66 @@ class IndexStore:
         data = {existing["rel"]: existing for existing in self.read_all()}
         data[rel] = row
         self.write_rows(data.values())
+
+    def remove_rows(self, rels: Iterable[str]) -> None:
+        """Drop any index rows whose ``rel`` key matches *rels*.
+
+        The helper loads the existing payload once, filters out the requested
+        entries, and rewrites the file atomically.  This mirrors the behaviour
+        of :meth:`write_rows` so concurrent processes never observe a partially
+        written ``index.jsonl`` file.
+        """
+
+        removable = {Path(rel).as_posix() for rel in rels}
+        if not removable:
+            return
+
+        remaining: List[Dict[str, object]] = []
+        removed_any = False
+        for row in self.read_all():
+            rel_key = Path(str(row.get("rel", ""))).as_posix()
+            if rel_key in removable:
+                removed_any = True
+                continue
+            remaining.append(row)
+
+        # Rewrite the file only when something actually changed.  Skipping the
+        # write keeps the lock duration short if the target rows were absent.
+        if not removed_any:
+            return
+
+        self.write_rows(remaining)
+
+    def append_rows(self, rows: Iterable[Dict[str, object]]) -> None:
+        """Merge *rows* into the index, replacing duplicates by ``rel`` key.
+
+        Appending new entries requires keeping existing rows intact.  The
+        implementation reads the current snapshot once, merges the incoming
+        payload, and relies on :meth:`write_rows` to persist the result using an
+        atomic rename so interrupted writes cannot corrupt the cache.
+        """
+
+        additions = list(rows)
+        if not additions:
+            return
+
+        merged: Dict[str, Dict[str, object]] = {}
+        for row in self.read_all():
+            rel_key = Path(str(row.get("rel", ""))).as_posix()
+            merged[rel_key] = row
+
+        changed = False
+        for row in additions:
+            rel_value = row.get("rel")
+            if rel_value is None:
+                continue
+            rel_key = Path(str(rel_value)).as_posix()
+            existing = merged.get(rel_key)
+            if existing != row:
+                changed = True
+            merged[rel_key] = row
+
+        if not changed:
+            return
+
+        self.write_rows(merged.values())

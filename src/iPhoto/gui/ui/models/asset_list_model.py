@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
 from PySide6.QtCore import (
     QAbstractListModel,
@@ -52,11 +52,229 @@ class AssetListModel(QAbstractListModel):
         self._loader_signals: Optional[AssetLoaderSignals] = None
         self._pending_reload = False
         self._visible_rows: Set[int] = set()
+        # ``_pending_move_rows`` tracks optimistic UI updates performed when
+        # assets are moved out of the virtual "All Photos" collection.  The
+        # mapping allows the model to reconcile the optimistic path guesses
+        # with the final filesystem locations once the worker thread completes
+        # the move, or to roll back the changes if the operation fails.
+        self._pending_move_rows: Dict[str, Tuple[int, str]] = {}
 
     def album_root(self) -> Optional[Path]:
         """Return the path of the currently open album, if any."""
 
         return self._album_root
+
+    def remove_rows(self, indexes: list[QModelIndex]) -> None:
+        """Remove assets referenced by *indexes*, tolerating proxy selections.
+
+        The gallery view exposes :class:`AssetModel`, so any selection reported
+        by the view may reference one or more proxy layers.  The helper performs
+        the necessary ``mapToSource`` hops before trimming ``self._rows`` so
+        callers do not have to special-case filtered or sorted presentations.
+        """
+
+        # Mapping proxy indices back to the source model is necessary because the
+        # gallery view operates on :class:`AssetModel`, which layers filtering on
+        # top of :class:`AssetListModel`.  Walk through any proxy chain by
+        # repeatedly invoking ``mapToSource`` until we arrive at indices owned by
+        # this model.  Invalid or foreign indices are ignored gracefully so the
+        # caller can forward the selection from a view without bespoke checks.
+        source_rows: set[int] = set()
+        for proxy_index in indexes:
+            if not proxy_index.isValid() or proxy_index.column() != 0:
+                continue
+            current_index = proxy_index
+            model = current_index.model()
+            while model is not self and hasattr(model, "mapToSource"):
+                mapped_index = model.mapToSource(current_index)
+                if not mapped_index.isValid():
+                    current_index = QModelIndex()
+                    break
+                current_index = mapped_index
+                model = current_index.model()
+            if not current_index.isValid() or model is not self:
+                continue
+            row_number = current_index.row()
+            if 0 <= row_number < len(self._rows):
+                source_rows.add(row_number)
+
+        if not source_rows:
+            return
+
+        # Removing rows in descending order prevents index shifts from
+        # invalidating pending deletions.  The thumbnail cache and lookup tables
+        # are updated to remain in sync with the trimmed dataset.
+        for row in sorted(source_rows, reverse=True):
+            row_data = self._rows[row]
+            rel_key = str(row_data["rel"])
+            self.beginRemoveRows(QModelIndex(), row, row)
+            self._rows.pop(row)
+            self.endRemoveRows()
+            self._row_lookup.pop(rel_key, None)
+            self._thumb_cache.pop(rel_key, None)
+
+        # Rebuild lookup tables so callers relying on ``_row_lookup`` continue to
+        # receive accurate mappings.  Clearing caches keeps the thumbnail loader
+        # aligned with the new model contents at the cost of recomputing a few
+        # placeholders lazily when they are next requested.
+        self._row_lookup = {row["rel"]: index for index, row in enumerate(self._rows)}
+        self._placeholder_cache.clear()
+        self._visible_rows.clear()
+
+    def update_rows_for_move(
+        self, rels: list[str], destination_root: Path
+    ) -> None:
+        """Optimistically update moved rows to reflect their new location.
+
+        The gallery keeps the "All Photos" aggregate visually stable by
+        updating only the affected rows when files are moved into a concrete
+        album.  The method records enough bookkeeping to reconcile the final
+        filesystem locations once the worker thread finishes the move.
+        """
+
+        if not self._album_root or not rels:
+            return
+
+        album_root = self._album_root.resolve()
+        try:
+            destination_root = destination_root.resolve()
+            dest_prefix = destination_root.relative_to(album_root)
+        except OSError:
+            return
+        except ValueError:
+            # Ignore moves that target folders outside the currently open
+            # library root.  They are not visible in this model so an
+            # optimistic update would be misleading.
+            return
+
+        changed_rows: List[int] = []
+        for original_rel in {Path(rel).as_posix() for rel in rels}:
+            row_index = self._row_lookup.get(original_rel)
+            if row_index is None:
+                continue
+
+            row_data = self._rows[row_index]
+            file_name = Path(original_rel).name
+            if str(dest_prefix) in (".", ""):
+                guessed_rel = file_name
+            else:
+                guessed_rel = (dest_prefix / file_name).as_posix()
+            guessed_abs = destination_root / file_name
+
+            # Re-key caches and lookup tables before mutating the row so all
+            # helper structures stay consistent with the optimistic update.
+            self._row_lookup.pop(original_rel, None)
+            self._row_lookup[guessed_rel] = row_index
+            thumb = self._thumb_cache.pop(original_rel, None)
+            if thumb is not None:
+                self._thumb_cache[guessed_rel] = thumb
+            placeholder = self._placeholder_cache.pop(original_rel, None)
+            if placeholder is not None:
+                self._placeholder_cache[guessed_rel] = placeholder
+
+            row_data["rel"] = guessed_rel
+            row_data["abs"] = str(guessed_abs)
+            self._pending_move_rows[original_rel] = (row_index, guessed_rel)
+            changed_rows.append(row_index)
+
+        for row in changed_rows:
+            model_index = self.index(row, 0)
+            self.dataChanged.emit(
+                model_index,
+                model_index,
+                [Roles.REL, Roles.ABS, Qt.DecorationRole],
+            )
+
+    def finalise_move_results(self, moves: List[Tuple[Path, Path]]) -> None:
+        """Reconcile optimistic move updates with the worker results."""
+
+        if not self._album_root or not moves:
+            return
+
+        album_root = self._album_root.resolve()
+        updated_rows: List[int] = []
+        for original_path, target_path in moves:
+            try:
+                original_rel = original_path.resolve().relative_to(album_root).as_posix()
+            except OSError:
+                continue
+            except ValueError:
+                continue
+
+            pending = self._pending_move_rows.pop(original_rel, None)
+            if pending is None:
+                continue
+            row_index, guessed_rel = pending
+            row_data = self._rows[row_index]
+
+            try:
+                final_rel = target_path.resolve().relative_to(album_root).as_posix()
+            except OSError:
+                final_rel = guessed_rel
+            except ValueError:
+                final_rel = guessed_rel
+
+            self._row_lookup.pop(guessed_rel, None)
+            self._row_lookup[final_rel] = row_index
+            thumb = self._thumb_cache.pop(guessed_rel, None)
+            if thumb is not None:
+                self._thumb_cache[final_rel] = thumb
+            placeholder = self._placeholder_cache.pop(guessed_rel, None)
+            if placeholder is not None:
+                self._placeholder_cache[final_rel] = placeholder
+
+            row_data["rel"] = final_rel
+            row_data["abs"] = str(target_path.resolve())
+            updated_rows.append(row_index)
+
+        for row in updated_rows:
+            model_index = self.index(row, 0)
+            self.dataChanged.emit(
+                model_index,
+                model_index,
+                [Roles.REL, Roles.ABS, Qt.DecorationRole],
+            )
+
+    def rollback_pending_moves(self) -> None:
+        """Restore original metadata for moves that failed or were cancelled."""
+
+        if not self._album_root or not self._pending_move_rows:
+            return
+
+        album_root = self._album_root.resolve()
+        to_restore = list(self._pending_move_rows.items())
+        self._pending_move_rows.clear()
+
+        restored_rows: List[int] = []
+        for original_rel, (row_index, guessed_rel) in to_restore:
+            row_data = self._rows[row_index]
+            absolute = (album_root / original_rel).resolve()
+
+            self._row_lookup.pop(guessed_rel, None)
+            self._row_lookup[original_rel] = row_index
+            thumb = self._thumb_cache.pop(guessed_rel, None)
+            if thumb is not None:
+                self._thumb_cache[original_rel] = thumb
+            placeholder = self._placeholder_cache.pop(guessed_rel, None)
+            if placeholder is not None:
+                self._placeholder_cache[original_rel] = placeholder
+
+            row_data["rel"] = original_rel
+            row_data["abs"] = str(absolute)
+            restored_rows.append(row_index)
+
+        for row in restored_rows:
+            model_index = self.index(row, 0)
+            self.dataChanged.emit(
+                model_index,
+                model_index,
+                [Roles.REL, Roles.ABS, Qt.DecorationRole],
+            )
+
+    def has_pending_move_placeholders(self) -> bool:
+        """Return ``True`` when optimistic move updates are awaiting results."""
+
+        return bool(self._pending_move_rows)
 
     def populate_from_cache(self, *, max_index_bytes: int = 512 * 1024) -> bool:
         """Synchronously load cached index data when the file is small."""

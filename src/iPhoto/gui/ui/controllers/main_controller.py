@@ -4,11 +4,21 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from functools import partial
 from pathlib import Path
 from typing import Iterable, List, Optional, TYPE_CHECKING
 
-from PySide6.QtCore import QModelIndex, QObject, QThreadPool, QMimeData, QUrl
+from PySide6.QtCore import (
+    QCoreApplication,
+    QModelIndex,
+    QObject,
+    QThreadPool,
+    QMimeData,
+    QUrl,
+    Qt,
+)
 from PySide6.QtGui import QGuiApplication, QAction
+from PySide6.QtWidgets import QMenu
 
 # ``main_controller`` shares the same import caveat as ``main_window``.  The
 # fallback ensures running the module as a script still locates ``AppContext``.
@@ -47,6 +57,8 @@ class MainController(QObject):
         self._window = window
         self._context = context
         self._facade: AppFacade = context.facade
+        self._selection_mode_active = False
+        self._grid_delegate: AssetGridDelegate | None = None
 
         # Models -------------------------------------------------------
         self._asset_model = AssetModel(self._facade)
@@ -141,6 +153,8 @@ class MainController(QObject):
         # allocations and keep the animations silky-smooth when triggered rapidly.
         self._notification_toast = NotificationToast(window)
 
+        window.ui.selection_button.setEnabled(False)
+
         self._configure_views()
         self._restore_playback_preferences()
         self._restore_share_preference()
@@ -173,12 +187,14 @@ class MainController(QObject):
         """Attach models and delegates to the widgets constructed by the UI."""
 
         self._window.ui.grid_view.setModel(self._asset_model)
-        self._window.ui.grid_view.setItemDelegate(
-            AssetGridDelegate(self._window.ui.grid_view)
-        )
+        self._grid_delegate = AssetGridDelegate(self._window.ui.grid_view)
+        self._window.ui.grid_view.setItemDelegate(self._grid_delegate)
         self._window.ui.grid_view.configure_external_drop(
             handler=self._handle_grid_drop,
             validator=self._validate_grid_drop,
+        )
+        self._window.ui.grid_view.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu
         )
 
         self._window.ui.filmstrip_view.setModel(self._filmstrip_model)
@@ -265,6 +281,42 @@ class MainController(QObject):
         mode = "zoom" if action == "zoom" else "navigate"
         self._window.ui.image_viewer.set_wheel_action(mode)
 
+    def _set_selection_mode(self, enabled: bool) -> None:
+        """Synchronise grid, delegate, and button state with *enabled*."""
+
+        desired_state = bool(enabled)
+        if self._selection_mode_active == desired_state:
+            if not desired_state:
+                self._window.ui.grid_view.clearSelection()
+            return
+
+        self._selection_mode_active = desired_state
+
+        button = self._window.ui.selection_button
+        if desired_state:
+            button.setText(QCoreApplication.translate("MainWindow", "Cancel"))
+            button.setToolTip(
+                QCoreApplication.translate(
+                    "MainWindow",
+                    "Exit multi-selection mode",
+                )
+            )
+        else:
+            button.setText(QCoreApplication.translate("MainWindow", "Select"))
+            button.setToolTip(
+                QCoreApplication.translate(
+                    "MainWindow",
+                    "Toggle multi-selection mode",
+                )
+            )
+
+        self._window.ui.grid_view.set_selection_mode_enabled(desired_state)
+        if self._grid_delegate is not None:
+            self._grid_delegate.set_selection_mode_active(desired_state)
+        self._window.ui.grid_view.clearSelection()
+        if not desired_state:
+            self._preview_controller.close_preview(False)
+
     # -----------------------------------------------------------------
     # Signal wiring
     def _connect_signals(self) -> None:
@@ -292,10 +344,20 @@ class MainController(QObject):
         self._window.ui.wheel_action_group.triggered.connect(
             self._handle_wheel_action_changed
         )
+        self._window.ui.selection_button.clicked.connect(
+            self._handle_selection_button_clicked
+        )
 
         # Global error reporting
         self._facade.errorRaised.connect(self._dialog.show_error)
         self._context.library.errorRaised.connect(self._dialog.show_error)
+        # ``treeUpdated`` fires whenever the filesystem watcher rebuilds the
+        # sidebar hierarchy.  Forward the notification so the navigation
+        # controller can decide whether the resulting selection changes should
+        # trigger a fresh navigation cycle.
+        self._context.library.treeUpdated.connect(
+            self._navigation.handle_tree_updated
+        )
 
         # Sidebar navigation
         self._window.ui.sidebar.albumSelected.connect(self.open_album_from_path)
@@ -320,6 +382,11 @@ class MainController(QObject):
         self._facade.importStarted.connect(self._status_bar.handle_import_started)
         self._facade.importProgress.connect(self._status_bar.handle_import_progress)
         self._facade.importFinished.connect(self._status_bar.handle_import_finished)
+        self._facade.importFinished.connect(self._handle_import_finished)
+        self._facade.moveStarted.connect(self._status_bar.handle_move_started)
+        self._facade.moveProgress.connect(self._status_bar.handle_move_progress)
+        self._facade.moveFinished.connect(self._status_bar.handle_move_finished)
+        self._facade.moveFinished.connect(self._handle_move_finished)
         self._facade.indexUpdated.connect(self._map_controller.handle_index_update)
 
         # Model housekeeping
@@ -342,9 +409,17 @@ class MainController(QObject):
         )
 
         # View interactions
-        for view in (self._window.ui.grid_view, self._window.ui.filmstrip_view):
-            view.itemClicked.connect(self._playback.activate_index)
-            self._preview_controller.bind_view(view)
+        self._window.ui.grid_view.itemClicked.connect(
+            self._handle_grid_item_clicked
+        )
+        self._window.ui.grid_view.customContextMenuRequested.connect(
+            self._handle_grid_context_menu
+        )
+        self._preview_controller.bind_view(self._window.ui.grid_view)
+        self._window.ui.filmstrip_view.itemClicked.connect(
+            self._playback.activate_index
+        )
+        self._preview_controller.bind_view(self._window.ui.filmstrip_view)
 
         self._playlist.currentChanged.connect(
             self._playback.handle_playlist_current_changed
@@ -418,12 +493,23 @@ class MainController(QObject):
     def _handle_all_photos_selected(self) -> None:
         """Reset to the default gallery view when All Photos is selected."""
 
+        if (
+            self._navigation.should_suppress_tree_refresh()
+            and self._navigation.is_all_photos_view()
+        ):
+            return
         self._map_controller.hide_map_view()
+        self._set_selection_mode(False)
         self._navigation.open_all_photos()
 
     def _handle_static_node_selected(self, title: str) -> None:
         """Dispatch sidebar selections, treating Location as a special case."""
 
+        if self._navigation.should_suppress_tree_refresh():
+            current_static = self._navigation.static_selection()
+            if current_static and current_static.casefold() == title.casefold():
+                return
+        self._set_selection_mode(False)
         if title.casefold() == "location":
             self._navigation.open_location_view()
             if self._context.library.root() is None:
@@ -435,6 +521,35 @@ class MainController(QObject):
         self._map_controller.hide_map_view()
         self._navigation.open_static_node(title)
 
+    def _handle_import_finished(
+        self,
+        _root: Path | None,
+        success: bool,
+        _message: str,
+    ) -> None:
+        """Drop tree-refresh guards and refresh caches after imports."""
+
+        self._navigation.clear_tree_refresh_suppression()
+        if success:
+            self._map_controller.refresh_assets()
+
+    def _handle_move_finished(
+        self,
+        _source: Path,
+        _destination: Path,
+        success: bool,
+        _message: str,
+    ) -> None:
+        """Release tree-refresh guards and refresh ancillary views after moves."""
+
+        self._navigation.clear_tree_refresh_suppression()
+        if success:
+            # The map controller caches geotagged entries across the entire
+            # library.  Refreshing here ensures moved assets immediately appear
+            # under their new album hierarchy without waiting for a manual
+            # rescan.
+            self._map_controller.refresh_assets()
+
     def _handle_album_opened(self, root: Path) -> None:
         """React to the facade opening a new or refreshed album."""
 
@@ -443,6 +558,8 @@ class MainController(QObject):
         )
         was_refresh = self._navigation.consume_last_open_refresh()
         self._navigation.handle_album_opened(root)
+        self._window.ui.selection_button.setEnabled(True)
+        self._set_selection_mode(False)
 
         if was_refresh and is_detail_view_before_handle:
             self._view_controller.show_detail_view()
@@ -526,6 +643,149 @@ class MainController(QObject):
         else:
             self._reveal_in_file_manager(file_path)
 
+    # -----------------------------------------------------------------
+    # Selection helpers
+    def _handle_selection_button_clicked(self) -> None:
+        """Toggle the gallery's multi-selection mode."""
+
+        if not self._window.ui.selection_button.isEnabled():
+            return
+        self._set_selection_mode(not self._selection_mode_active)
+
+    def _handle_grid_item_clicked(self, index: QModelIndex) -> None:
+        """Activate the clicked item unless multi-selection mode is active."""
+
+        if self._selection_mode_active:
+            return
+        self._playback.activate_index(index)
+
+    def _handle_grid_context_menu(self, point) -> None:
+        """Present copy and move actions when right-clicking selected items."""
+
+        if not self._selection_mode_active:
+            return
+        view = self._window.ui.grid_view
+        selection_model = view.selectionModel()
+        if selection_model is None:
+            return
+        if not selection_model.selectedIndexes():
+            return
+        index = view.indexAt(point)
+        if not index.isValid() or not selection_model.isSelected(index):
+            return
+
+        menu = QMenu(view)
+        copy_action = menu.addAction(
+            QCoreApplication.translate("MainWindow", "Copy")
+        )
+        move_menu = menu.addMenu(
+            QCoreApplication.translate("MainWindow", "Move to")
+        )
+
+        destinations = self._collect_move_targets()
+        if destinations:
+            for label, path in destinations:
+                action = move_menu.addAction(label)
+                action.triggered.connect(partial(self._execute_move_to_album, path))
+        else:
+            move_menu.setEnabled(False)
+
+        copy_action.triggered.connect(self._copy_selection_to_clipboard)
+        global_pos = view.viewport().mapToGlobal(point)
+        menu.exec(global_pos)
+
+    def _copy_selection_to_clipboard(self) -> None:
+        """Copy the absolute paths of the selected assets to the clipboard."""
+
+        paths = self._selected_asset_paths()
+        if not paths:
+            self._status_bar.show_message("Select items to copy first.", 3000)
+            return
+        existing = [path for path in paths if path.exists()]
+        if not existing:
+            self._status_bar.show_message(
+                "Selected files are unavailable on disk.",
+                3000,
+            )
+            return
+        mime_data = QMimeData()
+        mime_data.setUrls([QUrl.fromLocalFile(str(path)) for path in existing])
+        QGuiApplication.clipboard().setMimeData(mime_data)
+        self._notification_toast.show_toast("Copied to Clipboard")
+
+    def _execute_move_to_album(self, target: Path) -> None:
+        """Initiate moving the current selection into *target*."""
+
+        view = self._window.ui.grid_view
+        selection_model = view.selectionModel()
+        selected_indexes = (
+            list(selection_model.selectedIndexes()) if selection_model else []
+        )
+        paths = self._selected_asset_paths()
+        if not paths:
+            self._status_bar.show_message("Select items to move first.", 3000)
+            return
+
+        source_model = self._asset_model.source_model()
+        is_all_photos_move = self._navigation.is_all_photos_view()
+        if is_all_photos_move:
+            rels = [index.data(Roles.REL) for index in selected_indexes if index.isValid()]
+            source_model.update_rows_for_move([rel for rel in rels if isinstance(rel, str)], target)
+        elif selected_indexes:
+            source_model.remove_rows(selected_indexes)
+
+        self._facade.pause_library_watcher()
+        try:
+            self._facade.move_assets(paths, target)
+        except Exception:
+            self._facade.resume_library_watcher()
+            source_model.rollback_pending_moves()
+            raise
+        self._set_selection_mode(False)
+
+    def _selected_asset_paths(self) -> list[Path]:
+        """Return the absolute filesystem paths for the selected grid items."""
+
+        selection_model = self._window.ui.grid_view.selectionModel()
+        if selection_model is None:
+            return []
+        seen: set[Path] = set()
+        paths: list[Path] = []
+        for index in selection_model.selectedIndexes():
+            raw_path = index.data(Roles.ABS)
+            if not raw_path:
+                continue
+            path = Path(str(raw_path))
+            if path in seen:
+                continue
+            seen.add(path)
+            paths.append(path)
+        return paths
+
+    def _collect_move_targets(self) -> list[tuple[str, Path]]:
+        """Return candidate album destinations for the move submenu."""
+
+        model = self._window.ui.sidebar.tree_model()
+        entries = model.iter_album_entries()
+        current_album = self._facade.current_album
+        current_root: Path | None = None
+        if current_album is not None:
+            try:
+                current_root = current_album.root.resolve()
+            except OSError:
+                current_root = current_album.root
+
+        destinations: list[tuple[str, Path]] = []
+        for label, path in entries:
+            try:
+                resolved = path.resolve()
+            except OSError:
+                continue
+            if current_root is not None and resolved == current_root:
+                continue
+            destinations.append((label, path))
+        return destinations
+
     def _copy_file_to_clipboard(self, path: Path) -> None:
         """Copy *path* as a file reference to the system clipboard."""
 
@@ -584,6 +844,17 @@ class MainController(QObject):
     def open_album_from_path(self, path: Path) -> None:
         """Forward album navigation requests to the navigation controller."""
 
+        if self._navigation.should_suppress_tree_refresh():
+            current_album = self._facade.current_album
+            if current_album is not None:
+                try:
+                    if current_album.root.resolve() == Path(path).resolve():
+                        return
+                except OSError:
+                    # If resolving either path fails we fall back to the
+                    # default behaviour so the navigation request is still
+                    # honoured for user-initiated selections.
+                    pass
         self._map_controller.hide_map_view()
         self._navigation.open_album(path)
 
