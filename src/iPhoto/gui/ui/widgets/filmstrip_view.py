@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QModelIndex, QPoint, QSize, Qt, Signal
+from PySide6.QtCore import QModelIndex, QSize, Qt, Signal
 from PySide6.QtGui import QResizeEvent, QWheelEvent
 from PySide6.QtWidgets import QListView, QSizePolicy, QStyleOptionViewItem
 
@@ -205,33 +205,18 @@ class FilmstripView(AssetGrid):
             super().wheelEvent(event)
             return
 
-        scrollbar = self.horizontalScrollBar()
-        global_pos: QPoint | None = None
-        if hasattr(event, "globalPosition"):
-            global_pos = event.globalPosition().toPoint()
-        elif hasattr(event, "globalPos"):
-            global_pos = event.globalPos()
-
-        if global_pos is not None:
-            local_pos = self.mapFromGlobal(global_pos)
-            if scrollbar.isVisible() and scrollbar.geometry().contains(local_pos):
-                super().wheelEvent(event)
-                return
-            viewport_pos = self.viewport().mapFromGlobal(global_pos)
-            if not self.viewport().rect().contains(viewport_pos):
-                super().wheelEvent(event)
-                return
-
-        delta = event.angleDelta()
-        step = delta.y() or delta.x()
-        if step == 0:
-            pixel_delta = event.pixelDelta()
-            step = pixel_delta.y() or pixel_delta.x()
-        if step == 0:
+        # Evaluate the scroll delta as a simple direction indicator so every
+        # wheel tick translates to a single navigation step.  This prevents
+        # high-resolution trackpads from flooding the controller with requests.
+        delta = event.angleDelta().y() or event.angleDelta().x()
+        if delta == 0:
+            pixel_delta = event.pixelDelta().y() or event.pixelDelta().x()
+            delta = pixel_delta
+        if delta == 0:
             super().wheelEvent(event)
             return
 
-        if step < 0:
+        if delta < 0:
             self.nextItemRequested.emit()
         else:
             self.prevItemRequested.emit()

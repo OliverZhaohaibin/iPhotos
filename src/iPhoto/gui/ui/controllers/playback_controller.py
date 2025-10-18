@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QModelIndex
+from PySide6.QtCore import QModelIndex, QTimer
 
 from ...facade import AppFacade
 from ..media import MediaController, PlaylistController
@@ -43,6 +43,16 @@ class PlaybackController:
         self._preview_controller = preview_controller
         self._facade = facade
         self._resume_playback_after_scrub = False
+        # The timer debounces heavy media loading while the user scrolls
+        # quickly.  Parenting it to the filmstrip view keeps its lifetime tied
+        # to the UI object tree.
+        self._load_delay_timer = QTimer(detail_ui.filmstrip_view)
+        self._load_delay_timer.setSingleShot(True)
+        self._load_delay_timer.setInterval(10)
+        self._load_delay_timer.timeout.connect(self._perform_delayed_load)
+        # ``_pending_load_row`` stores the row scheduled for deferred loading.
+        # ``-1`` acts as a sentinel indicating that no deferred request exists.
+        self._pending_load_row: int = -1
 
         media.mutedChanged.connect(self._state_manager.handle_media_muted_changed)
         self._state_manager.playbackReset.connect(self._clear_scrub_state)
@@ -103,8 +113,23 @@ class PlaybackController:
     def handle_playlist_source_changed(self, source: Path) -> None:
         """Load and present the media source associated with the current row."""
 
+        # Cancel any queued debounced selection because the playlist already
+        # committed to a new row, making the pending work obsolete.
+        if self._load_delay_timer.isActive():
+            self._load_delay_timer.stop()
+        self._pending_load_row = -1
+
         previous_state = self._state_manager.state
         self._state_manager.begin_transition()
+        self._media.stop()
+
+        # Postpone the media loading work until the next event loop iteration
+        # so quick successive selections keep the UI responsive.
+        QTimer.singleShot(0, lambda: self._load_new_source(source, previous_state))
+
+    def _load_new_source(self, source: Path, previous_state: object) -> None:
+        """Carry out the deferred media loading after debouncing completes."""
+
         self._state_manager.reset(previous_state=previous_state, set_idle_state=False)
         self._clear_scrub_state()
 
@@ -203,18 +228,38 @@ class PlaybackController:
     # Internal helpers
     # ------------------------------------------------------------------
     def _request_next_item(self) -> None:
-        """Advance to the next playlist item when not transitioning."""
+        """Advance to the next playlist item with debounce handling."""
 
-        if self._state_manager.is_transitioning():
+        if self._state_manager.is_transitioning() and not self._load_delay_timer.isActive():
             return
-        self._playlist.next()
+        self._handle_navigation_request(1)
 
     def _request_previous_item(self) -> None:
-        """Select the previous playlist item when not transitioning."""
+        """Select the previous playlist item with debounce handling."""
 
-        if self._state_manager.is_transitioning():
+        if self._state_manager.is_transitioning() and not self._load_delay_timer.isActive():
             return
-        self._playlist.previous()
+        self._handle_navigation_request(-1)
+
+    def _handle_navigation_request(self, delta: int) -> None:
+        """Queue a navigation request and delay loading until scrolling pauses."""
+
+        target_row = self._playlist.peek_next_row(delta)
+        if target_row is None:
+            return
+        # Update the playlist selection immediately so the UI highlights track
+        # user intent, but defer loading until the timer fires.
+        self._playlist.set_current_row_only(target_row)
+        self._pending_load_row = target_row
+        self._load_delay_timer.start()
+
+    def _perform_delayed_load(self) -> None:
+        """Commit the deferred selection once the debounce timer expires."""
+
+        if self._pending_load_row == -1:
+            return
+        self._playlist.set_current(self._pending_load_row)
+        self._pending_load_row = -1
 
     def _handle_gallery_view_shown(self) -> None:
         """Perform cleanup when the UI switches back to the gallery."""
