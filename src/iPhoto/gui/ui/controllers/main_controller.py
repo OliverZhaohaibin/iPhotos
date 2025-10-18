@@ -255,11 +255,15 @@ class MainController(QObject):
         self._apply_wheel_action(wheel_action)
 
     def _apply_wheel_action(self, action: str) -> None:
-        """Propagate the chosen wheel behaviour to the viewer and filmstrip widgets."""
+        """Update the main viewer's wheel behaviour based on the stored preference.
+
+        The filmstrip now always consumes wheel events to request navigation so users can quickly
+        browse adjacent assets. Only the full-sized image viewer still honours the zoom versus
+        navigate preference.
+        """
 
         mode = "zoom" if action == "zoom" else "navigate"
         self._window.ui.image_viewer.set_wheel_action(mode)
-        self._window.ui.filmstrip_view.set_wheel_action(mode)
 
     # -----------------------------------------------------------------
     # Signal wiring
