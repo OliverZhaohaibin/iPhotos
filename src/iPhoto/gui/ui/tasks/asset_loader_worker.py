@@ -25,6 +25,34 @@ def _determine_size(row: Dict[str, object], is_image: bool) -> object:
     return {"bytes": row.get("bytes"), "duration": row.get("dur")}
 
 
+def _is_panorama_candidate(row: Dict[str, object], is_image: bool) -> bool:
+    """Return ``True`` when *row* looks like a panorama photograph.
+
+    The heuristic is intentionally conservative: it only flags assets that are
+    confirmed still images, have a wide aspect ratio (width at least twice the
+    height), and exceed a minimum size threshold. The size gate helps filter out
+    tiny thumbnails or preview files that might also be wide but should not
+    display the panorama badge.
+    """
+
+    if not is_image:
+        return False
+
+    width = row.get("w")
+    height = row.get("h")
+    byte_size = row.get("bytes")
+
+    if not isinstance(width, int) or not isinstance(height, int):
+        return False
+    if width <= 0 or height <= 0:
+        return False
+    if not isinstance(byte_size, int) or byte_size <= 1 * 1024 * 1024:
+        return False
+
+    aspect_ratio = width / height
+    return aspect_ratio >= 2.0
+
+
 def _is_featured(rel: str, featured: Set[str]) -> bool:
     if rel in featured:
         return True
@@ -101,6 +129,7 @@ def _build_entry(
     live_info = live_map.get(rel)
     abs_path = str((root / rel).resolve())
     is_image, is_video = classify_media(row)
+    is_pano = _is_panorama_candidate(row, is_image)
 
     live_motion: Optional[str] = None
     live_motion_abs: Optional[str] = None
@@ -129,6 +158,7 @@ def _build_entry(
         "is_image": is_image,
         "is_video": is_video,
         "is_live": bool(live_motion),
+        "is_pano": is_pano,
         "live_group_id": live_group_id,
         "live_motion": live_motion,
         "live_motion_abs": live_motion_abs,

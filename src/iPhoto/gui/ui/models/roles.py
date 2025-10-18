@@ -27,6 +27,7 @@ class Roles(IntEnum):
     IS_SPACER = Qt.UserRole + 14
     LOCATION = Qt.UserRole + 15
     INFO = Qt.UserRole + 16
+    IS_PANO = Qt.UserRole + 17
 
 
 def role_names(base: Dict[int, bytes] | None = None) -> Dict[int, bytes]:
@@ -51,6 +52,7 @@ def role_names(base: Dict[int, bytes] | None = None) -> Dict[int, bytes]:
             Roles.IS_SPACER: b"isSpacer",
             Roles.LOCATION: b"location",
             Roles.INFO: b"info",
+            Roles.IS_PANO: b"isPano",
         }
     )
     return mapping

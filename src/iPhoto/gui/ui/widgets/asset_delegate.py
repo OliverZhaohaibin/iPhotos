@@ -32,6 +32,8 @@ class AssetGridDelegate(QStyledItemDelegate):
         self._duration_font: Optional[QFont] = None
         self._live_icon: QIcon = load_icon("livephoto.svg", color="white")
         self._favorite_icon: QIcon = load_icon("suit.heart.fill.svg", color="#ff4d67")
+        # ``_pano_icon`` is rendered in the lower-right corner when the asset is a panorama.
+        self._pano_icon: QIcon = load_icon("pano.svg", color="white")
         self._filmstrip_mode = filmstrip_mode
         self._base_size = 192
         self._filmstrip_height = 120
@@ -132,6 +134,9 @@ class AssetGridDelegate(QStyledItemDelegate):
 
         if index.data(Roles.IS_LIVE):
             self._draw_live_badge(painter, option, thumb_rect)
+
+        if index.data(Roles.IS_PANO):
+            self._draw_pano_badge(painter, option, thumb_rect)
 
         if index.data(Roles.IS_VIDEO):
             self._draw_duration_badge(painter, option, thumb_rect, index.data(Roles.SIZE))
@@ -242,6 +247,43 @@ class AssetGridDelegate(QStyledItemDelegate):
             icon_size,
         )
         self._live_icon.paint(painter, icon_rect)
+        painter.restore()
+
+    def _draw_pano_badge(
+        self,
+        painter: QPainter,
+        option: QStyleOptionViewItem,
+        rect: QRect,
+    ) -> None:
+        """Paint the panorama indicator badge in the lower-right corner."""
+
+        if self._pano_icon.isNull():
+            return
+
+        # The badge mirrors the duration badge to provide a consistent visual language.
+        padding = 6
+        icon_size = 18
+        badge_width = icon_size + padding * 2
+        badge_height = icon_size + padding * 2
+        badge_rect = QRect(
+            rect.right() - badge_width - 8,
+            rect.bottom() - badge_height - 8,
+            badge_width,
+            badge_height,
+        )
+
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 160))
+        painter.drawRoundedRect(badge_rect, 6, 6)
+        icon_rect = QRect(
+            badge_rect.left() + padding,
+            badge_rect.top() + padding,
+            icon_size,
+            icon_size,
+        )
+        self._pano_icon.paint(painter, icon_rect)
         painter.restore()
 
     def _draw_favorite_badge(
