@@ -2,23 +2,10 @@
 
 from __future__ import annotations
 
-import subprocess
-import sys
-from functools import partial
 from pathlib import Path
-from typing import Iterable, List, Optional, TYPE_CHECKING
+from typing import Iterable, Optional, TYPE_CHECKING
 
-from PySide6.QtCore import (
-    QCoreApplication,
-    QModelIndex,
-    QObject,
-    QThreadPool,
-    QMimeData,
-    QUrl,
-    Qt,
-)
-from PySide6.QtGui import QGuiApplication, QAction
-from PySide6.QtWidgets import QMenu
+from PySide6.QtCore import QModelIndex, QObject, QThreadPool, Qt
 
 # ``main_controller`` shares the same import caveat as ``main_window``.  The
 # fallback ensures running the module as a script still locates ``AppContext``.
@@ -28,20 +15,24 @@ except ImportError:  # pragma: no cover - script execution fallback
     from iPhotos.src.iPhoto.appctx import AppContext
 
 from ...facade import AppFacade
-from ....media_classifier import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 from ..media import MediaController, PlaylistController
 from ..models.asset_model import AssetModel, Roles
 from ..models.spacer_proxy_model import SpacerProxyModel
 from ..widgets import AssetGridDelegate, InfoPanel, NotificationToast
+from .context_menu_controller import ContextMenuController
 from .detail_ui_controller import DetailUIController
 from .dialog_controller import DialogController
+from .drag_drop_controller import DragDropController
 from .header_controller import HeaderController
 from .navigation_controller import NavigationController
 from .map_view_controller import LocationMapController
 from .playback_controller import PlaybackController
 from .playback_state_manager import PlaybackStateManager
 from .player_view_controller import PlayerViewController
+from .preference_controller import PreferenceController
 from .preview_controller import PreviewController
+from .selection_controller import SelectionController
+from .share_controller import ShareController
 from .status_bar_controller import StatusBarController
 from .view_controller import ViewController
 
@@ -57,7 +48,6 @@ class MainController(QObject):
         self._window = window
         self._context = context
         self._facade: AppFacade = context.facade
-        self._selection_mode_active = False
         self._grid_delegate: AssetGridDelegate | None = None
 
         # Models -------------------------------------------------------
@@ -156,12 +146,63 @@ class MainController(QObject):
         window.ui.selection_button.setEnabled(False)
 
         self._configure_views()
-        self._restore_playback_preferences()
-        self._restore_share_preference()
-        self._restore_wheel_preference()
+
+        self._selection_controller = SelectionController(
+            window.ui.selection_button,
+            window.ui.grid_view,
+            self._grid_delegate,
+            self._preview_controller,
+            self._playback,
+            parent=window,
+        )
+        self._preference_controller = PreferenceController(
+            settings=context.settings,
+            media=self._media,
+            player_bar=window.ui.player_bar,
+            filmstrip_view=window.ui.filmstrip_view,
+            filmstrip_action=window.ui.toggle_filmstrip_action,
+            wheel_action_group=window.ui.wheel_action_group,
+            wheel_action_zoom=window.ui.wheel_action_zoom,
+            wheel_action_navigate=window.ui.wheel_action_navigate,
+            image_viewer=window.ui.image_viewer,
+            parent=window,
+        )
+        self._share_controller = ShareController(
+            settings=context.settings,
+            playlist=self._playlist,
+            asset_model=self._asset_model,
+            status_bar=self._status_bar,
+            notification_toast=self._notification_toast,
+            share_button=window.ui.share_button,
+            share_action_group=window.ui.share_action_group,
+            copy_file_action=window.ui.share_action_copy_file,
+            copy_path_action=window.ui.share_action_copy_path,
+            reveal_action=window.ui.share_action_reveal_file,
+            parent=window,
+        )
+        self._share_controller.restore_preference()
+        self._context_menu_controller = ContextMenuController(
+            grid_view=window.ui.grid_view,
+            asset_model=self._asset_model,
+            facade=self._facade,
+            navigation=self._navigation,
+            status_bar=self._status_bar,
+            notification_toast=self._notification_toast,
+            selection_controller=self._selection_controller,
+            parent=window,
+        )
+        self._drag_drop_controller = DragDropController(
+            grid_view=window.ui.grid_view,
+            sidebar=window.ui.sidebar,
+            context=context,
+            facade=self._facade,
+            status_bar=self._status_bar,
+            dialog=self._dialog,
+            navigation=self._navigation,
+            parent=window,
+        )
         self._playlist.bind_model(self._asset_model)
         self._connect_signals()
-        self._connect_share_signals()
 
     def shutdown(self) -> None:
         """Stop worker threads and background jobs before the app exits."""
@@ -189,10 +230,6 @@ class MainController(QObject):
         self._window.ui.grid_view.setModel(self._asset_model)
         self._grid_delegate = AssetGridDelegate(self._window.ui.grid_view)
         self._window.ui.grid_view.setItemDelegate(self._grid_delegate)
-        self._window.ui.grid_view.configure_external_drop(
-            handler=self._handle_grid_drop,
-            validator=self._validate_grid_drop,
-        )
         self._window.ui.grid_view.setContextMenuPolicy(
             Qt.ContextMenuPolicy.CustomContextMenu
         )
@@ -206,116 +243,6 @@ class MainController(QObject):
         self._media.set_video_output(self._window.ui.video_area.video_item)
 
         self._window.ui.player_bar.setEnabled(False)
-
-    def _restore_playback_preferences(self) -> None:
-        """Restore persisted volume, mute state, and filmstrip visibility."""
-
-        stored_volume = self._context.settings.get("ui.volume", 75)
-        try:
-            initial_volume = int(round(float(stored_volume)))
-        except (TypeError, ValueError):
-            initial_volume = 75
-        initial_volume = max(0, min(100, initial_volume))
-
-        stored_muted = self._context.settings.get("ui.is_muted", False)
-        if isinstance(stored_muted, str):
-            initial_muted = stored_muted.strip().lower() in {
-                "1",
-                "true",
-                "yes",
-                "on",
-            }
-        else:
-            initial_muted = bool(stored_muted)
-
-        stored_filmstrip = self._context.settings.get("ui.show_filmstrip", True)
-        if isinstance(stored_filmstrip, str):
-            show_filmstrip = stored_filmstrip.strip().lower() in {
-                "1",
-                "true",
-                "yes",
-                "on",
-            }
-        else:
-            show_filmstrip = bool(stored_filmstrip)
-
-        self._media.set_volume(initial_volume)
-        self._media.set_muted(initial_muted)
-        self._window.ui.player_bar.set_volume(self._media.volume())
-        self._window.ui.player_bar.set_muted(self._media.is_muted())
-        # Ensure the detail layout reflects the stored preference immediately so the widgets
-        # are in the desired state before any album is opened.
-        self._window.ui.filmstrip_view.setVisible(show_filmstrip)
-        self._window.ui.toggle_filmstrip_action.setChecked(show_filmstrip)
-
-    def _restore_share_preference(self) -> None:
-        """Restore the saved share option so it mirrors the persisted settings value."""
-
-        share_action = self._context.settings.get("ui.share_action", "reveal_file")
-        if share_action == "copy_file":
-            self._window.ui.share_action_copy_file.setChecked(True)
-        elif share_action == "copy_path":
-            self._window.ui.share_action_copy_path.setChecked(True)
-        else:
-            self._window.ui.share_action_reveal_file.setChecked(True)
-
-    def _restore_wheel_preference(self) -> None:
-        """Restore the saved wheel action and update the interactive widgets."""
-
-        wheel_action = self._context.settings.get("ui.wheel_action", "navigate")
-        if wheel_action == "zoom":
-            self._window.ui.wheel_action_zoom.setChecked(True)
-        else:
-            wheel_action = "navigate"
-            self._window.ui.wheel_action_navigate.setChecked(True)
-        self._apply_wheel_action(wheel_action)
-
-    def _apply_wheel_action(self, action: str) -> None:
-        """Update the main viewer's wheel behaviour based on the stored preference.
-
-        The filmstrip now always consumes wheel events to request navigation so users can quickly
-        browse adjacent assets. Only the full-sized image viewer still honours the zoom versus
-        navigate preference.
-        """
-
-        mode = "zoom" if action == "zoom" else "navigate"
-        self._window.ui.image_viewer.set_wheel_action(mode)
-
-    def _set_selection_mode(self, enabled: bool) -> None:
-        """Synchronise grid, delegate, and button state with *enabled*."""
-
-        desired_state = bool(enabled)
-        if self._selection_mode_active == desired_state:
-            if not desired_state:
-                self._window.ui.grid_view.clearSelection()
-            return
-
-        self._selection_mode_active = desired_state
-
-        button = self._window.ui.selection_button
-        if desired_state:
-            button.setText(QCoreApplication.translate("MainWindow", "Cancel"))
-            button.setToolTip(
-                QCoreApplication.translate(
-                    "MainWindow",
-                    "Exit multi-selection mode",
-                )
-            )
-        else:
-            button.setText(QCoreApplication.translate("MainWindow", "Select"))
-            button.setToolTip(
-                QCoreApplication.translate(
-                    "MainWindow",
-                    "Toggle multi-selection mode",
-                )
-            )
-
-        self._window.ui.grid_view.set_selection_mode_enabled(desired_state)
-        if self._grid_delegate is not None:
-            self._grid_delegate.set_selection_mode_active(desired_state)
-        self._window.ui.grid_view.clearSelection()
-        if not desired_state:
-            self._preview_controller.close_preview(False)
 
     # -----------------------------------------------------------------
     # Signal wiring
@@ -336,18 +263,6 @@ class MainController(QObject):
         self._window.ui.bind_library_action.triggered.connect(
             self._dialog.bind_library_dialog
         )
-        # Keep the filmstrip toggle and widget visibility aligned so the interface reacts
-        # instantly when the user flips the preference.
-        self._window.ui.toggle_filmstrip_action.toggled.connect(
-            self._handle_toggle_filmstrip
-        )
-        self._window.ui.wheel_action_group.triggered.connect(
-            self._handle_wheel_action_changed
-        )
-        self._window.ui.selection_button.clicked.connect(
-            self._handle_selection_button_clicked
-        )
-
         # Global error reporting
         self._facade.errorRaised.connect(self._dialog.show_error)
         self._context.library.errorRaised.connect(self._dialog.show_error)
@@ -370,8 +285,6 @@ class MainController(QObject):
         self._window.ui.sidebar.bindLibraryRequested.connect(
             self._dialog.bind_library_dialog
         )
-        self._window.ui.sidebar.filesDropped.connect(self._handle_sidebar_drop)
-
         # Facade events
         self._facade.albumOpened.connect(self._handle_album_opened)
         self._facade.scanProgress.connect(self._status_bar.handle_scan_progress)
@@ -409,12 +322,6 @@ class MainController(QObject):
         )
 
         # View interactions
-        self._window.ui.grid_view.itemClicked.connect(
-            self._handle_grid_item_clicked
-        )
-        self._window.ui.grid_view.customContextMenuRequested.connect(
-            self._handle_grid_context_menu
-        )
         self._preview_controller.bind_view(self._window.ui.grid_view)
         self._window.ui.filmstrip_view.itemClicked.connect(
             self._playback.activate_index
@@ -464,14 +371,6 @@ class MainController(QObject):
             self._view_controller.show_gallery_view
         )
 
-    def _connect_share_signals(self) -> None:
-        """Wire the share menu and toolbar button to their respective handlers."""
-
-        self._window.ui.share_action_group.triggered.connect(
-            self._handle_share_action_changed
-        )
-        self._window.ui.share_button.clicked.connect(self._handle_share_button_clicked)
-
     # -----------------------------------------------------------------
     # Slots
     def _handle_open_album_dialog(self) -> None:
@@ -499,7 +398,7 @@ class MainController(QObject):
         ):
             return
         self._map_controller.hide_map_view()
-        self._set_selection_mode(False)
+        self._selection_controller.set_selection_mode(False)
         self._navigation.open_all_photos()
 
     def _handle_static_node_selected(self, title: str) -> None:
@@ -509,7 +408,7 @@ class MainController(QObject):
             current_static = self._navigation.static_selection()
             if current_static and current_static.casefold() == title.casefold():
                 return
-        self._set_selection_mode(False)
+        self._selection_controller.set_selection_mode(False)
         if title.casefold() == "location":
             self._navigation.open_location_view()
             if self._context.library.root() is None:
@@ -559,7 +458,7 @@ class MainController(QObject):
         was_refresh = self._navigation.consume_last_open_refresh()
         self._navigation.handle_album_opened(root)
         self._window.ui.selection_button.setEnabled(True)
-        self._set_selection_mode(False)
+        self._selection_controller.set_selection_mode(False)
 
         if was_refresh and is_detail_view_before_handle:
             self._view_controller.show_detail_view()
@@ -587,246 +486,6 @@ class MainController(QObject):
         self._window.ui.player_bar.set_muted(is_muted)
         if self._context.settings.get("ui.is_muted") != is_muted:
             self._context.settings.set("ui.is_muted", is_muted)
-
-    def _handle_share_action_changed(self, action: QAction) -> None:
-        """Persist the selected share behaviour so the choice survives restarts."""
-
-        if action is self._window.ui.share_action_copy_file:
-            self._context.settings.set("ui.share_action", "copy_file")
-        elif action is self._window.ui.share_action_copy_path:
-            self._context.settings.set("ui.share_action", "copy_path")
-        elif action is self._window.ui.share_action_reveal_file:
-            self._context.settings.set("ui.share_action", "reveal_file")
-
-    def _handle_toggle_filmstrip(self, checked: bool) -> None:
-        """Persist and apply the filmstrip visibility preference."""
-
-        show_filmstrip = bool(checked)
-        self._window.ui.filmstrip_view.setVisible(show_filmstrip)
-        if self._context.settings.get("ui.show_filmstrip") != show_filmstrip:
-            self._context.settings.set("ui.show_filmstrip", show_filmstrip)
-
-    def _handle_wheel_action_changed(self, action: QAction) -> None:
-        """Persist the selected wheel action and refresh dependent widgets."""
-
-        if action is self._window.ui.wheel_action_zoom:
-            selected = "zoom"
-        else:
-            selected = "navigate"
-        if self._context.settings.get("ui.wheel_action") != selected:
-            self._context.settings.set("ui.wheel_action", selected)
-        self._apply_wheel_action(selected)
-
-    def _handle_share_button_clicked(self) -> None:
-        """Execute the configured share behaviour for the active playlist item."""
-
-        current_row = self._playlist.current_row()
-        if current_row < 0:
-            self._status_bar.show_message("No item selected to share.", 3000)
-            return
-
-        index = self._asset_model.index(current_row, 0)
-        if not index.isValid():
-            return
-
-        file_path_str = index.data(Roles.ABS)
-        if not file_path_str:
-            return
-
-        file_path = Path(file_path_str)
-        share_action = self._context.settings.get("ui.share_action", "reveal_file")
-
-        if share_action == "copy_file":
-            self._copy_file_to_clipboard(file_path)
-        elif share_action == "copy_path":
-            self._copy_path_to_clipboard(file_path)
-        else:
-            self._reveal_in_file_manager(file_path)
-
-    # -----------------------------------------------------------------
-    # Selection helpers
-    def _handle_selection_button_clicked(self) -> None:
-        """Toggle the gallery's multi-selection mode."""
-
-        if not self._window.ui.selection_button.isEnabled():
-            return
-        self._set_selection_mode(not self._selection_mode_active)
-
-    def _handle_grid_item_clicked(self, index: QModelIndex) -> None:
-        """Activate the clicked item unless multi-selection mode is active."""
-
-        if self._selection_mode_active:
-            return
-        self._playback.activate_index(index)
-
-    def _handle_grid_context_menu(self, point) -> None:
-        """Present copy and move actions when right-clicking selected items."""
-
-        if not self._selection_mode_active:
-            return
-        view = self._window.ui.grid_view
-        selection_model = view.selectionModel()
-        if selection_model is None:
-            return
-        if not selection_model.selectedIndexes():
-            return
-        index = view.indexAt(point)
-        if not index.isValid() or not selection_model.isSelected(index):
-            return
-
-        menu = QMenu(view)
-        copy_action = menu.addAction(
-            QCoreApplication.translate("MainWindow", "Copy")
-        )
-        move_menu = menu.addMenu(
-            QCoreApplication.translate("MainWindow", "Move to")
-        )
-
-        destinations = self._collect_move_targets()
-        if destinations:
-            for label, path in destinations:
-                action = move_menu.addAction(label)
-                action.triggered.connect(partial(self._execute_move_to_album, path))
-        else:
-            move_menu.setEnabled(False)
-
-        copy_action.triggered.connect(self._copy_selection_to_clipboard)
-        global_pos = view.viewport().mapToGlobal(point)
-        menu.exec(global_pos)
-
-    def _copy_selection_to_clipboard(self) -> None:
-        """Copy the absolute paths of the selected assets to the clipboard."""
-
-        paths = self._selected_asset_paths()
-        if not paths:
-            self._status_bar.show_message("Select items to copy first.", 3000)
-            return
-        existing = [path for path in paths if path.exists()]
-        if not existing:
-            self._status_bar.show_message(
-                "Selected files are unavailable on disk.",
-                3000,
-            )
-            return
-        mime_data = QMimeData()
-        mime_data.setUrls([QUrl.fromLocalFile(str(path)) for path in existing])
-        QGuiApplication.clipboard().setMimeData(mime_data)
-        self._notification_toast.show_toast("Copied to Clipboard")
-
-    def _execute_move_to_album(self, target: Path) -> None:
-        """Initiate moving the current selection into *target*."""
-
-        view = self._window.ui.grid_view
-        selection_model = view.selectionModel()
-        selected_indexes = (
-            list(selection_model.selectedIndexes()) if selection_model else []
-        )
-        paths = self._selected_asset_paths()
-        if not paths:
-            self._status_bar.show_message("Select items to move first.", 3000)
-            return
-
-        source_model = self._asset_model.source_model()
-        is_virtual_view_move = self._navigation.is_basic_library_virtual_view()
-        if is_virtual_view_move:
-            # Moving items from any Basic Library virtual collection (All Photos,
-            # Videos, Live Photos, Favorites) should behave like a read-only view
-            # over the master index.  Apply the optimistic update path so the
-            # thumbnails remain visible while the worker performs the actual
-            # filesystem updates.
-            rels = [index.data(Roles.REL) for index in selected_indexes if index.isValid()]
-            source_model.update_rows_for_move([rel for rel in rels if isinstance(rel, str)], target)
-        elif selected_indexes:
-            source_model.remove_rows(selected_indexes)
-
-        self._facade.pause_library_watcher()
-        try:
-            self._facade.move_assets(paths, target)
-        except Exception:
-            self._facade.resume_library_watcher()
-            source_model.rollback_pending_moves()
-            raise
-        self._set_selection_mode(False)
-
-    def _selected_asset_paths(self) -> list[Path]:
-        """Return the absolute filesystem paths for the selected grid items."""
-
-        selection_model = self._window.ui.grid_view.selectionModel()
-        if selection_model is None:
-            return []
-        seen: set[Path] = set()
-        paths: list[Path] = []
-        for index in selection_model.selectedIndexes():
-            raw_path = index.data(Roles.ABS)
-            if not raw_path:
-                continue
-            path = Path(str(raw_path))
-            if path in seen:
-                continue
-            seen.add(path)
-            paths.append(path)
-        return paths
-
-    def _collect_move_targets(self) -> list[tuple[str, Path]]:
-        """Return candidate album destinations for the move submenu."""
-
-        model = self._window.ui.sidebar.tree_model()
-        entries = model.iter_album_entries()
-        current_album = self._facade.current_album
-        current_root: Path | None = None
-        if current_album is not None:
-            try:
-                current_root = current_album.root.resolve()
-            except OSError:
-                current_root = current_album.root
-
-        destinations: list[tuple[str, Path]] = []
-        for label, path in entries:
-            try:
-                resolved = path.resolve()
-            except OSError:
-                continue
-            if current_root is not None and resolved == current_root:
-                continue
-            destinations.append((label, path))
-        return destinations
-
-    def _copy_file_to_clipboard(self, path: Path) -> None:
-        """Copy *path* as a file reference to the system clipboard."""
-
-        if not path.exists():
-            self._status_bar.show_message(f"File not found: {path.name}", 3000)
-            return
-
-        mime_data = QMimeData()
-        mime_data.setUrls([QUrl.fromLocalFile(str(path))])
-        QGuiApplication.clipboard().setMimeData(mime_data)
-        self._notification_toast.show_toast("Copied to Clipboard")
-
-    def _copy_path_to_clipboard(self, path: Path) -> None:
-        """Copy the textual representation of *path* onto the clipboard."""
-
-        QGuiApplication.clipboard().setText(str(path))
-        self._notification_toast.show_toast("Copied to Clipboard")
-
-    def _reveal_in_file_manager(self, path: Path) -> None:
-        """Reveal *path* in the native file manager for the host operating system."""
-
-        if not path.exists():
-            self._status_bar.show_message(f"File not found: {path.name}", 3000)
-            return
-
-        # Tailor the command to each supported platform so the action works universally.
-        if sys.platform == "win32":
-            subprocess.run(["explorer", "/select,", str(path)], check=False)
-        elif sys.platform == "darwin":
-            subprocess.run(["open", "-R", str(path)], check=False)
-        else:
-            subprocess.run(["xdg-open", str(path.parent)], check=False)
-        self._status_bar.show_message(
-            f"Revealed {path.name} in file manager.",
-            3000,
-        )
 
     def _prioritize_filmstrip_rows(self, first: int, last: int) -> None:
         """Prioritise asset loading to match filmstrip visibility."""

@@ -6,11 +6,12 @@ import shutil
 from pathlib import Path
 from typing import Iterable, List, Optional, Set, Tuple, TYPE_CHECKING
 
-from PySide6.QtCore import QObject, QThreadPool, QTimer, Signal
+from PySide6.QtCore import QObject, QTimer, Signal
 
 from .. import app as backend
 from ..errors import IPhotoError
 from ..models.album import Album
+from .background_task_manager import BackgroundTaskManager
 from .ui.tasks.import_worker import ImportSignals, ImportWorker
 from .ui.tasks.move_worker import MoveSignals, MoveWorker
 from .ui.tasks.scanner_worker import ScannerSignals, ScannerWorker
@@ -44,11 +45,13 @@ class AppFacade(QObject):
         self._current_album: Optional[Album] = None
         self._pending_index_announcements: Set[Path] = set()
         self._library_manager: Optional["LibraryManager"] = None
-        self._scanner_pool = QThreadPool.globalInstance()
         self._scanner_worker: Optional[ScannerWorker] = None
         self._scan_pending = False
-        self._active_imports: list[ImportWorker] = []
-        self._active_moves: list[MoveWorker] = []
+        self._task_manager = BackgroundTaskManager(
+            pause_watcher=self._pause_library_watcher,
+            resume_watcher=self._resume_library_watcher,
+            parent=self,
+        )
 
         from .ui.models.asset_list_model import AssetListModel
 
@@ -137,15 +140,22 @@ class AppFacade(QObject):
         # lifetime explicitly and dispose of them once the worker finishes.
         signals = ScannerSignals()
         signals.progressUpdated.connect(self.scanProgress.emit)
-        signals.finished.connect(self._on_scan_finished)
-        signals.error.connect(self._on_scan_error)
-
         worker = ScannerWorker(album.root, include, exclude, signals)
         self._scanner_worker = worker
         self._scan_pending = False
-        self._scanner_pool.start(worker)
+        self._task_manager.submit_task(
+            task_id=f"scan:{album.root}",
+            worker=worker,
+            progress=signals.progressUpdated,
+            finished=signals.finished,
+            error=signals.error,
+            pause_watcher=False,
+            on_finished=lambda root, rows: self._on_scan_finished(worker, root, rows),
+            on_error=self._on_scan_error,
+            result_payload=lambda root, rows: rows,
+        )
 
-    def pause_library_watcher(self) -> None:
+    def _pause_library_watcher(self) -> None:
         """Suspend the filesystem watcher while an internal move is in flight.
 
         The :class:`~iPhoto.library.manager.LibraryManager` uses a
@@ -160,7 +170,7 @@ class AppFacade(QObject):
         if self._library_manager is not None:
             self._library_manager.pause_watcher()
 
-    def resume_library_watcher(self) -> None:
+    def _resume_library_watcher(self) -> None:
         """Re-enable filesystem monitoring after internal operations finish.
 
         Resuming the watcher is slightly delayed to give the operating system a
@@ -176,13 +186,7 @@ class AppFacade(QObject):
     def is_performing_background_operation(self) -> bool:
         """Return ``True`` while imports or moves are still running."""
 
-        # The GUI reacts to several facade signals (sidebar tree rebuilds,
-        # playlist changes, etc.) by reopening the current album.  Doing so while
-        # a move or import worker is still adjusting on-disk state causes the
-        # freshly opened model to observe a transient, half-updated index.  By
-        # exposing this helper the controllers can defer those refreshes until
-        # the background job has wrapped up.
-        return bool(self._active_imports or self._active_moves)
+        return self._task_manager.has_watcher_blocking_tasks()
 
     def pair_live_current(self) -> List[dict]:
         """Rebuild Live Photo pairings for the active album."""
@@ -266,32 +270,25 @@ class AppFacade(QObject):
         signals = ImportSignals()
         signals.started.connect(self.importStarted.emit)
         signals.progress.connect(self.importProgress.emit)
-        signals.error.connect(self.errorRaised.emit)
-
         worker = ImportWorker(normalized, target_root, self._copy_into_album, signals)
-        self._active_imports.append(worker)
-        def _handle_finished(root: Path, imported: List[Path], rescan_ok: bool) -> None:
-            """Forward worker completion details to the facade callback.
 
-            Using a named local function instead of a ``lambda`` avoids runtime
-            issues on older Python builds where keyword-only defaults inside a
-            ``lambda`` definition are not supported.  The closure still captures
-            the ``worker`` instance and the ``mark_featured`` flag so
-            :meth:`_on_import_finished` receives the full context required to
-            finalise the operation.
-            """
-
-            self._on_import_finished(
+        self._task_manager.submit_task(
+            task_id=f"import:{target_root}",
+            worker=worker,
+            started=signals.started,
+            progress=signals.progress,
+            finished=signals.finished,
+            error=signals.error,
+            pause_watcher=True,
+            on_finished=lambda root, imported, rescan_ok: self._on_import_finished(
                 root,
                 imported,
                 rescan_ok,
-                worker,
                 mark_featured,
-            )
-
-        signals.finished.connect(_handle_finished)
-
-        self._scanner_pool.start(worker)
+            ),
+            on_error=self.errorRaised.emit,
+            result_payload=lambda root, imported, rescan_ok: imported,
+        )
 
     def move_assets(self, sources: Iterable[Path], destination: Path) -> None:
         """Move *sources* into *destination* and refresh the relevant albums."""
@@ -303,7 +300,6 @@ class AppFacade(QObject):
             # resume the watcher immediately because no worker will be queued to
             # do it on our behalf.
             self._asset_list_model.rollback_pending_moves()
-            self.resume_library_watcher()
             return
         source_root = album.root
 
@@ -312,7 +308,6 @@ class AppFacade(QObject):
         except OSError as exc:
             self.errorRaised.emit(f"Invalid destination: {exc}")
             self._asset_list_model.rollback_pending_moves()
-            self.resume_library_watcher()
             return
 
         if not destination_root.exists() or not destination_root.is_dir():
@@ -320,7 +315,6 @@ class AppFacade(QObject):
                 f"Move destination is not a directory: {destination_root}"
             )
             self._asset_list_model.rollback_pending_moves()
-            self.resume_library_watcher()
             return
 
         if destination_root == source_root:
@@ -331,7 +325,6 @@ class AppFacade(QObject):
                 "Files are already located in this album.",
             )
             self._asset_list_model.rollback_pending_moves()
-            self.resume_library_watcher()
             return
 
         normalized: list[Path] = []
@@ -371,38 +364,32 @@ class AppFacade(QObject):
                 "No valid files were selected for moving.",
             )
             self._asset_list_model.rollback_pending_moves()
-            self.resume_library_watcher()
             return
 
         signals = MoveSignals()
-        signals.error.connect(self.errorRaised.emit)
         signals.started.connect(self.moveStarted.emit)
         signals.progress.connect(self.moveProgress.emit)
 
         worker = MoveWorker(normalized, source_root, destination_root, signals)
-        self._active_moves.append(worker)
-
-        def _handle_finished(
-            src: Path,
-            dest: Path,
-            moved: List[Tuple[Path, Path]],
-            source_ok: bool,
-            destination_ok: bool,
-            *,
-            move_worker: MoveWorker = worker,
-        ) -> None:
-            self._on_move_finished(
+        self._task_manager.submit_task(
+            task_id=f"move:{source_root}->{destination_root}",
+            worker=worker,
+            started=signals.started,
+            progress=signals.progress,
+            finished=signals.finished,
+            error=signals.error,
+            pause_watcher=True,
+            on_finished=lambda src, dest, moved, source_ok, destination_ok, *, move_worker=worker: self._on_move_finished(
                 src,
                 dest,
                 moved,
                 source_ok,
                 destination_ok,
                 move_worker,
-            )
-
-        signals.finished.connect(_handle_finished)
-
-        self._scanner_pool.start(worker)
+            ),
+            on_error=self.errorRaised.emit,
+            result_payload=lambda src, dest, moved, *_: moved,
+        )
 
     def toggle_featured(self, ref: str) -> bool:
         """Toggle *ref* in the active album and mirror the change in the library."""
@@ -573,14 +560,9 @@ class AppFacade(QObject):
         root: Path,
         imported: List[Path],
         rescan_succeeded: bool,
-        worker: ImportWorker,
         mark_featured: bool,
     ) -> None:
         """Handle completion of an asynchronous import operation."""
-
-        if worker in self._active_imports:
-            self._active_imports.remove(worker)
-        worker.signals.deleteLater()
 
         success = bool(imported) and rescan_succeeded
 
@@ -616,56 +598,49 @@ class AppFacade(QObject):
     ) -> None:
         """Handle completion of an asynchronous move operation."""
 
-        try:
-            if worker in self._active_moves:
-                self._active_moves.remove(worker)
-            worker.signals.deleteLater()
+        moved_pairs = [(Path(src), Path(dst)) for src, dst in moved]
 
-            moved_pairs = [(Path(src), Path(dst)) for src, dst in moved]
+        if worker.cancelled:
+            self._asset_list_model.rollback_pending_moves()
+            self.moveFinished.emit(
+                source_root,
+                destination_root,
+                False,
+                "Move cancelled.",
+            )
+            return
 
-            if worker.cancelled:
-                self._asset_list_model.rollback_pending_moves()
-                self.moveFinished.emit(
-                    source_root,
-                    destination_root,
-                    False,
-                    "Move cancelled.",
+        success = bool(moved_pairs) and source_ok and destination_ok
+
+        if moved_pairs:
+            self._asset_list_model.finalise_move_results(moved_pairs)
+        if self._asset_list_model.has_pending_move_placeholders():
+            self._asset_list_model.rollback_pending_moves()
+
+        # ``indexUpdated`` and ``linksUpdated`` intentionally remain quiet
+        # here.  The gallery already reflects the optimistic in-memory
+        # updates performed before the worker started.  Re-emitting the
+        # legacy refresh signals would re-trigger the heavy album reload
+        # logic we are trying to sidestep, causing visible flicker in "All
+        # Photos".  Controllers that need to react to the move can listen to
+        # :attr:`moveFinished` directly.
+
+        if not moved_pairs:
+            message = "No files were moved."
+        else:
+            label = "file" if len(moved_pairs) == 1 else "files"
+            if source_ok and destination_ok:
+                message = f"Moved {len(moved_pairs)} {label}."
+            elif source_ok or destination_ok:
+                message = (
+                    f"Moved {len(moved_pairs)} {label}, but refreshing one album failed."
                 )
-                return
-
-            success = bool(moved_pairs) and source_ok and destination_ok
-
-            if moved_pairs:
-                self._asset_list_model.finalise_move_results(moved_pairs)
-            if self._asset_list_model.has_pending_move_placeholders():
-                self._asset_list_model.rollback_pending_moves()
-
-            # ``indexUpdated`` and ``linksUpdated`` intentionally remain quiet
-            # here.  The gallery already reflects the optimistic in-memory
-            # updates performed before the worker started.  Re-emitting the
-            # legacy refresh signals would re-trigger the heavy album reload
-            # logic we are trying to sidestep, causing visible flicker in "All
-            # Photos".  Controllers that need to react to the move can listen to
-            # :attr:`moveFinished` directly.
-
-            if not moved_pairs:
-                message = "No files were moved."
             else:
-                label = "file" if len(moved_pairs) == 1 else "files"
-                if source_ok and destination_ok:
-                    message = f"Moved {len(moved_pairs)} {label}."
-                elif source_ok or destination_ok:
-                    message = (
-                        f"Moved {len(moved_pairs)} {label}, but refreshing one album failed."
-                    )
-                else:
-                    message = (
-                        f"Moved {len(moved_pairs)} {label}, but refreshing both albums failed."
-                    )
+                message = (
+                    f"Moved {len(moved_pairs)} {label}, but refreshing both albums failed."
+                )
 
-            self.moveFinished.emit(source_root, destination_root, success, message)
-        finally:
-            self.resume_library_watcher()
+        self.moveFinished.emit(source_root, destination_root, success, message)
 
     def _save_manifest(self, album: Album, *, reload_view: bool = True) -> bool:
         manager = self._library_manager
@@ -702,9 +677,13 @@ class AppFacade(QObject):
             return None
         return self._current_album
 
-    def _on_scan_finished(self, root: Path, rows: List[dict]) -> None:
-        worker = self._scanner_worker
-        if worker is None or root != worker.root:
+    def _on_scan_finished(
+        self,
+        worker: ScannerWorker,
+        root: Path,
+        rows: List[dict],
+    ) -> None:
+        if self._scanner_worker is not worker or root != worker.root:
             return
 
         cancelled = worker.cancelled
@@ -749,10 +728,6 @@ class AppFacade(QObject):
             QTimer.singleShot(0, self.rescan_current_async)
 
     def _cleanup_scan_worker(self) -> None:
-        worker = self._scanner_worker
-        if worker is not None:
-            signals = worker.signals
-            signals.deleteLater()
         self._scanner_worker = None
         self._scan_pending = False
 
