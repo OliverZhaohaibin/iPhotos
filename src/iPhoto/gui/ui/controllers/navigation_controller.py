@@ -67,12 +67,12 @@ class NavigationController:
         )
         is_same_album = current_root == target_root
 
-        # Static collections ("All Photos", "Favorites", etc.) deliberately
-        # re-use the library root, so only treat the invocation as a refresh
-        # when no static node is active.  This keeps virtual collections using
-        # their gallery-first behaviour while allowing genuine album reloads to
-        # bypass the gallery reset.
-        is_refresh = bool(is_same_album and self._static_selection is None)
+        # Treat any re-opening of the current album as a refresh, regardless of
+        # whether the gallery is showing a virtual collection.  This ensures
+        # that filesystem watcher events triggered by move operations do not
+        # wipe the model and produce placeholder tiles while the asynchronous
+        # reload repopulates the data.
+        is_refresh = bool(is_same_album)
         self._last_open_was_refresh = is_refresh
 
         if is_refresh:
@@ -147,6 +147,13 @@ class NavigationController:
         if root is None:
             self._dialog.bind_library_dialog()
             return
+        # ``open_static_collection`` is always a user-driven navigation request
+        # (e.g. clicking "All Photos" or "Favorites"), so explicitly mark the
+        # transition as a fresh navigation instead of a passive refresh.  This
+        # prevents the caller that triggered the static switch from assuming
+        # the previous album remained visible.
+        self._last_open_was_refresh = False
+
         # Reset the detail pane whenever a static collection (All Photos,
         # Favorites, etc.) is opened so the UI consistently shows the grid as
         # its entry point for that virtual album.
