@@ -68,8 +68,12 @@ class StatusBarController(QObject):
             self.show_message(f"Scanning… ({current}/{total})")
         self._progress_bar.setVisible(True)
 
-    def handle_scan_finished(self, root: Path | None, success: bool) -> None:
+    def handle_scan_finished(self, _root: Path, success: bool) -> None:
         """Restore the status bar once a scan completes."""
+
+        # ``_root`` is guaranteed to be a :class:`Path` because the facade now
+        # emits strongly typed signals.  The argument is intentionally unused
+        # because the status bar only cares about the outcome of the scan.
 
         if self._progress_context == "scan":
             self._progress_bar.setVisible(False)

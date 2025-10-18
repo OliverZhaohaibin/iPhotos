@@ -176,7 +176,11 @@ class ThumbnailJob(QRunnable):
 class ThumbnailLoader(QObject):
     """Asynchronous thumbnail renderer with disk and memory caching."""
 
-    ready = Signal(object, str, QPixmap)
+    # ``Path`` is used for the album root argument to keep the public signal in
+    # sync with slots that expect :class:`Path` instances.  This mirrors the
+    # rest of the GUI layer and prevents Nuitka from flagging the connection as
+    # type-unsafe during compilation.
+    ready = Signal(Path, str, QPixmap)
     _delivered = Signal(object, object, str)
 
     class Priority(IntEnum):

@@ -14,7 +14,11 @@ class PlaylistController(QObject):
     """Coordinate playback order for assets exposed via :class:`AssetModel`."""
 
     currentChanged = Signal(int)
-    sourceChanged = Signal(object)
+    # ``sourceChanged`` always emits the absolute :class:`Path` of the selected
+    # media file.  Using the explicit ``Path`` meta-type keeps the signature in
+    # lock-step with ``PlaybackController.handle_playlist_source_changed`` and
+    # prevents Nuitka from reporting a mismatched connection.
+    sourceChanged = Signal(Path)
 
     def __init__(self, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
