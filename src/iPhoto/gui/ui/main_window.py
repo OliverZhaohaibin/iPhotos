@@ -177,11 +177,12 @@ class MainWindow(QMainWindow):
         self._immersive_background_applied = False
         self._immersive_visibility_targets: tuple[QWidget, ...]
         self._immersive_visibility_targets = self._build_immersive_targets()
-        # ``_menu_stylesheet`` stores the latest palette-aware rules for popup menus so other
-        # widgets (for example context menu controllers) can reapply them to ad-hoc ``QMenu``
-        # instances.  Using an attribute avoids circular imports and keeps the styling logic
-        # centralised inside ``MainWindow``.
-        self._menu_stylesheet: str = ""
+        # ``_qmenu_stylesheet`` caches the rounded popup styling so right-click menus reuse the
+        # same colours and radii as the application-controlled drop-down menus.  The
+        # ``_global_menu_stylesheet`` marker tracks which rules were last injected into the
+        # ``QApplication`` instance, letting us replace them cleanly when the palette changes
+        # without building up duplicate blocks.
+        self._qmenu_stylesheet: str = ""
         self._global_menu_stylesheet: str | None = None
         self._applying_menu_styles = False
 
@@ -229,9 +230,24 @@ class MainWindow(QMainWindow):
     def menu_stylesheet(self) -> str | None:
         """Return the cached ``QMenu`` stylesheet so other widgets can reuse it."""
 
-        return self._menu_stylesheet or None
+        return self.get_qmenu_stylesheet()
 
-    def _rebuild_menu_styles(self) -> tuple[str, str]:
+    def get_qmenu_stylesheet(self) -> str | None:
+        """Expose the rounded ``QMenu`` stylesheet, rebuilding it if necessary."""
+
+        if not self._qmenu_stylesheet:
+            # If the stylesheet has not been generated yet, trigger a full application so the menu
+            # bar and global ``QApplication`` share the same rounded rules before the string is
+            # handed to callers.
+            if not self._applying_menu_styles:
+                self._apply_menu_styles()
+            else:
+                # Recompute directly when a caller races with ``_apply_menu_styles`` so we can
+                # return a valid string without waiting for the guarded method to finish.
+                self._qmenu_stylesheet = self._build_menu_styles()[0]
+        return self._qmenu_stylesheet or None
+
+    def _build_menu_styles(self) -> tuple[str, str]:
         """Compute palette-aware stylesheets for ``QMenu`` and ``QMenuBar`` widgets."""
 
         palette = self.palette()
@@ -242,17 +258,26 @@ class MainWindow(QMainWindow):
         highlight_text_color = palette.color(QPalette.ColorRole.HighlightedText).name()
         separator_color = palette.color(QPalette.ColorRole.Midlight).name()
 
+        # Rounded menus read cleaner against the translucent window shell, so we base both the
+        # popup and top-level styles around a shared radius while ensuring menu items retain a
+        # subtle inset curve that does not clip their text.
+        border_radius_px = 8
+        item_radius_px = max(0, border_radius_px - 3)
+
         qmenu_style = (
             "QMenu {\n"
             f"    background-color: {base_color};\n"
             f"    border: 1px solid {border_color};\n"
+            f"    border-radius: {border_radius_px}px;\n"
             "    background-clip: padding-box;\n"
+            "    padding: 4px;\n"
             "}\n"
             "QMenu::item {\n"
             "    background-color: transparent;\n"
             f"    color: {text_color};\n"
-            "    padding: 4px 20px;\n"
-            "    margin: 2px 0px;\n"
+            "    padding: 5px 20px;\n"
+            "    margin: 2px 4px;\n"
+            f"    border-radius: {item_radius_px}px;\n"
             "}\n"
             "QMenu::item:selected {\n"
             f"    background-color: {highlight_color};\n"
@@ -269,13 +294,14 @@ class MainWindow(QMainWindow):
         menubar_style = (
             "QMenuBar {\n"
             f"    background-color: {base_color};\n"
-            f"    border-bottom: 1px solid {border_color};\n"
+            "    border-radius: 0px;\n"
+            "    padding: 2px;\n"
             "}\n"
             "QMenuBar::item {\n"
             "    background-color: transparent;\n"
             f"    color: {text_color};\n"
             "    padding: 4px 10px;\n"
-            "    margin: 0px;\n"
+            "    border-radius: 4px;\n"
             "}\n"
             "QMenuBar::item:selected {\n"
             f"    background-color: {highlight_color};\n"
@@ -288,7 +314,7 @@ class MainWindow(QMainWindow):
             "}"
         )
 
-        self._menu_stylesheet = qmenu_style
+        self._qmenu_stylesheet = qmenu_style
         return qmenu_style, menubar_style
 
     def _apply_menu_styles(self) -> None:
@@ -308,7 +334,7 @@ class MainWindow(QMainWindow):
 
         self._applying_menu_styles = True
         try:
-            qmenu_style, menubar_style = self._rebuild_menu_styles()
+            qmenu_style, menubar_style = self._build_menu_styles()
 
             # Apply the stylesheet directly to the menu bar so Qt propagates the palette-aware
             # rules to its drop-down menus.  ``setAutoFillBackground`` and the attribute override

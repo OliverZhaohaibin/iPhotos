@@ -55,28 +55,32 @@ class ContextMenuController(QObject):
 
         index = self._grid_view.indexAt(point)
         menu = QMenu(self._grid_view)
-        # ``QMenu`` inherits the translucent background attribute from the frameless main window,
-        # so we explicitly force an opaque surface and reuse the main window's stylesheet if it is
-        # available.  This keeps the context menu readable regardless of the desktop wallpaper.
+        # Menus inherit ``WA_TranslucentBackground`` from the frameless window shell.  The flag is
+        # essential for rendering rounded corners, so we keep it enabled and rely on the palette-
+        # driven stylesheet to paint an opaque surface that prevents any wallpaper bleed-through.
+        menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         menu.setAutoFillBackground(True)
-        menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        menu.setWindowFlags(
+            menu.windowFlags()
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.Popup
+        )
 
         main_window = self._grid_view.window()
         if main_window is not None:
-            # Copy the window palette so the popup colours remain consistent with the active theme
-            # even when the menu is shown outside the main window frame (for example on a second
-            # monitor).  Setting the background role to ``Base`` explicitly marks the popup as an
-            # opaque surface, preventing Qt from blending the wallpaper behind the menu items.
+            # Copy the main window palette verbatim so the popup colours stay consistent across
+            # multiple monitors and theme transitions.  The ``Base`` role keeps the surface opaque
+            # so the rounded outline never reveals the desktop wallpaper beneath the menu.
             menu.setPalette(main_window.palette())
             menu.setBackgroundRole(QPalette.ColorRole.Base)
 
-            stylesheet_accessor = getattr(main_window, "menu_stylesheet", None)
+            stylesheet_accessor = getattr(main_window, "get_qmenu_stylesheet", None)
             stylesheet: Optional[str]
             if callable(stylesheet_accessor):
                 stylesheet = stylesheet_accessor()
             else:
-                candidate = getattr(main_window, "_menu_stylesheet", None)
-                stylesheet = candidate if isinstance(candidate, str) else None
+                fallback_accessor = getattr(main_window, "menu_stylesheet", None)
+                stylesheet = fallback_accessor() if callable(fallback_accessor) else None
 
             if isinstance(stylesheet, str) and stylesheet:
                 menu.setStyleSheet(stylesheet)

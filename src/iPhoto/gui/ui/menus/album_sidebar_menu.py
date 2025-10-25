@@ -16,24 +16,34 @@ from ..models.album_tree_model import AlbumTreeItem, NodeType, AlbumTreeModel
 
 
 def _apply_main_window_menu_style(menu: QMenu, anchor: Optional[QWidget]) -> None:
-    """Ensure ``menu`` renders opaquely and matches the main window palette."""
+    """Apply the main window's rounded menu styling to ``menu``."""
 
+    # Keep ``WA_TranslucentBackground`` enabled so the stylesheet-defined border radius can take
+    # effect.  ``setAutoFillBackground`` ensures Qt still paints an opaque surface inside the
+    # rounded outline that the stylesheet defines.
+    menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
     menu.setAutoFillBackground(True)
-    menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+    menu.setWindowFlags(
+        menu.windowFlags()
+        | Qt.WindowType.FramelessWindowHint
+        | Qt.WindowType.Popup
+    )
 
     main_window = anchor.window() if anchor is not None else None
     if main_window is not None:
-        # Mirror the main window palette so the popup seamlessly matches the active theme and
-        # retains an opaque ``Base`` background role even if the frameless parent is translucent.
+        # Adopt the main window palette so the popup maintains consistent colours regardless of
+        # which display it appears on.  Emphasising the ``Base`` role keeps the rounded corners
+        # opaque and prevents any wallpaper bleed-through.
         menu.setPalette(main_window.palette())
         menu.setBackgroundRole(QPalette.ColorRole.Base)
 
-        accessor = getattr(main_window, "menu_stylesheet", None)
+        accessor = getattr(main_window, "get_qmenu_stylesheet", None)
+        stylesheet: Optional[str]
         if callable(accessor):
             stylesheet = accessor()
         else:
-            candidate = getattr(main_window, "_menu_stylesheet", None)
-            stylesheet = candidate if isinstance(candidate, str) else None
+            fallback_accessor = getattr(main_window, "menu_stylesheet", None)
+            stylesheet = fallback_accessor() if callable(fallback_accessor) else None
         if isinstance(stylesheet, str) and stylesheet:
             menu.setStyleSheet(stylesheet)
 
@@ -58,8 +68,8 @@ class AlbumSidebarContextMenu(QMenu):
         self._item = item
         self._set_pending_selection = set_pending_selection
         self._on_bind_library = on_bind_library
-        # Ensure the popup renders opaquely by disabling inherited translucency and reusing the
-        # palette-aware stylesheet published by the main window when available.
+        # Ensure the popup renders with rounded opaque styling by reusing the palette-aware rules
+        # published by the main window whenever they are available.
         _apply_main_window_menu_style(self, parent)
         self._build_menu()
 
