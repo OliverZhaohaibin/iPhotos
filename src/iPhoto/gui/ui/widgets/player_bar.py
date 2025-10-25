@@ -72,6 +72,9 @@ class PlayerBar(QWidget):
 
         self._progress_frame = QWidget(self)
         self._progress_frame.setObjectName("progressFrame")
+        # The background frame is the only widget painting an opaque surface.
+        # This keeps the semi-transparent chrome from stacking across child controls.
+        self._progress_frame.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
         slider_row = QHBoxLayout()
         slider_row.setContentsMargins(0, 0, 0, 0)
@@ -99,6 +102,7 @@ class PlayerBar(QWidget):
         layout.addWidget(self._progress_frame)
 
         self._apply_palette()
+        self._make_controls_transparent()
 
         self._play_button.clicked.connect(self._on_play_button_clicked)
         self._mute_button.toggled.connect(self._on_mute_button_toggled)
@@ -276,24 +280,27 @@ class PlayerBar(QWidget):
 
     def _apply_palette(self) -> None:
         button_style = (
-            "QToolButton { color: #d7d8da; font-size: 18px; padding: 6px; border-radius: 18px; }\n"
+            "QToolButton { background-color: transparent; border: none; color: #d7d8da;"
+            " font-size: 18px; padding: 6px; border-radius: 18px; }\n"
             "QToolButton:hover { background-color: rgba(255, 255, 255, 26); }\n"
             "QToolButton:pressed { background-color: rgba(255, 255, 255, 44); }\n"
             "QToolButton:checked { background-color: rgba(255, 255, 255, 58); }"
         )
         slider_style = (
+            "QSlider { background: transparent; }\n"
             "QSlider::groove:horizontal { height: 4px; background: rgba(240, 240, 240, 80); border-radius: 2px; }\n"
             "QSlider::sub-page:horizontal { background: #d7d8da; border-radius: 2px; }\n"
             "QSlider::add-page:horizontal { background: rgba(255, 255, 255, 24); border-radius: 2px; }\n"
             "QSlider::handle:horizontal { background: #f5f6f8; width: 14px; margin: -6px 0; border-radius: 7px; }"
         )
         volume_style = (
+            "QSlider { background: transparent; }\n"
             "QSlider::groove:horizontal { height: 3px; background: rgba(240, 240, 240, 70); border-radius: 2px; }\n"
             "QSlider::sub-page:horizontal { background: #d7d8da; border-radius: 2px; }\n"
             "QSlider::add-page:horizontal { background: rgba(255, 255, 255, 18); border-radius: 2px; }\n"
             "QSlider::handle:horizontal { background: #f5f6f8; width: 12px; margin: -6px 0; border-radius: 6px; }"
         )
-        label_style = "color: #d7d8da; font-size: 12px;"
+        label_style = "color: #d7d8da; font-size: 12px; background: transparent;"
 
         self.setStyleSheet(
             "PlayerBar {"
@@ -312,3 +319,19 @@ class PlayerBar(QWidget):
         self._volume_slider.setStyleSheet(volume_style)
         self._elapsed_label.setStyleSheet(label_style)
         self._duration_label.setStyleSheet(label_style)
+
+    def _make_controls_transparent(self) -> None:
+        """Disable opaque painting for child widgets so only the shared backdrop draws."""
+
+        translucent_widgets = (
+            self._play_button,
+            self._mute_button,
+            self._position_slider,
+            self._volume_slider,
+            self._elapsed_label,
+            self._duration_label,
+        )
+        for widget in translucent_widgets:
+            widget.setAutoFillBackground(False)
+            widget.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+            widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
