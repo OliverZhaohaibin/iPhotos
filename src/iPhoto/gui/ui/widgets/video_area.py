@@ -15,7 +15,7 @@ from PySide6.QtCore import (
     Qt,
     Signal,
 )
-from PySide6.QtGui import QCursor, QPainter, QResizeEvent
+from PySide6.QtGui import QCursor, QMouseEvent, QPainter, QResizeEvent
 from PySide6.QtWidgets import (
     QFrame,
     QGraphicsOpacityEffect,
@@ -44,6 +44,7 @@ class VideoArea(QWidget):
 
     mouseActive = Signal()
     controlsVisibleChanged = Signal(bool)
+    fullscreenExitRequested = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -197,6 +198,15 @@ class VideoArea(QWidget):
         self._on_mouse_activity()
         super().mouseMoveEvent(event)
 
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:  # pragma: no cover - GUI behaviour
+        """Emit a dedicated signal so the window can exit immersive full screen."""
+
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.fullscreenExitRequested.emit()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
     def hideEvent(self, event) -> None:  # pragma: no cover - GUI behaviour
         super().hideEvent(event)
         self.hide_controls(animate=False)
@@ -335,4 +345,9 @@ class VideoArea(QWidget):
             self._controls_visible = False
             self._overlay.hide()
             self._player_bar.hide()
+
+    def controls_enabled(self) -> bool:
+        """Return ``True`` when the playback controls are currently enabled."""
+
+        return self._controls_enabled
 

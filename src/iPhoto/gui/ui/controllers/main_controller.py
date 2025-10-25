@@ -536,6 +536,49 @@ class MainController(QObject):
                 paths.append((self._facade.current_album.root / rel).resolve())
         return paths
 
+    def prepare_fullscreen_asset(self) -> bool:
+        """Ensure a media item is available when entering immersive full screen mode."""
+
+        if self._asset_model.rowCount() == 0:
+            if not self._navigation.is_all_photos_view():
+                self._navigation.open_all_photos()
+            if self._asset_model.rowCount() == 0:
+                self._detail_ui.show_detail_view()
+                return False
+
+        current_row = self._playlist.current_row()
+        if current_row != -1:
+            self._detail_ui.show_detail_view()
+            return True
+
+        grid_selection = self._window.ui.grid_view.selectionModel()
+        if grid_selection is not None:
+            candidate = grid_selection.currentIndex()
+            if not candidate.isValid():
+                selected = grid_selection.selectedIndexes()
+                if selected:
+                    candidate = selected[0]
+            if candidate.isValid():
+                self._playback.activate_index(candidate)
+                if self._playlist.current_row() != -1:
+                    return True
+
+        if self._asset_model.rowCount() > 0:
+            first_index = self._asset_model.index(0, 0)
+            if first_index.isValid():
+                self._playback.activate_index(first_index)
+                if self._playlist.current_row() != -1:
+                    return True
+
+        self._detail_ui.show_detail_view()
+        return False
+
+    def show_placeholder_in_viewer(self) -> None:
+        """Display the neutral placeholder when no media is available for full screen."""
+
+        self._detail_ui.show_detail_view()
+        self._detail_ui.show_placeholder()
+
     # -----------------------------------------------------------------
     # Drag-and-drop helpers
     def _validate_grid_drop(self, paths: List[Path]) -> bool:

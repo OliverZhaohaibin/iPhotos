@@ -34,6 +34,9 @@ class ImageViewer(QWidget):
     prevItemRequested = Signal()
     """Emitted when a wheel gesture requests navigation to the previous asset."""
 
+    fullscreenExitRequested = Signal()
+    """Emitted when a double-click should exit the immersive full screen mode."""
+
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._pixmap: Optional[QPixmap] = None
@@ -204,6 +207,15 @@ class ImageViewer(QWidget):
         """Return the centre point of the scroll area's viewport."""
 
         return self._scroll_area.viewport().rect().center()
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:  # pragma: no cover - GUI behaviour
+        """Emit a signal when the viewer is double-clicked to exit immersive mode."""
+
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.fullscreenExitRequested.emit()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
     # ------------------------------------------------------------------
     # QWidget overrides

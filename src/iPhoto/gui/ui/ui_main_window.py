@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QMenuBar,
     QProgressBar,
     QSlider,
+    QSizePolicy,
     QSplitter,
     QStackedWidget,
     QStatusBar,
@@ -40,6 +41,12 @@ HEADER_ICON_GLYPH_SIZE = QSize(24, 24)
 
 HEADER_BUTTON_SIZE = QSize(36, 38)
 """Hit target size that guarantees a comfortable clickable header button."""
+
+WINDOW_CONTROL_GLYPH_SIZE = QSize(16, 16)
+"""Icon size used for the custom window chrome buttons."""
+
+WINDOW_CONTROL_BUTTON_SIZE = QSize(26, 26)
+"""Provides a reliable click target for the frameless window controls."""
 
 
 class Ui_MainWindow(object):
@@ -80,6 +87,58 @@ class Ui_MainWindow(object):
         self.progress_bar.setMinimumWidth(160)
         self.progress_bar.setTextVisible(False)
         self.status_bar.addPermanentWidget(self.progress_bar)
+
+        # Assemble the frameless host widget that replaces the native window chrome. All
+        # content — including the custom title bar — lives inside this container so the
+        # window can hide everything quickly when immersive full screen mode is activated.
+        self.window_shell = QWidget(MainWindow)
+        self.window_shell_layout = QVBoxLayout(self.window_shell)
+        self.window_shell_layout.setContentsMargins(0, 0, 0, 0)
+        self.window_shell_layout.setSpacing(0)
+
+        # -------------------- Custom title bar --------------------
+        self.title_bar = QWidget(self.window_shell)
+        self.title_bar.setObjectName("windowTitleBar")
+        title_layout = QHBoxLayout(self.title_bar)
+        title_layout.setContentsMargins(12, 10, 12, 6)
+        title_layout.setSpacing(8)
+
+        self.window_title_label = QLabel(MainWindow.windowTitle())
+        self.window_title_label.setObjectName("windowTitleLabel")
+        self.window_title_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        self.window_title_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
+        title_layout.addWidget(self.window_title_label, 1)
+
+        self.window_controls = QWidget(self.title_bar)
+        self.window_controls.setObjectName("windowControls")
+        controls_layout = QHBoxLayout(self.window_controls)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(6)
+
+        self.minimize_button = QToolButton(self.window_controls)
+        self.fullscreen_button = QToolButton(self.window_controls)
+        self.close_button = QToolButton(self.window_controls)
+
+        for button, icon_name, tooltip in (
+            (self.minimize_button, "yellow.minimum.circle.svg", "Minimize"),
+            (self.fullscreen_button, "green.maximum.circle.svg", "Enter Full Screen"),
+            (self.close_button, "red.close.circle.svg", "Close"),
+        ):
+            self._configure_window_control_button(button, icon_name, tooltip)
+            controls_layout.addWidget(button)
+
+        title_layout.addWidget(self.window_controls, 0, Qt.AlignmentFlag.AlignRight)
+        self.window_shell_layout.addWidget(self.title_bar)
+
+        self.title_separator = QFrame(self.window_shell)
+        self.title_separator.setObjectName("windowTitleSeparator")
+        self.title_separator.setFrameShape(QFrame.Shape.HLine)
+        self.title_separator.setFrameShadow(QFrame.Shadow.Plain)
+        self.title_separator.setFixedHeight(1)
+        self.window_shell_layout.addWidget(self.title_separator)
 
         self.open_album_action = QAction("Open Album Folder…", MainWindow)
         self.rescan_action = QAction("Rescan", MainWindow)
@@ -209,6 +268,7 @@ class Ui_MainWindow(object):
         self.selection_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         album_header_layout.addWidget(self.selection_button)
         right_layout.addWidget(album_header)
+        self.album_header = album_header
 
         gallery_page = QWidget()
         gallery_layout = QVBoxLayout(gallery_page)
@@ -320,6 +380,7 @@ class Ui_MainWindow(object):
         header_layout.addWidget(info_container, 1)
         header_layout.addWidget(actions_container)
         detail_layout.addWidget(header)
+        self.detail_header = header
 
         # Insert a custom separator between the metadata header and the media area.
         # A soft drop shadow coupled with a light-toned line delivers the requested
@@ -346,6 +407,7 @@ class Ui_MainWindow(object):
         separator_shadow.setOffset(0, 1)
         header_separator.setGraphicsEffect(separator_shadow)
         detail_layout.addWidget(header_separator)
+        self.detail_header_separator = header_separator
 
         player_container = QWidget()
         player_layout = QVBoxLayout(player_container)
@@ -353,6 +415,7 @@ class Ui_MainWindow(object):
         player_layout.setSpacing(0)
         player_layout.addWidget(self.player_stack)
         detail_layout.addWidget(player_container)
+        self.player_container = player_container
         detail_layout.addWidget(self.filmstrip_view)
         self.detail_page = detail_page
 
@@ -379,7 +442,9 @@ class Ui_MainWindow(object):
         self.splitter.setCollapsible(0, False)
         self.splitter.setCollapsible(1, False)
 
-        MainWindow.setCentralWidget(self.splitter)
+        self.window_shell_layout.addWidget(self.splitter)
+
+        MainWindow.setCentralWidget(self.window_shell)
 
         player_container.installEventFilter(MainWindow)
 
@@ -398,14 +463,38 @@ class Ui_MainWindow(object):
         button.setIconSize(HEADER_ICON_GLYPH_SIZE)
         button.setFixedSize(HEADER_BUTTON_SIZE)
         button.setAutoRaise(True)
-        button.setToolTip(tooltip)
+
+    def _configure_window_control_button(
+        self,
+        button: QToolButton,
+        icon_name: str,
+        tooltip: str,
+    ) -> None:
+        """Apply the shared styling for the custom window control buttons."""
+
+        button.setIcon(load_icon(icon_name))
+        button.setIconSize(WINDOW_CONTROL_GLYPH_SIZE)
+        button.setFixedSize(WINDOW_CONTROL_BUTTON_SIZE)
+        button.setAutoRaise(True)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        button.setToolTip(tooltip)
 
     def retranslateUi(self, MainWindow: QMainWindow) -> None:  # noqa: N802 - Qt style
         """Apply translatable strings to the window."""
 
         MainWindow.setWindowTitle(
             QCoreApplication.translate("MainWindow", "iPhoto", None)
+        )
+        self.window_title_label.setText(MainWindow.windowTitle())
+        self.minimize_button.setToolTip(
+            QCoreApplication.translate("MainWindow", "Minimize", None)
+        )
+        self.fullscreen_button.setToolTip(
+            QCoreApplication.translate("MainWindow", "Enter Full Screen", None)
+        )
+        self.close_button.setToolTip(
+            QCoreApplication.translate("MainWindow", "Close", None)
         )
         self.selection_button.setText(
             QCoreApplication.translate("MainWindow", "Select", None)
