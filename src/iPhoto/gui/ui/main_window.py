@@ -6,8 +6,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable, Iterator, cast
 
-from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
-from PySide6.QtGui import QCloseEvent, QKeyEvent, QMouseEvent
+from PySide6.QtCore import QEvent, QPoint, QRectF, Qt, QTimer
+from PySide6.QtGui import QCloseEvent, QKeyEvent, QMouseEvent, QPainterPath, QRegion
 from PySide6.QtWidgets import QMainWindow, QWidget
 
 # ``main_window`` can be imported either via ``iPhoto.gui`` (package execution)
@@ -70,6 +70,10 @@ class MainWindow(QMainWindow):
         self._immersive_background_applied = False
         self._immersive_visibility_targets: tuple[QWidget, ...]
         self._immersive_visibility_targets = self._build_immersive_targets()
+        # ``_window_corner_radius`` keeps the frameless window visually aligned with native macOS
+        # chrome by reintroducing soft corners via a mask.  The value matches the platform default
+        # while remaining visually appealing on other operating systems.
+        self._window_corner_radius = 12
 
         # Wire the custom window control buttons to the standard window management actions and
         # connect the immersive viewer exit affordances.
@@ -104,6 +108,11 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
         self.position_live_badge()
+        self._apply_window_mask()
+
+    def showEvent(self, event) -> None:  # type: ignore[override]
+        super().showEvent(event)
+        self._apply_window_mask()
 
     def eventFilter(self, watched, event):  # type: ignore[override]
         if watched in self._drag_sources:
@@ -186,6 +195,7 @@ class MainWindow(QMainWindow):
         self._apply_immersive_backdrop()
 
         self._immersive_active = True
+        self.clearMask()
         self.showFullScreen()
         self._update_fullscreen_button_icon()
         self._schedule_playback_resume(expect_immersive=True, resume=resume_after_transition)
@@ -219,6 +229,7 @@ class MainWindow(QMainWindow):
 
         self._update_fullscreen_button_icon()
         self._schedule_playback_resume(expect_immersive=False, resume=resume_after_transition)
+        self._apply_window_mask()
 
     # Public API used by sidebar/actions
     def open_album_from_path(self, path: Path) -> None:
@@ -366,3 +377,28 @@ class MainWindow(QMainWindow):
             self.ui.filmstrip_view,
         )
         return tuple(widget for widget in candidates if widget is not None)
+
+    def _apply_window_mask(self) -> None:
+        """Apply a rounded rectangle mask so the frameless window keeps soft corners."""
+
+        if not self.isVisible():
+            return
+
+        # The mask must be cleared while the window is in immersive full screen mode to avoid
+        # cropping the screen contents.  Once the standard chrome returns, the rounded shape can be
+        # restored during the next resize or show event.
+        if self._immersive_active or self.isFullScreen():
+            self.clearMask()
+            return
+
+        rect = self.rect()
+        if rect.width() <= 0 or rect.height() <= 0:
+            return
+
+        # ``QPainterPath`` produces an anti-aliased outline that converts cleanly into a region.
+        # This keeps the corners smooth on high-DPI displays while avoiding the performance costs of
+        # using a translucent top-level window on platforms that do not support GPU compositing.
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(rect), self._window_corner_radius, self._window_corner_radius)
+        region = QRegion(path.toFillPolygon().toPolygon())
+        self.setMask(region)
