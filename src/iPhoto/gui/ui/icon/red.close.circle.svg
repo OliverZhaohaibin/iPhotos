@@ -1,0 +1,23 @@
+<!-- mac-close-red.svg -->
+<svg width="20" height="20" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Mac Close">
+  <defs>
+    <linearGradient id="gRed" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FF7B72"/>
+      <stop offset="1" stop-color="#FF5F57"/>
+    </linearGradient>
+    <filter id="innerShadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feOffset dx="0" dy="0"/>
+      <feGaussianBlur stdDeviation="0.9" result="blur"/>
+      <feComposite in2="SourceAlpha" operator="arithmetic" k2="-1" k3="1"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 .6 0"/>
+    </filter>
+  </defs>
+  <circle cx="10" cy="10" r="8.5" fill="url(#gRed)" stroke="#E0443E" stroke-width="1"/>
+  <circle cx="7" cy="7" r="2" fill="#ffffff" opacity=".25"/> <!-- 高光点 -->
+  <!-- X 图标（与 macOS hover 一致，可按需隐藏/显示） -->
+  <g stroke="#7A1A16" stroke-width="1.6" stroke-linecap="round" opacity=".85">
+    <line x1="6.4" y1="6.4" x2="13.6" y2="13.6"/>
+    <line x1="13.6" y1="6.4" x2="6.4" y2="13.6"/>
+  </g>
+  <circle cx="10" cy="10" r="8.5" fill="transparent" filter="url(#innerShadow)"/>
+</svg>
