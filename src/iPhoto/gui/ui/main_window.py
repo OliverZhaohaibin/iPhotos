@@ -17,7 +17,14 @@ from PySide6.QtGui import (
     QPainterPath,
     QPalette,
 )
-from PySide6.QtWidgets import QApplication, QMainWindow, QMenuBar, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QMainWindow,
+    QMenu,
+    QMenuBar,
+    QVBoxLayout,
+    QWidget,
+)
 
 # ``main_window`` can be imported either via ``iPhoto.gui`` (package execution)
 # or ``iPhotos.src.iPhoto.gui`` (legacy test harness).  The absolute import
@@ -251,7 +258,11 @@ class MainWindow(QMainWindow):
         """Compute palette-aware stylesheets for ``QMenu`` and ``QMenuBar`` widgets."""
 
         palette = self.palette()
-        base_color = palette.color(QPalette.ColorRole.Base).name()
+        # ``QPalette.ColorRole.Window`` is the shade the rest of the chrome uses for panels such as
+        # the sidebar.  Matching that role keeps the menu surfaces visually aligned with the rest of
+        # the application shell, whereas ``Base`` resolves to plain white under the bundled
+        # palette.
+        window_color = palette.color(QPalette.ColorRole.Window).name()
         border_color = palette.color(QPalette.ColorRole.Mid).name()
         text_color = palette.color(QPalette.ColorRole.WindowText).name()
         highlight_color = palette.color(QPalette.ColorRole.Highlight).name()
@@ -266,7 +277,7 @@ class MainWindow(QMainWindow):
 
         qmenu_style = (
             "QMenu {\n"
-            f"    background-color: {base_color};\n"
+            f"    background-color: {window_color};\n"
             f"    border: 1px solid {border_color};\n"
             f"    border-radius: {border_radius_px}px;\n"
             "    background-clip: padding-box;\n"
@@ -293,7 +304,7 @@ class MainWindow(QMainWindow):
 
         menubar_style = (
             "QMenuBar {\n"
-            f"    background-color: {base_color};\n"
+            f"    background-color: {window_color};\n"
             "    border-radius: 0px;\n"
             "    padding: 2px;\n"
             "}\n"
@@ -357,6 +368,22 @@ class MainWindow(QMainWindow):
                 combined_parts = [part for part in (existing, qmenu_style) if part]
                 app.setStyleSheet("\n".join(combined_parts))
                 self._global_menu_stylesheet = qmenu_style
+
+            # ``QMenuBar`` owns the drop-down menus presented for each action.  Qt constructs those
+            # popups lazily, so iterating the actions here lets us retrofit the required window
+            # flags once they exist.  ``FramelessWindowHint`` allows the stylesheet to control the
+            # rounded outline while ``WA_TranslucentBackground`` keeps the corners transparent so the
+            # painted background remains visible.  Applying the cached stylesheet directly ensures
+            # the popups match the context menus that reuse the same helper.
+            for action in self.ui.menu_bar.actions():
+                menu = action.menu()
+                if menu is None:
+                    continue
+                menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+                menu.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+                menu.setWindowFlag(Qt.WindowType.Popup, True)
+                menu.setStyleSheet(qmenu_style)
+                menu.setPalette(self.palette())
         finally:
             self._applying_menu_styles = False
 
