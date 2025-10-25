@@ -59,7 +59,11 @@ class ImageViewer(QWidget):
         # matches the rest of the detail panel instead of relying on a fixed hex
         # value that might drift from the active theme.
         surface_color = viewer_surface_color(self)
+        self._default_surface_color = surface_color
         self._scroll_area.setStyleSheet(
+            f"background-color: {surface_color}; border: none;"
+        )
+        self._scroll_area.viewport().setStyleSheet(
             f"background-color: {surface_color}; border: none;"
         )
         self._scroll_area.setWidget(self._label)
@@ -89,6 +93,15 @@ class ImageViewer(QWidget):
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+    def set_immersive_background(self, immersive: bool) -> None:
+        """Toggle a pure black backdrop used when immersive mode is active."""
+
+        colour = "#000000" if immersive else self._default_surface_color
+        stylesheet = f"background-color: {colour}; border: none;"
+        self._scroll_area.setStyleSheet(stylesheet)
+        self._scroll_area.viewport().setStyleSheet(stylesheet)
+        self.setStyleSheet(f"background-color: {colour};")
+
     def set_pixmap(self, pixmap: Optional[QPixmap]) -> None:
         """Display *pixmap* and update the scaled rendering."""
 

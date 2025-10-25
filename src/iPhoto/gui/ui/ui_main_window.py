@@ -48,6 +48,9 @@ WINDOW_CONTROL_GLYPH_SIZE = QSize(16, 16)
 WINDOW_CONTROL_BUTTON_SIZE = QSize(26, 26)
 """Provides a reliable click target for the frameless window controls."""
 
+TITLE_BAR_HEIGHT = WINDOW_CONTROL_BUTTON_SIZE.height() + 16
+"""Fixed vertical extent for the custom title bar including padding."""
+
 
 class Ui_MainWindow(object):
     """Pure UI layer for :class:`~PySide6.QtWidgets.QMainWindow`.
@@ -102,6 +105,7 @@ class Ui_MainWindow(object):
         title_layout = QHBoxLayout(self.title_bar)
         title_layout.setContentsMargins(12, 10, 12, 6)
         title_layout.setSpacing(8)
+        self.title_bar.setFixedHeight(TITLE_BAR_HEIGHT)
 
         self.window_title_label = QLabel(MainWindow.windowTitle())
         self.window_title_label.setObjectName("windowTitleLabel")
@@ -117,6 +121,11 @@ class Ui_MainWindow(object):
         controls_layout = QHBoxLayout(self.window_controls)
         controls_layout.setContentsMargins(0, 0, 0, 0)
         controls_layout.setSpacing(6)
+        self.window_controls.setFixedHeight(WINDOW_CONTROL_BUTTON_SIZE.height())
+        self.window_controls.setSizePolicy(
+            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Fixed,
+        )
 
         self.minimize_button = QToolButton(self.window_controls)
         self.fullscreen_button = QToolButton(self.window_controls)

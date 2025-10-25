@@ -63,6 +63,10 @@ class MainWindow(QMainWindow):
         self._drag_active = False
         self._drag_offset = QPoint()
         self._video_controls_enabled_before = self.ui.video_area.controls_enabled()
+        self._window_shell_stylesheet = self.ui.window_shell.styleSheet()
+        self._player_container_stylesheet = self.ui.player_container.styleSheet()
+        self._player_stack_stylesheet = self.ui.player_stack.styleSheet()
+        self._immersive_background_applied = False
 
         # Wire the custom window control buttons to the standard window management actions and
         # connect the immersive viewer exit affordances.
@@ -179,16 +183,18 @@ class MainWindow(QMainWindow):
             self._hidden_widget_states.append((widget, widget.isVisible()))
             widget.setVisible(False)
 
-        # Store and temporarily disable the floating video controls so the player surface fills
-        # the entire screen with unobstructed content.
+        # Store the current playback control state and collapse the overlay.  Keeping the controls
+        # enabled allows mouse movement inside the immersive canvas to bring the bar back,
+        # matching the expected behaviour of dedicated media players.
         self._video_controls_enabled_before = self.ui.video_area.controls_enabled()
-        self.ui.video_area.set_controls_enabled(False)
         self.ui.video_area.hide_controls(animate=False)
 
         # Expanding the splitter after hiding the sidebar ensures the player canvas stretches to
         # occupy the full width.  ``QSplitter`` automatically redistributes the hidden widget's
         # space, so there is no need for manual size adjustments beyond clearing the handle.
         self.ui.splitter.setSizes([0, sum(self._splitter_sizes or [self.width()])])
+
+        self._apply_immersive_backdrop()
 
         self._immersive_active = True
         self.showFullScreen()
@@ -201,6 +207,7 @@ class MainWindow(QMainWindow):
             return
 
         self._immersive_active = False
+        self._restore_default_backdrop()
         self.showNormal()
 
         if self._previous_geometry is not None:
@@ -281,3 +288,36 @@ class MainWindow(QMainWindow):
         """Mirror the window title onto the custom title bar label."""
 
         self.ui.window_title_label.setText(self.windowTitle())
+
+    def _apply_immersive_backdrop(self) -> None:
+        """Paint every viewer surface pure black for the immersive presentation."""
+
+        if self._immersive_background_applied:
+            return
+
+        # ``QWidget`` stylesheets default to an empty string, so caching the initial values allows
+        # the standard theme to be restored precisely instead of falling back to hard coded
+        # defaults once the immersive session finishes.
+        self._window_shell_stylesheet = self.ui.window_shell.styleSheet()
+        self._player_container_stylesheet = self.ui.player_container.styleSheet()
+        self._player_stack_stylesheet = self.ui.player_stack.styleSheet()
+
+        self.ui.window_shell.setStyleSheet("background-color: #000000;")
+        self.ui.player_container.setStyleSheet("background-color: #000000;")
+        self.ui.player_stack.setStyleSheet("background-color: #000000;")
+        self.ui.image_viewer.set_immersive_background(True)
+        self.ui.video_area.set_immersive_background(True)
+        self._immersive_background_applied = True
+
+    def _restore_default_backdrop(self) -> None:
+        """Revert the temporary black theme applied during immersive mode."""
+
+        if not self._immersive_background_applied:
+            return
+
+        self.ui.window_shell.setStyleSheet(self._window_shell_stylesheet)
+        self.ui.player_container.setStyleSheet(self._player_container_stylesheet)
+        self.ui.player_stack.setStyleSheet(self._player_stack_stylesheet)
+        self.ui.image_viewer.set_immersive_background(False)
+        self.ui.video_area.set_immersive_background(False)
+        self._immersive_background_applied = False
