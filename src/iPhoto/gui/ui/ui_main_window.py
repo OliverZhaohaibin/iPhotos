@@ -103,6 +103,13 @@ class Ui_MainWindow(object):
         # main window can hide or show the entire chrome strip with a single widget toggle when
         # entering or exiting immersive full screen mode.
         self.window_chrome = QWidget(self.window_shell)
+        # Keep the chrome wrapper at a fixed height so the custom title bar and its controls do
+        # not stretch vertically when the main window grows taller.  The horizontal policy stays
+        # ``Preferred`` so the container can expand to match the available width.
+        self.window_chrome.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Fixed,
+        )
         window_chrome_layout = QVBoxLayout(self.window_chrome)
         window_chrome_layout.setContentsMargins(0, 0, 0, 0)
         window_chrome_layout.setSpacing(0)
@@ -110,6 +117,12 @@ class Ui_MainWindow(object):
         # -------------------- Custom title bar --------------------
         self.title_bar = QWidget(self.window_chrome)
         self.title_bar.setObjectName("windowTitleBar")
+        # Explicitly fix the title bar height and size policy to lock the macOS-style traffic
+        # light controls in place regardless of how tall the application window becomes.
+        self.title_bar.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
         title_layout = QHBoxLayout(self.title_bar)
         title_layout.setContentsMargins(12, 10, 12, 6)
         title_layout.setSpacing(8)
