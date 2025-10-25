@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QCoreApplication, QMetaObject, QSize, Qt, QTimer
-from PySide6.QtGui import QAction, QActionGroup, QColor, QFont
+from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QPalette
 from PySide6.QtWidgets import (
     QFrame,
     QGraphicsDropShadowEffect,
@@ -67,6 +67,14 @@ class ChromeStatusBar(QWidget):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setAutoFillBackground(True)
+
+        # Keep the status bar opaque even though the parent window uses
+        # ``WA_TranslucentBackground``.  Copying the base colour into the Window
+        # role ensures every style fills the background without inheriting
+        # transparency from the palette.
+        palette = self.palette()
+        palette.setColor(QPalette.ColorRole.Window, palette.color(QPalette.ColorRole.Base))
+        self.setPalette(palette)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 6, 12, 6)
@@ -159,8 +167,24 @@ class Ui_MainWindow(object):
 
         MainWindow.resize(1200, 720)
 
-        self.menu_bar = QMenuBar(MainWindow)
-        MainWindow.setMenuBar(self.menu_bar)
+        self.menu_bar = QMenuBar(self.window_shell)
+        self.menu_bar.setObjectName("chromeMenuBar")
+        # Hosting the menu bar inside the rounded shell keeps the chrome opaque while still
+        # allowing macOS to fall back to the in-window variant instead of the application-wide
+        # native menu.  This approach produces consistent visuals across platforms.
+        self.menu_bar.setNativeMenuBar(False)
+        self.menu_bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.menu_bar.setAutoFillBackground(True)
+        self.menu_bar.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Fixed,
+        )
+        menu_palette = self.menu_bar.palette()
+        menu_palette.setColor(
+            QPalette.ColorRole.Window,
+            menu_palette.color(QPalette.ColorRole.Base),
+        )
+        self.menu_bar.setPalette(menu_palette)
 
         # Assemble the frameless host widget that replaces the native window chrome. All
         # content — including the custom title bar — lives inside this container so the
@@ -242,6 +266,7 @@ class Ui_MainWindow(object):
         window_chrome_layout.addWidget(self.title_separator)
 
         self.window_shell_layout.addWidget(self.window_chrome)
+        self.window_shell_layout.addWidget(self.menu_bar)
 
         self.open_album_action = QAction("Open Album Folder…", MainWindow)
         self.rescan_action = QAction("Rescan", MainWindow)

@@ -17,7 +17,7 @@ from PySide6.QtGui import (
     QPainterPath,
     QPalette,
 )
-from PySide6.QtWidgets import QMainWindow, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QMainWindow, QMenuBar, QVBoxLayout, QWidget
 
 # ``main_window`` can be imported either via ``iPhoto.gui`` (package execution)
 # or ``iPhotos.src.iPhoto.gui`` (legacy test harness).  The absolute import
@@ -212,6 +212,11 @@ class MainWindow(QMainWindow):
         """Return the custom status bar embedded in the rounded shell."""
 
         return self.ui.status_bar
+
+    def menuBar(self) -> QMenuBar:  # type: ignore[override]
+        """Expose the menu bar hosted inside the rounded window shell."""
+
+        return self.ui.menu_bar
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
