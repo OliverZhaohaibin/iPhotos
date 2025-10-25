@@ -130,8 +130,11 @@ class MainWindow(QMainWindow):
         # The rounded shell handles per-pixel transparency by drawing the anti-aliased corners.
         # Applying ``WA_TranslucentBackground`` to the top-level ``QMainWindow`` prevents Qt from
         # painting the primary window surface on certain platforms, leaving the UI invisible when
-        # the application launches.  Keeping the flag off here ensures the shell is the only widget
-        # responsible for transparent rendering while the host window remains stable.
+        # the application launches.  Explicitly clearing the attribute makes sure the host window
+        # keeps its default opaque behaviour so only ``RoundedWindowShell`` performs translucent
+        # rendering.  ``setAutoFillBackground(False)`` avoids redundant background fills while the
+        # dedicated shell paints the anti-aliased corners.
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
         self.setAutoFillBackground(False)
 
         # ``_window_corner_radius`` keeps the frameless window visually aligned with native macOS
