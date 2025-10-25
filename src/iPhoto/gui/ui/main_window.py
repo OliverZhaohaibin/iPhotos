@@ -17,7 +17,7 @@ from PySide6.QtGui import (
     QPainterPath,
     QPalette,
 )
-from PySide6.QtWidgets import QMainWindow, QMenuBar, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QMainWindow, QMenuBar, QVBoxLayout, QWidget
 
 # ``main_window`` can be imported either via ``iPhoto.gui`` (package execution)
 # or ``iPhotos.src.iPhoto.gui`` (legacy test harness).  The absolute import
@@ -177,6 +177,9 @@ class MainWindow(QMainWindow):
         self._immersive_background_applied = False
         self._immersive_visibility_targets: tuple[QWidget, ...]
         self._immersive_visibility_targets = self._build_immersive_targets()
+        # Cache the most recently applied menu stylesheet so repeated calls can replace the block
+        # instead of continuously appending duplicate rules when palettes change.
+        self._menu_stylesheet_block: str | None = None
 
         # Wire the custom window control buttons to the standard window management actions and
         # connect the immersive viewer exit affordances.
@@ -220,12 +223,15 @@ class MainWindow(QMainWindow):
         return self.ui.menu_bar
 
     def _apply_menu_styles(self) -> None:
-        """Force drop-down menus to render with opaque backgrounds.
+        """Force drop-down and context menus to render with opaque backgrounds.
 
         The application window uses ``WA_TranslucentBackground`` so the rounded chrome can
         blend with the desktop wallpaper.  Without explicit styling, popup menus inherit the
         translucency hint and end up drawing fully transparent surfaces.  Applying a targeted
-        stylesheet keeps the menus readable while still respecting the active palette.
+        stylesheet keeps the menus readable while still respecting the active palette.  The
+        stylesheet is installed on the main window instead of the menu bar so that ad-hoc
+        ``QMenu`` instances created by child widgets (for example, right-click context menus)
+        also receive the opaque background rules.
         """
 
         palette = self.palette()
@@ -257,11 +263,53 @@ class MainWindow(QMainWindow):
             margin-left: 10px;
             margin-right: 10px;
         }}
+        QMenuBar {{
+            background-color: {base_color};
+            border-bottom: 1px solid {border_color};
+        }}
+        QMenuBar::item {{
+            background-color: transparent;
+            color: {text_color};
+            padding: 4px 10px;
+            margin: 0px;
+        }}
+        QMenuBar::item:selected {{
+            background-color: {highlight_color};
+            color: {highlight_text_color};
+        }}
+        QMenuBar::separator {{
+            background: {separator_color};
+            width: 1px;
+            margin: 4px 2px;
+        }}
         """.strip()
 
-        # ``setStyleSheet`` automatically propagates to popup menus spawned from the bar,
-        # ensuring both the drop-down surface and individual menu items remain opaque.
-        self.ui.menu_bar.setStyleSheet(menu_style)
+        # ``self.styleSheet`` may already contain rules from other UI customisations.  Merging the
+        # new menu styling ensures those definitions remain intact while guaranteeing every menu is
+        # explicitly opaque.
+        existing_style = self.styleSheet().strip()
+        if self._menu_stylesheet_block and self._menu_stylesheet_block in existing_style:
+            existing_style = existing_style.replace(self._menu_stylesheet_block, "").strip()
+        combined_style = menu_style if not existing_style else f"{existing_style}\n\n{menu_style}"
+        self.setStyleSheet(combined_style)
+        self._menu_stylesheet_block = menu_style
+
+        # ``QApplication`` caches style sheets for new top-level widgets, so updating the active
+        # instance guarantees menus created lazily after this call (for example, context menus
+        # spawned on demand) pick up the same palette-aware rules without additional plumbing.
+        app = QApplication.instance()
+        if app is not None:
+            app_style = app.styleSheet().strip()
+            previous_menu_style = app.property("_lexiphoto_menu_stylesheet")
+            if isinstance(previous_menu_style, str) and previous_menu_style in app_style:
+                app_style = app_style.replace(previous_menu_style, "").strip()
+            app_combined_style = (
+                combined_style
+                if not app_style
+                else f"{app_style}\n\n{menu_style}"
+            )
+            app.setStyleSheet(app_combined_style)
+            app.setProperty("_lexiphoto_menu_stylesheet", menu_style)
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
