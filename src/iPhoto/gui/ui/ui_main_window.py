@@ -181,17 +181,10 @@ class Ui_MainWindow(object):
         # native menu.  This approach produces consistent visuals across platforms.
         self.menu_bar.setNativeMenuBar(False)
         self.menu_bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.menu_bar.setAutoFillBackground(True)
         self.menu_bar.setSizePolicy(
             QSizePolicy.Policy.Preferred,
             QSizePolicy.Policy.Fixed,
         )
-        menu_palette = self.menu_bar.palette()
-        menu_palette.setColor(
-            QPalette.ColorRole.Window,
-            menu_palette.color(QPalette.ColorRole.Base),
-        )
-        self.menu_bar.setPalette(menu_palette)
 
         # Collect the custom title bar and its separator inside a dedicated container so the
         # main window can hide or show the entire chrome strip with a single widget toggle when

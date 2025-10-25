@@ -17,7 +17,7 @@ from PySide6.QtGui import (
     QPainterPath,
     QPalette,
 )
-from PySide6.QtWidgets import QMainWindow, QMenuBar, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QMainWindow, QMenuBar, QVBoxLayout, QWidget
 
 # ``main_window`` can be imported either via ``iPhoto.gui`` (package execution)
 # or ``iPhotos.src.iPhoto.gui`` (legacy test harness).  The absolute import
@@ -111,6 +111,8 @@ class RoundedWindowShell(QWidget):
 
 class MainWindow(QMainWindow):
     """Primary window for the desktop experience."""
+
+    _GLOBAL_MENU_STYLESHEET: str | None = None
 
     def __init__(self, context: AppContext) -> None:
         super().__init__()
@@ -220,26 +222,57 @@ class MainWindow(QMainWindow):
         return self.ui.menu_bar
 
     def _apply_menu_styles(self) -> None:
-        """Force drop-down menus to render with opaque backgrounds.
-
-        The application window uses ``WA_TranslucentBackground`` so the rounded chrome can
-        blend with the desktop wallpaper.  Without explicit styling, popup menus inherit the
-        translucency hint and end up drawing fully transparent surfaces.  Applying a targeted
-        stylesheet keeps the menus readable while still respecting the active palette.
-        """
+        """Synchronise menu visuals with the active palette while keeping popups opaque."""
 
         palette = self.palette()
         base_color = palette.color(QPalette.ColorRole.Base).name()
+        window_color = palette.color(QPalette.ColorRole.Window).name()
         border_color = palette.color(QPalette.ColorRole.Mid).name()
         text_color = palette.color(QPalette.ColorRole.WindowText).name()
+        disabled_text_color = palette.color(
+            QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text
+        ).name()
         highlight_color = palette.color(QPalette.ColorRole.Highlight).name()
         highlight_text_color = palette.color(QPalette.ColorRole.HighlightedText).name()
         separator_color = palette.color(QPalette.ColorRole.Midlight).name()
 
-        menu_style = f"""
+        # Styling the in-window menu bar keeps it visually aligned with platform conventions while
+        # still ensuring it remains legible atop the rounded, translucent shell.
+        menubar_style = f"""
+        QMenuBar#chromeMenuBar {{
+            background-color: {window_color};
+            padding: 4px 8px;
+            spacing: 6px;
+        }}
+        QMenuBar#chromeMenuBar::item {{
+            background-color: transparent;
+            border-radius: 4px;
+            color: {text_color};
+            margin: 0px;
+            padding: 4px 12px;
+        }}
+        QMenuBar#chromeMenuBar::item:selected {{
+            background-color: {highlight_color};
+            color: {highlight_text_color};
+        }}
+        QMenuBar#chromeMenuBar::item:pressed {{
+            background-color: {highlight_color};
+            color: {highlight_text_color};
+        }}
+        QMenuBar#chromeMenuBar::item:disabled {{
+            color: {disabled_text_color};
+        }}
+        """.strip()
+        self.ui.menu_bar.setStyleSheet(menubar_style)
+
+        # Global popup menu styling needs to be applied through the QApplication so that every
+        # context menu – including those created dynamically throughout the interface – receives
+        # an opaque background rather than inheriting the translucent window surface.
+        popup_style = f"""/* BEGIN iPhotos Menu Styles */
         QMenu {{
             background-color: {base_color};
             border: 1px solid {border_color};
+            padding: 4px 0px;
         }}
         QMenu::item {{
             background-color: transparent;
@@ -251,17 +284,28 @@ class MainWindow(QMainWindow):
             background-color: {highlight_color};
             color: {highlight_text_color};
         }}
+        QMenu::item:disabled {{
+            color: {disabled_text_color};
+        }}
         QMenu::separator {{
             height: 1px;
             background: {separator_color};
             margin-left: 10px;
             margin-right: 10px;
         }}
-        """.strip()
+        /* END iPhotos Menu Styles */""".strip()
 
-        # ``setStyleSheet`` automatically propagates to popup menus spawned from the bar,
-        # ensuring both the drop-down surface and individual menu items remain opaque.
-        self.ui.menu_bar.setStyleSheet(menu_style)
+        app = QApplication.instance()
+        if app is None:
+            return
+
+        existing = app.styleSheet()
+        if MainWindow._GLOBAL_MENU_STYLESHEET and MainWindow._GLOBAL_MENU_STYLESHEET in existing:
+            existing = existing.replace(MainWindow._GLOBAL_MENU_STYLESHEET, "").strip()
+
+        combined = f"{existing}\n\n{popup_style}".strip() if existing else popup_style
+        app.setStyleSheet(combined)
+        MainWindow._GLOBAL_MENU_STYLESHEET = popup_style
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
@@ -304,6 +348,9 @@ class MainWindow(QMainWindow):
             # Updating the rounded shell ensures palette transitions repaint the anti-aliased edge
             # without waiting for external resize events.
             self._rounded_shell.update()
+            # Refresh the menu styling whenever the palette or Qt style changes so the colours
+            # used for both the menu bar and context menus stay aligned with the active theme.
+            self._apply_menu_styles()
 
     def position_live_badge(self) -> None:
         """Keep the Live badge pinned to the player corner."""
