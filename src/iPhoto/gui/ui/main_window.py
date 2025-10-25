@@ -127,10 +127,11 @@ class MainWindow(QMainWindow):
         # bar using the default frame.
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
 
-        # Enable per-pixel transparency so the rounded container can blend smoothly with the
-        # desktop wallpaper.  The main window itself remains borderless while the dedicated shell
-        # widget below paints the actual rounded rectangle chrome.
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        # The rounded shell handles per-pixel transparency by drawing the anti-aliased corners.
+        # Applying ``WA_TranslucentBackground`` to the top-level ``QMainWindow`` prevents Qt from
+        # painting the primary window surface on certain platforms, leaving the UI invisible when
+        # the application launches.  Keeping the flag off here ensures the shell is the only widget
+        # responsible for transparent rendering while the host window remains stable.
         self.setAutoFillBackground(False)
 
         # ``_window_corner_radius`` keeps the frameless window visually aligned with native macOS
