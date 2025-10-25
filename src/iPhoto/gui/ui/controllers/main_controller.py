@@ -579,6 +579,20 @@ class MainController(QObject):
         self._detail_ui.show_detail_view()
         self._detail_ui.show_placeholder()
 
+    def suspend_playback_for_transition(self) -> bool:
+        """Pause active playback so window state changes do not drop frames."""
+
+        if not self._media.is_playing():
+            return False
+        self._media.pause()
+        return True
+
+    def resume_playback_after_transition(self) -> None:
+        """Resume playback if it was paused specifically for a window transition."""
+
+        if self._media.is_paused():
+            self._media.play()
+
     # -----------------------------------------------------------------
     # Drag-and-drop helpers
     def _validate_grid_drop(self, paths: List[Path]) -> bool:

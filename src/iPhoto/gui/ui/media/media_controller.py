@@ -120,6 +120,18 @@ class MediaController(QObject):
 
         self._player.pause()
 
+    def is_playing(self) -> bool:
+        """Return ``True`` when the media player is actively rendering frames."""
+
+        assert QMediaPlayer is not None  # noqa: S101 - guard for type checkers
+        return self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+
+    def is_paused(self) -> bool:
+        """Return ``True`` when playback is paused but ready to resume instantly."""
+
+        assert QMediaPlayer is not None  # noqa: S101 - guard for type checkers
+        return self._player.playbackState() == QMediaPlayer.PlaybackState.PausedState
+
     def stop(self) -> None:
         """Stop playback and reset the playback position to the beginning."""
 

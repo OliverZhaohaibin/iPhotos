@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable, Iterator, cast
 
-from PySide6.QtCore import QEvent, QPoint, Qt
+from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
 from PySide6.QtGui import QCloseEvent, QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import QMainWindow, QWidget
 
@@ -23,6 +23,10 @@ from .controllers.main_controller import MainController
 from .media import require_multimedia
 from .ui_main_window import Ui_MainWindow
 from .icons import load_icon
+
+
+# Small delay that gives Qt time to settle window transitions before resuming playback.
+PLAYBACK_RESUME_DELAY_MS = 120
 
 
 class MainWindow(QMainWindow):
@@ -151,6 +155,7 @@ class MainWindow(QMainWindow):
         if self._immersive_active:
             return
 
+        resume_after_transition = self.controller.suspend_playback_for_transition()
         ready = self.controller.prepare_fullscreen_asset()
         if not ready:
             # ``prepare_fullscreen_asset`` guarantees the placeholder is visible when no media
@@ -183,6 +188,7 @@ class MainWindow(QMainWindow):
         self._immersive_active = True
         self.showFullScreen()
         self._update_fullscreen_button_icon()
+        self._schedule_playback_resume(expect_immersive=True, resume=resume_after_transition)
 
     def exit_fullscreen(self) -> None:
         """Restore the normal window chrome and previously visible widgets."""
@@ -190,6 +196,7 @@ class MainWindow(QMainWindow):
         if not self._immersive_active:
             return
 
+        resume_after_transition = self.controller.suspend_playback_for_transition()
         self._immersive_active = False
         self._restore_default_backdrop()
         self.showNormal()
@@ -211,6 +218,7 @@ class MainWindow(QMainWindow):
                 self.ui.video_area.show_controls(animate=False)
 
         self._update_fullscreen_button_icon()
+        self._schedule_playback_resume(expect_immersive=False, resume=resume_after_transition)
 
     # Public API used by sidebar/actions
     def open_album_from_path(self, path: Path) -> None:
@@ -301,6 +309,20 @@ class MainWindow(QMainWindow):
         self.ui.image_viewer.set_immersive_background(False)
         self.ui.video_area.set_immersive_background(False)
         self._immersive_background_applied = False
+
+    def _schedule_playback_resume(self, *, expect_immersive: bool, resume: bool) -> None:
+        """Resume playback after the window has settled into the target mode."""
+
+        if not resume:
+            return
+
+        def _resume() -> None:
+            # Skip the resume when the user toggled modes again before the delay elapsed.
+            if self._immersive_active != expect_immersive:
+                return
+            self.controller.resume_playback_after_transition()
+
+        QTimer.singleShot(PLAYBACK_RESUME_DELAY_MS, _resume)
 
     @contextmanager
     def _suspend_layout_updates(self) -> Iterator[None]:
