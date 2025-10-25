@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QCoreApplication, QMimeData, QObject, QPoint, QUrl, Qt
-from PySide6.QtGui import QGuiApplication, QPalette
-from PySide6.QtWidgets import QMenu
+from PySide6.QtGui import QGuiApplication, QPalette, QColor
+from PySide6.QtWidgets import QGraphicsDropShadowEffect, QMenu
 
 from ...facade import AppFacade
 from ..models.asset_model import AssetModel, Roles
@@ -84,6 +84,17 @@ class ContextMenuController(QObject):
 
             if isinstance(stylesheet, str) and stylesheet:
                 menu.setStyleSheet(stylesheet)
+
+        # Equip the popup with a soft drop shadow so it no longer appears as a flat rectangle that
+        # floats awkwardly above the translucent window shell.  ``QGraphicsDropShadowEffect`` must
+        # be owned by the menu instance, therefore we create it here and tune the blur/offset to
+        # mimic the subtle elevation used by the rest of the application chrome.
+        menu.setGraphicsEffect(None)
+        shadow = QGraphicsDropShadowEffect(menu)
+        shadow.setBlurRadius(18)
+        shadow.setColor(QColor(0, 0, 0, 110))
+        shadow.setOffset(0, 6)
+        menu.setGraphicsEffect(shadow)
 
         selection_model = self._grid_view.selectionModel()
 

@@ -19,6 +19,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QGraphicsDropShadowEffect,
     QMainWindow,
     QMenu,
     QMenuBar,
@@ -282,6 +283,7 @@ class MainWindow(QMainWindow):
             f"    border-radius: {border_radius_px}px;\n"
             "    background-clip: padding-box;\n"
             "    padding: 4px;\n"
+            "    margin: 6px;\n"
             "}\n"
             "QMenu::item {\n"
             "    background-color: transparent;\n"
@@ -327,6 +329,35 @@ class MainWindow(QMainWindow):
 
         self._qmenu_stylesheet = qmenu_style
         return qmenu_style, menubar_style
+
+    def _configure_popup_menu(self, menu: QMenu, stylesheet: str) -> None:
+        """Apply frameless styling and a drop shadow to ``menu``.
+
+        Menu widgets inherit ``WA_TranslucentBackground`` from the frameless window shell so the
+        stylesheet-defined rounded corners can blend smoothly with the wallpaper.  Qt disables the
+        native window frame in this mode, meaning we must supply both the opaque background and the
+        shadow effect manually to match the rest of the chrome.  Creating a fresh
+        ``QGraphicsDropShadowEffect`` for every popup avoids reusing instances that would otherwise
+        be owned by multiple widgets simultaneously.
+        """
+
+        menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        menu.setAutoFillBackground(True)
+        menu.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+        menu.setWindowFlag(Qt.WindowType.Popup, True)
+        menu.setPalette(self.palette())
+        menu.setBackgroundRole(QPalette.ColorRole.Base)
+        menu.setStyleSheet(stylesheet)
+
+        # ``QGraphicsDropShadowEffect`` instances cannot be shared between widgets, so we clear any
+        # previous effect before installing a newly configured one whose lifetime is tied to the
+        # menu itself.
+        menu.setGraphicsEffect(None)
+        shadow = QGraphicsDropShadowEffect(menu)
+        shadow.setBlurRadius(18)
+        shadow.setColor(QColor(0, 0, 0, 110))
+        shadow.setOffset(0, 6)
+        menu.setGraphicsEffect(shadow)
 
     def _apply_menu_styles(self) -> None:
         """Force drop-down and context menus to render with opaque backgrounds.
@@ -379,11 +410,7 @@ class MainWindow(QMainWindow):
                 menu = action.menu()
                 if menu is None:
                     continue
-                menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-                menu.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
-                menu.setWindowFlag(Qt.WindowType.Popup, True)
-                menu.setStyleSheet(qmenu_style)
-                menu.setPalette(self.palette())
+                self._configure_popup_menu(menu, qmenu_style)
         finally:
             self._applying_menu_styles = False
 

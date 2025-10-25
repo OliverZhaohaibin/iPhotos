@@ -6,8 +6,15 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from PySide6.QtCore import QPoint, QUrl, Qt
-from PySide6.QtGui import QDesktopServices, QPalette
-from PySide6.QtWidgets import QInputDialog, QMenu, QMessageBox, QWidget, QTreeView
+from PySide6.QtGui import QDesktopServices, QPalette, QColor
+from PySide6.QtWidgets import (
+    QGraphicsDropShadowEffect,
+    QInputDialog,
+    QMenu,
+    QMessageBox,
+    QWidget,
+    QTreeView,
+)
 
 from ....errors import LibraryError
 from ....library.manager import LibraryManager
@@ -46,6 +53,17 @@ def _apply_main_window_menu_style(menu: QMenu, anchor: Optional[QWidget]) -> Non
             stylesheet = fallback_accessor() if callable(fallback_accessor) else None
         if isinstance(stylesheet, str) and stylesheet:
             menu.setStyleSheet(stylesheet)
+
+    # Always attach a fresh drop shadow so the popup casts the same soft silhouette regardless of
+    # where it originates.  Qt takes ownership of the effect when ``setGraphicsEffect`` is called,
+    # therefore we clear any previous instance before configuring the replacement to avoid
+    # retaining outdated parameters.
+    menu.setGraphicsEffect(None)
+    shadow = QGraphicsDropShadowEffect(menu)
+    shadow.setBlurRadius(18)
+    shadow.setColor(QColor(0, 0, 0, 110))
+    shadow.setOffset(0, 6)
+    menu.setGraphicsEffect(shadow)
 
 
 class AlbumSidebarContextMenu(QMenu):
