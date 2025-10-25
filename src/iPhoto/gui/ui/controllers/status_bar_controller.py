@@ -7,15 +7,16 @@ from typing import Optional
 
 from PySide6.QtCore import QObject
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QProgressBar, QStatusBar
+from PySide6.QtWidgets import QProgressBar
 
+from ..ui_main_window import ChromeStatusBar
 
 class StatusBarController(QObject):
     """Manage progress feedback and transient messages in the status bar."""
 
     def __init__(
         self,
-        status_bar: QStatusBar,
+        status_bar: ChromeStatusBar,
         progress_bar: QProgressBar,
         rescan_action: QAction | None,
     ) -> None:

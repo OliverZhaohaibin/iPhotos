@@ -30,7 +30,7 @@ except ImportError:  # pragma: no cover - script execution fallback
 
 from .controllers.main_controller import MainController
 from .media import require_multimedia
-from .ui_main_window import Ui_MainWindow
+from .ui_main_window import ChromeStatusBar, Ui_MainWindow
 from .icons import load_icon
 
 
@@ -142,6 +142,9 @@ class MainWindow(QMainWindow):
             radius=self._window_corner_radius,
             parent=self,
         )
+        # Keep the rounded shell's palette in sync with the window so the anti-aliased
+        # backdrop inherits the same colour the application theme expects.
+        self._rounded_shell.setPalette(self.palette())
         original_shell.setParent(self._rounded_shell)
         original_shell.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         original_shell.setAutoFillBackground(False)
@@ -204,6 +207,11 @@ class MainWindow(QMainWindow):
         # after the UI is dismissed.
         self.controller.shutdown()
         super().closeEvent(event)
+
+    def statusBar(self) -> ChromeStatusBar:  # type: ignore[override]
+        """Return the custom status bar embedded in the rounded shell."""
+
+        return self.ui.status_bar
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
@@ -475,7 +483,7 @@ class MainWindow(QMainWindow):
 
         candidates: tuple[QWidget | None, ...] = (
             self.menuBar(),
-            self.statusBar(),
+            self.ui.status_bar,
             self.ui.main_toolbar,
             self.ui.sidebar,
             self.ui.window_chrome,

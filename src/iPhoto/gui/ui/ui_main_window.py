@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QCoreApplication, QMetaObject, QSize, Qt
+from PySide6.QtCore import QCoreApplication, QMetaObject, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QColor, QFont
 from PySide6.QtWidgets import (
     QFrame,
@@ -16,7 +16,6 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSplitter,
     QStackedWidget,
-    QStatusBar,
     QToolBar,
     QToolButton,
     QVBoxLayout,
@@ -47,6 +46,87 @@ WINDOW_CONTROL_GLYPH_SIZE = QSize(16, 16)
 
 WINDOW_CONTROL_BUTTON_SIZE = QSize(26, 26)
 """Provides a reliable click target for the frameless window controls."""
+
+
+class ChromeStatusBar(QWidget):
+    """Lightweight status bar with an opaque background and progress indicator.
+
+    The widget emulates the small subset of :class:`QStatusBar` behaviour that the
+    controllers rely on (``showMessage``/``clearMessage``) while guaranteeing that the
+    background remains fully opaque inside the rounded window shell.  Implementing a
+    bespoke control avoids the transparency artefacts introduced by the native status bar
+    when the main window uses ``Qt.WA_TranslucentBackground`` for anti-aliased corners.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("chromeStatusBar")
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAutoFillBackground(True)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(12, 6, 12, 6)
+        layout.setSpacing(12)
+
+        self._message_label = QLabel(self)
+        self._message_label.setObjectName("statusMessageLabel")
+        self._message_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        self._message_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
+        layout.addWidget(self._message_label, 1)
+
+        self._progress_bar = self._create_progress_bar()
+        layout.addWidget(self._progress_bar, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        self._clear_timer = QTimer(self)
+        self._clear_timer.setSingleShot(True)
+        self._clear_timer.timeout.connect(self.clearMessage)
+
+    def _create_progress_bar(self) -> "QProgressBar":
+        """Instantiate the determinate/indeterminate progress indicator.
+
+        A dedicated helper keeps the constructor easy to read and ensures any future
+        styling tweaks stay encapsulated in one place.
+        """
+
+        bar = QProgressBar(self)
+        bar.setObjectName("statusProgress")
+        bar.setVisible(False)
+        bar.setMinimumWidth(160)
+        bar.setTextVisible(False)
+        bar.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        return bar
+
+    @property
+    def progress_bar(self) -> "QProgressBar":
+        """Expose the embedded progress bar for controllers that drive it."""
+
+        return self._progress_bar
+
+    def showMessage(self, message: str, timeout: int = 0) -> None:  # noqa: N802 - Qt-style API
+        """Display a status message optionally cleared after ``timeout`` milliseconds."""
+
+        self._message_label.setText(message)
+        self._clear_timer.stop()
+        if timeout > 0:
+            self._clear_timer.start(max(0, timeout))
+
+    def clearMessage(self) -> None:  # noqa: N802 - Qt-style API
+        """Remove the current message and cancel any pending timeout."""
+
+        self._message_label.clear()
+        self._clear_timer.stop()
+
+    def currentMessage(self) -> str:  # noqa: N802 - Qt-style API
+        """Return the text currently shown in the status bar."""
+
+        return self._message_label.text()
 
 TITLE_BAR_HEIGHT = WINDOW_CONTROL_BUTTON_SIZE.height() + 16
 """Fixed vertical extent for the custom title bar including padding."""
@@ -81,15 +161,6 @@ class Ui_MainWindow(object):
 
         self.menu_bar = QMenuBar(MainWindow)
         MainWindow.setMenuBar(self.menu_bar)
-
-        self.status_bar = QStatusBar(MainWindow)
-        MainWindow.setStatusBar(self.status_bar)
-
-        self.progress_bar = QProgressBar(MainWindow)
-        self.progress_bar.setVisible(False)
-        self.progress_bar.setMinimumWidth(160)
-        self.progress_bar.setTextVisible(False)
-        self.status_bar.addPermanentWidget(self.progress_bar)
 
         # Assemble the frameless host widget that replaces the native window chrome. All
         # content — including the custom title bar — lives inside this container so the
@@ -485,6 +556,10 @@ class Ui_MainWindow(object):
         self.splitter.setCollapsible(1, False)
 
         self.window_shell_layout.addWidget(self.splitter)
+
+        self.status_bar = ChromeStatusBar(self.window_shell)
+        self.window_shell_layout.addWidget(self.status_bar)
+        self.progress_bar = self.status_bar.progress_bar
 
         MainWindow.setCentralWidget(self.window_shell)
 

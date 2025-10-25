@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtWidgets import QLabel, QStatusBar
+from PySide6.QtWidgets import QLabel
 
 # Support both package-style and legacy ``iPhotos.src`` imports during GUI
 # bootstrap.
@@ -16,6 +16,7 @@ except ImportError:  # pragma: no cover - executed in script mode
 from ...facade import AppFacade
 from ..models.asset_model import AssetModel
 from ..widgets.album_sidebar import AlbumSidebar
+from ..ui_main_window import ChromeStatusBar
 from .dialog_controller import DialogController
 from .view_controller import ViewController
 
@@ -30,7 +31,7 @@ class NavigationController:
         asset_model: AssetModel,
         sidebar: AlbumSidebar,
         album_label: QLabel,
-        status_bar: QStatusBar,
+        status_bar: ChromeStatusBar,
         dialog: DialogController,
         view_controller: ViewController,
     ) -> None:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtWidgets import QStatusBar, QWidget
+from PySide6.QtWidgets import QWidget
 
 # Allow both ``iPhoto.gui`` and legacy ``iPhotos.src.iPhoto.gui`` import paths.
 try:  # pragma: no cover - depends on runtime packaging
@@ -14,12 +14,13 @@ except ImportError:  # pragma: no cover - fallback for script execution
     from iPhotos.src.iPhoto.appctx import AppContext
 from ....errors import LibraryError
 from ..widgets import dialogs
+from ..ui_main_window import ChromeStatusBar
 
 
 class DialogController:
     """Centralise dialog and message interactions."""
 
-    def __init__(self, parent: QWidget, context: AppContext, status_bar: QStatusBar) -> None:
+    def __init__(self, parent: QWidget, context: AppContext, status_bar: ChromeStatusBar) -> None:
         self._parent = parent
         self._context = context
         self._status = status_bar

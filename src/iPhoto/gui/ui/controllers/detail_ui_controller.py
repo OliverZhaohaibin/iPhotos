@@ -13,13 +13,14 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
-from PySide6.QtWidgets import QSlider, QStatusBar, QToolButton, QWidget
+from PySide6.QtWidgets import QSlider, QToolButton, QWidget
 
 ZOOM_SLIDER_DEFAULT = 100
 """Default percentage value used when the zoom slider is reset."""
 
 from ..icons import load_icon
 from ..models.asset_model import AssetModel, Roles
+from ..ui_main_window import ChromeStatusBar
 from ..widgets.asset_grid import AssetGrid
 from ..widgets.info_panel import InfoPanel
 from ..widgets.player_bar import PlayerBar
@@ -58,7 +59,7 @@ class DetailUIController(QObject):
         zoom_slider: QSlider,
         zoom_in_button: QToolButton,
         zoom_out_button: QToolButton,
-        status_bar: QStatusBar,
+        status_bar: ChromeStatusBar,
         parent: QObject | None = None,
     ) -> None:
         """Store widget references and apply the initial UI baseline."""
@@ -608,7 +609,7 @@ class DetailUIController(QObject):
         self._zoom_slider.blockSignals(False)
 
     @property
-    def status_bar(self) -> QStatusBar:
+    def status_bar(self) -> ChromeStatusBar:
         """Provide access to the managed status bar."""
 
         return self._status_bar
