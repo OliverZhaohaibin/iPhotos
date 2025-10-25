@@ -8,8 +8,8 @@ from functools import partial
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QCoreApplication, QMimeData, QObject, QPoint, QUrl
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtCore import QCoreApplication, QMimeData, QObject, QPoint, QUrl, Qt
+from PySide6.QtGui import QGuiApplication, QPalette
 from PySide6.QtWidgets import QMenu
 
 from ...facade import AppFacade
@@ -55,6 +55,41 @@ class ContextMenuController(QObject):
 
         index = self._grid_view.indexAt(point)
         menu = QMenu(self._grid_view)
+        # Menus inherit ``WA_TranslucentBackground`` from the frameless window shell.  The flag is
+        # essential for rendering rounded corners, so we keep it enabled and rely on the palette-
+        # driven stylesheet to paint an opaque surface that prevents any wallpaper bleed-through.
+        menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        menu.setAutoFillBackground(True)
+        menu.setWindowFlags(
+            menu.windowFlags()
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.Popup
+        )
+
+        main_window = self._grid_view.window()
+        if main_window is not None:
+            # Copy the main window palette verbatim so the popup colours stay consistent across
+            # multiple monitors and theme transitions.  The ``Base`` role keeps the surface opaque
+            # so the rounded outline never reveals the desktop wallpaper beneath the menu.
+            menu.setPalette(main_window.palette())
+            menu.setBackgroundRole(QPalette.ColorRole.Base)
+
+            stylesheet_accessor = getattr(main_window, "get_qmenu_stylesheet", None)
+            stylesheet: Optional[str]
+            if callable(stylesheet_accessor):
+                stylesheet = stylesheet_accessor()
+            else:
+                fallback_accessor = getattr(main_window, "menu_stylesheet", None)
+                stylesheet = fallback_accessor() if callable(fallback_accessor) else None
+
+            if isinstance(stylesheet, str) and stylesheet:
+                menu.setStyleSheet(stylesheet)
+
+        # Clear any residual graphics effect in case another component previously attached one.
+        # Removing stale ``QGraphicsEffect`` instances keeps the rounded outline crisp and avoids
+        # blending artefacts that might otherwise leak in from other widgets.
+        menu.setGraphicsEffect(None)
+
         selection_model = self._grid_view.selectionModel()
 
         # When the cursor is above an already selected item we expose actions that operate on

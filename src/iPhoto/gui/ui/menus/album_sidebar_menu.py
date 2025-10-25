@@ -5,14 +5,57 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, Optional
 
-from PySide6.QtCore import QPoint, QUrl
-from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QInputDialog, QMenu, QMessageBox, QWidget, QTreeView
+from PySide6.QtCore import QPoint, QUrl, Qt
+from PySide6.QtGui import QDesktopServices, QPalette
+from PySide6.QtWidgets import (
+    QInputDialog,
+    QMenu,
+    QMessageBox,
+    QWidget,
+    QTreeView,
+)
 
 from ....errors import LibraryError
 from ....library.manager import LibraryManager
 from ....library.tree import AlbumNode
 from ..models.album_tree_model import AlbumTreeItem, NodeType, AlbumTreeModel
+
+
+def _apply_main_window_menu_style(menu: QMenu, anchor: Optional[QWidget]) -> None:
+    """Apply the main window's rounded menu styling to ``menu``."""
+
+    # Keep ``WA_TranslucentBackground`` enabled so the stylesheet-defined border radius can take
+    # effect.  ``setAutoFillBackground`` ensures Qt still paints an opaque surface inside the
+    # rounded outline that the stylesheet defines.
+    menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+    menu.setAutoFillBackground(True)
+    menu.setWindowFlags(
+        menu.windowFlags()
+        | Qt.WindowType.FramelessWindowHint
+        | Qt.WindowType.Popup
+    )
+
+    main_window = anchor.window() if anchor is not None else None
+    if main_window is not None:
+        # Adopt the main window palette so the popup maintains consistent colours regardless of
+        # which display it appears on.  Emphasising the ``Base`` role keeps the rounded corners
+        # opaque and prevents any wallpaper bleed-through.
+        menu.setPalette(main_window.palette())
+        menu.setBackgroundRole(QPalette.ColorRole.Base)
+
+        accessor = getattr(main_window, "get_qmenu_stylesheet", None)
+        stylesheet: Optional[str]
+        if callable(accessor):
+            stylesheet = accessor()
+        else:
+            fallback_accessor = getattr(main_window, "menu_stylesheet", None)
+            stylesheet = fallback_accessor() if callable(fallback_accessor) else None
+        if isinstance(stylesheet, str) and stylesheet:
+            menu.setStyleSheet(stylesheet)
+
+    # Clear any inherited graphics effect so previous UI state cannot interfere with the rounded
+    # outline or introduce unexpected blending artefacts on the popup surface.
+    menu.setGraphicsEffect(None)
 
 
 class AlbumSidebarContextMenu(QMenu):
@@ -35,6 +78,9 @@ class AlbumSidebarContextMenu(QMenu):
         self._item = item
         self._set_pending_selection = set_pending_selection
         self._on_bind_library = on_bind_library
+        # Ensure the popup renders with rounded opaque styling by reusing the palette-aware rules
+        # published by the main window whenever they are available.
+        _apply_main_window_menu_style(self, parent)
         self._build_menu()
 
     def _build_menu(self) -> None:
@@ -139,6 +185,8 @@ def show_context_menu(
 
     if not index.isValid():
         menu = QMenu(parent)
+        _apply_main_window_menu_style(menu, parent)
+
         menu.addAction("Set Basic Library…", on_bind_library)
         menu.exec(global_pos)
         return
