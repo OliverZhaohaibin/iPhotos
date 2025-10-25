@@ -8,7 +8,7 @@ from functools import partial
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QCoreApplication, QMimeData, QObject, QPoint, QUrl
+from PySide6.QtCore import QCoreApplication, QMimeData, QObject, QPoint, QUrl, Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QMenu
 
@@ -55,6 +55,25 @@ class ContextMenuController(QObject):
 
         index = self._grid_view.indexAt(point)
         menu = QMenu(self._grid_view)
+        # ``QMenu`` inherits the translucent background attribute from the frameless main window,
+        # so we explicitly force an opaque surface and reuse the main window's stylesheet if it is
+        # available.  This keeps the context menu readable regardless of the desktop wallpaper.
+        menu.setAutoFillBackground(True)
+        menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+
+        stylesheet: Optional[str] = None
+        main_window = self._grid_view.window()
+        if main_window is not None:
+            accessor = getattr(main_window, "menu_stylesheet", None)
+            if callable(accessor):
+                stylesheet = accessor()
+            else:
+                candidate = getattr(main_window, "_menu_stylesheet", None)
+                if isinstance(candidate, str):
+                    stylesheet = candidate
+        if isinstance(stylesheet, str) and stylesheet:
+            menu.setStyleSheet(stylesheet)
+
         selection_model = self._grid_view.selectionModel()
 
         # When the cursor is above an already selected item we expose actions that operate on

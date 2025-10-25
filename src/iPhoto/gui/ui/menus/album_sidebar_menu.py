@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, Optional
 
-from PySide6.QtCore import QPoint, QUrl
+from PySide6.QtCore import QPoint, QUrl, Qt
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QInputDialog, QMenu, QMessageBox, QWidget, QTreeView
 
@@ -13,6 +13,26 @@ from ....errors import LibraryError
 from ....library.manager import LibraryManager
 from ....library.tree import AlbumNode
 from ..models.album_tree_model import AlbumTreeItem, NodeType, AlbumTreeModel
+
+
+def _apply_main_window_menu_style(menu: QMenu, anchor: Optional[QWidget]) -> None:
+    """Ensure ``menu`` renders opaquely and matches the main window palette."""
+
+    menu.setAutoFillBackground(True)
+    menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+
+    stylesheet: Optional[str] = None
+    main_window = anchor.window() if anchor is not None else None
+    if main_window is not None:
+        accessor = getattr(main_window, "menu_stylesheet", None)
+        if callable(accessor):
+            stylesheet = accessor()
+        else:
+            candidate = getattr(main_window, "_menu_stylesheet", None)
+            if isinstance(candidate, str):
+                stylesheet = candidate
+    if isinstance(stylesheet, str) and stylesheet:
+        menu.setStyleSheet(stylesheet)
 
 
 class AlbumSidebarContextMenu(QMenu):
@@ -35,6 +55,9 @@ class AlbumSidebarContextMenu(QMenu):
         self._item = item
         self._set_pending_selection = set_pending_selection
         self._on_bind_library = on_bind_library
+        # Ensure the popup renders opaquely by disabling inherited translucency and reusing the
+        # palette-aware stylesheet published by the main window when available.
+        _apply_main_window_menu_style(self, parent)
         self._build_menu()
 
     def _build_menu(self) -> None:
@@ -139,6 +162,8 @@ def show_context_menu(
 
     if not index.isValid():
         menu = QMenu(parent)
+        _apply_main_window_menu_style(menu, parent)
+
         menu.addAction("Set Basic Library…", on_bind_library)
         menu.exec(global_pos)
         return
