@@ -17,7 +17,7 @@ from PySide6.QtGui import (
     QPainterPath,
     QPalette,
 )
-from PySide6.QtWidgets import QMainWindow, QMenuBar, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QMainWindow, QMenuBar, QVBoxLayout, QWidget
 
 # ``main_window`` can be imported either via ``iPhoto.gui`` (package execution)
 # or ``iPhotos.src.iPhoto.gui`` (legacy test harness).  The absolute import
@@ -181,7 +181,9 @@ class MainWindow(QMainWindow):
         # widgets (for example context menu controllers) can reapply them to ad-hoc ``QMenu``
         # instances.  Using an attribute avoids circular imports and keeps the styling logic
         # centralised inside ``MainWindow``.
-        self._menu_stylesheet: str | None = None
+        self._menu_stylesheet: str = ""
+        self._global_menu_stylesheet: str | None = None
+        self._applying_menu_styles = False
 
         # Wire the custom window control buttons to the standard window management actions and
         # connect the immersive viewer exit affordances.
@@ -225,9 +227,69 @@ class MainWindow(QMainWindow):
         return self.ui.menu_bar
 
     def menu_stylesheet(self) -> str | None:
-        """Return the cached menu stylesheet for use by ad-hoc ``QMenu`` instances."""
+        """Return the cached ``QMenu`` stylesheet so other widgets can reuse it."""
 
-        return self._menu_stylesheet
+        return self._menu_stylesheet or None
+
+    def _rebuild_menu_styles(self) -> tuple[str, str]:
+        """Compute palette-aware stylesheets for ``QMenu`` and ``QMenuBar`` widgets."""
+
+        palette = self.palette()
+        base_color = palette.color(QPalette.ColorRole.Base).name()
+        border_color = palette.color(QPalette.ColorRole.Mid).name()
+        text_color = palette.color(QPalette.ColorRole.WindowText).name()
+        highlight_color = palette.color(QPalette.ColorRole.Highlight).name()
+        highlight_text_color = palette.color(QPalette.ColorRole.HighlightedText).name()
+        separator_color = palette.color(QPalette.ColorRole.Midlight).name()
+
+        qmenu_style = (
+            "QMenu {\n"
+            f"    background-color: {base_color};\n"
+            f"    border: 1px solid {border_color};\n"
+            "    background-clip: padding-box;\n"
+            "}\n"
+            "QMenu::item {\n"
+            "    background-color: transparent;\n"
+            f"    color: {text_color};\n"
+            "    padding: 4px 20px;\n"
+            "    margin: 2px 0px;\n"
+            "}\n"
+            "QMenu::item:selected {\n"
+            f"    background-color: {highlight_color};\n"
+            f"    color: {highlight_text_color};\n"
+            "}\n"
+            "QMenu::separator {\n"
+            "    height: 1px;\n"
+            f"    background: {separator_color};\n"
+            "    margin-left: 10px;\n"
+            "    margin-right: 10px;\n"
+            "}"
+        )
+
+        menubar_style = (
+            "QMenuBar {\n"
+            f"    background-color: {base_color};\n"
+            f"    border-bottom: 1px solid {border_color};\n"
+            "}\n"
+            "QMenuBar::item {\n"
+            "    background-color: transparent;\n"
+            f"    color: {text_color};\n"
+            "    padding: 4px 10px;\n"
+            "    margin: 0px;\n"
+            "}\n"
+            "QMenuBar::item:selected {\n"
+            f"    background-color: {highlight_color};\n"
+            f"    color: {highlight_text_color};\n"
+            "}\n"
+            "QMenuBar::separator {\n"
+            f"    background: {separator_color};\n"
+            "    width: 1px;\n"
+            "    margin: 4px 2px;\n"
+            "}"
+        )
+
+        self._menu_stylesheet = qmenu_style
+        return qmenu_style, menubar_style
 
     def _apply_menu_styles(self) -> None:
         """Force drop-down and context menus to render with opaque backgrounds.
@@ -241,66 +303,36 @@ class MainWindow(QMainWindow):
         widgets (for example, right-click context menus).
         """
 
-        palette = self.palette()
-        base_color = palette.color(QPalette.ColorRole.Base).name()
-        border_color = palette.color(QPalette.ColorRole.Mid).name()
-        text_color = palette.color(QPalette.ColorRole.WindowText).name()
-        highlight_color = palette.color(QPalette.ColorRole.Highlight).name()
-        highlight_text_color = palette.color(QPalette.ColorRole.HighlightedText).name()
-        separator_color = palette.color(QPalette.ColorRole.Midlight).name()
+        if self._applying_menu_styles:
+            return
 
-        menu_style = f"""
-        QMenu {{
-            background-color: {base_color};
-            border: 1px solid {border_color};
-        }}
-        QMenu::item {{
-            background-color: transparent;
-            color: {text_color};
-            padding: 4px 20px;
-            margin: 2px 0px;
-        }}
-        QMenu::item:selected {{
-            background-color: {highlight_color};
-            color: {highlight_text_color};
-        }}
-        QMenu::separator {{
-            height: 1px;
-            background: {separator_color};
-            margin-left: 10px;
-            margin-right: 10px;
-        }}
-        QMenuBar {{
-            background-color: {base_color};
-            border-bottom: 1px solid {border_color};
-        }}
-        QMenuBar::item {{
-            background-color: transparent;
-            color: {text_color};
-            padding: 4px 10px;
-            margin: 0px;
-        }}
-        QMenuBar::item:selected {{
-            background-color: {highlight_color};
-            color: {highlight_text_color};
-        }}
-        QMenuBar::separator {{
-            background: {separator_color};
-            width: 1px;
-            margin: 4px 2px;
-        }}
-        """.strip()
+        self._applying_menu_styles = True
+        try:
+            qmenu_style, menubar_style = self._rebuild_menu_styles()
 
-        # Apply the stylesheet directly to the menu bar so Qt propagates the palette-aware rules
-        # to its drop-down menus.  ``setAutoFillBackground`` and the attribute override ensure the
-        # widget paints an opaque surface instead of inheriting the translucent background used by
-        # the frameless window chrome.
-        self.ui.menu_bar.setStyleSheet(menu_style)
-        self.ui.menu_bar.setAutoFillBackground(True)
-        self.ui.menu_bar.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+            # Apply the stylesheet directly to the menu bar so Qt propagates the palette-aware
+            # rules to its drop-down menus.  ``setAutoFillBackground`` and the attribute override
+            # ensure the widget paints an opaque surface instead of inheriting the translucent
+            # background used by the frameless window chrome.
+            self.ui.menu_bar.setStyleSheet(menubar_style)
+            self.ui.menu_bar.setAutoFillBackground(True)
+            self.ui.menu_bar.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
 
-        # Retain the computed stylesheet for reuse by ad-hoc ``QMenu`` instances.
-        self._menu_stylesheet = menu_style
+            # Merge the ``QMenu`` rules into the global application stylesheet so menus that Qt
+            # creates internally (for example, menu bar popups) inherit the opaque background even
+            # if they are constructed outside the main window.  Any previously injected block is
+            # removed first to avoid endlessly appending duplicate rules when the palette changes.
+            app = QApplication.instance()
+            if app is not None:
+                existing = app.styleSheet()
+                if self._global_menu_stylesheet and self._global_menu_stylesheet in existing:
+                    existing = existing.replace(self._global_menu_stylesheet, "").strip()
+
+                combined_parts = [part for part in (existing, qmenu_style) if part]
+                app.setStyleSheet("\n".join(combined_parts))
+                self._global_menu_stylesheet = qmenu_style
+        finally:
+            self._applying_menu_styles = False
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
@@ -336,12 +368,18 @@ class MainWindow(QMainWindow):
         super().changeEvent(event)
         if event.type() == QEvent.Type.WindowTitleChange:
             self._update_title_bar()
-        elif event.type() in {
-            QEvent.Type.PaletteChange,
-            QEvent.Type.StyleChange,
-        }:
+        elif event.type() == QEvent.Type.PaletteChange:
             # Updating the rounded shell ensures palette transitions repaint the anti-aliased edge
             # without waiting for external resize events.
+            self._rounded_shell.update()
+            # Regenerate the palette-aware menu stylesheet so newly themed drop-downs immediately
+            # adopt the opaque colours without requiring an application restart.
+            self._apply_menu_styles()
+        elif event.type() == QEvent.Type.StyleChange:
+            # Style changes may arrive when Qt swaps window decorations or the application switches
+            # between light and dark modes.  The rounded shell still needs a repaint to keep the
+            # anti-aliased frame crisp, but the menu styling will be refreshed on the ensuing
+            # palette change (if any) or the next explicit request.
             self._rounded_shell.update()
 
     def position_live_badge(self) -> None:

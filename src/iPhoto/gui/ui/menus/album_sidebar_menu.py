@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from PySide6.QtCore import QPoint, QUrl, Qt
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QPalette
 from PySide6.QtWidgets import QInputDialog, QMenu, QMessageBox, QWidget, QTreeView
 
 from ....errors import LibraryError
@@ -21,18 +21,21 @@ def _apply_main_window_menu_style(menu: QMenu, anchor: Optional[QWidget]) -> Non
     menu.setAutoFillBackground(True)
     menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
 
-    stylesheet: Optional[str] = None
     main_window = anchor.window() if anchor is not None else None
     if main_window is not None:
+        # Mirror the main window palette so the popup seamlessly matches the active theme and
+        # retains an opaque ``Base`` background role even if the frameless parent is translucent.
+        menu.setPalette(main_window.palette())
+        menu.setBackgroundRole(QPalette.ColorRole.Base)
+
         accessor = getattr(main_window, "menu_stylesheet", None)
         if callable(accessor):
             stylesheet = accessor()
         else:
             candidate = getattr(main_window, "_menu_stylesheet", None)
-            if isinstance(candidate, str):
-                stylesheet = candidate
-    if isinstance(stylesheet, str) and stylesheet:
-        menu.setStyleSheet(stylesheet)
+            stylesheet = candidate if isinstance(candidate, str) else None
+        if isinstance(stylesheet, str) and stylesheet:
+            menu.setStyleSheet(stylesheet)
 
 
 class AlbumSidebarContextMenu(QMenu):

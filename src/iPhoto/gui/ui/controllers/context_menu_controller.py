@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QCoreApplication, QMimeData, QObject, QPoint, QUrl, Qt
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QGuiApplication, QPalette
 from PySide6.QtWidgets import QMenu
 
 from ...facade import AppFacade
@@ -61,18 +61,25 @@ class ContextMenuController(QObject):
         menu.setAutoFillBackground(True)
         menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
 
-        stylesheet: Optional[str] = None
         main_window = self._grid_view.window()
         if main_window is not None:
-            accessor = getattr(main_window, "menu_stylesheet", None)
-            if callable(accessor):
-                stylesheet = accessor()
+            # Copy the window palette so the popup colours remain consistent with the active theme
+            # even when the menu is shown outside the main window frame (for example on a second
+            # monitor).  Setting the background role to ``Base`` explicitly marks the popup as an
+            # opaque surface, preventing Qt from blending the wallpaper behind the menu items.
+            menu.setPalette(main_window.palette())
+            menu.setBackgroundRole(QPalette.ColorRole.Base)
+
+            stylesheet_accessor = getattr(main_window, "menu_stylesheet", None)
+            stylesheet: Optional[str]
+            if callable(stylesheet_accessor):
+                stylesheet = stylesheet_accessor()
             else:
                 candidate = getattr(main_window, "_menu_stylesheet", None)
-                if isinstance(candidate, str):
-                    stylesheet = candidate
-        if isinstance(stylesheet, str) and stylesheet:
-            menu.setStyleSheet(stylesheet)
+                stylesheet = candidate if isinstance(candidate, str) else None
+
+            if isinstance(stylesheet, str) and stylesheet:
+                menu.setStyleSheet(stylesheet)
 
         selection_model = self._grid_view.selectionModel()
 
