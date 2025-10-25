@@ -127,15 +127,12 @@ class MainWindow(QMainWindow):
         # bar using the default frame.
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
 
-        # The rounded shell handles per-pixel transparency by drawing the anti-aliased corners.
-        # Applying ``WA_TranslucentBackground`` to the top-level ``QMainWindow`` prevents Qt from
-        # painting the primary window surface on certain platforms, leaving the UI invisible when
-        # the application launches.  Explicitly clearing the attribute makes sure the host window
-        # keeps its default opaque behaviour so only ``RoundedWindowShell`` performs translucent
-        # rendering.  ``setAutoFillBackground(False)`` avoids redundant background fills while the
-        # dedicated shell paints the anti-aliased corners.
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
-        self.setAutoFillBackground(False)
+        # ``QMainWindow`` defaults to an opaque backing store.  Some platforms interpret an
+        # explicit ``WA_TranslucentBackground`` toggle – even when passed ``False`` – as a request
+        # to create the window using the per-pixel transparency path, which in practice yields a
+        # fully transparent, invisible window.  Avoid touching the attribute entirely so the host
+        # surface retains Qt's default behaviour while the dedicated ``RoundedWindowShell`` handles
+        # the anti-aliased corner rendering.
 
         # ``_window_corner_radius`` keeps the frameless window visually aligned with native macOS
         # chrome by reintroducing soft corners using a dedicated drawing surface.
