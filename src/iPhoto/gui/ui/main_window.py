@@ -54,10 +54,6 @@ class MainWindow(QMainWindow):
         # native title bar on frameless windows.
         self._immersive_active = False
         self._hidden_widget_states: list[tuple[QWidget, bool]] = []
-        self._menu_bar_was_visible = True
-        self._status_bar_was_visible = True
-        self._toolbar_was_visible = True
-        self._sidebar_was_visible = True
         self._splitter_sizes: list[int] | None = None
         self._previous_geometry = self.saveGeometry()
         self._previous_window_state = self.windowState()
@@ -68,12 +64,8 @@ class MainWindow(QMainWindow):
         self._player_container_stylesheet = self.ui.player_container.styleSheet()
         self._player_stack_stylesheet = self.ui.player_stack.styleSheet()
         self._immersive_background_applied = False
-        self._immersive_visibility_targets: tuple[QWidget, ...] = (
-            self.ui.window_chrome,
-            self.ui.album_header,
-            self.ui.detail_chrome_container,
-            self.ui.filmstrip_view,
-        )
+        self._immersive_visibility_targets: tuple[QWidget, ...]
+        self._immersive_visibility_targets = self._build_immersive_targets()
 
         # Wire the custom window control buttons to the standard window management actions and
         # connect the immersive viewer exit affordances.
@@ -168,18 +160,7 @@ class MainWindow(QMainWindow):
         self._previous_geometry = self.saveGeometry()
         self._previous_window_state = self.windowState()
         self._splitter_sizes = self.ui.splitter.sizes()
-        self._hidden_widget_states = []
-
         with self._suspend_layout_updates():
-            self._menu_bar_was_visible = self.menuBar().isVisible()
-            self.menuBar().setVisible(False)
-            self._status_bar_was_visible = self.statusBar().isVisible()
-            self.statusBar().setVisible(False)
-            self._toolbar_was_visible = self.ui.main_toolbar.isVisible()
-            self.ui.main_toolbar.setVisible(False)
-            self._sidebar_was_visible = self.ui.sidebar.isVisible()
-            self.ui.sidebar.setVisible(False)
-
             self._hidden_widget_states = self._override_visibility(
                 self._immersive_visibility_targets,
                 visible=False,
@@ -220,11 +201,6 @@ class MainWindow(QMainWindow):
                 self.setWindowState(self._previous_window_state)
             if self._splitter_sizes:
                 self.ui.splitter.setSizes(self._splitter_sizes)
-
-            self.menuBar().setVisible(self._menu_bar_was_visible)
-            self.statusBar().setVisible(self._status_bar_was_visible)
-            self.ui.main_toolbar.setVisible(self._toolbar_was_visible)
-            self.ui.sidebar.setVisible(self._sidebar_was_visible)
 
             for widget, was_visible in self._hidden_widget_states:
                 widget.setVisible(was_visible)
@@ -353,3 +329,18 @@ class MainWindow(QMainWindow):
             previous_states.append((widget, widget.isVisible()))
             widget.setVisible(visible)
         return previous_states
+
+    def _build_immersive_targets(self) -> tuple[QWidget, ...]:
+        """Collect every chrome widget that should disappear during immersion."""
+
+        candidates: tuple[QWidget | None, ...] = (
+            self.menuBar(),
+            self.statusBar(),
+            self.ui.main_toolbar,
+            self.ui.sidebar,
+            self.ui.window_chrome,
+            self.ui.album_header,
+            self.ui.detail_chrome_container,
+            self.ui.filmstrip_view,
+        )
+        return tuple(widget for widget in candidates if widget is not None)
