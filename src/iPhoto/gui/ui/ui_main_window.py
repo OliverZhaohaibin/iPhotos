@@ -167,6 +167,13 @@ class Ui_MainWindow(object):
 
         MainWindow.resize(1200, 720)
 
+        # ``window_shell`` hosts every visible surface so the rounded window chrome can keep the
+        # menu bar, tool bar, and content area opaque while the corners remain transparent.
+        self.window_shell = QWidget(MainWindow)
+        self.window_shell_layout = QVBoxLayout(self.window_shell)
+        self.window_shell_layout.setContentsMargins(0, 0, 0, 0)
+        self.window_shell_layout.setSpacing(0)
+
         self.menu_bar = QMenuBar(self.window_shell)
         self.menu_bar.setObjectName("chromeMenuBar")
         # Hosting the menu bar inside the rounded shell keeps the chrome opaque while still
@@ -185,14 +192,6 @@ class Ui_MainWindow(object):
             menu_palette.color(QPalette.ColorRole.Base),
         )
         self.menu_bar.setPalette(menu_palette)
-
-        # Assemble the frameless host widget that replaces the native window chrome. All
-        # content — including the custom title bar — lives inside this container so the
-        # window can hide everything quickly when immersive full screen mode is activated.
-        self.window_shell = QWidget(MainWindow)
-        self.window_shell_layout = QVBoxLayout(self.window_shell)
-        self.window_shell_layout.setContentsMargins(0, 0, 0, 0)
-        self.window_shell_layout.setSpacing(0)
 
         # Collect the custom title bar and its separator inside a dedicated container so the
         # main window can hide or show the entire chrome strip with a single widget toggle when
@@ -314,9 +313,26 @@ class Ui_MainWindow(object):
             else:
                 file_menu.addAction(action)
 
-        self.main_toolbar = QToolBar("Main", MainWindow)
+        self.main_toolbar = QToolBar("Main", self.window_shell)
+        # Hosting the toolbar inside the rounded shell keeps the controls opaque while avoiding
+        # the transparent gap that appeared when Qt painted it outside the custom chrome.
+        self.main_toolbar.setObjectName("mainToolbar")
         self.main_toolbar.setMovable(False)
-        MainWindow.addToolBar(self.main_toolbar)
+        self.main_toolbar.setFloatable(False)
+        self.main_toolbar.setOrientation(Qt.Orientation.Horizontal)
+        self.main_toolbar.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Fixed,
+        )
+        self.main_toolbar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.main_toolbar.setAutoFillBackground(True)
+        toolbar_palette = self.main_toolbar.palette()
+        toolbar_palette.setColor(
+            QPalette.ColorRole.Window,
+            toolbar_palette.color(QPalette.ColorRole.Base),
+        )
+        self.main_toolbar.setPalette(toolbar_palette)
+        self.window_shell_layout.addWidget(self.main_toolbar)
         for action in (
             self.open_album_action,
             self.rescan_action,
