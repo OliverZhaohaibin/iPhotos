@@ -195,6 +195,7 @@ class MainWindow(QMainWindow):
 
         self._update_title_bar()
         self._update_fullscreen_button_icon()
+        self._apply_menu_styles()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # type: ignore[override]
         """Tear down background services before the window closes."""
@@ -217,6 +218,50 @@ class MainWindow(QMainWindow):
         """Expose the menu bar hosted inside the rounded window shell."""
 
         return self.ui.menu_bar
+
+    def _apply_menu_styles(self) -> None:
+        """Force drop-down menus to render with opaque backgrounds.
+
+        The application window uses ``WA_TranslucentBackground`` so the rounded chrome can
+        blend with the desktop wallpaper.  Without explicit styling, popup menus inherit the
+        translucency hint and end up drawing fully transparent surfaces.  Applying a targeted
+        stylesheet keeps the menus readable while still respecting the active palette.
+        """
+
+        palette = self.palette()
+        base_color = palette.color(QPalette.ColorRole.Base).name()
+        border_color = palette.color(QPalette.ColorRole.Mid).name()
+        text_color = palette.color(QPalette.ColorRole.WindowText).name()
+        highlight_color = palette.color(QPalette.ColorRole.Highlight).name()
+        highlight_text_color = palette.color(QPalette.ColorRole.HighlightedText).name()
+        separator_color = palette.color(QPalette.ColorRole.Midlight).name()
+
+        menu_style = f"""
+        QMenu {{
+            background-color: {base_color};
+            border: 1px solid {border_color};
+        }}
+        QMenu::item {{
+            background-color: transparent;
+            color: {text_color};
+            padding: 4px 20px;
+            margin: 2px 0px;
+        }}
+        QMenu::item:selected {{
+            background-color: {highlight_color};
+            color: {highlight_text_color};
+        }}
+        QMenu::separator {{
+            height: 1px;
+            background: {separator_color};
+            margin-left: 10px;
+            margin-right: 10px;
+        }}
+        """.strip()
+
+        # ``setStyleSheet`` automatically propagates to popup menus spawned from the bar,
+        # ensuring both the drop-down surface and individual menu items remain opaque.
+        self.ui.menu_bar.setStyleSheet(menu_style)
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
