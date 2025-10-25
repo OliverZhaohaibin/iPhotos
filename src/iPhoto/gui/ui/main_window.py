@@ -275,31 +275,23 @@ class MainWindow(QMainWindow):
         border_radius_px = 8
         item_radius_px = max(0, border_radius_px - 3)
 
-        # ``shadow_margin_px`` emulates a soft drop shadow by reserving space around the popup and
-        # painting it with a translucent border.  Qt's stylesheet engine does not support CSS
-        # ``box-shadow`` properties, so the widened border provides a predictable, theme-aware
-        # fallback that still keeps menus readable against a variety of wallpapers.
-        shadow_margin_px = 8
-        shadow_color = "rgba(0, 0, 0, 0.18)"
-        inner_padding_px = max(3, shadow_margin_px - 6)
-
+        # ``QMenu`` widgets no longer draw shadows, so the stylesheet focuses on providing a clean
+        # rounded outline that mirrors the rest of the chrome.  The margin and padding values are
+        # intentionally small to keep the popup compact while still leaving breathing room for
+        # hover highlights.
         qmenu_style = (
             "QMenu {\n"
-            f"    border: {shadow_margin_px}px solid {shadow_color};\n"
-            f"    border-radius: {border_radius_px + shadow_margin_px}px;\n"
             f"    background-color: {window_color};\n"
-            f"    padding: {inner_padding_px}px;\n"
+            f"    border: 1px solid {border_color};\n"
+            f"    border-radius: {border_radius_px}px;\n"
+            "    padding: 4px;\n"
             "    margin: 0px;\n"
-            f"    border-top-color: rgba(0, 0, 0, 0.12);\n"
-            f"    border-left-color: rgba(0, 0, 0, 0.10);\n"
-            f"    border-right-color: rgba(0, 0, 0, 0.22);\n"
-            f"    border-bottom-color: rgba(0, 0, 0, 0.26);\n"
             "}\n"
             "QMenu::item {\n"
             "    background-color: transparent;\n"
             f"    color: {text_color};\n"
             "    padding: 5px 20px;\n"
-            f"    margin: 2px {shadow_margin_px - 4}px;\n"
+            "    margin: 2px 6px;\n"
             f"    border-radius: {item_radius_px}px;\n"
             "}\n"
             "QMenu::item:selected {\n"
@@ -309,8 +301,7 @@ class MainWindow(QMainWindow):
             "QMenu::separator {\n"
             "    height: 1px;\n"
             f"    background: {separator_color};\n"
-            f"    margin-left: {shadow_margin_px + 4}px;\n"
-            f"    margin-right: {shadow_margin_px + 4}px;\n"
+            "    margin: 4px 10px;\n"
             "}"
         )
 
@@ -341,14 +332,14 @@ class MainWindow(QMainWindow):
         return qmenu_style, menubar_style
 
     def _configure_popup_menu(self, menu: QMenu, stylesheet: str) -> None:
-        """Apply frameless styling and the simulated shadow border to ``menu``.
+        """Apply frameless styling and rounded menu rules to ``menu``.
 
         Menu widgets inherit ``WA_TranslucentBackground`` from the frameless window shell so the
         stylesheet-defined rounded corners can blend smoothly with the wallpaper.  Qt disables the
-        native window frame in this mode, meaning we must provide both the opaque background and the
-        faux shadow directly through the stylesheet.  The helper ensures that every popup receives
-        the same palette-aware rules while also updating the core window flags required for Qt to
-        honour the rounded outline.
+        native window frame in this mode, meaning we must provide the opaque background directly
+        through the stylesheet.  The helper ensures that every popup receives the same palette-aware
+        rules while also updating the core window flags required for Qt to honour the rounded
+        outline.
         """
 
         menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)

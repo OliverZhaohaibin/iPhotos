@@ -53,8 +53,8 @@ def _apply_main_window_menu_style(menu: QMenu, anchor: Optional[QWidget]) -> Non
         if isinstance(stylesheet, str) and stylesheet:
             menu.setStyleSheet(stylesheet)
 
-    # ``QGraphicsEffect`` instances are unnecessary now that the stylesheet renders the faux
-    # shadow, but clearing any inherited effect ensures the rounded outline remains crisp.
+    # Clear any inherited graphics effect so previous UI state cannot interfere with the rounded
+    # outline or introduce unexpected blending artefacts on the popup surface.
     menu.setGraphicsEffect(None)
 
 

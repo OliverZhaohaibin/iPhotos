@@ -86,9 +86,8 @@ class ContextMenuController(QObject):
                 menu.setStyleSheet(stylesheet)
 
         # Clear any residual graphics effect in case another component previously attached one.
-        # The simulated shadow is delivered entirely through the stylesheet so no runtime effect is
-        # required, but removing any pre-existing ``QGraphicsEffect`` instances prevents them from
-        # overriding the rounded outline.
+        # Removing stale ``QGraphicsEffect`` instances keeps the rounded outline crisp and avoids
+        # blending artefacts that might otherwise leak in from other widgets.
         menu.setGraphicsEffect(None)
 
         selection_model = self._grid_view.selectionModel()
