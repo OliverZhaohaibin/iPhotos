@@ -99,8 +99,16 @@ class Ui_MainWindow(object):
         self.window_shell_layout.setContentsMargins(0, 0, 0, 0)
         self.window_shell_layout.setSpacing(0)
 
+        # Collect the custom title bar and its separator inside a dedicated container so the
+        # main window can hide or show the entire chrome strip with a single widget toggle when
+        # entering or exiting immersive full screen mode.
+        self.window_chrome = QWidget(self.window_shell)
+        window_chrome_layout = QVBoxLayout(self.window_chrome)
+        window_chrome_layout.setContentsMargins(0, 0, 0, 0)
+        window_chrome_layout.setSpacing(0)
+
         # -------------------- Custom title bar --------------------
-        self.title_bar = QWidget(self.window_shell)
+        self.title_bar = QWidget(self.window_chrome)
         self.title_bar.setObjectName("windowTitleBar")
         title_layout = QHBoxLayout(self.title_bar)
         title_layout.setContentsMargins(12, 10, 12, 6)
@@ -140,14 +148,16 @@ class Ui_MainWindow(object):
             controls_layout.addWidget(button)
 
         title_layout.addWidget(self.window_controls, 0, Qt.AlignmentFlag.AlignRight)
-        self.window_shell_layout.addWidget(self.title_bar)
+        window_chrome_layout.addWidget(self.title_bar)
 
-        self.title_separator = QFrame(self.window_shell)
+        self.title_separator = QFrame(self.window_chrome)
         self.title_separator.setObjectName("windowTitleSeparator")
         self.title_separator.setFrameShape(QFrame.Shape.HLine)
         self.title_separator.setFrameShadow(QFrame.Shadow.Plain)
         self.title_separator.setFixedHeight(1)
-        self.window_shell_layout.addWidget(self.title_separator)
+        window_chrome_layout.addWidget(self.title_separator)
+
+        self.window_shell_layout.addWidget(self.window_chrome)
 
         self.open_album_action = QAction("Open Album Folder…", MainWindow)
         self.rescan_action = QAction("Rescan", MainWindow)
@@ -388,7 +398,14 @@ class Ui_MainWindow(object):
         self.zoom_widget.hide()
         header_layout.addWidget(info_container, 1)
         header_layout.addWidget(actions_container)
-        detail_layout.addWidget(header)
+        # Group the header widgets under a single container so the immersive mode only needs to
+        # toggle one widget to hide every metadata chrome element above the viewer.
+        detail_chrome_container = QWidget()
+        detail_chrome_layout = QVBoxLayout(detail_chrome_container)
+        detail_chrome_layout.setContentsMargins(0, 0, 0, 0)
+        detail_chrome_layout.setSpacing(6)
+
+        detail_chrome_layout.addWidget(header)
         self.detail_header = header
 
         # Insert a custom separator between the metadata header and the media area.
@@ -415,8 +432,11 @@ class Ui_MainWindow(object):
         separator_shadow.setColor(QColor(0, 0, 0, 45))
         separator_shadow.setOffset(0, 1)
         header_separator.setGraphicsEffect(separator_shadow)
-        detail_layout.addWidget(header_separator)
+        detail_chrome_layout.addWidget(header_separator)
         self.detail_header_separator = header_separator
+
+        detail_layout.addWidget(detail_chrome_container)
+        self.detail_chrome_container = detail_chrome_container
 
         player_container = QWidget()
         player_layout = QVBoxLayout(player_container)

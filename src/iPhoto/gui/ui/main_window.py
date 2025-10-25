@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
-from typing import cast
+from typing import Iterable, Iterator, cast
 
 from PySide6.QtCore import QEvent, QPoint, Qt
 from PySide6.QtGui import QCloseEvent, QKeyEvent, QMouseEvent
@@ -67,6 +68,12 @@ class MainWindow(QMainWindow):
         self._player_container_stylesheet = self.ui.player_container.styleSheet()
         self._player_stack_stylesheet = self.ui.player_stack.styleSheet()
         self._immersive_background_applied = False
+        self._immersive_visibility_targets: tuple[QWidget, ...] = (
+            self.ui.window_chrome,
+            self.ui.album_header,
+            self.ui.detail_chrome_container,
+            self.ui.filmstrip_view,
+        )
 
         # Wire the custom window control buttons to the standard window management actions and
         # connect the immersive viewer exit affordances.
@@ -163,36 +170,32 @@ class MainWindow(QMainWindow):
         self._splitter_sizes = self.ui.splitter.sizes()
         self._hidden_widget_states = []
 
-        self._menu_bar_was_visible = self.menuBar().isVisible()
-        self.menuBar().setVisible(False)
-        self._status_bar_was_visible = self.statusBar().isVisible()
-        self.statusBar().setVisible(False)
-        self._toolbar_was_visible = self.ui.main_toolbar.isVisible()
-        self.ui.main_toolbar.setVisible(False)
-        self._sidebar_was_visible = self.ui.sidebar.isVisible()
-        self.ui.sidebar.setVisible(False)
+        with self._suspend_layout_updates():
+            self._menu_bar_was_visible = self.menuBar().isVisible()
+            self.menuBar().setVisible(False)
+            self._status_bar_was_visible = self.statusBar().isVisible()
+            self.statusBar().setVisible(False)
+            self._toolbar_was_visible = self.ui.main_toolbar.isVisible()
+            self.ui.main_toolbar.setVisible(False)
+            self._sidebar_was_visible = self.ui.sidebar.isVisible()
+            self.ui.sidebar.setVisible(False)
 
-        for widget in (
-            self.ui.title_bar,
-            self.ui.title_separator,
-            self.ui.album_header,
-            self.ui.detail_header,
-            self.ui.detail_header_separator,
-            self.ui.filmstrip_view,
-        ):
-            self._hidden_widget_states.append((widget, widget.isVisible()))
-            widget.setVisible(False)
+            self._hidden_widget_states = self._override_visibility(
+                self._immersive_visibility_targets,
+                visible=False,
+            )
 
-        # Store the current playback control state and collapse the overlay.  Keeping the controls
-        # enabled allows mouse movement inside the immersive canvas to bring the bar back,
-        # matching the expected behaviour of dedicated media players.
-        self._video_controls_enabled_before = self.ui.video_area.controls_enabled()
-        self.ui.video_area.hide_controls(animate=False)
+            # Store the current playback control state and collapse the overlay.  Keeping the
+            # controls enabled allows mouse movement inside the immersive canvas to bring the bar
+            # back, matching the expected behaviour of dedicated media players.
+            self._video_controls_enabled_before = self.ui.video_area.controls_enabled()
+            self.ui.video_area.hide_controls(animate=False)
 
-        # Expanding the splitter after hiding the sidebar ensures the player canvas stretches to
-        # occupy the full width.  ``QSplitter`` automatically redistributes the hidden widget's
-        # space, so there is no need for manual size adjustments beyond clearing the handle.
-        self.ui.splitter.setSizes([0, sum(self._splitter_sizes or [self.width()])])
+            # Expanding the splitter after hiding the sidebar ensures the player canvas stretches
+            # to occupy the full width.  ``QSplitter`` automatically redistributes the hidden
+            # widget's space, so there is no need for manual size adjustments beyond clearing the
+            # handle.
+            self.ui.splitter.setSizes([0, sum(self._splitter_sizes or [self.width()])])
 
         self._apply_immersive_backdrop()
 
@@ -210,25 +213,26 @@ class MainWindow(QMainWindow):
         self._restore_default_backdrop()
         self.showNormal()
 
-        if self._previous_geometry is not None:
-            self.restoreGeometry(self._previous_geometry)
-        if self._previous_window_state is not None:
-            self.setWindowState(self._previous_window_state)
-        if self._splitter_sizes:
-            self.ui.splitter.setSizes(self._splitter_sizes)
+        with self._suspend_layout_updates():
+            if self._previous_geometry is not None:
+                self.restoreGeometry(self._previous_geometry)
+            if self._previous_window_state is not None:
+                self.setWindowState(self._previous_window_state)
+            if self._splitter_sizes:
+                self.ui.splitter.setSizes(self._splitter_sizes)
 
-        self.menuBar().setVisible(self._menu_bar_was_visible)
-        self.statusBar().setVisible(self._status_bar_was_visible)
-        self.ui.main_toolbar.setVisible(self._toolbar_was_visible)
-        self.ui.sidebar.setVisible(self._sidebar_was_visible)
+            self.menuBar().setVisible(self._menu_bar_was_visible)
+            self.statusBar().setVisible(self._status_bar_was_visible)
+            self.ui.main_toolbar.setVisible(self._toolbar_was_visible)
+            self.ui.sidebar.setVisible(self._sidebar_was_visible)
 
-        for widget, was_visible in self._hidden_widget_states:
-            widget.setVisible(was_visible)
-        self._hidden_widget_states = []
+            for widget, was_visible in self._hidden_widget_states:
+                widget.setVisible(was_visible)
+            self._hidden_widget_states = []
 
-        self.ui.video_area.set_controls_enabled(self._video_controls_enabled_before)
-        if self._video_controls_enabled_before and self.ui.video_area.isVisible():
-            self.ui.video_area.show_controls(animate=False)
+            self.ui.video_area.set_controls_enabled(self._video_controls_enabled_before)
+            if self._video_controls_enabled_before and self.ui.video_area.isVisible():
+                self.ui.video_area.show_controls(animate=False)
 
         self._update_fullscreen_button_icon()
 
@@ -321,3 +325,31 @@ class MainWindow(QMainWindow):
         self.ui.image_viewer.set_immersive_background(False)
         self.ui.video_area.set_immersive_background(False)
         self._immersive_background_applied = False
+
+    @contextmanager
+    def _suspend_layout_updates(self) -> Iterator[None]:
+        """Temporarily disable repaints and splitter signals while chrome toggles run."""
+
+        updates_previously_enabled = self.updatesEnabled()
+        splitter_signals_blocked = self.ui.splitter.signalsBlocked()
+        self.setUpdatesEnabled(False)
+        self.ui.splitter.blockSignals(True)
+        try:
+            yield
+        finally:
+            self.ui.splitter.blockSignals(splitter_signals_blocked)
+            self.setUpdatesEnabled(updates_previously_enabled)
+            if updates_previously_enabled:
+                # Trigger a final repaint so the window reflects the batched changes instantly.
+                self.update()
+
+    def _override_visibility(
+        self, widgets: Iterable[QWidget], *, visible: bool
+    ) -> list[tuple[QWidget, bool]]:
+        """Apply a shared visibility state and return the previous values for restoration."""
+
+        previous_states: list[tuple[QWidget, bool]] = []
+        for widget in widgets:
+            previous_states.append((widget, widget.isVisible()))
+            widget.setVisible(visible)
+        return previous_states
