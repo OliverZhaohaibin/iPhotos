@@ -17,6 +17,8 @@ from PySide6.QtGui import (
     QPainterPath,
     QPaintEvent,
     QPen,
+    QTextLayout,
+    QTextOption,
 )
 from PySide6.QtWidgets import QWidget
 
@@ -130,35 +132,61 @@ class FloatingToolTip(QWidget):
         metrics = QFontMetrics(self._font)
         available_width = max(0, self._MAX_WIDTH - 2 * self._padding)
 
-        # ``boundingRect`` performs the same word-wrapping logic that the paint
-        # routine later uses via ``drawText``.  By passing a width-constrained
-        # ``QRect`` the calculation yields the wrapped height, while the returned
-        # width reflects the widest rendered line.  Using the metrics directly
-        # avoids inventing a larger width for short strings that do not stretch
-        # to the available boundary.
-        text_flags = (
-            Qt.AlignmentFlag.AlignLeft
-            | Qt.AlignmentFlag.AlignTop
-            | Qt.TextFlag.TextWordWrap
-        )
-        text_rect = metrics.boundingRect(
-            QRect(0, 0, available_width, 0),
-            text_flags,
-            self._last_text,
-        )
+        # ``QTextLayout`` reproduces the exact wrapping logic that
+        # ``QPainter.drawText`` uses, but also exposes the natural width of each
+        # rendered line.  This allows the tooltip to shrink to the longest actual
+        # line instead of automatically stretching to the configured maximum
+        # width, eliminating the excess whitespace that previously surrounded
+        # short labels.
+        option = QTextOption()
+        option.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+        option.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
-        # ``boundingRect`` may report a zero width for strings made entirely of
-        # whitespace.  ``horizontalAdvance`` provides a stable fallback so the
-        # tooltip still reserves a minimal amount of space around such content.
-        fallback_width = metrics.horizontalAdvance(self._last_text.strip() or " ")
-        content_width = max(text_rect.width(), fallback_width)
+        layout = QTextLayout(self._last_text, self._font)
+        layout.setTextOption(option)
+
+        layout.beginLayout()
+        max_line_width = 0.0
+        content_height = 0.0
+        # ``setLineWidth`` cannot accept zero, therefore fall back to a tight
+        # bound derived from the measured string width when wrapping is disabled
+        # (``available_width`` evaluates to ``0`` for extremely small tooltips).
+        line_width_constraint = float(
+            available_width or max(1, metrics.horizontalAdvance(self._last_text) + 1)
+        )
+        line_count = 0
+
+        while True:
+            line = layout.createLine()
+            if not line.isValid():
+                break
+
+            line.setLineWidth(line_width_constraint)
+            max_line_width = max(max_line_width, line.naturalTextWidth())
+            content_height += line.height()
+            line_count += 1
+
+        layout.endLayout()
+
+        if line_count == 0:
+            # ``QTextLayout`` creates zero lines for an empty string.  Fall back
+            # to the font metrics so the tooltip still reserves a minimal frame
+            # for whitespace-only tooltips.
+            max_line_width = float(metrics.horizontalAdvance(self._last_text.strip() or " "))
+            content_height = float(metrics.height())
+
         if available_width:
-            content_width = min(content_width, available_width)
+            # ``naturalTextWidth`` may overshoot the assigned width by a small
+            # floating-point margin.  Clamping keeps the tooltip within the
+            # user-configured width budget while still fitting tightly around the
+            # measured line lengths.
+            max_line_width = min(max_line_width, float(available_width))
 
-        # The height reported by ``boundingRect`` already reflects the wrapped
-        # layout.  Ensure a minimum edge so extremely small strings still render
-        # with the intended padding and border thickness.
-        content_height = max(text_rect.height(), metrics.height())
+        # Guarantee a sensible fallback for purely whitespace content.  Without
+        # this guard the tooltip could collapse to zero width, making the border
+        # invisible despite the text technically containing characters.
+        fallback_width = float(metrics.horizontalAdvance(self._last_text.strip() or " "))
+        content_width = max(max_line_width, fallback_width)
 
         frame_inset = 2 * (self._padding + self._border_width)
         width = math.ceil(content_width) + frame_inset
