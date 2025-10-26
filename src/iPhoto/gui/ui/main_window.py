@@ -10,6 +10,7 @@ from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
 from PySide6.QtGui import (
     QColor,
     QCloseEvent,
+    QHelpEvent,
     QKeyEvent,
     QMouseEvent,
     QPaintEvent,
@@ -32,6 +33,7 @@ from .controllers.main_controller import MainController
 from .media import require_multimedia
 from .ui_main_window import ChromeStatusBar, Ui_MainWindow
 from .icons import load_icon
+from .widgets.custom_tooltip import FloatingToolTip
 
 
 # Small delay that gives Qt time to settle window transitions before resuming playback.
@@ -152,6 +154,12 @@ class MainWindow(QMainWindow):
         cast(QVBoxLayout, self._rounded_shell.layout()).addWidget(original_shell)
         self.setCentralWidget(self._rounded_shell)
 
+        # ``FloatingToolTip`` replicates ``QToolTip`` using an opaque backing
+        # store.  Sharing a single instance for the window chrome avoids the
+        # platform-specific translucency issues that produced unreadable hover
+        # hints on Windows when ``WA_TranslucentBackground`` is enabled.
+        self._window_tooltip = FloatingToolTip(self)
+
         # ``MainController`` owns every piece of non-view logic so the window
         # can focus purely on QWidget behaviour.
         self.controller = MainController(self, context)
@@ -198,8 +206,24 @@ class MainWindow(QMainWindow):
         # window chrome.  The controls themselves keep their default behaviour so users cannot
         # accidentally start moving the window when they meant to click a button.
         self._drag_sources = {self.ui.title_bar, self.ui.window_title_label}
-        for source in self._drag_sources:
+
+        # Chrome buttons need their tooltips rerouted through
+        # :class:`FloatingToolTip` to avoid the black rectangles produced by the
+        # native ``QToolTip`` implementation on translucent windows.  Keeping a
+        # list of sources simplifies the event filter dispatch logic.
+        self._tooltip_sources: tuple[QWidget, ...] = (
+            self.ui.minimize_button,
+            self.ui.fullscreen_button,
+            self.ui.close_button,
+        )
+
+        for source in (*self._drag_sources, *self._tooltip_sources):
             source.installEventFilter(self)
+
+        # ``badge_host`` keeps the Live badge aligned with the video viewport;
+        # install the filter separately so geometry changes can reposition the
+        # overlay without being treated as tooltip traffic.
+        self.ui.badge_host.installEventFilter(self)
 
         self._update_title_bar()
         self._update_fullscreen_button_icon()
@@ -443,9 +467,30 @@ class MainWindow(QMainWindow):
         super().showEvent(event)
 
     def eventFilter(self, watched, event):  # type: ignore[override]
+        if watched in self._tooltip_sources:
+            if event.type() == QEvent.Type.ToolTip:
+                help_event = cast(QHelpEvent, event)
+                widget = cast(QWidget, watched)
+                text = help_event.text() or widget.toolTip()
+                if text:
+                    self._window_tooltip.show_tooltip(help_event.globalPos(), text)
+                else:
+                    self._window_tooltip.hide_tooltip()
+                return True
+            if event.type() in {
+                QEvent.Type.Leave,
+                QEvent.Type.Hide,
+                QEvent.Type.FocusOut,
+                QEvent.Type.WindowDeactivate,
+                QEvent.Type.MouseButtonPress,
+            }:
+                self._window_tooltip.hide_tooltip()
+                return False
+
         if watched in self._drag_sources:
             if self._handle_title_bar_drag(event):
                 return True
+
         if watched is self.ui.badge_host and event.type() in {
             QEvent.Type.Resize,
             QEvent.Type.Move,

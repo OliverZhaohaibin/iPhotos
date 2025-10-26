@@ -29,11 +29,14 @@ class FloatingToolTip(QWidget):
     _CURSOR_OFFSET = QPoint(14, 22)
     _MAX_WIDTH = 360
 
-    def __init__(self) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         # The tooltip is created as a stand-alone window so it can freely float
-        # above the map without stealing focus or activating the parent.
+        # above the map without stealing focus or activating the parent.  Qt
+        # still accepts a *parent* argument which keeps the object lifetime tied
+        # to that owner without altering the toplevel behaviour that ``Qt.Tool``
+        # provides for the widget itself.
         super().__init__(
-            None,
+            parent,
             Qt.WindowType.Tool
             | Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint,
@@ -208,6 +211,9 @@ class FloatingToolTip(QWidget):
         if self.isVisible():
             self.hide()
         self._text = ""
+
+    # ``MainWindow`` uses ``show_tooltip`` to mirror the ``QToolTip`` API.
+    show_tooltip = show_text
 
 
 __all__ = ["FloatingToolTip"]
