@@ -263,9 +263,17 @@ class ToolTipEventFilter(QObject):
         event_type = event.type()
         if event_type == QEvent.Type.ToolTip:
             help_event = cast(QHelpEvent, event)
-            text = help_event.text()
+
+            # ``QHelpEvent`` gained ``text()`` in newer Qt releases, however
+            # several PySide6 builds – including the version bundled with the
+            # project – omit the accessor.  Query the attribute defensively so
+            # the event filter remains compatible with runtimes that expose the
+            # data exclusively through ``QWidget.toolTip``.
+            text_getter = getattr(help_event, "text", None)
+            text = text_getter() if callable(text_getter) else None
+
             if not text:
-                # Some widgets populate ``QHelpEvent`` without copying the
+                # Some widgets populate the help event without copying the
                 # tooltip string.  Falling back to ``QWidget.toolTip`` mimics
                 # Qt's default behaviour so the popup always receives the
                 # expected copy.
