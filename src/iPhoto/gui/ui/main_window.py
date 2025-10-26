@@ -153,12 +153,13 @@ class MainWindow(QMainWindow):
         cast(QVBoxLayout, self._rounded_shell.layout()).addWidget(original_shell)
         self.setCentralWidget(self._rounded_shell)
 
-        # ``FloatingToolTip`` replicates ``QToolTip`` using an opaque backing
-        # store.  Sharing a single instance for the window chrome avoids the
-        # platform-specific translucency issues that produced unreadable hover
-        # hints on Windows when ``WA_TranslucentBackground`` is enabled.  A
-        # dedicated application-wide event filter forwards tooltip requests to
-        # this helper so every widget inherits the reliable rendering path.
+        # ``FloatingToolTip`` replicates ``QToolTip`` using a styled ``QFrame``
+        # so the popup always paints an opaque background.  Sharing a single
+        # instance for the window chrome avoids the platform-specific
+        # translucency issues that produced unreadable hover hints on Windows
+        # when ``WA_TranslucentBackground`` is enabled.  A dedicated
+        # application-wide event filter forwards tooltip requests to this
+        # helper so every widget inherits the reliable rendering path.
         self._window_tooltip = FloatingToolTip(self)
         self._tooltip_filter: ToolTipEventFilter | None = None
         app = QApplication.instance()

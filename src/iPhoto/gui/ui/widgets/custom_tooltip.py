@@ -4,20 +4,9 @@ from __future__ import annotations
 
 from typing import Iterable, Set, cast
 
-from PySide6.QtCore import QObject, QEvent, QPoint, QRect, QRectF, QSize, Qt
-from PySide6.QtGui import (
-    QColor,
-    QFont,
-    QFontMetrics,
-    QGuiApplication,
-    QRegion,
-    QResizeEvent,
-    QPainter,
-    QPainterPath,
-    QPalette,
-    QHelpEvent,
-)
-from PySide6.QtWidgets import QWidget
+from PySide6.QtCore import QObject, QEvent, QPoint, QRect, QSize, Qt
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QGuiApplication, QPalette, QHelpEvent
+from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout, QWidget
 
 
 _HIDE_EVENTS: Set[QEvent.Type] = {
@@ -32,26 +21,26 @@ _HIDE_EVENTS: Set[QEvent.Type] = {
 }
 
 
-class FloatingToolTip(QWidget):
-    """Top-level tooltip widget that performs its own painting.
+class FloatingToolTip(QFrame):
+    """Top-level tooltip widget rendered with Qt's style engine.
 
-    The standard ``QToolTip`` inherits ``WA_TranslucentBackground`` from the
-    frameless main window, forcing the platform to composite the popup without
-    Qt ever drawing an opaque background.  On some window managers this yields a
-    solid black rectangle.  By taking over the painting inside a dedicated
-    ``QWidget`` we can always draw an opaque backdrop and sidestep those
-    platform quirks entirely.
+    The frameless main window enables ``WA_TranslucentBackground`` which causes
+    ``QToolTip`` popups to inherit a transparent backing.  On Windows this often
+    leaves the tooltip to be composited without ever drawing an opaque
+    background, producing unreadable black rectangles.  ``FloatingToolTip``
+    replaces the native helper with a dedicated ``QFrame`` that uses standard
+    Qt styling rules, guaranteeing that the palette-derived colours and rounded
+    corners are painted opaquely on every platform.
     """
 
     _CURSOR_OFFSET = QPoint(14, 22)
     _MAX_WIDTH = 340
 
     def __init__(self, parent: QWidget | None = None) -> None:
-        # The tooltip is created as a stand-alone window so it can freely float
-        # above the map without stealing focus or activating the parent.  Qt
-        # still accepts a *parent* argument which keeps the object lifetime tied
-        # to that owner without altering the toplevel behaviour that ``Qt.Tool``
-        # provides for the widget itself.
+        # ``Qt.Tool`` keeps the popup as an independent window while still
+        # allowing the caller to parent it for lifetime management.  Combined
+        # with ``FramelessWindowHint`` it produces a floating widget that never
+        # steals focus from the rest of the application.
         super().__init__(
             parent,
             Qt.WindowType.Tool
@@ -59,113 +48,108 @@ class FloatingToolTip(QWidget):
             | Qt.WindowType.WindowStaysOnTopHint,
         )
 
-        # ``WA_TranslucentBackground`` must be explicitly disabled so the
-        # tooltip paints onto an opaque surface.  Windows in a frameless,
-        # translucent hierarchy inherit transparency by default which is the
-        # root cause of the black rectangles we observed.  ``WA_OpaquePaintEvent``
-        # and ``WA_NoSystemBackground`` instruct Qt to skip any platform
-        # back-fill and trust our :meth:`paintEvent` to draw every pixel.
+        # Opt out of the translucency inherited from the frameless main window
+        # so the style engine is free to paint an opaque background.
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
-        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
-
-        # ``WA_ShowWithoutActivating`` allows the tooltip to appear even if the
-        # application is not the active window.  ``WA_TransparentForMouseEvents``
-        # ensures the popup never intercepts clicks, keeping interactions with
-        # map markers responsive.
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setObjectName("floatingToolTip")
 
-        # Text and layout configuration used during painting.
-        self._text: str = ""
-        # Prefer the platform's tooltip font when available so the helper
-        # mirrors native widgets.  ``QGuiApplication.font("QToolTip")`` falls
-        # back to the default application font when the platform has no
-        # distinct tooltip face configured.
+        # ``QLabel`` handles text layout, including word wrapping.  The
+        # container is a ``QFrame`` purely so we can lean on Qt's styling system
+        # to draw the rounded rectangle without writing a custom ``paintEvent``.
+        self._label = QLabel(self)
+        self._label.setObjectName("floatingToolTipLabel")
+        self._label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._label.setWordWrap(True)
+
+        self._padding = 6
+        self._border_width = 1
+        self._corner_radius = 6
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(self._padding, self._padding, self._padding, self._padding)
+        layout.addWidget(self._label)
+
+        # Respect the palette whenever possible so the tooltip integrates with
+        # the current theme while falling back to readable colours when the
+        # palette omits dedicated tooltip roles (a common occurrence on Linux).
+        palette: QPalette = QGuiApplication.palette()
+        background = self._resolve_css_colour(
+            palette.color(QPalette.ColorRole.ToolTipBase), "#ffffe1"
+        )
+        text_colour = self._resolve_css_colour(
+            palette.color(QPalette.ColorRole.ToolTipText), "#000000"
+        )
+        border_colour = self._resolve_css_colour(palette.color(QPalette.ColorRole.Mid), "#999999")
+
+        # Apply the palette-aware styling directly to this frame and its label.
+        self.setStyleSheet(
+            f"""
+            #floatingToolTip {{
+                background-color: {background};
+                border: {self._border_width}px solid {border_colour};
+                border-radius: {self._corner_radius}px;
+            }}
+            #floatingToolTip QLabel {{
+                background-color: transparent;
+                color: {text_colour};
+            }}
+            """
+        )
+
         tooltip_font = QGuiApplication.font("QToolTip")
         self._font = QFont(tooltip_font)
-        if self._font.pointSize() > 0:
-            self._font.setPointSize(self._font.pointSize())
-        self._padding: int = 6
+        self._label.setFont(self._font)
 
-        # Resolve palette aware colours while forcing the alpha channel to be
-        # fully opaque so the tooltip never inherits translucent shades from the
-        # parent window shell.  The fallbacks intentionally lean towards the
-        # pale yellow and soft grey tones that Windows tooltips use so the
-        # custom popup still feels familiar when the palette omits dedicated
-        # tooltip roles.
-        palette: QPalette = QGuiApplication.palette()
-        self._background_color = self._opaque_colour(
-            palette.color(QPalette.ColorRole.ToolTipBase), QColor(255, 255, 225)
-        )
-        self._text_color = self._opaque_colour(
-            palette.color(QPalette.ColorRole.ToolTipText), QColor(Qt.GlobalColor.black)
-        )
-        self._border_color = self._opaque_colour(
-            palette.color(QPalette.ColorRole.Mid), QColor("#999999")
-        )
-        self._corner_radius: float = 4.0
-        self._border_width: int = 1
+        # Constrain wrapping to a sensible width so long strings do not span the
+        # entire screen.  ``adjustSize`` will ensure the frame shrinks back down
+        # for short snippets.
+        self._label.setMaximumWidth(self._MAX_WIDTH - 2 * self._padding)
+        self._label.setMinimumWidth(0)
 
+        self._last_text: str = ""
         self.hide()
 
-    def resizeEvent(self, event: QResizeEvent) -> None:  # type: ignore[override]
-        """Qt override: refresh the window mask whenever the tooltip is resized."""
-
-        super().resizeEvent(event)
-
-        # ``setMask`` gives the window manager an explicit shape to use for
-        # hit-testing and compositing.  Applying a rounded mask eliminates the
-        # dark corner artifacts that appear on Windows when a frameless popup
-        # relies solely on alpha blending.
-        if self.width() <= 0 or self.height() <= 0:
-            self.clearMask()
-            return
-
-        rect = QRectF(self.rect())
-        radius = min(self._corner_radius, rect.width() / 2.0, rect.height() / 2.0)
-        path = QPainterPath()
-        path.addRoundedRect(rect, radius, radius)
-
-        self.setMask(QRegion(path.toFillPolygon().toPolygon()))
-
     @staticmethod
-    def _opaque_colour(candidate: QColor, fallback: QColor) -> QColor:
-        """Return a fully opaque colour, defaulting to *fallback* when empty."""
+    def _resolve_css_colour(candidate: QColor, fallback: str) -> str:
+        """Return an opaque ``#RRGGBB`` colour string using *fallback* when needed."""
 
         colour = QColor(candidate) if candidate.isValid() else QColor(fallback)
         if colour.alpha() != 255:
             colour.setAlpha(255)
-        return colour
+        return colour.name(QColor.NameFormat.HexRgb)
 
     def setText(self, text: str) -> None:
-        """Update the tooltip contents and recompute its cached geometry."""
+        """Update the tooltip content and recompute the preferred geometry."""
 
-        if text == self._text:
+        normalised = text or ""
+        if normalised == self._last_text:
+            # Even when the text is unchanged the layout may require a refresh
+            # after the widget was hidden, therefore ``adjustSize`` is still
+            # invoked to keep the frame tightly wrapped around the label.
+            self.adjustSize()
             return
 
-        self._text = text
-        # ``resize`` triggers :meth:`resizeEvent`, ensuring the window mask and
-        # backing store match the new bounds before the tooltip is shown.
-        self.resize(self.sizeHint())
-        self.update()
+        self._last_text = normalised
+        self._label.setText(normalised)
+        self.adjustSize()
 
-    def sizeHint(self) -> QSize:  # noqa: D401 - Qt docs describe the contract
-        """Qt override: report the tooltip size required for the current text."""
+    def sizeHint(self) -> QSize:  # noqa: D401 - Qt documents the contract
+        """Qt override: compute the popup size for the current label text."""
 
-        if not self._text:
+        if not self._last_text:
             edge = 2 * (self._padding + self._border_width)
             return QSize(edge, edge)
 
         metrics = QFontMetrics(self._font)
-        max_width = max(1, self._MAX_WIDTH - 2 * self._padding)
         text_rect = metrics.boundingRect(
-            QRect(0, 0, max_width, 0),
+            QRect(0, 0, self._MAX_WIDTH - 2 * self._padding, 0),
             Qt.AlignmentFlag.AlignLeft
             | Qt.AlignmentFlag.AlignTop
             | Qt.TextFlag.TextWordWrap,
-            self._text,
+            self._last_text,
         )
         width = text_rect.width() + 2 * (self._padding + self._border_width)
         height = text_rect.height() + 2 * (self._padding + self._border_width)
@@ -176,82 +160,20 @@ class FloatingToolTip(QWidget):
 
         return self.sizeHint()
 
-    def paintEvent(self, event) -> None:  # type: ignore[override]
-        """Qt override: render the rounded background and tooltip text."""
-
-        del event  # The event is unused but included to satisfy Qt's signature.
-
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-
-        # Clearing the canvas prevents residual pixels from previous frames
-        # from bleeding through around the rounded corners when the tooltip is
-        # resized to fit new text content.  This mirrors how native tooltips are
-        # rendered on composited desktops.
-        painter.fillRect(self.rect(), Qt.GlobalColor.transparent)
-
-        # ``adjusted`` avoids clipping the border by shrinking the rect by half
-        # the border width on each side.
-        rect = QRectF(self.rect()).adjusted(
-            0.5 * self._border_width,
-            0.5 * self._border_width,
-            -0.5 * self._border_width,
-            -0.5 * self._border_width,
-        )
-        path = QPainterPath()
-        path.addRoundedRect(rect, self._corner_radius, self._corner_radius)
-
-        painter.fillPath(path, self._background_color)
-
-        if self._border_width > 0:
-            pen = painter.pen()
-            pen.setColor(self._border_color)
-            pen.setWidth(self._border_width)
-            pen.setCosmetic(True)
-            painter.setPen(pen)
-            painter.drawPath(path)
-        else:
-            painter.setPen(Qt.PenStyle.NoPen)
-
-        if self._text:
-            painter.setPen(self._text_color)
-            painter.setFont(self._font)
-            text_rect = rect.adjusted(
-                self._padding,
-                self._padding,
-                -self._padding,
-                -self._padding,
-            )
-            painter.drawText(
-                text_rect,
-                Qt.AlignmentFlag.AlignLeft
-                | Qt.AlignmentFlag.AlignVCenter
-                | Qt.TextFlag.TextWordWrap,
-                self._text,
-            )
-
-        painter.end()
-
-    def show_text(self, global_pos: QPoint, text: str) -> None:
-        """Display *text* near *global_pos* while keeping the popup on-screen."""
+    def show_tooltip(self, global_pos: QPoint, text: str) -> None:
+        """Display *text* near *global_pos* while keeping the popup on screen."""
 
         if not text:
             self.hide_tooltip()
             return
 
-        text_changed = text != self._text
-        if text_changed:
-            self.setText(text)
-        else:
-            # ``setText`` short-circuits when the content is unchanged; calling
-            # ``resize`` directly ensures the mask remains synchronised when the
-            # tooltip reappears for the same label after being hidden.
-            self.resize(self.sizeHint())
-            self.update()
+        self.setText(text)
+        tooltip_size = self.sizeHint()
+        self.resize(tooltip_size)
 
         target = QPoint(global_pos)
         target += self._CURSOR_OFFSET
-        geometry = QRect(target, self.size())
+        geometry = QRect(target, tooltip_size)
 
         screen = QGuiApplication.screenAt(global_pos) or QGuiApplication.primaryScreen()
         if screen is not None:
@@ -261,8 +183,6 @@ class FloatingToolTip(QWidget):
                 geometry.moveRight(global_pos.x() - self._CURSOR_OFFSET.x())
 
             if geometry.bottom() > available.bottom():
-                # Place the tooltip above the cursor while maintaining a clear
-                # gap so the pointer does not obscure the marker.
                 geometry.moveBottom(global_pos.y() - self._CURSOR_OFFSET.y())
 
             if geometry.left() < available.left():
@@ -277,18 +197,15 @@ class FloatingToolTip(QWidget):
         self.raise_()
 
     def hide_tooltip(self) -> None:
-        """Hide the popup and clear the cached text to avoid stale state."""
+        """Hide the popup without discarding the cached label text."""
 
         if self.isVisible():
             self.hide()
-        if self._text:
-            # Resetting the text keeps the size hint – and therefore the mask –
-            # in sync for the next invocation while avoiding redundant work when
-            # the tooltip was already empty.
-            self.setText("")
 
-    # ``MainWindow`` uses ``show_tooltip`` to mirror the ``QToolTip`` API.
-    show_tooltip = show_text
+    # ``MainWindow`` and ``PhotoMapView`` mirror the ``QToolTip`` API by using
+    # ``show_tooltip``.  Retain a ``show_text`` alias so older call sites remain
+    # compatible with the helper.
+    show_text = show_tooltip
 
 
 class ToolTipEventFilter(QObject):
