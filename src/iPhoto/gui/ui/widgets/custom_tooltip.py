@@ -15,6 +15,7 @@ from PySide6.QtGui import (
     QPainter,
     QPainterPath,
     QPaintEvent,
+    QPen,
 )
 from PySide6.QtWidgets import QWidget
 
@@ -39,9 +40,9 @@ class FloatingToolTip(QWidget):
     leaves the tooltip to be composited without ever drawing an opaque
     background, producing unreadable black rectangles.  ``FloatingToolTip``
     replaces the native helper with a dedicated ``QWidget`` whose paint routine
-    first fills the border region and then the interior, ensuring every pixel in
-    the rounded frame is explicitly coloured without relying on platform
-    blending behaviour.
+    first fills the rounded background and then overlays the border, ensuring
+    every edge pixel blends against the tooltip's colours instead of the window
+    manager's default backdrop.
     """
 
     _CURSOR_OFFSET = QPoint(14, 22)
@@ -155,35 +156,34 @@ class FloatingToolTip(QWidget):
             self._corner_radius, outer_rect.width() / 2.0, outer_rect.height() / 2.0
         )
 
-        # Step 1: paint a rounded rectangle in the border colour.  Drawing the
-        # outline first prevents the window manager from blending partially
-        # transparent edge pixels with an undefined background.
+        # Step 1: paint the full rounded rectangle with the background colour.
+        # Drawing the fill first ensures any anti-aliased edge pixels blend with
+        # the tooltip's own colour rather than the compositor's fallback shade,
+        # preventing black halos on translucent parent windows.
+        paint_rect = outer_rect.adjusted(0.5, 0.5, -0.5, -0.5)
+        radius = min(self._corner_radius, paint_rect.width() / 2.0, paint_rect.height() / 2.0)
+        rounded_path = QPainterPath()
+        rounded_path.addRoundedRect(paint_rect, radius, radius)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(self._border_colour)
-        border_path = QPainterPath()
-        border_path.addRoundedRect(outer_rect, outer_radius, outer_radius)
-        painter.drawPath(border_path)
-
-        # Step 2: paint a slightly smaller rounded rectangle in the background
-        # colour.  The inset equals half the border width so the resulting edge
-        # thickness matches the configured border value even with antialiasing.
-        border_offset = self._border_width / 2.0
-        inner_rect = outer_rect.adjusted(
-            border_offset, border_offset, -border_offset, -border_offset
-        )
-        inner_radius = max(0.0, outer_radius - border_offset)
         painter.setBrush(self._background_colour)
-        inner_path = QPainterPath()
-        inner_path.addRoundedRect(inner_rect, inner_radius, inner_radius)
-        painter.drawPath(inner_path)
+        painter.drawPath(rounded_path)
+
+        # Step 2: stroke the same path using the configured border colour.  The
+        # stroke overlays the background fill, producing a crisp outline without
+        # exposing semi-transparent edge pixels to the window manager.
+        if self._border_width > 0 and self._border_colour.alpha() > 0:
+            border_pen = QPen(self._border_colour)
+            border_pen.setWidthF(self._border_width)
+            border_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(border_pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPath(rounded_path)
 
         if self._last_text:
             painter.setFont(self._font)
             painter.setPen(self._text_colour)
             text_inset = self._padding + self._border_width
-            text_rect = QRectF(outer_rect).adjusted(
-                text_inset, text_inset, -text_inset, -text_inset
-            )
+            text_rect = QRectF(paint_rect).adjusted(text_inset, text_inset, -text_inset, -text_inset)
             painter.drawText(
                 text_rect,
                 Qt.AlignmentFlag.AlignLeft
