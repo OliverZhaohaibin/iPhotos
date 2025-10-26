@@ -106,7 +106,11 @@ class FloatingToolTip(QWidget):
     def setText(self, text: str) -> None:
         """Update the tooltip content and recompute the preferred geometry."""
 
-        normalised = text or ""
+        # Qt supports explicit newlines in tooltip strings.  Because the widget
+        # now renders single-line content with ellipsis truncation we replace
+        # line breaks with spaces to avoid accidental wrapping and preserve a
+        # readable sentence fragment.
+        normalised = (text or "").replace("\r", "").replace("\n", " ")
         if normalised == self._last_text:
             # Even when the text is unchanged the layout may require a refresh
             # after the widget was hidden, therefore ``adjustSize`` is still
@@ -122,28 +126,33 @@ class FloatingToolTip(QWidget):
     def sizeHint(self) -> QSize:  # noqa: D401 - Qt documents the contract
         """Qt override: compute the popup size for the current tooltip text."""
 
+        edge = 2 * (self._padding + self._border_width)
         if not self._last_text:
-            edge = 2 * (self._padding + self._border_width)
             return QSize(edge, edge)
 
         metrics = QFontMetrics(self._font)
-        available_width = max(0, self._MAX_WIDTH - 2 * self._padding)
-        text_rect = metrics.boundingRect(
-            QRect(0, 0, available_width, 0),
-            Qt.AlignmentFlag.AlignLeft
-            | Qt.AlignmentFlag.AlignTop
-            | Qt.TextFlag.TextWordWrap,
-            self._last_text,
-        )
-        # Clamp the preferred width so extremely long words do not push the
-        # popup beyond the maximum width budget.  ``boundingRect`` may report a
-        # width that equals ``available_width`` when wrapping occurs, therefore
-        # ``max`` maintains the configured padding even when the text fits on a
-        # single line.
-        width = min(text_rect.width(), available_width) + 2 * (
-            self._padding + self._border_width
-        )
-        height = text_rect.height() + 2 * (self._padding + self._border_width)
+
+        # ``horizontalAdvance`` returns the pixel width Qt will consume when the
+        # string is rendered on a single baseline.  This value mirrors the
+        # behaviour of ``drawText`` with ``TextSingleLine`` enabled and therefore
+        # avoids the generous slack ``boundingRect`` assigns to multi-word
+        # strings.
+        text_width = metrics.horizontalAdvance(self._last_text)
+
+        # Guarantee at least the width of a single space so both very short
+        # strings and whitespace-only tooltips stay visible against the padded
+        # background frame.
+        text_width = max(text_width, metrics.horizontalAdvance(" "))
+
+        # ``height`` remains constant for single-line rendering and simply equals
+        # the baseline height plus the surrounding padding/border region.
+        line_height = metrics.height()
+
+        width = text_width + edge
+        height = line_height + edge
+
+        width = min(max(width, edge), self._MAX_WIDTH)
+        height = max(height, edge)
         return QSize(width, height)
 
     def minimumSizeHint(self) -> QSize:  # noqa: D401 - mirrors :meth:`sizeHint`
@@ -200,8 +209,9 @@ class FloatingToolTip(QWidget):
             painter.drawText(
                 text_rect,
                 Qt.AlignmentFlag.AlignLeft
-                | Qt.AlignmentFlag.AlignTop
-                | Qt.TextFlag.TextWordWrap,
+                | Qt.AlignmentFlag.AlignVCenter
+                | Qt.TextFlag.TextSingleLine
+                | Qt.ElideRight,
                 self._last_text,
             )
 
