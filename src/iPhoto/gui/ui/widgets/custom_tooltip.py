@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from typing import Iterable, Set, cast
 
 from PySide6.QtCore import QObject, QEvent, QPoint, QRect, QRectF, QSize, Qt
@@ -17,7 +16,6 @@ from PySide6.QtGui import (
     QPainterPath,
     QPaintEvent,
     QPen,
-    QTextDocument,
 )
 from PySide6.QtWidgets import QWidget
 
@@ -124,62 +122,68 @@ class FloatingToolTip(QWidget):
     def sizeHint(self) -> QSize:  # noqa: D401 - Qt documents the contract
         """Qt override: compute the popup size for the current tooltip text."""
 
+        edge = 2 * (self._padding + self._border_width)
         if not self._last_text:
-            edge = 2 * (self._padding + self._border_width)
             return QSize(edge, edge)
 
         metrics = QFontMetrics(self._font)
-        available_width = max(0, self._MAX_WIDTH - 2 * self._padding)
+        # ``available_text_width`` describes how much horizontal space remains
+        # once the tooltip padding is removed.  ``max`` keeps the value
+        # non-negative so the subsequent comparison logic can focus on the text
+        # metrics instead of defensive range checks.
+        available_text_width = max(0, self._MAX_WIDTH - 2 * self._padding)
 
-        # ``QTextDocument`` mirrors the wrapping behaviour used by
-        # ``QPainter.drawText`` but exposes higher level metrics such as the
-        # overall bounding box and the width of the longest rendered line via
-        # ``idealWidth``.  Leveraging the document avoids the inaccuracies seen
-        # with ``QFontMetrics.boundingRect`` and ``QTextLayout`` where the width
-        # could cling to the configured maximum even when the glyphs occupy far
-        # less horizontal space.
-        document = QTextDocument()
-        document.setDocumentMargin(0.0)
-        document.setDefaultFont(self._font)
-        document.setPlainText(self._last_text)
+        # ``boundingRect`` without ``TextWordWrap`` calculates the *natural*
+        # single-line dimensions of the tooltip string.  This answers the key
+        # question of whether wrapping is required in the first place instead of
+        # letting the layout machinery prematurely clamp the width to
+        # ``available_text_width``.
+        base_flags = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+        single_line_rect = metrics.boundingRect(QRect(), base_flags, self._last_text)
+        single_line_width = single_line_rect.width()
+        single_line_height = single_line_rect.height()
 
-        if available_width > 0:
-            # Setting ``textWidth`` instructs Qt to wrap the content to the
-            # requested width.  The resulting ``idealWidth`` will report the
-            # longest painted line, enabling the tooltip to shrink to fit short
-            # labels tightly.
-            document.setTextWidth(float(available_width))
+        # ``horizontalAdvance`` on the trimmed text provides a reliable
+        # whitespace fallback.  ``boundingRect`` returns ``0`` for strings that
+        # contain nothing but spaces, yet we still need a visible frame so the
+        # tooltip does not disappear entirely.
+        fallback_width = metrics.horizontalAdvance(self._last_text.strip() or " ")
+        if single_line_width <= 0:
+            single_line_width = fallback_width
+        if single_line_height <= 0:
+            single_line_height = metrics.height()
+
+        actual_text_width: int
+        actual_text_height: int
+
+        if available_text_width > 0 and single_line_width > available_text_width:
+            # The string is too wide to fit without wrapping.  Re-run the
+            # bounding box calculation using ``TextWordWrap`` so Qt reports the
+            # height of the laid out paragraph while keeping the width bounded
+            # to our requested limit.
+            wrap_flags = base_flags | Qt.TextFlag.TextWordWrap
+            wrapped_rect = metrics.boundingRect(
+                QRect(0, 0, available_text_width, 0), wrap_flags, self._last_text
+            )
+
+            # ``boundingRect`` may still over-report the width due to internal
+            # rounding, therefore ``min`` protects us from exceeding the
+            # available space.  A second ``max`` preserves the whitespace
+            # fallback so short but padded strings remain visible.
+            actual_text_width = max(min(wrapped_rect.width(), available_text_width), fallback_width)
+            actual_text_height = max(wrapped_rect.height(), metrics.height())
         else:
-            # ``-1`` disables wrapping altogether.  This is required when the
-            # available width collapses to zero which would otherwise force Qt
-            # to wrap each character individually and report an exaggerated
-            # height.
-            document.setTextWidth(-1.0)
+            # Wrapping is unnecessary: either the text naturally fits within the
+            # limit or wrapping was disabled entirely because the available width
+            # collapsed to zero.  The single-line metrics therefore represent the
+            # true content size.
+            actual_text_width = max(single_line_width, fallback_width)
+            actual_text_height = max(single_line_height, metrics.height())
 
-        # ``size`` returns the bounding rectangle of the laid out text.  Qt may
-        # produce sub-pixel measurements, therefore we keep the floating-point
-        # precision until the final rounding step to avoid cumulative error.
-        document_size = document.size()
-        content_height = float(document_size.height())
-
-        # ``idealWidth`` returns the width of the longest line that actually
-        # contains glyphs after wrapping.  The value can be zero for pure
-        # whitespace, so the fallback below maintains a sensible minimum.
-        content_width = float(document.idealWidth())
-
-        # Guarantee a sensible fallback for purely whitespace content.  Without
-        # this guard the tooltip could collapse to zero width, making the border
-        # invisible despite the text technically containing characters.
-        fallback_width = float(metrics.horizontalAdvance(self._last_text.strip() or " "))
-        content_width = max(content_width, fallback_width)
-
-        frame_inset = 2 * (self._padding + self._border_width)
-        width = math.ceil(content_width) + frame_inset
-        height = math.ceil(content_height) + frame_inset
-
-        min_edge = frame_inset
-        width = max(width, min_edge)
-        height = max(height, min_edge)
+        width = actual_text_width + edge
+        height = actual_text_height + edge
+        width = max(width, edge)
+        height = max(height, edge)
         return QSize(width, height)
 
     def minimumSizeHint(self) -> QSize:  # noqa: D401 - mirrors :meth:`sizeHint`
