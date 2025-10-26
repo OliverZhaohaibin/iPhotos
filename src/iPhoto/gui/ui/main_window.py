@@ -269,12 +269,14 @@ class MainWindow(QMainWindow):
         # the sidebar.  Matching that role keeps the menu surfaces visually aligned with the rest of
         # the application shell, whereas ``Base`` resolves to plain white under the bundled
         # palette.
-        window_color = palette.color(QPalette.ColorRole.Window)
-        border_color = palette.color(QPalette.ColorRole.Mid)
-        text_color = palette.color(QPalette.ColorRole.WindowText)
-        highlight_color = palette.color(QPalette.ColorRole.Highlight)
-        highlight_text_color = palette.color(QPalette.ColorRole.HighlightedText)
-        separator_color = palette.color(QPalette.ColorRole.Midlight)
+        window_color = self._opaque_color(palette.color(QPalette.ColorRole.Window))
+        border_color = self._opaque_color(palette.color(QPalette.ColorRole.Mid))
+        text_color = self._opaque_color(palette.color(QPalette.ColorRole.WindowText))
+        highlight_color = self._opaque_color(palette.color(QPalette.ColorRole.Highlight))
+        highlight_text_color = self._opaque_color(
+            palette.color(QPalette.ColorRole.HighlightedText)
+        )
+        separator_color = self._opaque_color(palette.color(QPalette.ColorRole.Midlight))
 
         window_color_name = window_color.name()
         border_color_name = border_color.name()
@@ -358,6 +360,25 @@ class MainWindow(QMainWindow):
 
         self._qmenu_stylesheet = qmenu_style
         return qmenu_style, menubar_style, tooltip_style, window_color, text_color
+
+    @staticmethod
+    def _opaque_color(color: QColor) -> QColor:
+        """Return a colour copy whose alpha channel is forced to full opacity.
+
+        ``WA_TranslucentBackground`` propagates to many popups which in turn causes their
+        palettes to report fully transparent colours.  ``QToolTip`` paints using the palette
+        rather than the stylesheet, so a transparent tone translates to a solid black rectangle
+        once the compositor blends it with the desktop.  Forcing every shade to have an opaque
+        alpha channel keeps both the menu and tooltip surfaces readable regardless of the
+        system theme or platform blending quirks.
+        """
+
+        if color.alpha() >= 255:
+            return color
+
+        opaque_color = QColor(color)
+        opaque_color.setAlpha(255)
+        return opaque_color
 
     def _configure_popup_menu(self, menu: QMenu, stylesheet: str) -> None:
         """Apply frameless styling and rounded menu rules to ``menu``.
