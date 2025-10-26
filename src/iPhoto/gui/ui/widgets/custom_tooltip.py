@@ -10,6 +10,8 @@ from PySide6.QtGui import (
     QFont,
     QFontMetrics,
     QGuiApplication,
+    QRegion,
+    QResizeEvent,
     QPainter,
     QPainterPath,
     QPalette,
@@ -108,6 +110,26 @@ class FloatingToolTip(QWidget):
 
         self.hide()
 
+    def resizeEvent(self, event: QResizeEvent) -> None:  # type: ignore[override]
+        """Qt override: refresh the window mask whenever the tooltip is resized."""
+
+        super().resizeEvent(event)
+
+        # ``setMask`` gives the window manager an explicit shape to use for
+        # hit-testing and compositing.  Applying a rounded mask eliminates the
+        # dark corner artifacts that appear on Windows when a frameless popup
+        # relies solely on alpha blending.
+        if self.width() <= 0 or self.height() <= 0:
+            self.clearMask()
+            return
+
+        rect = QRectF(self.rect())
+        radius = min(self._corner_radius, rect.width() / 2.0, rect.height() / 2.0)
+        path = QPainterPath()
+        path.addRoundedRect(rect, radius, radius)
+
+        self.setMask(QRegion(path.toFillPolygon().toPolygon()))
+
     @staticmethod
     def _opaque_colour(candidate: QColor, fallback: QColor) -> QColor:
         """Return a fully opaque colour, defaulting to *fallback* when empty."""
@@ -116,6 +138,18 @@ class FloatingToolTip(QWidget):
         if colour.alpha() != 255:
             colour.setAlpha(255)
         return colour
+
+    def setText(self, text: str) -> None:
+        """Update the tooltip contents and recompute its cached geometry."""
+
+        if text == self._text:
+            return
+
+        self._text = text
+        # ``resize`` triggers :meth:`resizeEvent`, ensuring the window mask and
+        # backing store match the new bounds before the tooltip is shown.
+        self.resize(self.sizeHint())
+        self.update()
 
     def sizeHint(self) -> QSize:  # noqa: D401 - Qt docs describe the contract
         """Qt override: report the tooltip size required for the current text."""
@@ -205,9 +239,15 @@ class FloatingToolTip(QWidget):
             self.hide_tooltip()
             return
 
-        self._text = text
-        self.resize(self.sizeHint())
-        self.update()
+        text_changed = text != self._text
+        if text_changed:
+            self.setText(text)
+        else:
+            # ``setText`` short-circuits when the content is unchanged; calling
+            # ``resize`` directly ensures the mask remains synchronised when the
+            # tooltip reappears for the same label after being hidden.
+            self.resize(self.sizeHint())
+            self.update()
 
         target = QPoint(global_pos)
         target += self._CURSOR_OFFSET
@@ -218,7 +258,7 @@ class FloatingToolTip(QWidget):
             available = screen.availableGeometry()
 
             if geometry.right() > available.right():
-                geometry.moveRight(available.right())
+                geometry.moveRight(global_pos.x() - self._CURSOR_OFFSET.x())
 
             if geometry.bottom() > available.bottom():
                 # Place the tooltip above the cursor while maintaining a clear
@@ -241,7 +281,11 @@ class FloatingToolTip(QWidget):
 
         if self.isVisible():
             self.hide()
-        self._text = ""
+        if self._text:
+            # Resetting the text keeps the size hint – and therefore the mask –
+            # in sync for the next invocation while avoiding redundant work when
+            # the tooltip was already empty.
+            self.setText("")
 
     # ``MainWindow`` uses ``show_tooltip`` to mirror the ``QToolTip`` API.
     show_tooltip = show_text
