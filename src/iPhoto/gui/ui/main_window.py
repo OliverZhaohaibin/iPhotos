@@ -10,7 +10,6 @@ from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
 from PySide6.QtGui import (
     QColor,
     QCloseEvent,
-    QHelpEvent,
     QKeyEvent,
     QMouseEvent,
     QPaintEvent,
@@ -33,7 +32,7 @@ from .controllers.main_controller import MainController
 from .media import require_multimedia
 from .ui_main_window import ChromeStatusBar, Ui_MainWindow
 from .icons import load_icon
-from .widgets.custom_tooltip import FloatingToolTip
+from .widgets.custom_tooltip import FloatingToolTip, ToolTipEventFilter
 
 
 # Small delay that gives Qt time to settle window transitions before resuming playback.
@@ -157,8 +156,16 @@ class MainWindow(QMainWindow):
         # ``FloatingToolTip`` replicates ``QToolTip`` using an opaque backing
         # store.  Sharing a single instance for the window chrome avoids the
         # platform-specific translucency issues that produced unreadable hover
-        # hints on Windows when ``WA_TranslucentBackground`` is enabled.
+        # hints on Windows when ``WA_TranslucentBackground`` is enabled.  A
+        # dedicated application-wide event filter forwards tooltip requests to
+        # this helper so every widget inherits the reliable rendering path.
         self._window_tooltip = FloatingToolTip(self)
+        self._tooltip_filter: ToolTipEventFilter | None = None
+        app = QApplication.instance()
+        if app is not None:
+            self._tooltip_filter = ToolTipEventFilter(self._window_tooltip, parent=self)
+            app.installEventFilter(self._tooltip_filter)
+            app.setProperty("floatingToolTipFilter", self._tooltip_filter)
 
         # ``MainController`` owns every piece of non-view logic so the window
         # can focus purely on QWidget behaviour.
@@ -207,17 +214,7 @@ class MainWindow(QMainWindow):
         # accidentally start moving the window when they meant to click a button.
         self._drag_sources = {self.ui.title_bar, self.ui.window_title_label}
 
-        # Chrome buttons need their tooltips rerouted through
-        # :class:`FloatingToolTip` to avoid the black rectangles produced by the
-        # native ``QToolTip`` implementation on translucent windows.  Keeping a
-        # list of sources simplifies the event filter dispatch logic.
-        self._tooltip_sources: tuple[QWidget, ...] = (
-            self.ui.minimize_button,
-            self.ui.fullscreen_button,
-            self.ui.close_button,
-        )
-
-        for source in (*self._drag_sources, *self._tooltip_sources):
+        for source in self._drag_sources:
             source.installEventFilter(self)
 
         # ``badge_host`` keeps the Live badge aligned with the video viewport;
@@ -231,6 +228,15 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:  # type: ignore[override]
         """Tear down background services before the window closes."""
+
+        if self._tooltip_filter is not None:
+            app = QApplication.instance()
+            if app is not None:
+                app.removeEventFilter(self._tooltip_filter)
+                if app.property("floatingToolTipFilter") == self._tooltip_filter:
+                    app.setProperty("floatingToolTipFilter", None)
+            self._tooltip_filter = None
+        self._window_tooltip.hide_tooltip()
 
         # ``MainController`` coordinates every component that spawns worker
         # threads (thumbnail rendering, map tile loading, clustering, etc.).
@@ -447,9 +453,11 @@ class MainWindow(QMainWindow):
 
             # ``QMenuBar`` owns the drop-down menus presented for each action.  Qt constructs those
             # popups lazily, so iterating the actions here lets us retrofit the required window
-            # flags once they exist.  ``FramelessWindowHint`` allows the stylesheet to control the
-            # rounded outline while ``WA_TranslucentBackground`` keeps the corners transparent so the
-            # painted background remains visible.  Applying the cached stylesheet directly ensures
+            # flags once they exist.  ``FramelessWindowHint`` allows the
+            # stylesheet to control the rounded outline while
+            # ``WA_TranslucentBackground`` keeps the corners transparent so the
+            # painted background remains visible.  Applying the cached
+            # stylesheet directly ensures
             # the popups match the context menus that reuse the same helper.
             for action in self.ui.menu_bar.actions():
                 menu = action.menu()
@@ -467,26 +475,6 @@ class MainWindow(QMainWindow):
         super().showEvent(event)
 
     def eventFilter(self, watched, event):  # type: ignore[override]
-        if watched in self._tooltip_sources:
-            if event.type() == QEvent.Type.ToolTip:
-                help_event = cast(QHelpEvent, event)
-                widget = cast(QWidget, watched)
-                text = help_event.text() or widget.toolTip()
-                if text:
-                    self._window_tooltip.show_tooltip(help_event.globalPos(), text)
-                else:
-                    self._window_tooltip.hide_tooltip()
-                return True
-            if event.type() in {
-                QEvent.Type.Leave,
-                QEvent.Type.Hide,
-                QEvent.Type.FocusOut,
-                QEvent.Type.WindowDeactivate,
-                QEvent.Type.MouseButtonPress,
-            }:
-                self._window_tooltip.hide_tooltip()
-                return False
-
         if watched in self._drag_sources:
             if self._handle_title_bar_drag(event):
                 return True
@@ -644,7 +632,10 @@ class MainWindow(QMainWindow):
             mouse_event = cast(QMouseEvent, event)
             if mouse_event.button() == Qt.MouseButton.LeftButton:
                 self._drag_active = True
-                self._drag_offset = mouse_event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+                self._drag_offset = (
+                    mouse_event.globalPosition().toPoint()
+                    - self.frameGeometry().topLeft()
+                )
                 return True
         if event.type() == QEvent.Type.MouseMove and self._drag_active:
             mouse_event = cast(QMouseEvent, event)

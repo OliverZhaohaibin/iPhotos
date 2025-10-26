@@ -19,7 +19,7 @@ from PySide6.QtGui import (
     QPen,
     QPixmap,
 )
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
 
 from iPhotos.maps.map_widget.map_gl_widget import MapGLWidget
 from iPhotos.maps.map_widget.map_widget import MapWidget
@@ -28,7 +28,7 @@ from iPhotos.maps.map_widget.map_renderer import CityAnnotation
 from ....library.manager import GeotaggedAsset
 from ..tasks.thumbnail_loader import ThumbnailLoader
 from .marker_controller import MarkerController, _MarkerCluster
-from .custom_tooltip import FloatingToolTip
+from .custom_tooltip import FloatingToolTip, ToolTipEventFilter
 
 
 logger = getLogger(__name__)
@@ -290,6 +290,16 @@ class PhotoMapView(QWidget):
         # the tooltip remains available for as long as the map view exists
         # without fighting Qt's global tooltip machinery.
         self._tooltip = FloatingToolTip()
+        app = QApplication.instance()
+        if app is not None:
+            filter_candidate = app.property("floatingToolTipFilter")
+            if isinstance(filter_candidate, ToolTipEventFilter):
+                # The global filter already manages tooltips originating from
+                # standard widgets.  Ignoring the map-specific tooltip prevents
+                # the filter from hiding it prematurely when Qt dispatches
+                # housekeeping events (for example ``Leave``) to the floating
+                # popup itself.
+                filter_candidate.ignore_object(self._tooltip)
         self._last_tooltip_text = ""
 
     @Slot(str)

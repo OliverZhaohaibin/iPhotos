@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt
+from typing import Iterable, Set, cast
+
+from PySide6.QtCore import QObject, QEvent, QPoint, QRect, QRectF, QSize, Qt
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -11,8 +13,21 @@ from PySide6.QtGui import (
     QPainter,
     QPainterPath,
     QPalette,
+    QHelpEvent,
 )
 from PySide6.QtWidgets import QWidget
+
+
+_HIDE_EVENTS: Set[QEvent.Type] = {
+    QEvent.Type.Leave,
+    QEvent.Type.Hide,
+    QEvent.Type.FocusOut,
+    QEvent.Type.WindowDeactivate,
+    QEvent.Type.MouseButtonPress,
+    QEvent.Type.MouseButtonDblClick,
+    QEvent.Type.KeyPress,
+    QEvent.Type.Close,
+}
 
 
 class FloatingToolTip(QWidget):
@@ -216,4 +231,67 @@ class FloatingToolTip(QWidget):
     show_tooltip = show_text
 
 
-__all__ = ["FloatingToolTip"]
+class ToolTipEventFilter(QObject):
+    """Event filter that reroutes ``QToolTip`` events to :class:`FloatingToolTip`."""
+
+    def __init__(self, tooltip: FloatingToolTip, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._tooltip = tooltip
+        # Track objects that should bypass the filter entirely.  The tooltip
+        # widget itself must be ignored or Qt will immediately re-enter the
+        # filter when it receives synthetic events such as ``Leave`` while
+        # hiding the popup.
+        self._ignored_ids: Set[int] = {id(tooltip)}
+
+    def ignore_object(self, obj: QObject) -> None:
+        """Exclude *obj* from tooltip interception logic."""
+
+        self._ignored_ids.add(id(obj))
+
+    def ignore_many(self, objects: Iterable[QObject]) -> None:
+        """Convenience helper to add multiple ignored objects in one call."""
+
+        for obj in objects:
+            self.ignore_object(obj)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # type: ignore[override]
+        """Intercept tooltip events and display them using the floating popup."""
+
+        if id(watched) in self._ignored_ids:
+            return False
+
+        event_type = event.type()
+        if event_type == QEvent.Type.ToolTip:
+            help_event = cast(QHelpEvent, event)
+            text = help_event.text()
+            if not text:
+                # Some widgets populate ``QHelpEvent`` without copying the
+                # tooltip string.  Falling back to ``QWidget.toolTip`` mimics
+                # Qt's default behaviour so the popup always receives the
+                # expected copy.
+                tooltip_attr = getattr(watched, "toolTip", None)
+                if callable(tooltip_attr):
+                    text = tooltip_attr()
+
+            text = text.strip() if text else ""
+            if text:
+                self._tooltip.show_tooltip(help_event.globalPos(), text)
+            else:
+                self._tooltip.hide_tooltip()
+            # Returning ``True`` prevents Qt from spawning the native tooltip,
+            # ensuring the floating helper is the only popup that appears.
+            return True
+
+        if event_type in _HIDE_EVENTS or event_type == QEvent.Type.Destroy:
+            # Events that naturally conclude tooltip interactions (for example
+            # pressing a mouse button or hiding the source widget) must dismiss
+            # the floating popup to mirror Qt's native behaviour.  Returning
+            # ``False`` allows the original widget to continue processing the
+            # event normally.
+            self._tooltip.hide_tooltip()
+            return False
+
+        return False
+
+
+__all__ = ["FloatingToolTip", "ToolTipEventFilter"]
