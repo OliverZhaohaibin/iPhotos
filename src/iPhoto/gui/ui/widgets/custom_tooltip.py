@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import math
 from typing import Iterable, Set, cast
 
-from PySide6.QtCore import QObject, QEvent, QPoint, QRect, QRectF, QSize, Qt
+from PySide6.QtCore import QObject, QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -16,6 +17,8 @@ from PySide6.QtGui import (
     QPainterPath,
     QPaintEvent,
     QPen,
+    QTextLayout,
+    QTextOption,
 )
 from PySide6.QtWidgets import QWidget
 
@@ -128,22 +131,53 @@ class FloatingToolTip(QWidget):
 
         metrics = QFontMetrics(self._font)
         available_width = max(0, self._MAX_WIDTH - 2 * self._padding)
-        text_rect = metrics.boundingRect(
-            QRect(0, 0, available_width, 0),
-            Qt.AlignmentFlag.AlignLeft
-            | Qt.AlignmentFlag.AlignTop
-            | Qt.TextFlag.TextWordWrap,
-            self._last_text,
-        )
-        # Clamp the preferred width so extremely long words do not push the
-        # popup beyond the maximum width budget.  ``boundingRect`` may report a
-        # width that equals ``available_width`` when wrapping occurs, therefore
-        # ``max`` maintains the configured padding even when the text fits on a
-        # single line.
-        width = min(text_rect.width(), available_width) + 2 * (
-            self._padding + self._border_width
-        )
-        height = text_rect.height() + 2 * (self._padding + self._border_width)
+
+        # ``QFontMetrics.boundingRect`` returns the constraint width whenever
+        # word wrapping is active, which makes the tooltip excessively wide for
+        # short strings.  ``QTextLayout`` exposes the natural width of each line
+        # after wrapping, allowing the popup to hug the rendered text more
+        # closely.  The layout mirrors the same wrap behaviour used when
+        # painting the tooltip contents so the computed geometry matches the
+        # actual drawing pass.
+        layout = QTextLayout(self._last_text, self._font)
+        text_option = QTextOption()
+        text_option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        text_option.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        layout.setTextOption(text_option)
+
+        max_line_width = 0.0
+        text_height = 0.0
+        layout_width = max(1.0, float(available_width))
+        layout.beginLayout()
+        try:
+            while True:
+                line = layout.createLine()
+                if not line.isValid():
+                    break
+
+                line.setLineWidth(layout_width)
+                line.setPosition(QPointF(0.0, text_height))
+                text_height += line.height()
+                max_line_width = max(max_line_width, line.naturalTextWidth())
+        finally:
+            layout.endLayout()
+
+        # ``naturalTextWidth`` may report zero for whitespace-only content.
+        # ``horizontalAdvance`` produces a stable fallback that still allows the
+        # tooltip to remain compact.
+        fallback_width = metrics.horizontalAdvance(self._last_text.strip() or " ")
+        content_width = max(max_line_width, float(fallback_width))
+        # Respect the maximum width budget while still shrinking to fit short
+        # lines.  ``math.ceil`` ensures fractional metrics do not truncate the
+        # drawn text.
+        width = min(content_width, float(available_width))
+        width = math.ceil(width) + 2 * (self._padding + self._border_width)
+
+        # ``text_height`` is zero when the layout only contained manual newline
+        # characters.  Fall back to the font metrics so the tooltip retains a
+        # sensible minimum height around empty or whitespace-only messages.
+        content_height = text_height if text_height > 0.0 else float(metrics.height())
+        height = math.ceil(content_height) + 2 * (self._padding + self._border_width)
         return QSize(width, height)
 
     def minimumSizeHint(self) -> QSize:  # noqa: D401 - mirrors :meth:`sizeHint`
