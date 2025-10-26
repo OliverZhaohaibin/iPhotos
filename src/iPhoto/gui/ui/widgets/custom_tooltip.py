@@ -42,7 +42,7 @@ class FloatingToolTip(QWidget):
     """
 
     _CURSOR_OFFSET = QPoint(14, 22)
-    _MAX_WIDTH = 360
+    _MAX_WIDTH = 340
 
     def __init__(self, parent: QWidget | None = None) -> None:
         # The tooltip is created as a stand-alone window so it can freely float
@@ -77,24 +77,33 @@ class FloatingToolTip(QWidget):
 
         # Text and layout configuration used during painting.
         self._text: str = ""
-        self._font: QFont = QGuiApplication.font()
-        self._font.setPointSize(self._font.pointSize() + 1)
-        self._padding: int = 8
+        # Prefer the platform's tooltip font when available so the helper
+        # mirrors native widgets.  ``QGuiApplication.font("QToolTip")`` falls
+        # back to the default application font when the platform has no
+        # distinct tooltip face configured.
+        tooltip_font = QGuiApplication.font("QToolTip")
+        self._font = QFont(tooltip_font)
+        if self._font.pointSize() > 0:
+            self._font.setPointSize(self._font.pointSize())
+        self._padding: int = 6
 
         # Resolve palette aware colours while forcing the alpha channel to be
         # fully opaque so the tooltip never inherits translucent shades from the
-        # parent window shell.
+        # parent window shell.  The fallbacks intentionally lean towards the
+        # pale yellow and soft grey tones that Windows tooltips use so the
+        # custom popup still feels familiar when the palette omits dedicated
+        # tooltip roles.
         palette: QPalette = QGuiApplication.palette()
         self._background_color = self._opaque_colour(
-            palette.color(QPalette.ColorRole.ToolTipBase), QColor("#eef3f6")
+            palette.color(QPalette.ColorRole.ToolTipBase), QColor(255, 255, 225)
         )
         self._text_color = self._opaque_colour(
             palette.color(QPalette.ColorRole.ToolTipText), QColor(Qt.GlobalColor.black)
         )
         self._border_color = self._opaque_colour(
-            palette.color(QPalette.ColorRole.Mid), QColor("#9a9a9a")
+            palette.color(QPalette.ColorRole.Mid), QColor("#999999")
         )
-        self._corner_radius: float = 8.0
+        self._corner_radius: float = 4.0
         self._border_width: int = 1
 
         self.hide()
@@ -112,19 +121,20 @@ class FloatingToolTip(QWidget):
         """Qt override: report the tooltip size required for the current text."""
 
         if not self._text:
-            return QSize(2 * self._padding, 2 * self._padding)
+            edge = 2 * (self._padding + self._border_width)
+            return QSize(edge, edge)
 
         metrics = QFontMetrics(self._font)
         max_width = max(1, self._MAX_WIDTH - 2 * self._padding)
         text_rect = metrics.boundingRect(
             QRect(0, 0, max_width, 0),
             Qt.AlignmentFlag.AlignLeft
-            | Qt.AlignmentFlag.AlignVCenter
+            | Qt.AlignmentFlag.AlignTop
             | Qt.TextFlag.TextWordWrap,
             self._text,
         )
-        width = text_rect.width() + 2 * self._padding + self._border_width
-        height = text_rect.height() + 2 * self._padding + self._border_width
+        width = text_rect.width() + 2 * (self._padding + self._border_width)
+        height = text_rect.height() + 2 * (self._padding + self._border_width)
         return QSize(width, height)
 
     def minimumSizeHint(self) -> QSize:  # noqa: D401 - mirrors :meth:`sizeHint`
@@ -139,6 +149,12 @@ class FloatingToolTip(QWidget):
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        # Clearing the canvas prevents residual pixels from previous frames
+        # from bleeding through around the rounded corners when the tooltip is
+        # resized to fit new text content.  This mirrors how native tooltips are
+        # rendered on composited desktops.
+        painter.fillRect(self.rect(), Qt.GlobalColor.transparent)
 
         # ``adjusted`` avoids clipping the border by shrinking the rect by half
         # the border width on each side.
