@@ -282,13 +282,13 @@ class PhotoMapView(QWidget):
         self._marker_controller.thumbnailUpdated.connect(self._overlay.set_thumbnail)
         self._marker_controller.thumbnailsInvalidated.connect(self._overlay.clear_pixmaps)
 
-        # ``FloatingToolTip`` replicates ``QToolTip`` using a custom label that
-        # paints its own background.  The standard tooltip inherits the
-        # translucent attributes from the frameless main window which causes the
-        # popup to render as an opaque black rectangle on several window
-        # managers.  Keeping a dedicated instance here ensures the tooltip
-        # remains available for as long as the map view exists without fighting
-        # Qt's global tooltip machinery.
+        # ``FloatingToolTip`` replicates ``QToolTip`` using a custom widget that
+        # draws its own rounded background via ``paintEvent``.  The standard
+        # tooltip inherits the translucent attributes from the frameless main
+        # window which causes the popup to render as an opaque black rectangle
+        # on several window managers.  Keeping a dedicated instance here ensures
+        # the tooltip remains available for as long as the map view exists
+        # without fighting Qt's global tooltip machinery.
         self._tooltip = FloatingToolTip()
         self._last_tooltip_text = ""
 
