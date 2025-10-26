@@ -127,39 +127,40 @@ class FloatingToolTip(QWidget):
             return QSize(edge, edge)
 
         metrics = QFontMetrics(self._font)
-        # ``available_text_width`` represents the horizontal budget once the
-        # widget padding is removed.  ``max`` keeps the value non-negative so the
-        # decision logic below can focus entirely on text measurements.
+        # ``available_text_width`` describes the space that remains for text once
+        # padding and borders are removed.  The ``max`` call keeps the value
+        # non-negative so later calculations do not have to deal with unexpected
+        # negative limits when the caller configures an unusually small
+        # ``_MAX_WIDTH``.
         available_text_width = max(0, self._MAX_WIDTH - 2 * self._padding)
 
-        # ``horizontalAdvance`` yields the tightest width of a string rendered on
-        # a single baseline.  Evaluating every explicit line break separately
-        # keeps the measurement accurate for user-provided ``\n`` characters
-        # while also providing the natural width for ordinary, unwrapped labels.
-        text_lines = self._last_text.split("\n")
-        single_line_width = max(metrics.horizontalAdvance(line) for line in text_lines)
+        # Split the tooltip text manually so user-specified line breaks are
+        # preserved exactly as entered.  ``horizontalAdvance`` yields a tight
+        # measurement for each line on a single baseline, which mirrors how the
+        # ``paintEvent`` renders text without implicit wrapping.
+        text_lines = self._last_text.split("\n") or [""]
+        line_widths = [metrics.horizontalAdvance(line) for line in text_lines]
+        natural_text_width = max(line_widths)
         line_height = metrics.height()
 
-        # ``horizontalAdvance`` on a fallback string ensures that pure whitespace
-        # still results in a visible tooltip frame.  Qt collapses the bounding
-        # box of ``"    "`` to zero otherwise, causing the popup to disappear.
-        fallback_width = metrics.horizontalAdvance(self._last_text.strip() or " ")
+        # ``horizontalAdvance`` collapses strings containing only whitespace to
+        # zero.  Measuring a single space keeps the tooltip visible even when the
+        # content is blank or consists purely of whitespace characters.
+        fallback_width = metrics.horizontalAdvance(" ") if self._last_text.strip() == "" else 0
 
-        # ``needs_wrapping`` indicates that the natural single-line width would
-        # exceed the allowed space.  In this situation a wrapped measurement is
-        # required to learn how tall the multi-line layout becomes.
-        needs_wrapping = available_text_width > 0 and single_line_width > available_text_width
-        has_manual_breaks = len(text_lines) > 1
+        # Determine whether the natural width would exceed the available space
+        # and therefore requires word wrapping.  The check ignores the fallback
+        # width so short labels remain as compact as possible.
+        needs_wrapping = available_text_width > 0 and natural_text_width > available_text_width
 
         actual_text_width: int
         actual_text_height: int
 
         if needs_wrapping:
-            # ``boundingRect`` with ``TextWordWrap`` gives us the paragraph
-            # metrics Qt will use when painting wrapped text.  The returned width
-            # can overshoot by a pixel due to internal rounding, therefore the
-            # ``min`` guard keeps the final tooltip strictly within bounds while
-            # still respecting the whitespace fallback.
+            # Once wrapping is required the bounding rectangle reflects the exact
+            # layout that Qt will use during painting.  The ``min`` call protects
+            # against off-by-one rounding so the tooltip never grows beyond the
+            # configured maximum width.
             wrap_flags = (
                 Qt.AlignmentFlag.AlignLeft
                 | Qt.AlignmentFlag.AlignTop
@@ -168,25 +169,25 @@ class FloatingToolTip(QWidget):
             wrapped_rect = metrics.boundingRect(
                 QRect(0, 0, available_text_width, 0), wrap_flags, self._last_text
             )
-
-            actual_text_width = max(min(wrapped_rect.width(), available_text_width), fallback_width)
+            actual_text_width = min(wrapped_rect.width(), available_text_width)
             actual_text_height = max(wrapped_rect.height(), line_height)
-        elif has_manual_breaks:
-            # Manually embedded newlines should be honoured as-is.  The natural
-            # width is the longest user-defined line, and the height equals the
-            # number of lines times the font's line height.
-            actual_text_width = max(single_line_width, fallback_width)
-            line_count = max(1, len(text_lines))
-            actual_text_height = max(line_height * line_count, line_height)
         else:
-            # The text fits on a single line inside the allowed width.  The
-            # single-line metrics therefore describe the final content size.
-            actual_text_width = max(single_line_width, fallback_width)
-            actual_text_height = line_height
+            # Without wrapping the final width equals the widest manual line and
+            # the height corresponds to the number of explicit lines provided by
+            # the caller.
+            actual_text_width = natural_text_width
+            actual_text_height = max(line_height * len(text_lines), line_height)
+
+        # Enforce the whitespace fallback after the main calculation so that
+        # completely blank tooltips still produce a visible frame for the user.
+        actual_text_width = max(actual_text_width, fallback_width)
 
         width = actual_text_width + edge
         height = actual_text_height + edge
-        width = max(width, edge)
+
+        # Clamp the tooltip width to ``_MAX_WIDTH`` to avoid exceeding the caller
+        # supplied limit once padding and borders have been applied.
+        width = min(max(width, edge), self._MAX_WIDTH)
         height = max(height, edge)
         return QSize(width, height)
 
