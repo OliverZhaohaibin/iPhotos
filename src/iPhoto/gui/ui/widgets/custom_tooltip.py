@@ -162,7 +162,27 @@ class FloatingToolTip(QWidget):
                 break
 
             line.setLineWidth(line_width_constraint)
-            max_line_width = max(max_line_width, line.naturalTextWidth())
+
+            # ``QTextLine.naturalTextWidth`` occasionally reports the assigned
+            # wrapping width instead of the actual glyph advance, causing short
+            # strings to expand to the maximum constraint.  Computing the
+            # horizontal advance from the concrete slice of characters keeps the
+            # tooltip width pinned to the longest rendered line regardless of
+            # how ``QTextLayout`` internally normalises the measurement.
+            start = line.textStart()
+            length = line.textLength()
+            line_text = self._last_text[start : start + length]
+
+            # ``QTextLayout`` keeps explicit newline characters at the end of
+            # a line.  They do not contribute to the painted width, therefore we
+            # strip them before querying the metrics while leaving any other
+            # leading or trailing whitespace untouched.
+            stripped_line = line_text.rstrip("\n\r")
+            measured_line = stripped_line or " "
+
+            max_line_width = max(
+                max_line_width, float(metrics.horizontalAdvance(measured_line))
+            )
             content_height += line.height()
             line_count += 1
 
