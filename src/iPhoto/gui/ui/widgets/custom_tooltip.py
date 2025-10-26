@@ -88,7 +88,7 @@ class FloatingToolTip(QWidget):
             palette.color(QPalette.ColorRole.Mid), QColor("#999999")
         )
 
-        tooltip_font = QGuiApplication.font("QToolTip")
+        tooltip_font = QGuiApplication.font()
         self._font = QFont(tooltip_font)
 
         self._last_text: str = ""
