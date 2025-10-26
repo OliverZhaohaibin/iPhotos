@@ -17,8 +17,7 @@ from PySide6.QtGui import (
     QPainterPath,
     QPaintEvent,
     QPen,
-    QTextLayout,
-    QTextOption,
+    QTextDocument,
 )
 from PySide6.QtWidgets import QWidget
 
@@ -132,81 +131,47 @@ class FloatingToolTip(QWidget):
         metrics = QFontMetrics(self._font)
         available_width = max(0, self._MAX_WIDTH - 2 * self._padding)
 
-        # ``QTextLayout`` reproduces the exact wrapping logic that
-        # ``QPainter.drawText`` uses, but also exposes the natural width of each
-        # rendered line.  This allows the tooltip to shrink to the longest actual
-        # line instead of automatically stretching to the configured maximum
-        # width, eliminating the excess whitespace that previously surrounded
-        # short labels.
-        option = QTextOption()
-        option.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
-        option.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        # ``QTextDocument`` mirrors the wrapping behaviour used by
+        # ``QPainter.drawText`` but exposes higher level metrics such as the
+        # overall bounding box and the width of the longest rendered line via
+        # ``idealWidth``.  Leveraging the document avoids the inaccuracies seen
+        # with ``QFontMetrics.boundingRect`` and ``QTextLayout`` where the width
+        # could cling to the configured maximum even when the glyphs occupy far
+        # less horizontal space.
+        document = QTextDocument()
+        document.setDocumentMargin(0.0)
+        document.setDefaultFont(self._font)
+        document.setPlainText(self._last_text)
 
-        layout = QTextLayout(self._last_text, self._font)
-        layout.setTextOption(option)
+        if available_width > 0:
+            # Setting ``textWidth`` instructs Qt to wrap the content to the
+            # requested width.  The resulting ``idealWidth`` will report the
+            # longest painted line, enabling the tooltip to shrink to fit short
+            # labels tightly.
+            document.setTextWidth(float(available_width))
+        else:
+            # ``-1`` disables wrapping altogether.  This is required when the
+            # available width collapses to zero which would otherwise force Qt
+            # to wrap each character individually and report an exaggerated
+            # height.
+            document.setTextWidth(-1.0)
 
-        layout.beginLayout()
-        max_line_width = 0.0
-        content_height = 0.0
-        # ``setLineWidth`` cannot accept zero, therefore fall back to a tight
-        # bound derived from the measured string width when wrapping is disabled
-        # (``available_width`` evaluates to ``0`` for extremely small tooltips).
-        line_width_constraint = float(
-            available_width or max(1, metrics.horizontalAdvance(self._last_text) + 1)
-        )
-        line_count = 0
+        # ``size`` returns the bounding rectangle of the laid out text.  Qt may
+        # produce sub-pixel measurements, therefore we keep the floating-point
+        # precision until the final rounding step to avoid cumulative error.
+        document_size = document.size()
+        content_height = float(document_size.height())
 
-        while True:
-            line = layout.createLine()
-            if not line.isValid():
-                break
-
-            line.setLineWidth(line_width_constraint)
-
-            # ``QTextLine.naturalTextWidth`` occasionally reports the assigned
-            # wrapping width instead of the actual glyph advance, causing short
-            # strings to expand to the maximum constraint.  Computing the
-            # horizontal advance from the concrete slice of characters keeps the
-            # tooltip width pinned to the longest rendered line regardless of
-            # how ``QTextLayout`` internally normalises the measurement.
-            start = line.textStart()
-            length = line.textLength()
-            line_text = self._last_text[start : start + length]
-
-            # ``QTextLayout`` keeps explicit newline characters at the end of
-            # a line.  They do not contribute to the painted width, therefore we
-            # strip them before querying the metrics while leaving any other
-            # leading or trailing whitespace untouched.
-            stripped_line = line_text.rstrip("\n\r")
-            measured_line = stripped_line or " "
-
-            max_line_width = max(
-                max_line_width, float(metrics.horizontalAdvance(measured_line))
-            )
-            content_height += line.height()
-            line_count += 1
-
-        layout.endLayout()
-
-        if line_count == 0:
-            # ``QTextLayout`` creates zero lines for an empty string.  Fall back
-            # to the font metrics so the tooltip still reserves a minimal frame
-            # for whitespace-only tooltips.
-            max_line_width = float(metrics.horizontalAdvance(self._last_text.strip() or " "))
-            content_height = float(metrics.height())
-
-        if available_width:
-            # ``naturalTextWidth`` may overshoot the assigned width by a small
-            # floating-point margin.  Clamping keeps the tooltip within the
-            # user-configured width budget while still fitting tightly around the
-            # measured line lengths.
-            max_line_width = min(max_line_width, float(available_width))
+        # ``idealWidth`` returns the width of the longest line that actually
+        # contains glyphs after wrapping.  The value can be zero for pure
+        # whitespace, so the fallback below maintains a sensible minimum.
+        content_width = float(document.idealWidth())
 
         # Guarantee a sensible fallback for purely whitespace content.  Without
         # this guard the tooltip could collapse to zero width, making the border
         # invisible despite the text technically containing characters.
         fallback_width = float(metrics.horizontalAdvance(self._last_text.strip() or " "))
-        content_width = max(max_line_width, fallback_width)
+        content_width = max(content_width, fallback_width)
 
         frame_inset = 2 * (self._padding + self._border_width)
         width = math.ceil(content_width) + frame_inset
