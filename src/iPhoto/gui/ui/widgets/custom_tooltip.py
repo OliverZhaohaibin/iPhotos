@@ -211,7 +211,7 @@ class FloatingToolTip(QWidget):
                 Qt.AlignmentFlag.AlignLeft
                 | Qt.AlignmentFlag.AlignVCenter
                 | Qt.TextFlag.TextSingleLine
-                | Qt.TextFlag.ElideRight,
+                | Qt.ElideRight,
                 self._last_text,
             )
 
