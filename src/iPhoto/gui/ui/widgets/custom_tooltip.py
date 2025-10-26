@@ -60,11 +60,11 @@ class FloatingToolTip(QWidget):
             | Qt.WindowType.WindowStaysOnTopHint,
         )
 
-        # Opt out of the translucency inherited from the frameless main window
-        # so the custom paint code can draw an opaque background.
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
-        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+        # Match the translucency behaviour of the frameless main window.  The
+        # paint routine below renders an opaque backdrop manually, therefore the
+        # widget can participate in alpha compositing without leaking black
+        # halos along the rounded edges.
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -127,14 +127,22 @@ class FloatingToolTip(QWidget):
             return QSize(edge, edge)
 
         metrics = QFontMetrics(self._font)
+        available_width = max(0, self._MAX_WIDTH - 2 * self._padding)
         text_rect = metrics.boundingRect(
-            QRect(0, 0, self._MAX_WIDTH - 2 * self._padding, 0),
+            QRect(0, 0, available_width, 0),
             Qt.AlignmentFlag.AlignLeft
             | Qt.AlignmentFlag.AlignTop
             | Qt.TextFlag.TextWordWrap,
             self._last_text,
         )
-        width = text_rect.width() + 2 * (self._padding + self._border_width)
+        # Clamp the preferred width so extremely long words do not push the
+        # popup beyond the maximum width budget.  ``boundingRect`` may report a
+        # width that equals ``available_width`` when wrapping occurs, therefore
+        # ``max`` maintains the configured padding even when the text fits on a
+        # single line.
+        width = min(text_rect.width(), available_width) + 2 * (
+            self._padding + self._border_width
+        )
         height = text_rect.height() + 2 * (self._padding + self._border_width)
         return QSize(width, height)
 
@@ -183,11 +191,16 @@ class FloatingToolTip(QWidget):
             painter.setFont(self._font)
             painter.setPen(self._text_colour)
             text_inset = self._padding + self._border_width
-            text_rect = QRectF(paint_rect).adjusted(text_inset, text_inset, -text_inset, -text_inset)
+            text_rect = QRectF(paint_rect).adjusted(
+                text_inset,
+                text_inset,
+                -text_inset,
+                -text_inset,
+            )
             painter.drawText(
                 text_rect,
                 Qt.AlignmentFlag.AlignLeft
-                | Qt.AlignmentFlag.AlignVCenter
+                | Qt.AlignmentFlag.AlignTop
                 | Qt.TextFlag.TextWordWrap,
                 self._last_text,
             )
