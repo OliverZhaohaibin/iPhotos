@@ -34,10 +34,20 @@ class FloatingToolTip(QWidget):
         # above the map without stealing focus or activating the parent.
         super().__init__(
             None,
-            Qt.WindowType.ToolTip
+            Qt.WindowType.Tool
             | Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint,
         )
+
+        # ``WA_TranslucentBackground`` must be explicitly disabled so the
+        # tooltip paints onto an opaque surface.  Windows in a frameless,
+        # translucent hierarchy inherit transparency by default which is the
+        # root cause of the black rectangles we observed.  ``WA_OpaquePaintEvent``
+        # and ``WA_NoSystemBackground`` instruct Qt to skip any platform
+        # back-fill and trust our :meth:`paintEvent` to draw every pixel.
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
 
         # ``WA_ShowWithoutActivating`` allows the tooltip to appear even if the
         # application is not the active window.  ``WA_TransparentForMouseEvents``
