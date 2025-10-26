@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMenuBar,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -254,13 +255,13 @@ class MainWindow(QMainWindow):
                 self._qmenu_stylesheet = self._build_menu_styles()[0]
         return self._qmenu_stylesheet or None
 
-    def _build_menu_styles(self) -> tuple[str, str, str]:
-        """Compute palette-aware stylesheets for popup chrome.
+    def _build_menu_styles(self) -> tuple[str, str, str, QColor, QColor]:
+        """Compute palette-aware stylesheets and tooltip palette colours for popup chrome.
 
         The helper centralises the palette lookups so ``QMenu`` and ``QToolTip`` widgets share
-        the same rounded outline and opaque background.  Keeping the strings grouped together
-        makes it easier to reapply the palette when the system theme changes without sprinkling
-        duplicate colour extraction logic across the codebase.
+        the same rounded outline and opaque background.  Returning both stylesheet strings and
+        the raw ``QColor`` objects keeps the tooltip palette override in sync with the CSS rules,
+        ensuring both mechanisms fall back to the same shades when the system theme changes.
         """
 
         palette = self.palette()
@@ -268,12 +269,19 @@ class MainWindow(QMainWindow):
         # the sidebar.  Matching that role keeps the menu surfaces visually aligned with the rest of
         # the application shell, whereas ``Base`` resolves to plain white under the bundled
         # palette.
-        window_color = palette.color(QPalette.ColorRole.Window).name()
-        border_color = palette.color(QPalette.ColorRole.Mid).name()
-        text_color = palette.color(QPalette.ColorRole.WindowText).name()
-        highlight_color = palette.color(QPalette.ColorRole.Highlight).name()
-        highlight_text_color = palette.color(QPalette.ColorRole.HighlightedText).name()
-        separator_color = palette.color(QPalette.ColorRole.Midlight).name()
+        window_color = palette.color(QPalette.ColorRole.Window)
+        border_color = palette.color(QPalette.ColorRole.Mid)
+        text_color = palette.color(QPalette.ColorRole.WindowText)
+        highlight_color = palette.color(QPalette.ColorRole.Highlight)
+        highlight_text_color = palette.color(QPalette.ColorRole.HighlightedText)
+        separator_color = palette.color(QPalette.ColorRole.Midlight)
+
+        window_color_name = window_color.name()
+        border_color_name = border_color.name()
+        text_color_name = text_color.name()
+        highlight_color_name = highlight_color.name()
+        highlight_text_color_name = highlight_text_color.name()
+        separator_color_name = separator_color.name()
 
         # Rounded menus read cleaner against the translucent window shell, so we base both the
         # popup and top-level styles around a shared radius while ensuring menu items retain a
@@ -287,48 +295,48 @@ class MainWindow(QMainWindow):
         # hover highlights.
         qmenu_style = (
             "QMenu {\n"
-            f"    background-color: {window_color};\n"
-            f"    border: 1px solid {border_color};\n"
+            f"    background-color: {window_color_name};\n"
+            f"    border: 1px solid {border_color_name};\n"
             f"    border-radius: {border_radius_px}px;\n"
             "    padding: 4px;\n"
             "    margin: 0px;\n"
             "}\n"
             "QMenu::item {\n"
             "    background-color: transparent;\n"
-            f"    color: {text_color};\n"
+            f"    color: {text_color_name};\n"
             "    padding: 5px 20px;\n"
             "    margin: 2px 6px;\n"
             f"    border-radius: {item_radius_px}px;\n"
             "}\n"
             "QMenu::item:selected {\n"
-            f"    background-color: {highlight_color};\n"
-            f"    color: {highlight_text_color};\n"
+            f"    background-color: {highlight_color_name};\n"
+            f"    color: {highlight_text_color_name};\n"
             "}\n"
             "QMenu::separator {\n"
             "    height: 1px;\n"
-            f"    background: {separator_color};\n"
+            f"    background: {separator_color_name};\n"
             "    margin: 4px 10px;\n"
             "}"
         )
 
         menubar_style = (
             "QMenuBar {\n"
-            f"    background-color: {window_color};\n"
+            f"    background-color: {window_color_name};\n"
             "    border-radius: 0px;\n"
             "    padding: 2px;\n"
             "}\n"
             "QMenuBar::item {\n"
             "    background-color: transparent;\n"
-            f"    color: {text_color};\n"
+            f"    color: {text_color_name};\n"
             "    padding: 4px 10px;\n"
             "    border-radius: 4px;\n"
             "}\n"
             "QMenuBar::item:selected {\n"
-            f"    background-color: {highlight_color};\n"
-            f"    color: {highlight_text_color};\n"
+            f"    background-color: {highlight_color_name};\n"
+            f"    color: {highlight_text_color_name};\n"
             "}\n"
             "QMenuBar::separator {\n"
-            f"    background: {separator_color};\n"
+            f"    background: {separator_color_name};\n"
             "    width: 1px;\n"
             "    margin: 4px 2px;\n"
             "}"
@@ -340,16 +348,16 @@ class MainWindow(QMainWindow):
         # decides to show one (for example, the map view hovering hints).
         tooltip_style = (
             "QToolTip {\n"
-            f"    background-color: {window_color};\n"
-            f"    color: {text_color};\n"
-            f"    border: 1px solid {border_color};\n"
+            f"    background-color: {window_color_name};\n"
+            f"    color: {text_color_name};\n"
+            f"    border: 1px solid {border_color_name};\n"
             f"    border-radius: {border_radius_px}px;\n"
             "    padding: 5px;\n"
             "}"
         )
 
         self._qmenu_stylesheet = qmenu_style
-        return qmenu_style, menubar_style, tooltip_style
+        return qmenu_style, menubar_style, tooltip_style, window_color, text_color
 
     def _configure_popup_menu(self, menu: QMenu, stylesheet: str) -> None:
         """Apply frameless styling and rounded menu rules to ``menu``.
@@ -388,7 +396,13 @@ class MainWindow(QMainWindow):
 
         self._applying_menu_styles = True
         try:
-            qmenu_style, menubar_style, tooltip_style = self._build_menu_styles()
+            (
+                qmenu_style,
+                menubar_style,
+                tooltip_style,
+                tooltip_background,
+                tooltip_foreground,
+            ) = self._build_menu_styles()
 
             # Apply the stylesheet directly to the menu bar so Qt propagates the palette-aware
             # rules to its drop-down menus.  ``setAutoFillBackground`` and the attribute override
@@ -416,6 +430,18 @@ class MainWindow(QMainWindow):
                 combined_parts = [part for part in (existing, combined_tooltip_styles) if part]
                 app.setStyleSheet("\n".join(combined_parts))
                 self._global_menu_stylesheet = combined_tooltip_styles
+
+                # ``QToolTip`` renders using a dedicated palette role that is independent from the
+                # window colours.  Copy the application palette so we can force the tooltip roles to
+                # align with the stylesheet background/text colours, ensuring Qt paints the same
+                # opaque shades even if a style engine bypasses the global stylesheet.
+                tooltip_palette = QPalette(app.palette())
+            else:
+                tooltip_palette = QPalette(self.palette())
+
+            tooltip_palette.setColor(QPalette.ColorRole.ToolTipBase, tooltip_background)
+            tooltip_palette.setColor(QPalette.ColorRole.ToolTipText, tooltip_foreground)
+            QToolTip.setPalette(tooltip_palette)
 
             # ``QMenuBar`` owns the drop-down menus presented for each action.  Qt constructs those
             # popups lazily, so iterating the actions here lets us retrofit the required window
