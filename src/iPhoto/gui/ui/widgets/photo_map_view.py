@@ -19,7 +19,7 @@ from PySide6.QtGui import (
     QPen,
     QPixmap,
 )
-from PySide6.QtWidgets import QToolTip, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
 
 from iPhotos.maps.map_widget.map_gl_widget import MapGLWidget
 from iPhotos.maps.map_widget.map_widget import MapWidget
@@ -28,6 +28,7 @@ from iPhotos.maps.map_widget.map_renderer import CityAnnotation
 from ....library.manager import GeotaggedAsset
 from ..tasks.thumbnail_loader import ThumbnailLoader
 from .marker_controller import MarkerController, _MarkerCluster
+from .custom_tooltip import FloatingToolTip, ToolTipEventFilter
 
 
 logger = getLogger(__name__)
@@ -280,6 +281,25 @@ class PhotoMapView(QWidget):
         self._marker_controller.assetActivated.connect(self._on_marker_asset_activated)
         self._marker_controller.thumbnailUpdated.connect(self._overlay.set_thumbnail)
         self._marker_controller.thumbnailsInvalidated.connect(self._overlay.clear_pixmaps)
+
+        # ``FloatingToolTip`` replicates ``QToolTip`` using a styled ``QFrame``
+        # instead of a custom paint routine.  The standard tooltip inherits the
+        # translucent attributes from the frameless main window which causes the
+        # popup to render as an opaque black rectangle on several window
+        # managers.  Keeping a dedicated instance here ensures the tooltip
+        # remains available for as long as the map view exists without fighting
+        # Qt's global tooltip machinery.
+        self._tooltip = FloatingToolTip()
+        app = QApplication.instance()
+        if app is not None:
+            filter_candidate = app.property("floatingToolTipFilter")
+            if isinstance(filter_candidate, ToolTipEventFilter):
+                # The global filter already manages tooltips originating from
+                # standard widgets.  Ignoring the map-specific tooltip prevents
+                # the filter from hiding it prematurely when Qt dispatches
+                # housekeeping events (for example ``Leave``) to the floating
+                # popup itself.
+                filter_candidate.ignore_object(self._tooltip)
         self._last_tooltip_text = ""
 
     @Slot(str)
@@ -302,7 +322,7 @@ class PhotoMapView(QWidget):
         """Remove all markers from the map."""
 
         if self._last_tooltip_text:
-            QToolTip.hideText()
+            self._tooltip.hide_tooltip()
             self._last_tooltip_text = ""
         self._marker_controller.clear()
 
@@ -310,6 +330,22 @@ class PhotoMapView(QWidget):
         super().resizeEvent(event)
         self._overlay.setGeometry(self._map_widget.geometry())
         self._marker_controller.handle_resize()
+
+    def hideEvent(self, event) -> None:  # type: ignore[override]
+        """Ensure the custom tooltip is dismissed when the view is hidden."""
+
+        if self._last_tooltip_text:
+            self._tooltip.hide_tooltip()
+            self._last_tooltip_text = ""
+        super().hideEvent(event)
+
+    def focusOutEvent(self, event) -> None:  # type: ignore[override]
+        """Clear hover feedback when the map relinquishes focus."""
+
+        if self._last_tooltip_text:
+            self._tooltip.hide_tooltip()
+            self._last_tooltip_text = ""
+        super().focusOutEvent(event)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # type: ignore[override]
         if watched is self._map_widget:
@@ -319,21 +355,33 @@ class PhotoMapView(QWidget):
                 if label:
                     global_pos = self._map_widget.mapToGlobal(mouse_event.position().toPoint())
                     if label != self._last_tooltip_text:
-                        QToolTip.showText(global_pos, label, self._map_widget)
+                        # Refresh the popup only when the label changes to avoid
+                        # flicker from repeatedly hiding and showing the widget
+                        # as the cursor moves within the same city hit area.
+                        self._tooltip.show_text(global_pos, label)
                         self._last_tooltip_text = label
+                    else:
+                        # The tooltip may need to be nudged when the cursor
+                        # approaches the screen edge even if the underlying
+                        # label stays the same, so keep it in sync with the
+                        # current pointer location.
+                        self._tooltip.show_text(global_pos, label)
                 else:
                     if self._last_tooltip_text:
-                        QToolTip.hideText()
+                        self._tooltip.hide_tooltip()
                         self._last_tooltip_text = ""
             elif event.type() == QEvent.Type.Leave:
                 if self._last_tooltip_text:
-                    QToolTip.hideText()
+                    self._tooltip.hide_tooltip()
                     self._last_tooltip_text = ""
             elif event.type() in (
                 QEvent.Type.MouseButtonPress,
                 QEvent.Type.MouseButtonDblClick,
             ):
                 mouse_event = cast(QMouseEvent, event)
+                if self._last_tooltip_text:
+                    self._tooltip.hide_tooltip()
+                    self._last_tooltip_text = ""
                 cluster = self._marker_controller.cluster_at(mouse_event.position())
                 if cluster is not None:
                     self._marker_controller.handle_marker_click(cluster)
@@ -344,8 +392,10 @@ class PhotoMapView(QWidget):
         """Ensure background workers shut down before the widget closes."""
 
         if self._last_tooltip_text:
-            QToolTip.hideText()
+            self._tooltip.hide_tooltip()
             self._last_tooltip_text = ""
+        self._tooltip.hide_tooltip()
+        self._tooltip.deleteLater()
         # ``MarkerController`` maintains a worker thread that aggregates marker clusters.
         # Explicitly shutting it down prevents the Qt event loop from waiting indefinitely.
         self._marker_controller.shutdown()

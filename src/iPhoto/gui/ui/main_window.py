@@ -17,14 +17,7 @@ from PySide6.QtGui import (
     QPainterPath,
     QPalette,
 )
-from PySide6.QtWidgets import (
-    QApplication,
-    QMainWindow,
-    QMenu,
-    QMenuBar,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QMenuBar, QVBoxLayout, QWidget
 
 # ``main_window`` can be imported either via ``iPhoto.gui`` (package execution)
 # or ``iPhotos.src.iPhoto.gui`` (legacy test harness).  The absolute import
@@ -39,6 +32,7 @@ from .controllers.main_controller import MainController
 from .media import require_multimedia
 from .ui_main_window import ChromeStatusBar, Ui_MainWindow
 from .icons import load_icon
+from .widgets.custom_tooltip import FloatingToolTip, ToolTipEventFilter
 
 
 # Small delay that gives Qt time to settle window transitions before resuming playback.
@@ -159,6 +153,21 @@ class MainWindow(QMainWindow):
         cast(QVBoxLayout, self._rounded_shell.layout()).addWidget(original_shell)
         self.setCentralWidget(self._rounded_shell)
 
+        # ``FloatingToolTip`` replicates ``QToolTip`` using a styled ``QFrame``
+        # so the popup always paints an opaque background.  Sharing a single
+        # instance for the window chrome avoids the platform-specific
+        # translucency issues that produced unreadable hover hints on Windows
+        # when ``WA_TranslucentBackground`` is enabled.  A dedicated
+        # application-wide event filter forwards tooltip requests to this
+        # helper so every widget inherits the reliable rendering path.
+        self._window_tooltip = FloatingToolTip(self)
+        self._tooltip_filter: ToolTipEventFilter | None = None
+        app = QApplication.instance()
+        if app is not None:
+            self._tooltip_filter = ToolTipEventFilter(self._window_tooltip, parent=self)
+            app.installEventFilter(self._tooltip_filter)
+            app.setProperty("floatingToolTipFilter", self._tooltip_filter)
+
         # ``MainController`` owns every piece of non-view logic so the window
         # can focus purely on QWidget behaviour.
         self.controller = MainController(self, context)
@@ -205,8 +214,14 @@ class MainWindow(QMainWindow):
         # window chrome.  The controls themselves keep their default behaviour so users cannot
         # accidentally start moving the window when they meant to click a button.
         self._drag_sources = {self.ui.title_bar, self.ui.window_title_label}
+
         for source in self._drag_sources:
             source.installEventFilter(self)
+
+        # ``badge_host`` keeps the Live badge aligned with the video viewport;
+        # install the filter separately so geometry changes can reposition the
+        # overlay without being treated as tooltip traffic.
+        self.ui.badge_host.installEventFilter(self)
 
         self._update_title_bar()
         self._update_fullscreen_button_icon()
@@ -214,6 +229,15 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:  # type: ignore[override]
         """Tear down background services before the window closes."""
+
+        if self._tooltip_filter is not None:
+            app = QApplication.instance()
+            if app is not None:
+                app.removeEventFilter(self._tooltip_filter)
+                if app.property("floatingToolTipFilter") == self._tooltip_filter:
+                    app.setProperty("floatingToolTipFilter", None)
+            self._tooltip_filter = None
+        self._window_tooltip.hide_tooltip()
 
         # ``MainController`` coordinates every component that spawns worker
         # threads (thumbnail rendering, map tile loading, clustering, etc.).
@@ -255,19 +279,35 @@ class MainWindow(QMainWindow):
         return self._qmenu_stylesheet or None
 
     def _build_menu_styles(self) -> tuple[str, str]:
-        """Compute palette-aware stylesheets for ``QMenu`` and ``QMenuBar`` widgets."""
+        """Compute palette-aware stylesheets for popup chrome.
+
+        The helper centralises the palette lookups so all menu surfaces reuse the same rounded
+        outline and opaque fill even though the main window operates with a translucent
+        background.  Returning only the stylesheet strings keeps the menu styling logic focused
+        on ``QMenu`` and ``QMenuBar`` while the tooltip palette is managed when the application
+        boots.
+        """
 
         palette = self.palette()
         # ``QPalette.ColorRole.Window`` is the shade the rest of the chrome uses for panels such as
         # the sidebar.  Matching that role keeps the menu surfaces visually aligned with the rest of
         # the application shell, whereas ``Base`` resolves to plain white under the bundled
         # palette.
-        window_color = palette.color(QPalette.ColorRole.Window).name()
-        border_color = palette.color(QPalette.ColorRole.Mid).name()
-        text_color = palette.color(QPalette.ColorRole.WindowText).name()
-        highlight_color = palette.color(QPalette.ColorRole.Highlight).name()
-        highlight_text_color = palette.color(QPalette.ColorRole.HighlightedText).name()
-        separator_color = palette.color(QPalette.ColorRole.Midlight).name()
+        window_color = self._opaque_color(palette.color(QPalette.ColorRole.Window))
+        border_color = self._opaque_color(palette.color(QPalette.ColorRole.Mid))
+        text_color = self._opaque_color(palette.color(QPalette.ColorRole.WindowText))
+        highlight_color = self._opaque_color(palette.color(QPalette.ColorRole.Highlight))
+        highlight_text_color = self._opaque_color(
+            palette.color(QPalette.ColorRole.HighlightedText)
+        )
+        separator_color = self._opaque_color(palette.color(QPalette.ColorRole.Midlight))
+
+        window_color_name = window_color.name()
+        border_color_name = border_color.name()
+        text_color_name = text_color.name()
+        highlight_color_name = highlight_color.name()
+        highlight_text_color_name = highlight_text_color.name()
+        separator_color_name = separator_color.name()
 
         # Rounded menus read cleaner against the translucent window shell, so we base both the
         # popup and top-level styles around a shared radius while ensuring menu items retain a
@@ -281,48 +321,48 @@ class MainWindow(QMainWindow):
         # hover highlights.
         qmenu_style = (
             "QMenu {\n"
-            f"    background-color: {window_color};\n"
-            f"    border: 1px solid {border_color};\n"
+            f"    background-color: {window_color_name};\n"
+            f"    border: 1px solid {border_color_name};\n"
             f"    border-radius: {border_radius_px}px;\n"
             "    padding: 4px;\n"
             "    margin: 0px;\n"
             "}\n"
             "QMenu::item {\n"
             "    background-color: transparent;\n"
-            f"    color: {text_color};\n"
+            f"    color: {text_color_name};\n"
             "    padding: 5px 20px;\n"
             "    margin: 2px 6px;\n"
             f"    border-radius: {item_radius_px}px;\n"
             "}\n"
             "QMenu::item:selected {\n"
-            f"    background-color: {highlight_color};\n"
-            f"    color: {highlight_text_color};\n"
+            f"    background-color: {highlight_color_name};\n"
+            f"    color: {highlight_text_color_name};\n"
             "}\n"
             "QMenu::separator {\n"
             "    height: 1px;\n"
-            f"    background: {separator_color};\n"
+            f"    background: {separator_color_name};\n"
             "    margin: 4px 10px;\n"
             "}"
         )
 
         menubar_style = (
             "QMenuBar {\n"
-            f"    background-color: {window_color};\n"
+            f"    background-color: {window_color_name};\n"
             "    border-radius: 0px;\n"
             "    padding: 2px;\n"
             "}\n"
             "QMenuBar::item {\n"
             "    background-color: transparent;\n"
-            f"    color: {text_color};\n"
+            f"    color: {text_color_name};\n"
             "    padding: 4px 10px;\n"
             "    border-radius: 4px;\n"
             "}\n"
             "QMenuBar::item:selected {\n"
-            f"    background-color: {highlight_color};\n"
-            f"    color: {highlight_text_color};\n"
+            f"    background-color: {highlight_color_name};\n"
+            f"    color: {highlight_text_color_name};\n"
             "}\n"
             "QMenuBar::separator {\n"
-            f"    background: {separator_color};\n"
+            f"    background: {separator_color_name};\n"
             "    width: 1px;\n"
             "    margin: 4px 2px;\n"
             "}"
@@ -330,6 +370,24 @@ class MainWindow(QMainWindow):
 
         self._qmenu_stylesheet = qmenu_style
         return qmenu_style, menubar_style
+
+    @staticmethod
+    def _opaque_color(color: QColor) -> QColor:
+        """Return a colour copy whose alpha channel is forced to full opacity.
+
+        ``WA_TranslucentBackground`` propagates to many popups which in turn causes their
+        palettes to report fully transparent colours.  A transparent tone translates to a
+        solid black rectangle once the compositor blends it with the desktop.  Forcing every
+        shade to have an opaque alpha channel keeps the menu surfaces readable regardless of
+        the system theme or platform blending quirks.
+        """
+
+        if color.alpha() >= 255:
+            return color
+
+        opaque_color = QColor(color)
+        opaque_color.setAlpha(255)
+        return opaque_color
 
     def _configure_popup_menu(self, menu: QMenu, stylesheet: str) -> None:
         """Apply frameless styling and rounded menu rules to ``menu``.
@@ -391,12 +449,16 @@ class MainWindow(QMainWindow):
                 combined_parts = [part for part in (existing, qmenu_style) if part]
                 app.setStyleSheet("\n".join(combined_parts))
                 self._global_menu_stylesheet = qmenu_style
+            else:
+                self._global_menu_stylesheet = qmenu_style
 
             # ``QMenuBar`` owns the drop-down menus presented for each action.  Qt constructs those
             # popups lazily, so iterating the actions here lets us retrofit the required window
-            # flags once they exist.  ``FramelessWindowHint`` allows the stylesheet to control the
-            # rounded outline while ``WA_TranslucentBackground`` keeps the corners transparent so the
-            # painted background remains visible.  Applying the cached stylesheet directly ensures
+            # flags once they exist.  ``FramelessWindowHint`` allows the
+            # stylesheet to control the rounded outline while
+            # ``WA_TranslucentBackground`` keeps the corners transparent so the
+            # painted background remains visible.  Applying the cached
+            # stylesheet directly ensures
             # the popups match the context menus that reuse the same helper.
             for action in self.ui.menu_bar.actions():
                 menu = action.menu()
@@ -417,6 +479,7 @@ class MainWindow(QMainWindow):
         if watched in self._drag_sources:
             if self._handle_title_bar_drag(event):
                 return True
+
         if watched is self.ui.badge_host and event.type() in {
             QEvent.Type.Resize,
             QEvent.Type.Move,
@@ -570,7 +633,10 @@ class MainWindow(QMainWindow):
             mouse_event = cast(QMouseEvent, event)
             if mouse_event.button() == Qt.MouseButton.LeftButton:
                 self._drag_active = True
-                self._drag_offset = mouse_event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+                self._drag_offset = (
+                    mouse_event.globalPosition().toPoint()
+                    - self.frameGeometry().topLeft()
+                )
                 return True
         if event.type() == QEvent.Type.MouseMove and self._drag_active:
             mouse_event = cast(QMouseEvent, event)
