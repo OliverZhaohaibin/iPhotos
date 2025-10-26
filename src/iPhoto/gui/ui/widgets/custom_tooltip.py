@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from typing import Iterable, Set, cast
 
-from PySide6.QtCore import QObject, QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt
+from PySide6.QtCore import QObject, QEvent, QPoint, QRect, QRectF, QSize, Qt
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -17,8 +17,6 @@ from PySide6.QtGui import (
     QPainterPath,
     QPaintEvent,
     QPen,
-    QTextLayout,
-    QTextOption,
 )
 from PySide6.QtWidgets import QWidget
 
@@ -132,52 +130,43 @@ class FloatingToolTip(QWidget):
         metrics = QFontMetrics(self._font)
         available_width = max(0, self._MAX_WIDTH - 2 * self._padding)
 
-        # ``QFontMetrics.boundingRect`` returns the constraint width whenever
-        # word wrapping is active, which makes the tooltip excessively wide for
-        # short strings.  ``QTextLayout`` exposes the natural width of each line
-        # after wrapping, allowing the popup to hug the rendered text more
-        # closely.  The layout mirrors the same wrap behaviour used when
-        # painting the tooltip contents so the computed geometry matches the
-        # actual drawing pass.
-        layout = QTextLayout(self._last_text, self._font)
-        text_option = QTextOption()
-        text_option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
-        text_option.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        layout.setTextOption(text_option)
+        # ``boundingRect`` performs the same word-wrapping logic that the paint
+        # routine later uses via ``drawText``.  By passing a width-constrained
+        # ``QRect`` the calculation yields the wrapped height, while the returned
+        # width reflects the widest rendered line.  Using the metrics directly
+        # avoids inventing a larger width for short strings that do not stretch
+        # to the available boundary.
+        text_flags = (
+            Qt.AlignmentFlag.AlignLeft
+            | Qt.AlignmentFlag.AlignTop
+            | Qt.TextFlag.TextWordWrap
+        )
+        text_rect = metrics.boundingRect(
+            QRect(0, 0, available_width, 0),
+            text_flags,
+            self._last_text,
+        )
 
-        max_line_width = 0.0
-        text_height = 0.0
-        layout_width = max(1.0, float(available_width))
-        layout.beginLayout()
-        try:
-            while True:
-                line = layout.createLine()
-                if not line.isValid():
-                    break
-
-                line.setLineWidth(layout_width)
-                line.setPosition(QPointF(0.0, text_height))
-                text_height += line.height()
-                max_line_width = max(max_line_width, line.naturalTextWidth())
-        finally:
-            layout.endLayout()
-
-        # ``naturalTextWidth`` may report zero for whitespace-only content.
-        # ``horizontalAdvance`` produces a stable fallback that still allows the
-        # tooltip to remain compact.
+        # ``boundingRect`` may report a zero width for strings made entirely of
+        # whitespace.  ``horizontalAdvance`` provides a stable fallback so the
+        # tooltip still reserves a minimal amount of space around such content.
         fallback_width = metrics.horizontalAdvance(self._last_text.strip() or " ")
-        content_width = max(max_line_width, float(fallback_width))
-        # Respect the maximum width budget while still shrinking to fit short
-        # lines.  ``math.ceil`` ensures fractional metrics do not truncate the
-        # drawn text.
-        width = min(content_width, float(available_width))
-        width = math.ceil(width) + 2 * (self._padding + self._border_width)
+        content_width = max(text_rect.width(), fallback_width)
+        if available_width:
+            content_width = min(content_width, available_width)
 
-        # ``text_height`` is zero when the layout only contained manual newline
-        # characters.  Fall back to the font metrics so the tooltip retains a
-        # sensible minimum height around empty or whitespace-only messages.
-        content_height = text_height if text_height > 0.0 else float(metrics.height())
-        height = math.ceil(content_height) + 2 * (self._padding + self._border_width)
+        # The height reported by ``boundingRect`` already reflects the wrapped
+        # layout.  Ensure a minimum edge so extremely small strings still render
+        # with the intended padding and border thickness.
+        content_height = max(text_rect.height(), metrics.height())
+
+        frame_inset = 2 * (self._padding + self._border_width)
+        width = math.ceil(content_width) + frame_inset
+        height = math.ceil(content_height) + frame_inset
+
+        min_edge = frame_inset
+        width = max(width, min_edge)
+        height = max(height, min_edge)
         return QSize(width, height)
 
     def minimumSizeHint(self) -> QSize:  # noqa: D401 - mirrors :meth:`sizeHint`
