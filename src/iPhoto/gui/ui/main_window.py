@@ -17,15 +17,7 @@ from PySide6.QtGui import (
     QPainterPath,
     QPalette,
 )
-from PySide6.QtWidgets import (
-    QApplication,
-    QMainWindow,
-    QMenu,
-    QMenuBar,
-    QToolTip,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QMenuBar, QVBoxLayout, QWidget
 
 # ``main_window`` can be imported either via ``iPhoto.gui`` (package execution)
 # or ``iPhotos.src.iPhoto.gui`` (legacy test harness).  The absolute import
@@ -255,13 +247,14 @@ class MainWindow(QMainWindow):
                 self._qmenu_stylesheet = self._build_menu_styles()[0]
         return self._qmenu_stylesheet or None
 
-    def _build_menu_styles(self) -> tuple[str, str, str, QColor, QColor]:
-        """Compute palette-aware stylesheets and tooltip palette colours for popup chrome.
+    def _build_menu_styles(self) -> tuple[str, str]:
+        """Compute palette-aware stylesheets for popup chrome.
 
-        The helper centralises the palette lookups so ``QMenu`` and ``QToolTip`` widgets share
-        the same rounded outline and opaque background.  Returning both stylesheet strings and
-        the raw ``QColor`` objects keeps the tooltip palette override in sync with the CSS rules,
-        ensuring both mechanisms fall back to the same shades when the system theme changes.
+        The helper centralises the palette lookups so all menu surfaces reuse the same rounded
+        outline and opaque fill even though the main window operates with a translucent
+        background.  Returning only the stylesheet strings keeps the menu styling logic focused
+        on ``QMenu`` and ``QMenuBar`` while the tooltip palette is managed when the application
+        boots.
         """
 
         palette = self.palette()
@@ -344,33 +337,18 @@ class MainWindow(QMainWindow):
             "}"
         )
 
-        # ``QToolTip`` inherits ``WA_TranslucentBackground`` from the frameless main window, which
-        # makes the popup render as a black rectangle unless we explicitly paint an opaque
-        # background.  Styling it alongside the menus guarantees a readable tooltip wherever Qt
-        # decides to show one (for example, the map view hovering hints).
-        tooltip_style = (
-            "QToolTip {\n"
-            f"    background-color: {window_color_name};\n"
-            f"    color: {text_color_name};\n"
-            f"    border: 1px solid {border_color_name};\n"
-            f"    border-radius: {border_radius_px}px;\n"
-            "    padding: 5px;\n"
-            "}"
-        )
-
         self._qmenu_stylesheet = qmenu_style
-        return qmenu_style, menubar_style, tooltip_style, window_color, text_color
+        return qmenu_style, menubar_style
 
     @staticmethod
     def _opaque_color(color: QColor) -> QColor:
         """Return a colour copy whose alpha channel is forced to full opacity.
 
         ``WA_TranslucentBackground`` propagates to many popups which in turn causes their
-        palettes to report fully transparent colours.  ``QToolTip`` paints using the palette
-        rather than the stylesheet, so a transparent tone translates to a solid black rectangle
-        once the compositor blends it with the desktop.  Forcing every shade to have an opaque
-        alpha channel keeps both the menu and tooltip surfaces readable regardless of the
-        system theme or platform blending quirks.
+        palettes to report fully transparent colours.  A transparent tone translates to a
+        solid black rectangle once the compositor blends it with the desktop.  Forcing every
+        shade to have an opaque alpha channel keeps the menu surfaces readable regardless of
+        the system theme or platform blending quirks.
         """
 
         if color.alpha() >= 255:
@@ -417,13 +395,7 @@ class MainWindow(QMainWindow):
 
         self._applying_menu_styles = True
         try:
-            (
-                qmenu_style,
-                menubar_style,
-                tooltip_style,
-                tooltip_background,
-                tooltip_foreground,
-            ) = self._build_menu_styles()
+            qmenu_style, menubar_style = self._build_menu_styles()
 
             # Apply the stylesheet directly to the menu bar so Qt propagates the palette-aware
             # rules to its drop-down menus.  ``setAutoFillBackground`` and the attribute override
@@ -443,26 +415,11 @@ class MainWindow(QMainWindow):
                 if self._global_menu_stylesheet and self._global_menu_stylesheet in existing:
                     existing = existing.replace(self._global_menu_stylesheet, "").strip()
 
-                combined_tooltip_styles = "\n".join(
-                    part for part in (qmenu_style, tooltip_style) if part
-                )
-                # Merge the tooltip styling alongside the menu rules so all transient popups paint
-                # an opaque background while still picking up palette-driven colours.
-                combined_parts = [part for part in (existing, combined_tooltip_styles) if part]
+                combined_parts = [part for part in (existing, qmenu_style) if part]
                 app.setStyleSheet("\n".join(combined_parts))
-                self._global_menu_stylesheet = combined_tooltip_styles
-
-                # ``QToolTip`` renders using a dedicated palette role that is independent from the
-                # window colours.  Copy the application palette so we can force the tooltip roles to
-                # align with the stylesheet background/text colours, ensuring Qt paints the same
-                # opaque shades even if a style engine bypasses the global stylesheet.
-                tooltip_palette = QPalette(app.palette())
+                self._global_menu_stylesheet = qmenu_style
             else:
-                tooltip_palette = QPalette(self.palette())
-
-            tooltip_palette.setColor(QPalette.ColorRole.ToolTipBase, tooltip_background)
-            tooltip_palette.setColor(QPalette.ColorRole.ToolTipText, tooltip_foreground)
-            QToolTip.setPalette(tooltip_palette)
+                self._global_menu_stylesheet = qmenu_style
 
             # ``QMenuBar`` owns the drop-down menus presented for each action.  Qt constructs those
             # popups lazily, so iterating the actions here lets us retrofit the required window
