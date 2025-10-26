@@ -38,9 +38,10 @@ class FloatingToolTip(QWidget):
     ``QToolTip`` popups to inherit a transparent backing.  On Windows this often
     leaves the tooltip to be composited without ever drawing an opaque
     background, producing unreadable black rectangles.  ``FloatingToolTip``
-    replaces the native helper with a dedicated ``QWidget`` that clips and
-    paints a rounded rectangle manually, guaranteeing that the palette-derived
-    colours remain opaque on every platform.
+    replaces the native helper with a dedicated ``QWidget`` whose paint routine
+    first fills the border region and then the interior, ensuring every pixel in
+    the rounded frame is explicitly coloured without relying on platform
+    blending behaviour.
     """
 
     _CURSOR_OFFSET = QPoint(14, 22)
@@ -147,37 +148,41 @@ class FloatingToolTip(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
-        rect = QRect(0, 0, self.width(), self.height())
-        rect_f = QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5)
-        # The half-pixel inset keeps the stroked outline crisp on high-DPI
-        # displays by aligning it with device pixels.
-        path = QPainterPath()
-        radius = min(self._corner_radius, rect_f.width() / 2.0, rect_f.height() / 2.0)
-        path.addRoundedRect(rect_f, radius, radius)
+        outer_rect = QRectF(self.rect())
+        # The outer radius matches the requested corner rounding but is clamped
+        # so extremely small frames do not attempt to draw impossible curves.
+        outer_radius = min(
+            self._corner_radius, outer_rect.width() / 2.0, outer_rect.height() / 2.0
+        )
 
-        # Clip the drawing region to the rounded rectangle so that the fill and
-        # border never bleed into the transparent corners.
-        painter.setClipPath(path)
+        # Step 1: paint a rounded rectangle in the border colour.  Drawing the
+        # outline first prevents the window manager from blending partially
+        # transparent edge pixels with an undefined background.
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(self._border_colour)
+        border_path = QPainterPath()
+        border_path.addRoundedRect(outer_rect, outer_radius, outer_radius)
+        painter.drawPath(border_path)
 
-        painter.fillPath(path, self._background_colour)
-
-        if self._border_width > 0:
-            pen = painter.pen()
-            pen.setColor(self._border_colour)
-            pen.setWidth(self._border_width)
-            pen.setCosmetic(True)
-            painter.setPen(pen)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawPath(path)
+        # Step 2: paint a slightly smaller rounded rectangle in the background
+        # colour.  The inset equals half the border width so the resulting edge
+        # thickness matches the configured border value even with antialiasing.
+        border_offset = self._border_width / 2.0
+        inner_rect = outer_rect.adjusted(
+            border_offset, border_offset, -border_offset, -border_offset
+        )
+        inner_radius = max(0.0, outer_radius - border_offset)
+        painter.setBrush(self._background_colour)
+        inner_path = QPainterPath()
+        inner_path.addRoundedRect(inner_rect, inner_radius, inner_radius)
+        painter.drawPath(inner_path)
 
         if self._last_text:
             painter.setFont(self._font)
             painter.setPen(self._text_colour)
-            text_rect = QRect(
-                self._padding + self._border_width,
-                self._padding + self._border_width,
-                rect.width() - 2 * (self._padding + self._border_width),
-                rect.height() - 2 * (self._padding + self._border_width),
+            text_inset = self._padding + self._border_width
+            text_rect = QRectF(outer_rect).adjusted(
+                text_inset, text_inset, -text_inset, -text_inset
             )
             painter.drawText(
                 text_rect,
