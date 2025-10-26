@@ -127,58 +127,62 @@ class FloatingToolTip(QWidget):
             return QSize(edge, edge)
 
         metrics = QFontMetrics(self._font)
-        # ``available_text_width`` describes how much horizontal space remains
-        # once the tooltip padding is removed.  ``max`` keeps the value
-        # non-negative so the subsequent comparison logic can focus on the text
-        # metrics instead of defensive range checks.
+        # ``available_text_width`` represents the horizontal budget once the
+        # widget padding is removed.  ``max`` keeps the value non-negative so the
+        # decision logic below can focus entirely on text measurements.
         available_text_width = max(0, self._MAX_WIDTH - 2 * self._padding)
 
-        # ``boundingRect`` without ``TextWordWrap`` calculates the *natural*
-        # single-line dimensions of the tooltip string.  This answers the key
-        # question of whether wrapping is required in the first place instead of
-        # letting the layout machinery prematurely clamp the width to
-        # ``available_text_width``.
-        base_flags = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
-        single_line_rect = metrics.boundingRect(QRect(), base_flags, self._last_text)
-        single_line_width = single_line_rect.width()
-        single_line_height = single_line_rect.height()
+        # ``horizontalAdvance`` yields the tightest width of a string rendered on
+        # a single baseline.  Evaluating every explicit line break separately
+        # keeps the measurement accurate for user-provided ``\n`` characters
+        # while also providing the natural width for ordinary, unwrapped labels.
+        text_lines = self._last_text.split("\n")
+        single_line_width = max(metrics.horizontalAdvance(line) for line in text_lines)
+        line_height = metrics.height()
 
-        # ``horizontalAdvance`` on the trimmed text provides a reliable
-        # whitespace fallback.  ``boundingRect`` returns ``0`` for strings that
-        # contain nothing but spaces, yet we still need a visible frame so the
-        # tooltip does not disappear entirely.
+        # ``horizontalAdvance`` on a fallback string ensures that pure whitespace
+        # still results in a visible tooltip frame.  Qt collapses the bounding
+        # box of ``"    "`` to zero otherwise, causing the popup to disappear.
         fallback_width = metrics.horizontalAdvance(self._last_text.strip() or " ")
-        if single_line_width <= 0:
-            single_line_width = fallback_width
-        if single_line_height <= 0:
-            single_line_height = metrics.height()
+
+        # ``needs_wrapping`` indicates that the natural single-line width would
+        # exceed the allowed space.  In this situation a wrapped measurement is
+        # required to learn how tall the multi-line layout becomes.
+        needs_wrapping = available_text_width > 0 and single_line_width > available_text_width
+        has_manual_breaks = len(text_lines) > 1
 
         actual_text_width: int
         actual_text_height: int
 
-        if available_text_width > 0 and single_line_width > available_text_width:
-            # The string is too wide to fit without wrapping.  Re-run the
-            # bounding box calculation using ``TextWordWrap`` so Qt reports the
-            # height of the laid out paragraph while keeping the width bounded
-            # to our requested limit.
-            wrap_flags = base_flags | Qt.TextFlag.TextWordWrap
+        if needs_wrapping:
+            # ``boundingRect`` with ``TextWordWrap`` gives us the paragraph
+            # metrics Qt will use when painting wrapped text.  The returned width
+            # can overshoot by a pixel due to internal rounding, therefore the
+            # ``min`` guard keeps the final tooltip strictly within bounds while
+            # still respecting the whitespace fallback.
+            wrap_flags = (
+                Qt.AlignmentFlag.AlignLeft
+                | Qt.AlignmentFlag.AlignTop
+                | Qt.TextFlag.TextWordWrap
+            )
             wrapped_rect = metrics.boundingRect(
                 QRect(0, 0, available_text_width, 0), wrap_flags, self._last_text
             )
 
-            # ``boundingRect`` may still over-report the width due to internal
-            # rounding, therefore ``min`` protects us from exceeding the
-            # available space.  A second ``max`` preserves the whitespace
-            # fallback so short but padded strings remain visible.
             actual_text_width = max(min(wrapped_rect.width(), available_text_width), fallback_width)
-            actual_text_height = max(wrapped_rect.height(), metrics.height())
-        else:
-            # Wrapping is unnecessary: either the text naturally fits within the
-            # limit or wrapping was disabled entirely because the available width
-            # collapsed to zero.  The single-line metrics therefore represent the
-            # true content size.
+            actual_text_height = max(wrapped_rect.height(), line_height)
+        elif has_manual_breaks:
+            # Manually embedded newlines should be honoured as-is.  The natural
+            # width is the longest user-defined line, and the height equals the
+            # number of lines times the font's line height.
             actual_text_width = max(single_line_width, fallback_width)
-            actual_text_height = max(single_line_height, metrics.height())
+            line_count = max(1, len(text_lines))
+            actual_text_height = max(line_height * line_count, line_height)
+        else:
+            # The text fits on a single line inside the allowed width.  The
+            # single-line metrics therefore describe the final content size.
+            actual_text_width = max(single_line_width, fallback_width)
+            actual_text_height = line_height
 
         width = actual_text_width + edge
         height = actual_text_height + edge
