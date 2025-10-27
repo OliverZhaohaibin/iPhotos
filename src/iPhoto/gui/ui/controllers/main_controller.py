@@ -35,6 +35,7 @@ from .selection_controller import SelectionController
 from .share_controller import ShareController
 from .status_bar_controller import StatusBarController
 from .view_controller import ViewController
+from ....config import VOLUME_SHORTCUT_STEP
 
 if TYPE_CHECKING:
     from ..main_window import MainWindow
@@ -133,6 +134,10 @@ class MainController(QObject):
             self._preview_controller,
             self._facade,
         )
+        window.ui.video_area.nextItemRequested.connect(self._playback.request_next_item)
+        window.ui.video_area.prevItemRequested.connect(self._playback.request_previous_item)
+        window.ui.video_area.volumeUpRequested.connect(self.increase_media_volume_step)
+        window.ui.video_area.volumeDownRequested.connect(self.decrease_media_volume_step)
         self._status_bar = StatusBarController(
             window.ui.status_bar,
             window.ui.progress_bar,
@@ -489,6 +494,16 @@ class MainController(QObject):
         if self._context.settings.get("ui.is_muted") != is_muted:
             self._context.settings.set("ui.is_muted", is_muted)
 
+    def increase_media_volume_step(self) -> None:
+        """Increment the media volume in response to keyboard shortcuts."""
+
+        self._media.set_volume(self._media.volume() + VOLUME_SHORTCUT_STEP)
+
+    def decrease_media_volume_step(self) -> None:
+        """Decrease the media volume when the shortcut requests it."""
+
+        self._media.set_volume(self._media.volume() - VOLUME_SHORTCUT_STEP)
+
     def _prioritize_filmstrip_rows(self, first: int, last: int) -> None:
         """Prioritise asset loading to match filmstrip visibility."""
 
@@ -538,25 +553,20 @@ class MainController(QObject):
 
         self._playback.request_previous_item()
 
-    def current_player_state(self) -> PlayerState:
-        """Return the enumerated playback surface state used for shortcut gating."""
+    def can_control_media_audio(self) -> bool:
+        """Return ``True`` when the active state exposes audio controls."""
 
-        return self._state_manager.state
+        state = self._state_manager.state
+        return state in {
+            PlayerState.PLAYING_VIDEO,
+            PlayerState.SHOWING_VIDEO_SURFACE,
+            PlayerState.PLAYING_LIVE_MOTION,
+        }
 
-    def is_live_context(self) -> bool:
-        """Return ``True`` when the state manager is presenting a Live Photo surface."""
+    def is_live_still_visible(self) -> bool:
+        """Return ``True`` if the detail view is displaying a Live Photo still frame."""
 
-        return self._state_manager.is_live_context()
-
-    def media_volume(self) -> int:
-        """Return the current audio volume in the user-facing 0-100 range."""
-
-        return self._media.volume()
-
-    def set_media_volume(self, volume: int) -> None:
-        """Persist the requested volume change via the media controller."""
-
-        self._media.set_volume(volume)
+        return self._state_manager.state == PlayerState.SHOWING_LIVE_STILL
 
     def is_media_muted(self) -> bool:
         """Return whether audio output is currently muted."""

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, cast
 
 from PySide6.QtCore import (
     QEasingCurve,
@@ -15,7 +15,7 @@ from PySide6.QtCore import (
     Qt,
     Signal,
 )
-from PySide6.QtGui import QColor, QCursor, QMouseEvent, QPainter, QResizeEvent
+from PySide6.QtGui import QColor, QCursor, QKeyEvent, QMouseEvent, QPainter, QResizeEvent
 from PySide6.QtWidgets import (
     QFrame,
     QGraphicsOpacityEffect,
@@ -45,6 +45,10 @@ class VideoArea(QWidget):
     mouseActive = Signal()
     controlsVisibleChanged = Signal(bool)
     fullscreenExitRequested = Signal()
+    nextItemRequested = Signal()
+    prevItemRequested = Signal()
+    volumeUpRequested = Signal()
+    volumeDownRequested = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -77,6 +81,10 @@ class VideoArea(QWidget):
         self._video_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._video_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._video_view.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        # Accept focus so keyboard navigation targets the video viewport without requiring the user
+        # to click a non-interactive chrome element first.
+        self._video_view.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setFocusProxy(self._video_view)
         # Match the photo viewer's light-toned surface so letterboxed video frames sit
         # on the same neutral backdrop.  Using the shared palette value keeps the
         # photo and video experiences visually consistent while avoiding harsh
@@ -120,6 +128,7 @@ class VideoArea(QWidget):
         self._hide_timer.timeout.connect(self.hide_controls)
 
         self._install_activity_filters()
+        self._install_shortcut_filters()
         self._wire_player_bar()
 
     # ------------------------------------------------------------------
@@ -243,6 +252,14 @@ class VideoArea(QWidget):
             if not self.rect().contains(self.mapFromGlobal(cursor_pos)):
                 self.hide_controls()
 
+        if (
+            watched in {self._video_view, self._video_view.viewport()}
+            and event.type() == QEvent.Type.KeyPress
+        ):
+            key_event = cast(QKeyEvent, event)
+            if self._handle_key_press(key_event):
+                return True
+
         return super().eventFilter(watched, event)
 
     # ------------------------------------------------------------------
@@ -250,6 +267,12 @@ class VideoArea(QWidget):
     # ------------------------------------------------------------------
     def _install_activity_filters(self) -> None:
         self._player_bar.installEventFilter(self)
+
+    def _install_shortcut_filters(self) -> None:
+        """Capture key presses from the graphics view and its viewport."""
+
+        self._video_view.installEventFilter(self)
+        self._video_view.viewport().installEventFilter(self)
 
     def _wire_player_bar(self) -> None:
         for signal in (
@@ -276,6 +299,38 @@ class VideoArea(QWidget):
             self._hide_timer.stop()
         elif self._controls_visible:
             self._hide_timer.start(PLAYER_CONTROLS_HIDE_DELAY_MS)
+
+    def _handle_key_press(self, event: QKeyEvent) -> bool:
+        """Translate navigation and volume keys into controller signals."""
+
+        modifiers = event.modifiers()
+        disallowed = modifiers & ~Qt.KeyboardModifier.KeypadModifier
+        if disallowed:
+            return False
+
+        key = event.key()
+        if key == Qt.Key.Key_Left:
+            self.prevItemRequested.emit()
+            self._on_mouse_activity()
+            event.accept()
+            return True
+        if key == Qt.Key.Key_Right:
+            self.nextItemRequested.emit()
+            self._on_mouse_activity()
+            event.accept()
+            return True
+        if key == Qt.Key.Key_Up:
+            self.volumeUpRequested.emit()
+            self._on_mouse_activity()
+            event.accept()
+            return True
+        if key == Qt.Key.Key_Down:
+            self.volumeDownRequested.emit()
+            self._on_mouse_activity()
+            event.accept()
+            return True
+
+        return False
 
     def _animate_to(self, value: float, duration: int) -> None:
         self._fade_anim.stop()

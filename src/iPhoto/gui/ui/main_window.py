@@ -30,7 +30,6 @@ except ImportError:  # pragma: no cover - script execution fallback
     from iPhotos.src.iPhoto.appctx import AppContext
 
 from .controllers.main_controller import MainController
-from .controllers.playback_state_manager import PlayerState
 from .media import require_multimedia
 from .ui_main_window import ChromeStatusBar, Ui_MainWindow
 from .icon import load_icon
@@ -39,10 +38,6 @@ from .widgets.custom_tooltip import FloatingToolTip, ToolTipEventFilter
 
 # Small delay that gives Qt time to settle window transitions before resuming playback.
 PLAYBACK_RESUME_DELAY_MS = 120
-
-# Fixed increment applied when keyboard shortcuts adjust the media volume.
-VOLUME_SHORTCUT_STEP = 5
-
 
 class RoundedWindowShell(QWidget):
     """Container that paints an anti-aliased rounded background for the window."""
@@ -249,45 +244,6 @@ class MainWindow(QMainWindow):
         # install the filter separately so geometry changes can reposition the
         # overlay without being treated as tooltip traffic.
         self.ui.badge_host.installEventFilter(self)
-
-        # Collect every child widget that routinely acquires keyboard focus inside the detail page
-        # so the window can intercept navigation shortcuts before scroll areas or list views consume
-        # the key press for scrolling.  Installing the filter on both the focus proxy (the scroll
-        # area or item view) *and* its viewport covers the different delivery paths Qt uses for
-        # keyboard input across widget types.
-        shortcut_targets: list[QWidget] = []
-
-        image_scroll = getattr(self.ui.image_viewer, "_scroll_area", None)
-        if image_scroll is not None:
-            shortcut_targets.append(image_scroll)
-            viewport = image_scroll.viewport()
-            if viewport is not None:
-                shortcut_targets.append(viewport)
-
-        video_view = getattr(self.ui.video_area, "_video_view", None)
-        if video_view is not None:
-            shortcut_targets.append(video_view)
-            viewport = video_view.viewport()
-            if viewport is not None:
-                shortcut_targets.append(viewport)
-
-        filmstrip_widget = getattr(self.ui, "filmstrip_view", None)
-        if filmstrip_widget is not None:
-            shortcut_targets.append(filmstrip_widget)
-            filmstrip_viewport_getter = getattr(filmstrip_widget, "viewport", None)
-            if callable(filmstrip_viewport_getter):
-                viewport = filmstrip_widget.viewport()
-                if viewport is not None:
-                    shortcut_targets.append(viewport)
-
-        # Store the targets so ``eventFilter`` can cheaply confirm whether a watched widget requires
-        # shortcut handling without rebuilding this list for every event.
-        self._detail_shortcut_filter_targets: tuple[QWidget, ...] = tuple(shortcut_targets)
-        for widget in self._detail_shortcut_filter_targets:
-            # Installing the filter on each widget ensures the keyboard handler executes even when
-            # the child accepts the key press, allowing the main window to claim the shortcut and
-            # stop the child from repeating the navigation a second time.
-            widget.installEventFilter(self)
 
         # Allow the window itself to accept focus when the user clicks the chrome so
         # ``keyPressEvent`` can act as a fall-back shortcut path if none of the child
@@ -559,19 +515,6 @@ class MainWindow(QMainWindow):
         }:
             self.position_live_badge()
 
-        if (
-            watched in getattr(self, "_detail_shortcut_filter_targets", ())
-            and event.type() == QEvent.Type.KeyPress
-        ):
-            key_event = cast(QKeyEvent, event)
-            # Delegate to the central shortcut handler only when the detail surface is visible so
-            # other parts of the UI retain their native arrow-key navigation.
-            if (
-                self.ui.view_stack.currentWidget() is self.ui.detail_page
-                and self._handle_detail_view_shortcut(key_event)
-            ):
-                return True
-
         return super().eventFilter(watched, event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # type: ignore[override]
@@ -600,16 +543,9 @@ class MainWindow(QMainWindow):
         if disallowed:
             return False
 
-        state = self.controller.current_player_state()
-        is_video_surface = state in {
-            PlayerState.PLAYING_VIDEO,
-            PlayerState.SHOWING_VIDEO_SURFACE,
-        }
-        is_live_motion = state == PlayerState.PLAYING_LIVE_MOTION
-        is_live_still = state == PlayerState.SHOWING_LIVE_STILL
-        can_control_audio = is_video_surface or is_live_motion
-
         key = event.key()
+        can_control_audio = self.controller.can_control_media_audio()
+        is_live_still = self.controller.is_live_still_visible()
 
         if key == Qt.Key.Key_Space:
             if is_live_still:
@@ -635,10 +571,13 @@ class MainWindow(QMainWindow):
             event.accept()
             return True
 
-        if key in {Qt.Key.Key_Up, Qt.Key.Key_Down} and can_control_audio:
-            step = VOLUME_SHORTCUT_STEP if key == Qt.Key.Key_Up else -VOLUME_SHORTCUT_STEP
-            current_volume = self.controller.media_volume()
-            self.controller.set_media_volume(current_volume + step)
+        if key == Qt.Key.Key_Up and can_control_audio:
+            self.controller.increase_media_volume_step()
+            event.accept()
+            return True
+
+        if key == Qt.Key.Key_Down and can_control_audio:
+            self.controller.decrease_media_volume_step()
             event.accept()
             return True
 
