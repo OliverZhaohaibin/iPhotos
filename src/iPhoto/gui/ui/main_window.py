@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable, Iterator, cast
 
-from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, QObject
+from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, QObject, QRectF
 from PySide6.QtGui import (
     QColor,
     QCloseEvent,
@@ -29,6 +29,10 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QScrollBar,
     QWidget,
+    QProxyStyle,
+    QStyle,
+    QStyleOptionComplex,
+    QStyleOptionSlider,
 )
 
 # ``main_window`` can be imported either via ``iPhoto.gui`` (package execution)
@@ -57,6 +61,122 @@ PLAYBACK_RESUME_DELAY_MS = 120
 # attached.  Storing the marker directly on the widget avoids fragile bookkeeping structures and
 # lets Qt manage the lifecycle in tandem with the menu itself.
 _MENU_STYLE_PROPERTY = "_lexiphoto_menu_style_hook"
+
+
+class FluentScrollbarStyle(QProxyStyle):
+    """Proxy style that paints Fluent-inspired scrollbars without stylesheets."""
+
+    _target_extent = 12
+    _minimum_slider_length = 24
+    _track_margin = 4
+    _handle_radius = 6
+
+    def __init__(self, base_style: QStyle) -> None:
+        """Wrap ``base_style`` so only scrollbar painting is customised."""
+
+        super().__init__(base_style)
+
+    @staticmethod
+    def _with_alpha(color: QColor, alpha: int) -> QColor:
+        """Return ``color`` with its alpha channel replaced by ``alpha``."""
+
+        constrained_alpha = max(0, min(255, int(alpha)))
+        if color.alpha() == constrained_alpha:
+            return QColor(color)
+        adjusted = QColor(color)
+        adjusted.setAlpha(constrained_alpha)
+        return adjusted
+
+    def pixelMetric(
+        self,
+        metric: QStyle.PixelMetric,
+        option: QStyleOptionComplex | None,
+        widget: QWidget | None,
+    ) -> int:
+        """Tighten scrollbar metrics while respecting the base style defaults."""
+
+        base_value = super().pixelMetric(metric, option, widget)
+
+        if metric == QStyle.PixelMetric.PM_ScrollBarExtent:
+            # Shrink the track thickness to roughly 75% of the native metric so the control
+            # remains comfortable on high-DPI displays while matching the Fluent silhouette.
+            if base_value <= 0:
+                return self._target_extent
+            scaled = int(round(base_value * 0.75))
+            return max(self._target_extent, scaled)
+
+        if metric == QStyle.PixelMetric.PM_ScrollBarSliderMin:
+            # Keep the grab handle long enough to stay precise when dragging quickly.
+            return max(self._minimum_slider_length, base_value)
+
+        return base_value
+
+    def drawComplexControl(
+        self,
+        control: QStyle.ComplexControl,
+        option: QStyleOptionComplex,
+        painter: QPainter,
+        widget: QWidget | None = None,
+    ) -> None:
+        """Render rounded scrollbar handles using palette-aware translucency."""
+
+        if control != QStyle.ComplexControl.CC_ScrollBar:
+            super().drawComplexControl(control, option, painter, widget)
+            return
+
+        slider_option = cast(QStyleOptionSlider, option)
+        handle_rect = self.subControlRect(
+            control,
+            slider_option,
+            QStyle.SubControl.SC_ScrollBarSlider,
+            widget,
+        )
+
+        if not handle_rect.isValid():
+            return
+
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        painter.setPen(Qt.PenStyle.NoPen)
+
+        target_extent = self.pixelMetric(
+            QStyle.PixelMetric.PM_ScrollBarExtent,
+            slider_option,
+            widget,
+        )
+
+        if slider_option.orientation == Qt.Orientation.Vertical:
+            shrink = max(0, (handle_rect.width() - target_extent) // 2)
+            handle_rect.adjust(shrink, self._track_margin, -shrink, -self._track_margin)
+        else:
+            shrink = max(0, (handle_rect.height() - target_extent) // 2)
+            handle_rect.adjust(self._track_margin, shrink, -self._track_margin, -shrink)
+
+        if handle_rect.width() <= 0 or handle_rect.height() <= 0:
+            painter.restore()
+            return
+
+        state = slider_option.state
+        palette = slider_option.palette
+
+        if not state & QStyle.StateFlag.State_Enabled:
+            fill_color = self._with_alpha(palette.color(QPalette.ColorRole.Mid), 60)
+        elif state & QStyle.StateFlag.State_Sunken:
+            fill_color = self._with_alpha(palette.color(QPalette.ColorRole.Highlight), 255)
+        elif state & QStyle.StateFlag.State_MouseOver:
+            fill_color = self._with_alpha(palette.color(QPalette.ColorRole.Highlight), 200)
+        else:
+            fill_color = self._with_alpha(palette.color(QPalette.ColorRole.Mid), 140)
+
+        radius = min(
+            self._handle_radius,
+            min(handle_rect.width(), handle_rect.height()) / 2,
+        )
+
+        painter.setBrush(fill_color)
+        painter.drawRoundedRect(QRectF(handle_rect), radius, radius)
+        painter.restore()
 
 class RoundedWindowShell(QWidget):
     """Container that paints an anti-aliased rounded background for the window."""
@@ -258,6 +378,9 @@ class MainWindow(QMainWindow):
         # application-wide overrides that could disturb native metrics on unrelated widgets.
         self._qmenu_stylesheet: str = ""
         self._applying_menu_styles = False
+        # ``_scrollbar_style`` keeps a single proxy instance alive so every affected scrollbar
+        # shares the same Fluent-inspired drawing logic without resorting to global stylesheets.
+        self._scrollbar_style: FluentScrollbarStyle | None = None
 
         # Wire the custom window control buttons to the standard window management actions and
         # connect the immersive viewer exit affordances.
@@ -459,20 +582,6 @@ class MainWindow(QMainWindow):
         opaque_color.setAlpha(255)
         return opaque_color
 
-    @staticmethod
-    def _rgba(color: QColor, alpha: int) -> str:
-        """Return an ``rgba()`` string built from ``color`` with a clamped ``alpha``."""
-
-        clamped_alpha = max(0, min(255, int(alpha)))
-        rgba_color = QColor(color)
-        rgba_color.setAlpha(clamped_alpha)
-        return "rgba({0}, {1}, {2}, {3})".format(
-            rgba_color.red(),
-            rgba_color.green(),
-            rgba_color.blue(),
-            rgba_color.alpha(),
-        )
-
     def _configure_popup_menu(self, menu: QMenu, stylesheet: str) -> None:
         """Apply frameless styling and rounded menu rules to ``menu``.
 
@@ -525,58 +634,18 @@ class MainWindow(QMainWindow):
             menu.setProperty(_MENU_STYLE_PROPERTY, True)
 
     def _apply_scrollbar_styles(self) -> None:
-        """Recreate Fluent-inspired scrollbars for key views without touching the app style."""
+        """Install a proxy style that draws Fluent-inspired scrollbars."""
 
-        palette = self.palette()
-        # ``QScrollBar`` widgets fall back to a flat, platform-agnostic look once their parents
-        # participate in a stylesheet.  Rebuilding a focused palette here restores the subtle Fluent
-        # shading without reintroducing global styles that interfere with other widgets.
-        handle_idle = self._rgba(self._opaque_color(palette.color(QPalette.ColorRole.Mid)), 140)
-        handle_hover = self._rgba(self._opaque_color(palette.color(QPalette.ColorRole.Highlight)), 200)
-        handle_pressed = self._rgba(self._opaque_color(palette.color(QPalette.ColorRole.Highlight)), 255)
-        track_margin = 4
-        radius = 6
+        base_style = self.style()
+        if base_style is None:
+            return
 
-        scrollbar_style = (
-            # Keep the trough invisible so scrollbars float over the content the way the Fluent
-            # design intends, while maintaining a comfortable hit target through generous margins.
-            "QScrollBar:vertical {"
-            f"background: transparent; width: 12px; margin: {track_margin}px 0 {track_margin}px 0;"
-            "}\n"
-            # Rounded handles match the Windows 11 look while respecting the active palette.
-            "QScrollBar::handle:vertical {"
-            f"background-color: {handle_idle}; border-radius: {radius}px; min-height: 24px;"
-            "}\n"
-            "QScrollBar::handle:vertical:hover {"
-            f"background-color: {handle_hover};"
-            "}\n"
-            "QScrollBar::handle:vertical:pressed {"
-            f"background-color: {handle_pressed};"
-            "}\n"
-            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,"
-            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {"
-            "background: transparent; border: none; margin: 0;"
-            "}\n"
-            "QScrollBar:horizontal {"
-            f"background: transparent; height: 12px; margin: 0 {track_margin}px 0 {track_margin}px;"
-            "}\n"
-            # Horizontal handles reuse the same rounded chrome so pointer feedback stays
-            # consistent across orientations.
-            "QScrollBar::handle:horizontal {"
-            f"background-color: {handle_idle}; border-radius: {radius}px; min-width: 24px;"
-            "}\n"
-            "QScrollBar::handle:horizontal:hover {"
-            f"background-color: {handle_hover};"
-            "}\n"
-            "QScrollBar::handle:horizontal:pressed {"
-            f"background-color: {handle_pressed};"
-            "}\n"
-            "QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal,"
-            "QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {"
-            "background: transparent; border: none; margin: 0;"
-            "}\n"
-            "QScrollBar::corner { background: transparent; }\n"
-        )
+        if self._scrollbar_style is not None:
+            self._scrollbar_style.deleteLater()
+            self._scrollbar_style = None
+
+        self._scrollbar_style = FluentScrollbarStyle(base_style)
+        self._scrollbar_style.setParent(self)
 
         scrollbars: list[QScrollBar] = []
         grid_view = getattr(self.ui, "grid_view", None)
@@ -606,7 +675,10 @@ class MainWindow(QMainWindow):
             if identifier in seen:
                 continue
             seen.add(identifier)
-            scrollbar.setStyleSheet(scrollbar_style)
+            scrollbar.setStyleSheet("")
+            scrollbar.setStyle(self._scrollbar_style)
+            self._scrollbar_style.polish(scrollbar)
+            scrollbar.update()
     def _apply_menu_styles(self) -> None:
         """Force drop-down and context menus to render with opaque backgrounds.
 
