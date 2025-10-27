@@ -23,7 +23,6 @@ class CustomScrollBarStyle(QProxyStyle):
     the underlying base style.
     """
 
-    _CORNER_RADIUS_PX = 4
     _HANDLE_MIN_LENGTH_PX = 25
     _TRACK_THICKNESS_PX = 10
 
@@ -105,19 +104,21 @@ class CustomScrollBarStyle(QProxyStyle):
     # ------------------------------------------------------------------
     # Geometry helpers
     # ------------------------------------------------------------------
-    def _handle_rect(self, option: QStyleOptionSlider) -> QRect:
-        """Return the geometry used to render the rounded handle."""
+    def _capsule_rect(self, option: QStyleOptionSlider) -> QRect:
+        """Return the shared capsule geometry used for the handle and groove."""
 
-        if option.orientation == Qt.Orientation.Vertical:
-            return option.rect.adjusted(1, 0, -1, 0)
-        return option.rect.adjusted(0, 1, 0, -1)
+        # Leaving a one-pixel inset on every edge keeps the painted capsule away
+        # from the viewport border so the anti-aliased corners remain visible on
+        # all scaling factors.
+        return option.rect.adjusted(1, 1, -1, -1)
 
-    def _groove_rect(self, option: QStyleOptionSlider) -> QRect:
-        """Return the geometry used to render the rounded groove."""
+    def _capsule_radius(self, rect: QRect) -> float:
+        """Return the radius that turns *rect* into a perfect capsule."""
 
-        if option.orientation == Qt.Orientation.Vertical:
-            return option.rect.adjusted(1, 0, -1, 0)
-        return option.rect.adjusted(0, 1, 0, -1)
+        # The capsule should mirror Windows 11 where the corner radius equals
+        # half of the available thickness.  ``max`` guards against zero-sized
+        # rectangles that may appear during layout transitions.
+        return max(1.0, min(rect.width(), rect.height()) / 2.0)
 
     # ------------------------------------------------------------------
     # Painting helpers
@@ -146,9 +147,9 @@ class CustomScrollBarStyle(QProxyStyle):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(brush_colour)
         painter.setClipRect(option.rect)
-        painter.drawRoundedRect(
-            self._handle_rect(option), self._CORNER_RADIUS_PX, self._CORNER_RADIUS_PX
-        )
+        capsule_rect = self._capsule_rect(option)
+        radius = self._capsule_radius(capsule_rect)
+        painter.drawRoundedRect(capsule_rect, radius, radius)
         painter.restore()
 
     def _paint_groove(
@@ -166,9 +167,9 @@ class CustomScrollBarStyle(QProxyStyle):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(groove_colour)
         painter.setClipRect(option.rect)
-        painter.drawRoundedRect(
-            self._groove_rect(option), self._CORNER_RADIUS_PX, self._CORNER_RADIUS_PX
-        )
+        capsule_rect = self._capsule_rect(option)
+        radius = self._capsule_radius(capsule_rect)
+        painter.drawRoundedRect(capsule_rect, radius, radius)
         painter.restore()
 
     # ------------------------------------------------------------------
