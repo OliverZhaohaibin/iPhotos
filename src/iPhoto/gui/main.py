@@ -34,8 +34,12 @@ def main(argv: list[str] | None = None) -> int:
     # Windows 11 look while every other control keeps its native appearance.
     base_style_name = app.style().objectName()
     base_style = QStyleFactory.create(base_style_name) if base_style_name else None
+    if base_style is not None and base_style.objectName().lower() == "windowsvista":
+        fusion_style = QStyleFactory.create("Fusion")
+        if fusion_style is not None:
+            base_style = fusion_style
     if base_style is None:
-        base_style = app.style()
+        base_style = QStyleFactory.create("Fusion") or app.style()
     app.setStyle(CustomScrollBarStyle(base_style))
 
     # Install the shared application stylesheet once so menu and tooltip rules

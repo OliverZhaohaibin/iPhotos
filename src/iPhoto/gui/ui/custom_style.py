@@ -20,19 +20,31 @@ class CustomScrollBarStyle(QProxyStyle):
 
     _CORNER_RADIUS_PX = 4
     _HANDLE_MIN_LENGTH_PX = 25
-    _TRACK_MARGIN_PX = 1
     _TRACK_THICKNESS_PX = 10
 
     def __init__(self, base_style: QStyle | None = None) -> None:
         """Initialise the proxy with an optional *base_style* to delegate to."""
 
         resolved_base = base_style
+        if resolved_base is not None:
+            base_name = resolved_base.objectName().lower()
+            if base_name == "windowsvista":
+                fusion_style = QStyleFactory.create("Fusion")
+                if fusion_style is not None:
+                    resolved_base = fusion_style
         if resolved_base is None:
             # ``QProxyStyle`` requires a backing style to forward unhandled
             # primitives.  Falling back to ``Fusion`` guarantees a predictable
             # baseline even when the platform style cannot be instantiated.
             resolved_base = QStyleFactory.create("Fusion")
+        if resolved_base is None:
+            # A final safeguard in case ``Fusion`` could not be created for some
+            # reason.  ``QProxyStyle`` accepts ``None`` but that would reintroduce
+            # platform specific behaviour that might block rounded handles again.
+            raise RuntimeError("Unable to resolve a base style for CustomScrollBarStyle")
         super().__init__(resolved_base)
+        if __debug__:
+            print(f"CustomScrollBarStyle using base style: {resolved_base.objectName()}")
 
     # ------------------------------------------------------------------
     # Colour helpers
@@ -113,13 +125,13 @@ class CustomScrollBarStyle(QProxyStyle):
             else:
                 painter.setBrush(normal_colour)
 
-            if option.orientation == Qt.Orientation.Vertical:
-                draw_rect = option.rect.adjusted(
-                    self._TRACK_MARGIN_PX, 0, -self._TRACK_MARGIN_PX, 0
-                )
-            else:
-                draw_rect = option.rect.adjusted(
-                    0, self._TRACK_MARGIN_PX, 0, -self._TRACK_MARGIN_PX
+            draw_rect = option.rect
+            if __debug__:
+                print(
+                    "Drawing CE_ScrollBarSlider",
+                    f"rect={draw_rect}",
+                    f"radius={self._CORNER_RADIUS_PX}",
+                    f"colour={painter.brush().color().name()}",
                 )
 
             painter.setClipRect(option.rect)
@@ -140,13 +152,13 @@ class CustomScrollBarStyle(QProxyStyle):
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(groove_colour)
 
-            if option.orientation == Qt.Orientation.Vertical:
-                draw_rect = option.rect.adjusted(
-                    self._TRACK_MARGIN_PX, 0, -self._TRACK_MARGIN_PX, 0
-                )
-            else:
-                draw_rect = option.rect.adjusted(
-                    0, self._TRACK_MARGIN_PX, 0, -self._TRACK_MARGIN_PX
+            draw_rect = option.rect
+            if __debug__:
+                print(
+                    "Drawing scroll bar groove",
+                    f"rect={draw_rect}",
+                    f"radius={self._CORNER_RADIUS_PX}",
+                    f"colour={groove_colour.name(QColor.HexArgb)}",
                 )
 
             painter.setClipRect(option.rect)
@@ -169,10 +181,10 @@ class CustomScrollBarStyle(QProxyStyle):
         """Provide geometry overrides so the proxy can honour our margins."""
 
         if metric == QStyle.PixelMetric.PM_ScrollBarExtent:
-            # ``PM_ScrollBarExtent`` controls the overall thickness of the bar.  Adding
-            # two extra pixels accounts for the one-pixel inset we apply on each side of
-            # the capsule so the handle never touches the container edge.
-            return self._TRACK_THICKNESS_PX + (self._TRACK_MARGIN_PX * 2)
+            # ``PM_ScrollBarExtent`` controls the overall thickness of the bar.  The
+            # proxy draws directly inside the provided geometry so we can return the
+            # capsule thickness without applying extra padding.
+            return self._TRACK_THICKNESS_PX
 
         if metric in (
             QStyle.PixelMetric.PM_ScrollBarAddLineExtent,
