@@ -174,10 +174,12 @@ class Ui_MainWindow(object):
         self.window_shell_layout.setContentsMargins(0, 0, 0, 0)
         self.window_shell_layout.setSpacing(0)
 
-        # Place a resize indicator directly on the shell rather than the layout.
-        # This keeps the overlay independent so it can sit above the status bar.
-        # The widget ignores mouse input so window-edge drags still reach Qt.
-        self.resize_indicator = QLabel(self.window_shell)
+        # Place a resize indicator as an overlay widget.  The label is created with the main
+        # window as its initial parent so layout code does not immediately manage it; the real
+        # parent is assigned once ``RoundedWindowShell`` exists inside ``MainWindow``.  The
+        # overlay ignores mouse input to avoid blocking resize drags that originate from the
+        # frameless window edge.
+        self.resize_indicator = QLabel(MainWindow)
         self.resize_indicator.setObjectName("resizeIndicatorLabel")
         indicator_size = QSize(20, 20)
         self.resize_indicator.setFixedSize(indicator_size)
@@ -187,7 +189,7 @@ class Ui_MainWindow(object):
         )
         self.resize_indicator.setScaledContents(True)
         self.resize_indicator.setPixmap(load_icon("resize.svg").pixmap(indicator_size))
-        self.resize_indicator.setVisible(True)
+        self.resize_indicator.hide()
 
         self.menu_bar = QMenuBar(self.window_shell)
         self.menu_bar.setObjectName("chromeMenuBar")

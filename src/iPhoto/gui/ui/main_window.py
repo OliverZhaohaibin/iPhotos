@@ -154,6 +154,16 @@ class MainWindow(QMainWindow):
         cast(QVBoxLayout, self._rounded_shell.layout()).addWidget(original_shell)
         self.setCentralWidget(self._rounded_shell)
 
+        # ``setupUi`` builds the resize indicator as a free-floating label so we can avoid layout
+        # management.  Reparent it now that the rounded shell exists, ensuring the overlay uses
+        # the same coordinate space as the frameless window chrome.  Showing the widget here keeps
+        # the first paint flicker-free while still letting ``position_resize_indicator`` decide the
+        # exact location.
+        resize_indicator = getattr(self.ui, "resize_indicator", None)
+        if resize_indicator is not None:
+            resize_indicator.setParent(self._rounded_shell)
+            resize_indicator.show()
+
         # ``FloatingToolTip`` replicates ``QToolTip`` using a styled ``QFrame``
         # so the popup always paints an opaque background.  Sharing a single
         # instance for the window chrome avoids the platform-specific
@@ -533,7 +543,7 @@ class MainWindow(QMainWindow):
         """Keep the resize affordance label anchored to the shell's lower-left corner."""
 
         indicator = getattr(self.ui, "resize_indicator", None)
-        shell = getattr(self.ui, "window_shell", None)
+        shell = getattr(self, "_rounded_shell", None)
         if shell is None or indicator is None:
             return
 
