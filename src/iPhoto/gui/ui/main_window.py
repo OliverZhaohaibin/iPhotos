@@ -194,6 +194,13 @@ class MainWindow(QMainWindow):
         # helper so every widget inherits the reliable rendering path.
         self._window_tooltip = FloatingToolTip(self)
         self._tooltip_filter: ToolTipEventFilter | None = None
+        # Initialise the drag source registry before installing any event filters.
+        # ``QApplication.installEventFilter`` begins forwarding events immediately, meaning
+        # ``eventFilter`` can run while the constructor is still executing.  Preparing the
+        # attribute upfront guarantees the handler always finds a valid container even if Qt
+        # dispatches paint or hover events during setup.  The collection is populated with the
+        # actual title-bar widgets once they have been constructed a few lines later.
+        self._drag_sources: set[QWidget] = set()
         app = QApplication.instance()
         if app is not None:
             # ``ToolTipEventFilter`` keeps hover hints readable on translucent
