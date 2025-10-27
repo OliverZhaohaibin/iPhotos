@@ -250,6 +250,37 @@ class MainWindow(QMainWindow):
         # overlay without being treated as tooltip traffic.
         self.ui.badge_host.installEventFilter(self)
 
+        # Collect the child viewports that typically claim keyboard focus inside the detail page so
+        # the window can intercept navigation shortcuts before scroll areas or list views absorb the
+        # key press for their own scrolling logic.  Guard each lookup so structural UI changes do not
+        # crash shortcut registration.
+        shortcut_viewports: list[QWidget] = []
+
+        image_scroll = getattr(self.ui.image_viewer, "_scroll_area", None)
+        if image_scroll is not None:
+            viewport = image_scroll.viewport()
+            if viewport is not None:
+                shortcut_viewports.append(viewport)
+
+        video_view = getattr(self.ui.video_area, "_video_view", None)
+        if video_view is not None:
+            viewport = video_view.viewport()
+            if viewport is not None:
+                shortcut_viewports.append(viewport)
+
+        filmstrip_viewport_getter = getattr(self.ui.filmstrip_view, "viewport", None)
+        if callable(filmstrip_viewport_getter):
+            viewport = self.ui.filmstrip_view.viewport()
+            if viewport is not None:
+                shortcut_viewports.append(viewport)
+
+        self._detail_shortcut_filter_targets: tuple[QWidget, ...] = tuple(shortcut_viewports)
+        for viewport in self._detail_shortcut_filter_targets:
+            # Installing the filter on each viewport ensures the keyboard handler executes even when
+            # the child widget accepts the key press.  Returning ``True`` from ``eventFilter`` will
+            # keep the child from reacting to the same shortcut a second time.
+            viewport.installEventFilter(self)
+
         self._update_title_bar()
         self._update_fullscreen_button_icon()
         self._apply_menu_styles()
@@ -514,6 +545,19 @@ class MainWindow(QMainWindow):
             QEvent.Type.Show,
         }:
             self.position_live_badge()
+
+        if (
+            watched in getattr(self, "_detail_shortcut_filter_targets", ())
+            and event.type() == QEvent.Type.KeyPress
+        ):
+            key_event = cast(QKeyEvent, event)
+            # Delegate to the central shortcut handler only when the detail surface is visible so
+            # other parts of the UI retain their native arrow-key navigation.
+            if self.controller.is_detail_view_active() and self._handle_detail_view_shortcut(
+                key_event
+            ):
+                return True
+
         return super().eventFilter(watched, event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # type: ignore[override]
