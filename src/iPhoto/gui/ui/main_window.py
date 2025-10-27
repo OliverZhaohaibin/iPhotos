@@ -16,6 +16,7 @@ from PySide6.QtGui import (
     QPainter,
     QPainterPath,
     QPalette,
+    QResizeEvent,
 )
 from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QMenuBar, QVBoxLayout, QWidget
 
@@ -174,7 +175,7 @@ class MainWindow(QMainWindow):
 
         # Position the Live badge after the layout is finalized.
         self.position_live_badge()
-        self._position_resize_indicator()
+        self.position_resize_indicator()
 
         # Keep track of whether the immersive full screen mode is active along with the widgets
         # that were hidden to enter that state so we can restore them exactly as the user left
@@ -469,10 +470,10 @@ class MainWindow(QMainWindow):
         finally:
             self._applying_menu_styles = False
 
-    def resizeEvent(self, event) -> None:  # type: ignore[override]
+    def resizeEvent(self, event: QResizeEvent) -> None:  # type: ignore[override]
         super().resizeEvent(event)
         self.position_live_badge()
-        self._position_resize_indicator()
+        self.position_resize_indicator()
 
     def showEvent(self, event) -> None:  # type: ignore[override]
         super().showEvent(event)
@@ -527,18 +528,19 @@ class MainWindow(QMainWindow):
         self.ui.live_badge.move(15, 15)
         self.ui.live_badge.raise_()
 
-    def _position_resize_indicator(self) -> None:
-        """Anchor the resize affordance to the lower-left corner of the shell."""
+    def position_resize_indicator(self) -> None:
+        """Keep the resize affordance label anchored to the shell's lower-left corner."""
 
-        label = self.ui.resize_indicator_label
-        shell = self.ui.window_shell
+        label = getattr(self.ui, "resize_indicator_label", None)
+        shell = getattr(self.ui, "window_shell", None)
         if shell is None or label is None:
             return
 
         margin = 5
-        # Clamp the vertical coordinate so the icon stays visible on very small
-        # windows.  That preserves the affordance without blocking resize
-        # gestures.
+        # Calculate the target position relative to the shell so the icon always hugs the
+        # lower-left corner with the same padding.  ``max`` avoids negative coordinates when the
+        # window becomes smaller than the affordance height, ensuring the indicator never slides
+        # out of view while still letting users drag the resize handle beneath it.
         target_y = max(margin, shell.height() - label.height() - margin)
         label.move(margin, target_y)
         label.raise_()
