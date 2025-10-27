@@ -175,6 +175,7 @@ class MainWindow(QMainWindow):
 
         # Position the Live badge after the layout is finalized.
         self.position_live_badge()
+        # Place the resize indicator immediately so it appears correctly on the first paint.
         self.position_resize_indicator()
 
         # Keep track of whether the immersive full screen mode is active along with the widgets
@@ -531,19 +532,19 @@ class MainWindow(QMainWindow):
     def position_resize_indicator(self) -> None:
         """Keep the resize affordance label anchored to the shell's lower-left corner."""
 
-        label = getattr(self.ui, "resize_indicator_label", None)
+        indicator = getattr(self.ui, "resize_indicator", None)
         shell = getattr(self.ui, "window_shell", None)
-        if shell is None or label is None:
+        if shell is None or indicator is None:
             return
 
         margin = 5
         # Calculate the target position relative to the shell so the icon always hugs the
-        # lower-left corner with the same padding.  ``max`` avoids negative coordinates when the
+        # lower-left corner with the same padding.  ``max`` clamps the coordinate to zero when the
         # window becomes smaller than the affordance height, ensuring the indicator never slides
         # out of view while still letting users drag the resize handle beneath it.
-        target_y = max(margin, shell.height() - label.height() - margin)
-        label.move(margin, target_y)
-        label.raise_()
+        target_y = max(0, shell.height() - indicator.height() - margin)
+        indicator.move(margin, target_y)
+        indicator.raise_()
 
     def toggle_fullscreen(self) -> None:
         """Toggle the immersive full screen mode."""
