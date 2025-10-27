@@ -581,10 +581,32 @@ def read_video_meta(path: Path, metadata: Optional[Dict[str, Any]] = None) -> Di
 
     if isinstance(fmt, dict):
         top_level_tags = fmt.get("tags")
-        if isinstance(top_level_tags, dict) and not info.get("content_id"):
-            content_id = top_level_tags.get("com.apple.quicktime.content.identifier")
-            if isinstance(content_id, str) and content_id:
-                info["content_id"] = content_id
+        if isinstance(top_level_tags, dict):
+            if not info.get("content_id"):
+                content_id = top_level_tags.get("com.apple.quicktime.content.identifier")
+                if isinstance(content_id, str) and content_id:
+                    info["content_id"] = content_id
+
+            if not info.get("make"):
+                ffprobe_make = top_level_tags.get("com.apple.quicktime.make")
+                if isinstance(ffprobe_make, str):
+                    trimmed_make = ffprobe_make.strip()
+                    if trimmed_make:
+                        # ``ffprobe`` exposes QuickTime-style camera metadata at the
+                        # container level for many iOS captures.  When ExifTool did
+                        # not populate ``make`` we reuse the ffprobe tag instead so
+                        # downstream features (e.g. device grouping) remain accurate.
+                        info["make"] = trimmed_make
+
+            if not info.get("model"):
+                ffprobe_model = top_level_tags.get("com.apple.quicktime.model")
+                if isinstance(ffprobe_model, str):
+                    trimmed_model = ffprobe_model.strip()
+                    if trimmed_model:
+                        # See the note above for ``make``: ffprobe's top-level
+                        # QuickTime tags often include the device model while
+                        # ExifTool sometimes omits it for video clips.
+                        info["model"] = trimmed_model
 
     streams = ffprobe_meta.get("streams", []) if isinstance(ffprobe_meta, dict) else []
     if isinstance(streams, list):
