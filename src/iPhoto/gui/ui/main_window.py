@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable, Iterator, cast
 
-from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
+from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QTimer
 from PySide6.QtGui import (
     QColor,
     QCloseEvent,
@@ -17,7 +17,14 @@ from PySide6.QtGui import (
     QPainterPath,
     QPalette,
 )
-from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QMenuBar, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QMainWindow,
+    QMenu,
+    QMenuBar,
+    QVBoxLayout,
+    QWidget,
+)
 
 # ``main_window`` can be imported either via ``iPhoto.gui`` (package execution)
 # or ``iPhotos.src.iPhoto.gui`` (legacy test harness).  The absolute import
@@ -37,6 +44,125 @@ from .widgets.custom_tooltip import FloatingToolTip, ToolTipEventFilter
 
 # Small delay that gives Qt time to settle window transitions before resuming playback.
 PLAYBACK_RESUME_DELAY_MS = 120
+
+
+class WindowResizeGrip(QWidget):
+    """Interactive handle that resizes the frameless window when dragged."""
+
+    def __init__(self, window: QMainWindow, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._window = window
+        self._dragging = False
+        self._press_pos = QPoint()
+        self._start_geometry = QRect()
+
+        # A compact square mirrors modern grip affordances while still offering a comfortable
+        # hit target.  The diagonal cursor communicates the behaviour without any extra chrome.
+        self.setFixedSize(18, 18)
+        self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setToolTip("Resize window")
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
+        """Capture the initial geometry so drag deltas can be applied precisely."""
+
+        if event.button() != Qt.MouseButton.LeftButton:
+            event.ignore()
+            return
+
+        if self._window.isMaximized() or self._window.isFullScreen():
+            # Qt ignores resize requests while the window is maximised or in immersive mode, so we
+            # abort the drag session immediately to avoid misleading the user.
+            event.ignore()
+            return
+
+        self._dragging = True
+        self._press_pos = event.globalPosition().toPoint()
+        self._start_geometry = self._window.geometry()
+        event.accept()
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
+        """Resize the window by applying the cursor delta to the stored geometry."""
+
+        if not self._dragging:
+            event.ignore()
+            return
+
+        if not (event.buttons() & Qt.MouseButton.LeftButton):
+            event.ignore()
+            return
+
+        delta = event.globalPosition().toPoint() - self._press_pos
+        new_width = self._start_geometry.width() + delta.x()
+        new_height = self._start_geometry.height() + delta.y()
+
+        # Clamp the requested geometry to honour the window's sizing constraints.
+        new_width = max(self._window.minimumWidth(), new_width)
+        new_height = max(self._window.minimumHeight(), new_height)
+
+        max_width = self._window.maximumWidth()
+        if max_width > 0:
+            new_width = min(max_width, new_width)
+
+        max_height = self._window.maximumHeight()
+        if max_height > 0:
+            new_height = min(max_height, new_height)
+
+        self._window.resize(new_width, new_height)
+        event.accept()
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
+        """Finish the drag interaction when the cursor button is released."""
+
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = False
+            event.accept()
+        else:
+            event.ignore()
+
+    def paintEvent(self, event: QPaintEvent) -> None:  # type: ignore[override]
+        """Render a subtle triangular grip that honours the active palette."""
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(Qt.PenStyle.NoPen)
+
+        palette = self._window.palette()
+        shadow_colour = MainWindow._opaque_color(  # type: ignore[attr-defined]
+            palette.color(QPalette.ColorRole.Mid)
+        )
+        highlight_colour = MainWindow._opaque_color(  # type: ignore[attr-defined]
+            palette.color(QPalette.ColorRole.Light)
+        )
+
+        triangle = QPainterPath()
+        triangle.moveTo(self.width(), 0)
+        triangle.lineTo(self.width(), self.height())
+        triangle.lineTo(0, self.height())
+        triangle.closeSubpath()
+        painter.fillPath(triangle, shadow_colour)
+
+        inset = QPainterPath()
+        inset.moveTo(self.width() - 4, 2)
+        inset.lineTo(self.width() - 2, self.height() - 4)
+        inset.lineTo(2, self.height() - 2)
+        inset.closeSubpath()
+        painter.fillPath(inset, highlight_colour)
+
+        super().paintEvent(event)
+
+    def reposition(self) -> None:
+        """Anchor the grip to the parent's bottom-right corner."""
+
+        parent = self.parentWidget()
+        if parent is None:
+            return
+
+        margin = 6
+        x_pos = max(0, parent.width() - self.width() - margin)
+        y_pos = max(0, parent.height() - self.height() - margin)
+        self.move(x_pos, y_pos)
+        self.raise_()
 
 
 class RoundedWindowShell(QWidget):
@@ -153,6 +279,9 @@ class MainWindow(QMainWindow):
         cast(QVBoxLayout, self._rounded_shell.layout()).addWidget(original_shell)
         self.setCentralWidget(self._rounded_shell)
 
+        self._resize_grip = WindowResizeGrip(self, parent=self._rounded_shell)
+        self._resize_grip.reposition()
+
         # ``FloatingToolTip`` replicates ``QToolTip`` using a styled ``QFrame``
         # so the popup always paints an opaque background.  Sharing a single
         # instance for the window chrome avoids the platform-specific
@@ -201,6 +330,8 @@ class MainWindow(QMainWindow):
         self._qmenu_stylesheet: str = ""
         self._global_menu_stylesheet: str | None = None
         self._applying_menu_styles = False
+        self._scrollbar_stylesheet: str = ""
+        self._global_scrollbar_stylesheet: str | None = None
 
         # Wire the custom window control buttons to the standard window management actions and
         # connect the immersive viewer exit affordances.
@@ -226,6 +357,8 @@ class MainWindow(QMainWindow):
         self._update_title_bar()
         self._update_fullscreen_button_icon()
         self._apply_menu_styles()
+        self._apply_scrollbar_styles()
+        self._update_resize_grip_visibility()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # type: ignore[override]
         """Tear down background services before the window closes."""
@@ -371,6 +504,68 @@ class MainWindow(QMainWindow):
         self._qmenu_stylesheet = qmenu_style
         return qmenu_style, menubar_style
 
+    def _build_scrollbar_styles(self) -> str:
+        """Construct palette-aware rounded scrollbars for every orientation."""
+
+        palette = self.palette()
+        groove_colour = self._opaque_color(palette.color(QPalette.ColorRole.Midlight))
+        background_colour = self._opaque_color(palette.color(QPalette.ColorRole.Window))
+        handle_colour = self._opaque_color(palette.color(QPalette.ColorRole.Highlight))
+
+        if handle_colour.lightness() >= 128:
+            hover_colour = handle_colour.darker(110)
+            pressed_colour = handle_colour.darker(125)
+        else:
+            hover_colour = handle_colour.lighter(115)
+            pressed_colour = handle_colour.lighter(130)
+
+        thickness_px = 12
+        radius_px = thickness_px // 2
+
+        scrollbar_style = (
+            "QScrollBar:vertical {\n"
+            f"    background-color: {background_colour.name()};\n"
+            f"    width: {thickness_px}px;\n"
+            "    margin: 12px 0px 12px 0px;\n"
+            "    border: none;\n"
+            "}\n"
+            "QScrollBar:horizontal {\n"
+            f"    background-color: {background_colour.name()};\n"
+            f"    height: {thickness_px}px;\n"
+            "    margin: 0px 12px 0px 12px;\n"
+            "    border: none;\n"
+            "}\n"
+            "QScrollBar::groove:vertical, QScrollBar::groove:horizontal {\n"
+            f"    background-color: {groove_colour.name()};\n"
+            f"    border-radius: {radius_px}px;\n"
+            "    margin: 2px;\n"
+            "}\n"
+            "QScrollBar::handle:vertical, QScrollBar::handle:horizontal {\n"
+            f"    background-color: {handle_colour.name()};\n"
+            f"    border-radius: {radius_px}px;\n"
+            "    min-height: 32px;\n"
+            "    min-width: 32px;\n"
+            "    margin: 2px;\n"
+            "}\n"
+            "QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {\n"
+            f"    background-color: {hover_colour.name()};\n"
+            "}\n"
+            "QScrollBar::handle:vertical:pressed, QScrollBar::handle:horizontal:pressed {\n"
+            f"    background-color: {pressed_colour.name()};\n"
+            "}\n"
+            "QScrollBar::add-line, QScrollBar::sub-line {\n"
+            "    width: 0px;\n"
+            "    height: 0px;\n"
+            "    border: none;\n"
+            "}\n"
+            "QScrollBar::add-page, QScrollBar::sub-page {\n"
+            "    background: transparent;\n"
+            "}\n"
+        )
+
+        self._scrollbar_stylesheet = scrollbar_style
+        return scrollbar_style
+
     @staticmethod
     def _opaque_color(color: QColor) -> QColor:
         """Return a colour copy whose alpha channel is forced to full opacity.
@@ -468,9 +663,27 @@ class MainWindow(QMainWindow):
         finally:
             self._applying_menu_styles = False
 
+    def _apply_scrollbar_styles(self) -> None:
+        """Inject the rounded scrollbar stylesheet into the QApplication instance."""
+
+        stylesheet = self._build_scrollbar_styles()
+        app = QApplication.instance()
+        if app is None:
+            return
+
+        existing = app.styleSheet()
+        if self._global_scrollbar_stylesheet and self._global_scrollbar_stylesheet in existing:
+            existing = existing.replace(self._global_scrollbar_stylesheet, "").strip()
+
+        combined_parts = [part for part in (existing, stylesheet) if part]
+        app.setStyleSheet("\n".join(combined_parts))
+        self._global_scrollbar_stylesheet = stylesheet
+
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
         self.position_live_badge()
+        if self._resize_grip.isVisible():
+            self._resize_grip.reposition()
 
     def showEvent(self, event) -> None:  # type: ignore[override]
         super().showEvent(event)
@@ -510,12 +723,15 @@ class MainWindow(QMainWindow):
             # Regenerate the palette-aware menu stylesheet so newly themed drop-downs immediately
             # adopt the opaque colours without requiring an application restart.
             self._apply_menu_styles()
+            self._apply_scrollbar_styles()
         elif event.type() == QEvent.Type.StyleChange:
             # Style changes may arrive when Qt swaps window decorations or the application switches
             # between light and dark modes.  The rounded shell still needs a repaint to keep the
             # anti-aliased frame crisp, but the menu styling will be refreshed on the ensuing
             # palette change (if any) or the next explicit request.
             self._rounded_shell.update()
+        elif event.type() == QEvent.Type.WindowStateChange:
+            self._update_resize_grip_visibility()
 
     def position_live_badge(self) -> None:
         """Keep the Live badge pinned to the player corner."""
@@ -572,6 +788,7 @@ class MainWindow(QMainWindow):
         self._immersive_active = True
         self.showFullScreen()
         self._update_fullscreen_button_icon()
+        self._update_resize_grip_visibility()
         self._schedule_playback_resume(expect_immersive=True, resume=resume_after_transition)
 
     def exit_fullscreen(self) -> None:
@@ -602,6 +819,7 @@ class MainWindow(QMainWindow):
                 self.ui.video_area.show_controls(animate=False)
 
         self._update_fullscreen_button_icon()
+        self._update_resize_grip_visibility()
         self._schedule_playback_resume(expect_immersive=False, resume=resume_after_transition)
 
     # Public API used by sidebar/actions
@@ -648,6 +866,18 @@ class MainWindow(QMainWindow):
             self._drag_active = False
             return True
         return False
+
+    def _update_resize_grip_visibility(self) -> None:
+        """Show the resize grip only when the window accepts manual resizing."""
+
+        should_show = (
+            not self._immersive_active
+            and not self.isFullScreen()
+            and not self.isMaximized()
+        )
+        self._resize_grip.setVisible(should_show)
+        if should_show:
+            self._resize_grip.reposition()
 
     def _update_fullscreen_button_icon(self) -> None:
         """Refresh the window control button to match the current mode."""
