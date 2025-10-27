@@ -63,3 +63,12 @@ class ViewController(QObject):
         """Reset the gallery view back to the standard grid."""
 
         self._active_gallery_page = self._gallery_page
+
+    def is_detail_view_active(self) -> bool:
+        """Return ``True`` when the stacked widget is currently showing the detail page."""
+
+        # ``_detail_page`` may be ``None`` if the UI omitted the page in a
+        # particular configuration (for example in lightweight test harnesses).
+        # The guard keeps the helper safe to call in those scenarios while still
+        # advertising whether the detail UI is presently active when it exists.
+        return self._detail_page is not None and self._view_stack.currentWidget() is self._detail_page

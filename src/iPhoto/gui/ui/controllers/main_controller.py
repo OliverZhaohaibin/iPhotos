@@ -456,9 +456,7 @@ class MainController(QObject):
     def _handle_album_opened(self, root: Path) -> None:
         """React to the facade opening a new or refreshed album."""
 
-        is_detail_view_before_handle = (
-            self._window.ui.view_stack.currentWidget() is self._window.ui.detail_page
-        )
+        is_detail_view_before_handle = self._view_controller.is_detail_view_active()
         was_refresh = self._navigation.consume_last_open_refresh()
         self._navigation.handle_album_opened(root)
         self._window.ui.selection_button.setEnabled(True)
@@ -569,6 +567,11 @@ class MainController(QObject):
         """Toggle the mute state through the media controller."""
 
         self._media.set_muted(muted)
+
+    def is_detail_view_active(self) -> bool:
+        """Return ``True`` when the detail page is the foreground view."""
+
+        return self._view_controller.is_detail_view_active()
 
     def open_album_from_path(self, path: Path) -> None:
         """Forward album navigation requests to the navigation controller."""

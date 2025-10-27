@@ -524,7 +524,7 @@ class MainWindow(QMainWindow):
             event.accept()
             return
 
-        if self.ui.view_stack.currentWidget() is self.ui.detail_page:
+        if self.controller.is_detail_view_active():
             if self._handle_detail_view_shortcut(event):
                 return
 
