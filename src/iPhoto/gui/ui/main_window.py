@@ -530,6 +530,17 @@ class MainWindow(QMainWindow):
         hover_colour = QColor(hover_value, hover_value, hover_value)
         pressed_colour = QColor(pressed_value, pressed_value, pressed_value)
 
+        # The Win11 capsule sits on a subtle translucent groove that becomes slightly brighter in
+        # dark mode and slightly darker in light mode.  The alpha channel ensures the groove never
+        # overpowers the surrounding chrome while still giving the handle a surface to sit on.
+        groove_colour = QColor(background_colour)
+        if window_lightness < 128:
+            groove_colour = groove_colour.lighter(140)
+        else:
+            groove_colour = groove_colour.darker(115)
+        groove_colour.setAlpha(120)
+        groove_red, groove_green, groove_blue, groove_alpha = groove_colour.getRgb()
+
         thickness_px = 10
         corner_radius_px = 4
         minimum_handle_length_px = 25
@@ -538,6 +549,9 @@ class MainWindow(QMainWindow):
         handle_colour_name = handle_colour.name()
         hover_colour_name = hover_colour.name()
         pressed_colour_name = pressed_colour.name()
+        groove_colour_name = (
+            f"rgba({groove_red}, {groove_green}, {groove_blue}, {groove_alpha})"
+        )
 
         scrollbar_style = (
             "QScrollBar {\n"
@@ -554,22 +568,23 @@ class MainWindow(QMainWindow):
             "    margin: 1px 1px 1px 1px;\n"
             f"    background-color: {background_colour_name};\n"
             "}\n"
-            "QScrollBar::handle:vertical {\n"
+            "QScrollBar::handle {\n"
             f"    background-color: {handle_colour_name};\n"
             f"    border-radius: {corner_radius_px}px;\n"
+            "    border: none;\n"
+            "}\n"
+            "QScrollBar::handle:vertical {\n"
             "    margin: 0px 1px 0px 1px;\n"
             f"    min-height: {minimum_handle_length_px}px;\n"
             "}\n"
             "QScrollBar::handle:horizontal {\n"
-            f"    background-color: {handle_colour_name};\n"
-            f"    border-radius: {corner_radius_px}px;\n"
             "    margin: 1px 0px 1px 0px;\n"
             f"    min-width: {minimum_handle_length_px}px;\n"
             "}\n"
-            "QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {\n"
+            "QScrollBar::handle:hover {\n"
             f"    background-color: {hover_colour_name};\n"
             "}\n"
-            "QScrollBar::handle:vertical:pressed, QScrollBar::handle:horizontal:pressed {\n"
+            "QScrollBar::handle:pressed {\n"
             f"    background-color: {pressed_colour_name};\n"
             "}\n"
             "QScrollBar::add-line, QScrollBar::sub-line {\n"
@@ -577,14 +592,34 @@ class MainWindow(QMainWindow):
             "    height: 0px;\n"
             "    border: none;\n"
             "    background: none;\n"
+            "    subcontrol-position: none;\n"
+            "}\n"
+            "QScrollBar::up-arrow, QScrollBar::down-arrow,\n"
+            "QScrollBar::left-arrow, QScrollBar::right-arrow {\n"
+            "    width: 0px;\n"
+            "    height: 0px;\n"
+            "    background: none;\n"
+            "}\n"
+            "QScrollBar::add-page, QScrollBar::sub-page {\n"
+            f"    background-color: {groove_colour_name};\n"
+            f"    border-radius: {corner_radius_px}px;\n"
+            "    border: none;\n"
+            "}\n"
+            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {\n"
+            "    margin: 0px 1px 0px 1px;\n"
+            "}\n"
+            "QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {\n"
+            "    margin: 1px 0px 1px 0px;\n"
             "}\n"
             "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical,\n"
             "QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {\n"
-            "    background: none;\n"
+            f"    min-height: {minimum_handle_length_px}px;\n"
+            f"    min-width: {minimum_handle_length_px}px;\n"
             "}\n"
             "QScrollBar::groove:vertical, QScrollBar::groove:horizontal {\n"
-            "    background: transparent;\n"
+            f"    background-color: {groove_colour_name};\n"
             f"    border-radius: {corner_radius_px}px;\n"
+            "    margin: 1px;\n"
             "}\n"
         )
 
