@@ -508,23 +508,32 @@ class MainWindow(QMainWindow):
         """Construct palette-aware rounded scrollbars for every orientation."""
 
         palette = self.palette()
-        groove_colour = self._opaque_color(palette.color(QPalette.ColorRole.Midlight))
         background_colour = self._opaque_color(palette.color(QPalette.ColorRole.Window))
-        handle_colour = self._opaque_color(palette.color(QPalette.ColorRole.Highlight))
 
-        if handle_colour.lightness() >= 128:
-            hover_colour = handle_colour.darker(110)
-            pressed_colour = handle_colour.darker(125)
+        # Windows 11 presents scrollbars with a neutral grey capsule regardless of the accent
+        # colour configured for the theme.  Qt does not expose the platform metrics directly, so
+        # the shades below approximate that appearance while remaining legible on both light and
+        # dark backgrounds.  The luminance of ``QPalette.Window`` is used as a simple heuristic to
+        # decide whether the UI is currently light or dark and the grey values are nudged
+        # accordingly so the handle still contrasts with the content behind it.
+        window_lightness = background_colour.lightness()
+        if window_lightness < 128:
+            base_value = 190
+            hover_value = 215
+            pressed_value = 165
         else:
-            hover_colour = handle_colour.lighter(115)
-            pressed_colour = handle_colour.lighter(130)
+            base_value = 154
+            hover_value = 127
+            pressed_value = 106
 
-        thickness_px = 12
-        corner_radius_px = max(4, thickness_px // 2)
-        handle_margin_px = 2
-        minimum_handle_length_px = 32
+        handle_colour = QColor(base_value, base_value, base_value)
+        hover_colour = QColor(hover_value, hover_value, hover_value)
+        pressed_colour = QColor(pressed_value, pressed_value, pressed_value)
 
-        groove_colour_name = groove_colour.name()
+        thickness_px = 10
+        corner_radius_px = 4
+        minimum_handle_length_px = 25
+
         background_colour_name = background_colour.name()
         handle_colour_name = handle_colour.name()
         hover_colour_name = hover_colour.name()
@@ -534,33 +543,27 @@ class MainWindow(QMainWindow):
             "QScrollBar {\n"
             "    border: none;\n"
             "    background: transparent;\n"
-            f"    border-radius: {corner_radius_px}px;\n"
             "}\n"
             "QScrollBar:vertical {\n"
             f"    width: {thickness_px}px;\n"
-            "    margin: 0px;\n"
+            "    margin: 1px 1px 1px 1px;\n"
             f"    background-color: {background_colour_name};\n"
             "}\n"
             "QScrollBar:horizontal {\n"
             f"    height: {thickness_px}px;\n"
-            "    margin: 0px;\n"
+            "    margin: 1px 1px 1px 1px;\n"
             f"    background-color: {background_colour_name};\n"
-            "}\n"
-            "QScrollBar::groove:vertical, QScrollBar::groove:horizontal {\n"
-            f"    background-color: {groove_colour_name};\n"
-            f"    border-radius: {corner_radius_px}px;\n"
-            f"    margin: {handle_margin_px}px;\n"
             "}\n"
             "QScrollBar::handle:vertical {\n"
             f"    background-color: {handle_colour_name};\n"
             f"    border-radius: {corner_radius_px}px;\n"
-            f"    margin: {handle_margin_px}px;\n"
+            "    margin: 0px 1px 0px 1px;\n"
             f"    min-height: {minimum_handle_length_px}px;\n"
             "}\n"
             "QScrollBar::handle:horizontal {\n"
             f"    background-color: {handle_colour_name};\n"
             f"    border-radius: {corner_radius_px}px;\n"
-            f"    margin: {handle_margin_px}px;\n"
+            "    margin: 1px 0px 1px 0px;\n"
             f"    min-width: {minimum_handle_length_px}px;\n"
             "}\n"
             "QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {\n"
@@ -577,7 +580,10 @@ class MainWindow(QMainWindow):
             "}\n"
             "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical,\n"
             "QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {\n"
-            f"    background-color: {groove_colour_name};\n"
+            "    background: none;\n"
+            "}\n"
+            "QScrollBar::groove:vertical, QScrollBar::groove:horizontal {\n"
+            "    background: transparent;\n"
             f"    border-radius: {corner_radius_px}px;\n"
             "}\n"
         )
