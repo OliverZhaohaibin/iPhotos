@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QMenuBar,
     QProgressBar,
     QSlider,
+    QSizeGrip,
     QSizePolicy,
     QSplitter,
     QStackedWidget,
@@ -190,6 +191,14 @@ class Ui_MainWindow(object):
         self.resize_indicator.setScaledContents(True)
         self.resize_indicator.setPixmap(load_icon("resize.svg").pixmap(indicator_size))
         self.resize_indicator.hide()
+
+        # ``QSizeGrip`` is instantiated alongside the icon so the visual affordance can sit directly
+        # above the interactive handle.  Assigning the temporary parent keeps the grip out of the
+        # auto-generated layouts until the main window finishes wrapping the rounded shell.
+        self.size_grip = QSizeGrip(MainWindow)
+        self.size_grip.setObjectName("resizeSizeGrip")
+        self.size_grip.setFixedSize(indicator_size)
+        self.size_grip.hide()
 
         self.menu_bar = QMenuBar(self.window_shell)
         self.menu_bar.setObjectName("chromeMenuBar")

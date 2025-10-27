@@ -157,12 +157,21 @@ class MainWindow(QMainWindow):
         # ``setupUi`` builds the resize indicator as a free-floating label so we can avoid layout
         # management.  Reparent it now that the rounded shell exists, ensuring the overlay uses
         # the same coordinate space as the frameless window chrome.  Showing the widget here keeps
-        # the first paint flicker-free while still letting ``position_resize_indicator`` decide the
+        # the first paint flicker-free while still letting ``position_resize_widgets`` decide the
         # exact location.
         resize_indicator = getattr(self.ui, "resize_indicator", None)
         if resize_indicator is not None:
+            # Reparent the indicator so it shares the rounded shell's coordinate space; this keeps
+            # the overlay aligned with the frameless chrome instead of the auto-generated layout.
             resize_indicator.setParent(self._rounded_shell)
             resize_indicator.show()
+
+        self._size_grip = getattr(self.ui, "size_grip", None)
+        if self._size_grip is not None:
+            # Matching the size grip's parent to the rounded shell ensures Qt routes drag gestures
+            # straight to the frameless edge while still letting us position the handle manually.
+            self._size_grip.setParent(self._rounded_shell)
+            self._size_grip.show()
 
         # ``FloatingToolTip`` replicates ``QToolTip`` using a styled ``QFrame``
         # so the popup always paints an opaque background.  Sharing a single
@@ -185,8 +194,9 @@ class MainWindow(QMainWindow):
 
         # Position the Live badge after the layout is finalized.
         self.position_live_badge()
-        # Place the resize indicator immediately so it appears correctly on the first paint.
-        self.position_resize_indicator()
+        # Place the resize affordances immediately so both the icon and size grip are correct on the
+        # first paint instead of waiting for the initial resize event to run.
+        self.position_resize_widgets()
 
         # Keep track of whether the immersive full screen mode is active along with the widgets
         # that were hidden to enter that state so we can restore them exactly as the user left
@@ -484,7 +494,7 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event: QResizeEvent) -> None:  # type: ignore[override]
         super().resizeEvent(event)
         self.position_live_badge()
-        self.position_resize_indicator()
+        self.position_resize_widgets()
 
     def showEvent(self, event) -> None:  # type: ignore[override]
         super().showEvent(event)
@@ -539,23 +549,40 @@ class MainWindow(QMainWindow):
         self.ui.live_badge.move(15, 15)
         self.ui.live_badge.raise_()
 
-    def position_resize_indicator(self) -> None:
-        """Keep the resize affordance label anchored to the shell's lower-right corner."""
+    def position_resize_widgets(self) -> None:
+        """Pin the resize icon and grip to the shell's lower-right corner."""
 
-        indicator = getattr(self.ui, "resize_indicator", None)
         shell = getattr(self, "_rounded_shell", None)
-        if shell is None or indicator is None:
+        if shell is None:
             return
 
+        indicator = getattr(self.ui, "resize_indicator", None)
+        size_grip = getattr(self, "_size_grip", None)
+
         margin = 5
-        # Calculate the target position relative to the shell so the icon always hugs the
-        # lower-right corner with the same padding.  ``max`` clamps the coordinates to zero when the
-        # window becomes smaller than the affordance footprint, ensuring the indicator never slides
-        # out of view while still letting users drag the resize handle beneath it.
-        target_x = max(0, shell.width() - indicator.width() - margin)
-        target_y = max(0, shell.height() - indicator.height() - margin)
-        indicator.move(target_x, target_y)
-        indicator.raise_()
+        # Determine the footprint required to anchor both widgets.  The maximum of the handle and
+        # icon dimensions keeps them perfectly overlapped even if future assets use different sizes.
+        width_candidates = [widget.width() for widget in (indicator, size_grip) if widget is not None]
+        height_candidates = [widget.height() for widget in (indicator, size_grip) if widget is not None]
+        if not width_candidates or not height_candidates:
+            return
+
+        target_width = max(width_candidates)
+        target_height = max(height_candidates)
+
+        # Offset from the shell's right and bottom edges so the handle always hugs the corner with a
+        # consistent margin.  ``max`` prevents the coordinates from becoming negative when the window
+        # shrinks below the widget footprint, keeping the affordance visible and reachable.
+        target_x = max(0, shell.width() - target_width - margin)
+        target_y = max(0, shell.height() - target_height - margin)
+
+        if size_grip is not None:
+            size_grip.move(target_x, target_y)
+            size_grip.raise_()
+
+        if indicator is not None:
+            indicator.move(target_x, target_y)
+            indicator.raise_()
 
     def toggle_fullscreen(self) -> None:
         """Toggle the immersive full screen mode."""
