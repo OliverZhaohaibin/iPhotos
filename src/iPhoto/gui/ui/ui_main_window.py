@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QSlider,
     QSizeGrip,
     QSizePolicy,
+    QSpacerItem,
     QSplitter,
     QStackedWidget,
     QToolBar,
@@ -92,6 +93,19 @@ class ChromeStatusBar(QWidget):
 
         self._progress_bar = self._create_progress_bar()
         layout.addWidget(self._progress_bar, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        # Reserve horizontal space so the floating resize indicator and size grip can occupy
+        # the bottom-right corner without overlapping the progress bar.  A fixed-width spacer
+        # keeps the layout intent explicit and makes future visual adjustments straightforward.
+        resize_overlay_width = 25
+        layout.addSpacerItem(
+            QSpacerItem(
+                resize_overlay_width,
+                1,
+                QSizePolicy.Policy.Fixed,
+                QSizePolicy.Policy.Minimum,
+            )
+        )
 
         self._clear_timer = QTimer(self)
         self._clear_timer.setSingleShot(True)
