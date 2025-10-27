@@ -15,7 +15,7 @@ from PySide6.QtCore import (
     Qt,
     Signal,
 )
-from PySide6.QtGui import QColor, QCursor, QKeyEvent, QMouseEvent, QPainter, QResizeEvent
+from PySide6.QtGui import QColor, QCursor, QMouseEvent, QPainter, QResizeEvent
 from PySide6.QtWidgets import (
     QFrame,
     QGraphicsOpacityEffect,
@@ -45,10 +45,6 @@ class VideoArea(QWidget):
     mouseActive = Signal()
     controlsVisibleChanged = Signal(bool)
     fullscreenExitRequested = Signal()
-    nextItemRequested = Signal()
-    prevItemRequested = Signal()
-    volumeUpRequested = Signal()
-    volumeDownRequested = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -128,7 +124,6 @@ class VideoArea(QWidget):
         self._hide_timer.timeout.connect(self.hide_controls)
 
         self._install_activity_filters()
-        self._install_shortcut_filters()
         self._wire_player_bar()
 
     # ------------------------------------------------------------------
@@ -252,14 +247,6 @@ class VideoArea(QWidget):
             if not self.rect().contains(self.mapFromGlobal(cursor_pos)):
                 self.hide_controls()
 
-        if (
-            watched in {self._video_view, self._video_view.viewport()}
-            and event.type() == QEvent.Type.KeyPress
-        ):
-            key_event = cast(QKeyEvent, event)
-            if self._handle_key_press(key_event):
-                return True
-
         return super().eventFilter(watched, event)
 
     # ------------------------------------------------------------------
@@ -267,12 +254,6 @@ class VideoArea(QWidget):
     # ------------------------------------------------------------------
     def _install_activity_filters(self) -> None:
         self._player_bar.installEventFilter(self)
-
-    def _install_shortcut_filters(self) -> None:
-        """Capture key presses from the graphics view and its viewport."""
-
-        self._video_view.installEventFilter(self)
-        self._video_view.viewport().installEventFilter(self)
 
     def _wire_player_bar(self) -> None:
         for signal in (
@@ -300,37 +281,23 @@ class VideoArea(QWidget):
         elif self._controls_visible:
             self._hide_timer.start(PLAYER_CONTROLS_HIDE_DELAY_MS)
 
-    def _handle_key_press(self, event: QKeyEvent) -> bool:
-        """Translate navigation and volume keys into controller signals."""
+    def video_view(self) -> QGraphicsView:
+        """Return the graphics view hosting the video surface."""
 
-        modifiers = event.modifiers()
-        disallowed = modifiers & ~Qt.KeyboardModifier.KeypadModifier
-        if disallowed:
-            return False
+        # Exposing the graphics view allows higher-level widgets to install
+        # shortcut filters directly on the focus target instead of reaching into
+        # private attributes.  The method keeps the detail view wiring explicit
+        # while still encapsulating the scene graph setup within ``VideoArea``.
+        return self._video_view
 
-        key = event.key()
-        if key == Qt.Key.Key_Left:
-            self.prevItemRequested.emit()
-            self._on_mouse_activity()
-            event.accept()
-            return True
-        if key == Qt.Key.Key_Right:
-            self.nextItemRequested.emit()
-            self._on_mouse_activity()
-            event.accept()
-            return True
-        if key == Qt.Key.Key_Up:
-            self.volumeUpRequested.emit()
-            self._on_mouse_activity()
-            event.accept()
-            return True
-        if key == Qt.Key.Key_Down:
-            self.volumeDownRequested.emit()
-            self._on_mouse_activity()
-            event.accept()
-            return True
+    def video_viewport(self) -> QWidget:
+        """Return the viewport widget that accepts keyboard focus."""
 
-        return False
+        # Keyboard shortcuts are intercepted at the viewport level so the main
+        # window can consume navigation keys before Qt treats them as focus
+        # traversal requests.  Providing the widget through a helper keeps the
+        # shortcut configuration readable from the controller layer.
+        return self._video_view.viewport()
 
     def _animate_to(self, value: float, duration: int) -> None:
         self._fade_anim.stop()

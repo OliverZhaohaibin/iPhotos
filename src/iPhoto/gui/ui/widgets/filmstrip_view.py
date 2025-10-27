@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QModelIndex, QSize, Qt, Signal
-from PySide6.QtGui import QKeyEvent, QResizeEvent, QWheelEvent
+from PySide6.QtGui import QResizeEvent, QWheelEvent
 from PySide6.QtWidgets import QListView, QSizePolicy, QStyleOptionViewItem
 
 from .asset_grid import AssetGrid
@@ -221,27 +221,6 @@ class FilmstripView(AssetGrid):
         else:
             self.prevItemRequested.emit()
         event.accept()
-
-    def keyPressEvent(self, event: QKeyEvent) -> None:  # type: ignore[override]
-        """Redirect arrow keys to playlist navigation instead of selection changes."""
-
-        modifiers = event.modifiers()
-        disallowed = modifiers & ~Qt.KeyboardModifier.KeypadModifier
-        if disallowed:
-            super().keyPressEvent(event)
-            return
-
-        key = event.key()
-        if key == Qt.Key.Key_Left:
-            self.prevItemRequested.emit()
-            event.accept()
-            return
-        if key == Qt.Key.Key_Right:
-            self.nextItemRequested.emit()
-            event.accept()
-            return
-
-        super().keyPressEvent(event)
 
     # ------------------------------------------------------------------
     # Programmatic scrolling helpers

@@ -29,6 +29,8 @@ try:  # pragma: no cover - exercised in packaging scenarios
 except ImportError:  # pragma: no cover - script execution fallback
     from iPhotos.src.iPhoto.appctx import AppContext
 
+from ...config import VOLUME_SHORTCUT_STEP
+
 from .controllers.main_controller import MainController
 from .media import require_multimedia
 from .ui_main_window import ChromeStatusBar, Ui_MainWindow
@@ -244,6 +246,24 @@ class MainWindow(QMainWindow):
         # install the filter separately so geometry changes can reposition the
         # overlay without being treated as tooltip traffic.
         self.ui.badge_host.installEventFilter(self)
+
+        # Capture the widgets that regularly hold focus inside the detail view so the
+        # main window can intercept navigation keys before the child controls treat
+        # them as scroll or selection commands.  Installing the filter on both the
+        # views and their viewports covers focus changes triggered by Qt's internal
+        # heuristics.
+        detail_shortcut_targets = [
+            self.ui.image_viewer,
+            self.ui.image_viewer.viewport_widget(),
+            self.ui.video_area,
+            self.ui.video_area.video_view(),
+            self.ui.video_area.video_viewport(),
+            self.ui.filmstrip_view,
+            self.ui.filmstrip_view.viewport(),
+        ]
+        self._detail_shortcut_filter_targets: tuple[QWidget, ...] = tuple(detail_shortcut_targets)
+        for target in self._detail_shortcut_filter_targets:
+            target.installEventFilter(self)
 
         # Allow the window itself to accept focus when the user clicks the chrome so
         # ``keyPressEvent`` can act as a fall-back shortcut path if none of the child
@@ -515,6 +535,18 @@ class MainWindow(QMainWindow):
         }:
             self.position_live_badge()
 
+        if (
+            event.type() == QEvent.Type.KeyPress
+            and watched in getattr(self, "_detail_shortcut_filter_targets", ())
+        ):
+            # Intercept keyboard shortcuts emitted while the detail view has focus so
+            # playback navigation remains consistent even when embedded Qt widgets
+            # would normally consume the arrow keys for scrolling.
+            if self.ui.view_stack.currentWidget() is self.ui.detail_page:
+                key_event = cast(QKeyEvent, event)
+                if self._handle_detail_view_shortcut(key_event):
+                    return True
+
         return super().eventFilter(watched, event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # type: ignore[override]
@@ -571,13 +603,15 @@ class MainWindow(QMainWindow):
             event.accept()
             return True
 
-        if key == Qt.Key.Key_Up and can_control_audio:
-            self.controller.increase_media_volume_step()
-            event.accept()
-            return True
-
-        if key == Qt.Key.Key_Down and can_control_audio:
-            self.controller.decrease_media_volume_step()
+        if key in {Qt.Key.Key_Up, Qt.Key.Key_Down} and can_control_audio:
+            step = VOLUME_SHORTCUT_STEP if key == Qt.Key.Key_Up else -VOLUME_SHORTCUT_STEP
+            current_volume = self.controller.media_volume()
+            new_volume = max(0, min(100, current_volume + step))
+            if new_volume != current_volume:
+                self.controller.set_media_volume(new_volume)
+            # Accept the event regardless of whether the volume actually changed so
+            # the focus widget does not attempt to interpret the key press as a
+            # scroll command when already at the boundary.
             event.accept()
             return True
 

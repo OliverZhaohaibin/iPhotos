@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Optional, Tuple, cast
 
 from PySide6.QtCore import QEvent, QPoint, QSize, Qt, Signal, QTimer
-from PySide6.QtGui import QKeyEvent, QMouseEvent, QPixmap, QWheelEvent
+from PySide6.QtGui import QMouseEvent, QPixmap, QWheelEvent
 from PySide6.QtWidgets import (
     QFrame,
     QLabel,
@@ -253,11 +253,6 @@ class ImageViewer(QWidget):
 
     def eventFilter(self, obj, event):  # type: ignore[override]
         if obj is self._scroll_area.viewport():
-            if event.type() == QEvent.Type.KeyPress:
-                key_event = cast(QKeyEvent, event)
-                if self._handle_key_press(key_event):
-                    return True
-
             if event.type() == QEvent.Type.Wheel:
                 wheel_event = cast(QWheelEvent, event)
                 if self._wheel_action != "zoom":
@@ -333,32 +328,15 @@ class ImageViewer(QWidget):
                     return True
         return super().eventFilter(obj, event)
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-    def _handle_key_press(self, event: QKeyEvent) -> bool:
-        """Intercept navigation keys so the viewer can request playlist changes."""
+    def viewport_widget(self) -> QWidget:
+        """Expose the scroll area's viewport for higher-level event filters."""
 
-        modifiers = event.modifiers()
-        disallowed = modifiers & ~Qt.KeyboardModifier.KeypadModifier
-        if disallowed:
-            return False
-
-        key = event.key()
-        if self._wheel_action == "navigate":
-            if key == Qt.Key.Key_Left:
-                # Emitting the navigation signal keeps the behaviour consistent with mouse wheel
-                # gestures and filmstrip controls, ensuring the same controller path handles all
-                # previous-item requests.
-                self.prevItemRequested.emit()
-                event.accept()
-                return True
-            if key == Qt.Key.Key_Right:
-                self.nextItemRequested.emit()
-                event.accept()
-                return True
-
-        return False
+        # The main window installs a keyboard event filter on the viewport so it can
+        # intercept navigation shortcuts before the scroll area claims them for
+        # focus navigation.  Returning the concrete widget keeps the detail view's
+        # shortcut wiring self-documenting while avoiding direct access to private
+        # attributes from outside the class.
+        return self._scroll_area.viewport()
 
     def _render_pixmap(
         self,

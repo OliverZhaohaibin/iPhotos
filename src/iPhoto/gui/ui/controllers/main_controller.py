@@ -35,7 +35,6 @@ from .selection_controller import SelectionController
 from .share_controller import ShareController
 from .status_bar_controller import StatusBarController
 from .view_controller import ViewController
-from ....config import VOLUME_SHORTCUT_STEP
 
 if TYPE_CHECKING:
     from ..main_window import MainWindow
@@ -134,10 +133,6 @@ class MainController(QObject):
             self._preview_controller,
             self._facade,
         )
-        window.ui.video_area.nextItemRequested.connect(self._playback.request_next_item)
-        window.ui.video_area.prevItemRequested.connect(self._playback.request_previous_item)
-        window.ui.video_area.volumeUpRequested.connect(self.increase_media_volume_step)
-        window.ui.video_area.volumeDownRequested.connect(self.decrease_media_volume_step)
         self._status_bar = StatusBarController(
             window.ui.status_bar,
             window.ui.progress_bar,
@@ -493,16 +488,6 @@ class MainController(QObject):
         self._window.ui.player_bar.set_muted(is_muted)
         if self._context.settings.get("ui.is_muted") != is_muted:
             self._context.settings.set("ui.is_muted", is_muted)
-
-    def increase_media_volume_step(self) -> None:
-        """Increment the media volume in response to keyboard shortcuts."""
-
-        self._media.set_volume(self._media.volume() + VOLUME_SHORTCUT_STEP)
-
-    def decrease_media_volume_step(self) -> None:
-        """Decrease the media volume when the shortcut requests it."""
-
-        self._media.set_volume(self._media.volume() - VOLUME_SHORTCUT_STEP)
 
     def _prioritize_filmstrip_rows(self, first: int, last: int) -> None:
         """Prioritise asset loading to match filmstrip visibility."""
