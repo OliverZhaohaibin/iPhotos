@@ -31,7 +31,7 @@ except ImportError:  # pragma: no cover - script execution fallback
 from .controllers.main_controller import MainController
 from .media import require_multimedia
 from .ui_main_window import ChromeStatusBar, Ui_MainWindow
-from .icons import load_icon
+from .icon import load_icon
 from .widgets.custom_tooltip import FloatingToolTip, ToolTipEventFilter
 
 
@@ -174,6 +174,7 @@ class MainWindow(QMainWindow):
 
         # Position the Live badge after the layout is finalized.
         self.position_live_badge()
+        self._position_resize_indicator()
 
         # Keep track of whether the immersive full screen mode is active along with the widgets
         # that were hidden to enter that state so we can restore them exactly as the user left
@@ -471,6 +472,7 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
         self.position_live_badge()
+        self._position_resize_indicator()
 
     def showEvent(self, event) -> None:  # type: ignore[override]
         super().showEvent(event)
@@ -524,6 +526,22 @@ class MainWindow(QMainWindow):
             return
         self.ui.live_badge.move(15, 15)
         self.ui.live_badge.raise_()
+
+    def _position_resize_indicator(self) -> None:
+        """Anchor the resize affordance to the lower-left corner of the shell."""
+
+        label = self.ui.resize_indicator_label
+        shell = self.ui.window_shell
+        if shell is None or label is None:
+            return
+
+        margin = 5
+        # Clamp the vertical coordinate so the icon stays visible on very small
+        # windows.  That preserves the affordance without blocking resize
+        # gestures.
+        target_y = max(margin, shell.height() - label.height() - margin)
+        label.move(margin, target_y)
+        label.raise_()
 
     def toggle_fullscreen(self) -> None:
         """Toggle the immersive full screen mode."""

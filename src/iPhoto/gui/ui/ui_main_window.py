@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .icons import load_icon
+from .icon import load_icon
 from .palette import viewer_surface_color
 from .widgets import (
     AlbumSidebar,
@@ -173,6 +173,21 @@ class Ui_MainWindow(object):
         self.window_shell_layout = QVBoxLayout(self.window_shell)
         self.window_shell_layout.setContentsMargins(0, 0, 0, 0)
         self.window_shell_layout.setSpacing(0)
+
+        # Place a resize indicator directly on the shell rather than the layout.
+        # This keeps the overlay independent so it can sit above the status bar.
+        # The widget ignores mouse input so window-edge drags still reach Qt.
+        self.resize_indicator_label = QLabel(self.window_shell)
+        self.resize_indicator_label.setObjectName("resizeIndicatorLabel")
+        indicator_size = QSize(20, 20)
+        self.resize_indicator_label.setFixedSize(indicator_size)
+        self.resize_indicator_label.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents,
+            True,
+        )
+        self.resize_indicator_label.setScaledContents(True)
+        self.resize_indicator_label.setPixmap(load_icon("resize.svg").pixmap(indicator_size))
+        self.resize_indicator_label.setVisible(True)
 
         self.menu_bar = QMenuBar(self.window_shell)
         self.menu_bar.setObjectName("chromeMenuBar")
