@@ -15,9 +15,11 @@ if __package__ is None or __package__ == "":  # pragma: no cover - script mode
         sys.path.insert(0, str(package_root))
     from iPhotos.src.iPhoto.appctx import AppContext
     from iPhotos.src.iPhoto.gui.ui.main_window import MainWindow
+    from iPhotos.src.iPhoto.gui.ui.styles import build_global_stylesheet
 else:  # pragma: no cover - normal package execution
     from ..appctx import AppContext
     from .ui.main_window import MainWindow
+    from .ui.styles import build_global_stylesheet
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -25,6 +27,10 @@ def main(argv: list[str] | None = None) -> int:
 
     arguments = list(sys.argv if argv is None else argv)
     app = QApplication(arguments)
+
+    # Install the combined application stylesheet once so scrollbar, menu, and tooltip rules
+    # share a single ``setStyleSheet`` call instead of overwriting each other.
+    app.setStyleSheet(build_global_stylesheet(app.palette()))
 
     # ``QToolTip`` instances inherit ``WA_TranslucentBackground`` from the frameless
     # main window, which means they expect the application to provide an opaque fill

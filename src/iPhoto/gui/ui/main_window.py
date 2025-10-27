@@ -37,6 +37,7 @@ except ImportError:  # pragma: no cover - script execution fallback
 
 from .controllers.main_controller import MainController
 from .media import require_multimedia
+from .styles import build_global_stylesheet, build_menu_styles, ensure_opaque_color
 from .ui_main_window import ChromeStatusBar, Ui_MainWindow
 from .icons import load_icon
 from .widgets.custom_tooltip import FloatingToolTip, ToolTipEventFilter
@@ -128,12 +129,8 @@ class WindowResizeGrip(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
 
         palette = self._window.palette()
-        shadow_colour = MainWindow._opaque_color(  # type: ignore[attr-defined]
-            palette.color(QPalette.ColorRole.Mid)
-        )
-        highlight_colour = MainWindow._opaque_color(  # type: ignore[attr-defined]
-            palette.color(QPalette.ColorRole.Light)
-        )
+        shadow_colour = ensure_opaque_color(palette.color(QPalette.ColorRole.Mid))
+        highlight_colour = ensure_opaque_color(palette.color(QPalette.ColorRole.Light))
 
         triangle = QPainterPath()
         triangle.moveTo(self.width(), 0)
@@ -328,10 +325,8 @@ class MainWindow(QMainWindow):
         # ``QApplication`` instance, letting us replace them cleanly when the palette changes
         # without building up duplicate blocks.
         self._qmenu_stylesheet: str = ""
-        self._global_menu_stylesheet: str | None = None
         self._applying_menu_styles = False
-        self._scrollbar_stylesheet: str = ""
-        self._global_scrollbar_stylesheet: str | None = None
+        self._current_global_stylesheet = ""
 
         # Wire the custom window control buttons to the standard window management actions and
         # connect the immersive viewer exit affordances.
@@ -357,7 +352,11 @@ class MainWindow(QMainWindow):
         self._update_title_bar()
         self._update_fullscreen_button_icon()
         self._apply_menu_styles()
-        self._apply_scrollbar_styles()
+        app = QApplication.instance()
+        if app is not None:
+            self._current_global_stylesheet = app.styleSheet()
+            if not self._current_global_stylesheet:
+                self.refresh_global_stylesheet()
         self._update_resize_grip_visibility()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # type: ignore[override]
@@ -408,241 +407,22 @@ class MainWindow(QMainWindow):
             else:
                 # Recompute directly when a caller races with ``_apply_menu_styles`` so we can
                 # return a valid string without waiting for the guarded method to finish.
-                self._qmenu_stylesheet = self._build_menu_styles()[0]
+                self._qmenu_stylesheet = build_menu_styles(self.palette())[0]
         return self._qmenu_stylesheet or None
 
-    def _build_menu_styles(self) -> tuple[str, str]:
-        """Compute palette-aware stylesheets for popup chrome.
+    def refresh_global_stylesheet(self) -> None:
+        """Rebuild and apply the combined application stylesheet in one pass."""
 
-        The helper centralises the palette lookups so all menu surfaces reuse the same rounded
-        outline and opaque fill even though the main window operates with a translucent
-        background.  Returning only the stylesheet strings keeps the menu styling logic focused
-        on ``QMenu`` and ``QMenuBar`` while the tooltip palette is managed when the application
-        boots.
-        """
+        app = QApplication.instance()
+        if app is None:
+            return
 
-        palette = self.palette()
-        # ``QPalette.ColorRole.Window`` is the shade the rest of the chrome uses for panels such as
-        # the sidebar.  Matching that role keeps the menu surfaces visually aligned with the rest of
-        # the application shell, whereas ``Base`` resolves to plain white under the bundled
-        # palette.
-        window_color = self._opaque_color(palette.color(QPalette.ColorRole.Window))
-        border_color = self._opaque_color(palette.color(QPalette.ColorRole.Mid))
-        text_color = self._opaque_color(palette.color(QPalette.ColorRole.WindowText))
-        highlight_color = self._opaque_color(palette.color(QPalette.ColorRole.Highlight))
-        highlight_text_color = self._opaque_color(
-            palette.color(QPalette.ColorRole.HighlightedText)
-        )
-        separator_color = self._opaque_color(palette.color(QPalette.ColorRole.Midlight))
+        combined_stylesheet = build_global_stylesheet(app.palette())
+        if self._current_global_stylesheet == combined_stylesheet:
+            return
 
-        window_color_name = window_color.name()
-        border_color_name = border_color.name()
-        text_color_name = text_color.name()
-        highlight_color_name = highlight_color.name()
-        highlight_text_color_name = highlight_text_color.name()
-        separator_color_name = separator_color.name()
-
-        # Rounded menus read cleaner against the translucent window shell, so we base both the
-        # popup and top-level styles around a shared radius while ensuring menu items retain a
-        # subtle inset curve that does not clip their text.
-        border_radius_px = 8
-        item_radius_px = max(0, border_radius_px - 3)
-
-        # ``QMenu`` widgets no longer draw shadows, so the stylesheet focuses on providing a clean
-        # rounded outline that mirrors the rest of the chrome.  The margin and padding values are
-        # intentionally small to keep the popup compact while still leaving breathing room for
-        # hover highlights.
-        qmenu_style = (
-            "QMenu {\n"
-            f"    background-color: {window_color_name};\n"
-            f"    border: 1px solid {border_color_name};\n"
-            f"    border-radius: {border_radius_px}px;\n"
-            "    padding: 4px;\n"
-            "    margin: 0px;\n"
-            "}\n"
-            "QMenu::item {\n"
-            "    background-color: transparent;\n"
-            f"    color: {text_color_name};\n"
-            "    padding: 5px 20px;\n"
-            "    margin: 2px 6px;\n"
-            f"    border-radius: {item_radius_px}px;\n"
-            "}\n"
-            "QMenu::item:selected {\n"
-            f"    background-color: {highlight_color_name};\n"
-            f"    color: {highlight_text_color_name};\n"
-            "}\n"
-            "QMenu::separator {\n"
-            "    height: 1px;\n"
-            f"    background: {separator_color_name};\n"
-            "    margin: 4px 10px;\n"
-            "}"
-        )
-
-        menubar_style = (
-            "QMenuBar {\n"
-            f"    background-color: {window_color_name};\n"
-            "    border-radius: 0px;\n"
-            "    padding: 2px;\n"
-            "}\n"
-            "QMenuBar::item {\n"
-            "    background-color: transparent;\n"
-            f"    color: {text_color_name};\n"
-            "    padding: 4px 10px;\n"
-            "    border-radius: 4px;\n"
-            "}\n"
-            "QMenuBar::item:selected {\n"
-            f"    background-color: {highlight_color_name};\n"
-            f"    color: {highlight_text_color_name};\n"
-            "}\n"
-            "QMenuBar::separator {\n"
-            f"    background: {separator_color_name};\n"
-            "    width: 1px;\n"
-            "    margin: 4px 2px;\n"
-            "}"
-        )
-
-        self._qmenu_stylesheet = qmenu_style
-        return qmenu_style, menubar_style
-
-    def _build_scrollbar_styles(self) -> str:
-        """Construct palette-aware rounded scrollbars for every orientation."""
-
-        palette = self.palette()
-        background_colour = self._opaque_color(palette.color(QPalette.ColorRole.Window))
-
-        # Windows 11 presents scrollbars with a neutral grey capsule regardless of the accent
-        # colour configured for the theme.  Qt does not expose the platform metrics directly, so
-        # the shades below approximate that appearance while remaining legible on both light and
-        # dark backgrounds.  The luminance of ``QPalette.Window`` is used as a simple heuristic to
-        # decide whether the UI is currently light or dark and the grey values are nudged
-        # accordingly so the handle still contrasts with the content behind it.
-        window_lightness = background_colour.lightness()
-        if window_lightness < 128:
-            base_value = 190
-            hover_value = 215
-            pressed_value = 165
-        else:
-            base_value = 154
-            hover_value = 127
-            pressed_value = 106
-
-        handle_colour = QColor(base_value, base_value, base_value)
-        hover_colour = QColor(hover_value, hover_value, hover_value)
-        pressed_colour = QColor(pressed_value, pressed_value, pressed_value)
-
-        # The Win11 capsule sits on a subtle translucent groove that becomes slightly brighter in
-        # dark mode and slightly darker in light mode.  The alpha channel ensures the groove never
-        # overpowers the surrounding chrome while still giving the handle a surface to sit on.
-        groove_colour = QColor(background_colour)
-        if window_lightness < 128:
-            groove_colour = groove_colour.lighter(140)
-        else:
-            groove_colour = groove_colour.darker(115)
-        groove_colour.setAlpha(120)
-        groove_red, groove_green, groove_blue, groove_alpha = groove_colour.getRgb()
-
-        thickness_px = 10
-        corner_radius_px = 4
-        minimum_handle_length_px = 25
-
-        background_colour_name = background_colour.name()
-        handle_colour_name = handle_colour.name()
-        hover_colour_name = hover_colour.name()
-        pressed_colour_name = pressed_colour.name()
-        groove_colour_name = (
-            f"rgba({groove_red}, {groove_green}, {groove_blue}, {groove_alpha})"
-        )
-
-        scrollbar_style = (
-            "QScrollBar {\n"
-            "    border: none;\n"
-            "    background: transparent;\n"
-            "}\n"
-            "QScrollBar:vertical {\n"
-            f"    width: {thickness_px}px;\n"
-            "    margin: 1px 1px 1px 1px;\n"
-            f"    background-color: {background_colour_name};\n"
-            "}\n"
-            "QScrollBar:horizontal {\n"
-            f"    height: {thickness_px}px;\n"
-            "    margin: 1px 1px 1px 1px;\n"
-            f"    background-color: {background_colour_name};\n"
-            "}\n"
-            "QScrollBar::handle {\n"
-            f"    background-color: {handle_colour_name};\n"
-            f"    border-radius: {corner_radius_px}px;\n"
-            "    border: none;\n"
-            "}\n"
-            "QScrollBar::handle:vertical {\n"
-            "    margin: 0px 1px 0px 1px;\n"
-            f"    min-height: {minimum_handle_length_px}px;\n"
-            "}\n"
-            "QScrollBar::handle:horizontal {\n"
-            "    margin: 1px 0px 1px 0px;\n"
-            f"    min-width: {minimum_handle_length_px}px;\n"
-            "}\n"
-            "QScrollBar::handle:hover {\n"
-            f"    background-color: {hover_colour_name};\n"
-            "}\n"
-            "QScrollBar::handle:pressed {\n"
-            f"    background-color: {pressed_colour_name};\n"
-            "}\n"
-            "QScrollBar::add-line, QScrollBar::sub-line {\n"
-            "    width: 0px;\n"
-            "    height: 0px;\n"
-            "    border: none;\n"
-            "    background: none;\n"
-            "    subcontrol-position: none;\n"
-            "}\n"
-            "QScrollBar::up-arrow, QScrollBar::down-arrow,\n"
-            "QScrollBar::left-arrow, QScrollBar::right-arrow {\n"
-            "    width: 0px;\n"
-            "    height: 0px;\n"
-            "    background: none;\n"
-            "}\n"
-            "QScrollBar::add-page, QScrollBar::sub-page {\n"
-            f"    background-color: {groove_colour_name};\n"
-            f"    border-radius: {corner_radius_px}px;\n"
-            "    border: none;\n"
-            "}\n"
-            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {\n"
-            "    margin: 0px 1px 0px 1px;\n"
-            "}\n"
-            "QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {\n"
-            "    margin: 1px 0px 1px 0px;\n"
-            "}\n"
-            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical,\n"
-            "QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {\n"
-            f"    min-height: {minimum_handle_length_px}px;\n"
-            f"    min-width: {minimum_handle_length_px}px;\n"
-            "}\n"
-            "QScrollBar::groove:vertical, QScrollBar::groove:horizontal {\n"
-            f"    background-color: {groove_colour_name};\n"
-            f"    border-radius: {corner_radius_px}px;\n"
-            "    margin: 1px;\n"
-            "}\n"
-        )
-
-        self._scrollbar_stylesheet = scrollbar_style
-        return scrollbar_style
-
-    @staticmethod
-    def _opaque_color(color: QColor) -> QColor:
-        """Return a colour copy whose alpha channel is forced to full opacity.
-
-        ``WA_TranslucentBackground`` propagates to many popups which in turn causes their
-        palettes to report fully transparent colours.  A transparent tone translates to a
-        solid black rectangle once the compositor blends it with the desktop.  Forcing every
-        shade to have an opaque alpha channel keeps the menu surfaces readable regardless of
-        the system theme or platform blending quirks.
-        """
-
-        if color.alpha() >= 255:
-            return color
-
-        opaque_color = QColor(color)
-        opaque_color.setAlpha(255)
-        return opaque_color
+        app.setStyleSheet(combined_stylesheet)
+        self._current_global_stylesheet = combined_stylesheet
 
     def _configure_popup_menu(self, menu: QMenu, stylesheet: str) -> None:
         """Apply frameless styling and rounded menu rules to ``menu``.
@@ -681,7 +461,8 @@ class MainWindow(QMainWindow):
 
         self._applying_menu_styles = True
         try:
-            qmenu_style, menubar_style = self._build_menu_styles()
+            qmenu_style, menubar_style = build_menu_styles(self.palette())
+            self._qmenu_stylesheet = qmenu_style
 
             # Apply the stylesheet directly to the menu bar so Qt propagates the palette-aware
             # rules to its drop-down menus.  ``setAutoFillBackground`` and the attribute override
@@ -691,30 +472,12 @@ class MainWindow(QMainWindow):
             self.ui.menu_bar.setAutoFillBackground(True)
             self.ui.menu_bar.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
 
-            # Merge the ``QMenu`` rules into the global application stylesheet so menus that Qt
-            # creates internally (for example, menu bar popups) inherit the opaque background even
-            # if they are constructed outside the main window.  Any previously injected block is
-            # removed first to avoid endlessly appending duplicate rules when the palette changes.
-            app = QApplication.instance()
-            if app is not None:
-                existing = app.styleSheet()
-                if self._global_menu_stylesheet and self._global_menu_stylesheet in existing:
-                    existing = existing.replace(self._global_menu_stylesheet, "").strip()
-
-                combined_parts = [part for part in (existing, qmenu_style) if part]
-                app.setStyleSheet("\n".join(combined_parts))
-                self._global_menu_stylesheet = qmenu_style
-            else:
-                self._global_menu_stylesheet = qmenu_style
-
             # ``QMenuBar`` owns the drop-down menus presented for each action.  Qt constructs those
             # popups lazily, so iterating the actions here lets us retrofit the required window
-            # flags once they exist.  ``FramelessWindowHint`` allows the
-            # stylesheet to control the rounded outline while
-            # ``WA_TranslucentBackground`` keeps the corners transparent so the
-            # painted background remains visible.  Applying the cached
-            # stylesheet directly ensures
-            # the popups match the context menus that reuse the same helper.
+            # flags once they exist.  ``FramelessWindowHint`` allows the stylesheet to control the
+            # rounded outline while ``WA_TranslucentBackground`` keeps the corners transparent so
+            # the painted background remains visible.  Applying the cached stylesheet directly
+            # ensures the popups match the context menus that reuse the same helper.
             for action in self.ui.menu_bar.actions():
                 menu = action.menu()
                 if menu is None:
@@ -722,22 +485,6 @@ class MainWindow(QMainWindow):
                 self._configure_popup_menu(menu, qmenu_style)
         finally:
             self._applying_menu_styles = False
-
-    def _apply_scrollbar_styles(self) -> None:
-        """Inject the rounded scrollbar stylesheet into the QApplication instance."""
-
-        stylesheet = self._build_scrollbar_styles()
-        app = QApplication.instance()
-        if app is None:
-            return
-
-        existing = app.styleSheet()
-        if self._global_scrollbar_stylesheet and self._global_scrollbar_stylesheet in existing:
-            existing = existing.replace(self._global_scrollbar_stylesheet, "").strip()
-
-        combined_parts = [part for part in (existing, stylesheet) if part]
-        app.setStyleSheet("\n".join(combined_parts))
-        self._global_scrollbar_stylesheet = stylesheet
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
@@ -783,7 +530,7 @@ class MainWindow(QMainWindow):
             # Regenerate the palette-aware menu stylesheet so newly themed drop-downs immediately
             # adopt the opaque colours without requiring an application restart.
             self._apply_menu_styles()
-            self._apply_scrollbar_styles()
+            self.refresh_global_stylesheet()
         elif event.type() == QEvent.Type.StyleChange:
             # Style changes may arrive when Qt swaps window decorations or the application switches
             # between light and dark modes.  The rounded shell still needs a repaint to keep the
