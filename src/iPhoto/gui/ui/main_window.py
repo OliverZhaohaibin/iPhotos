@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable, Iterator, cast
 
-from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, QObject, QRectF
+from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, QObject, QRectF, QRect
 from PySide6.QtGui import (
     QColor,
     QCloseEvent,
@@ -87,6 +87,38 @@ class FluentScrollbarStyle(QProxyStyle):
         adjusted.setAlpha(constrained_alpha)
         return adjusted
 
+    @staticmethod
+    def _blend_on(color: QColor, background: QColor, opacity: float) -> QColor:
+        """Return ``color`` composited on ``background`` using ``opacity``.
+
+        ``opacity`` is clamped between 0 and 1 so the helper always returns a
+        valid ``QColor`` even if callers pass a value outside the supported
+        range.  The calculation keeps the resulting RGB channels aligned with
+        Qt's usual ``QPainter`` alpha blending, which prevents subtle colour
+        shifts when the proxy paints into a widget that already uses a custom
+        palette.
+        """
+
+        clamped = max(0.0, min(1.0, float(opacity)))
+        if clamped <= 0.0:
+            return QColor(background)
+        if clamped >= 1.0:
+            return QColor(color)
+
+        fg = QColor(color)
+        bg = QColor(background)
+        result = QColor(bg)
+        for channel_getter, channel_setter in (
+            (QColor.red, QColor.setRed),
+            (QColor.green, QColor.setGreen),
+            (QColor.blue, QColor.setBlue),
+        ):
+            foreground_value = channel_getter(fg)
+            background_value = channel_getter(bg)
+            blended = int(round(background_value + (foreground_value - background_value) * clamped))
+            channel_setter(result, blended)
+        return result
+
     def pixelMetric(
         self,
         metric: QStyle.PixelMetric,
@@ -146,28 +178,61 @@ class FluentScrollbarStyle(QProxyStyle):
             widget,
         )
 
-        if slider_option.orientation == Qt.Orientation.Vertical:
-            shrink = max(0, (handle_rect.width() - target_extent) // 2)
-            handle_rect.adjust(shrink, self._track_margin, -shrink, -self._track_margin)
-        else:
-            shrink = max(0, (handle_rect.height() - target_extent) // 2)
-            handle_rect.adjust(self._track_margin, shrink, -self._track_margin, -shrink)
+        track_rect = QRectF(slider_option.rect)
 
-        if handle_rect.width() <= 0 or handle_rect.height() <= 0:
+        if slider_option.orientation == Qt.Orientation.Vertical:
+            shrink = max(0, (track_rect.width() - target_extent) / 2)
+            track_rect.adjust(shrink, self._track_margin, -shrink, -self._track_margin)
+            handle_shrink = max(0, (handle_rect.width() - target_extent) // 2)
+            handle_rect.adjust(handle_shrink, self._track_margin, -handle_shrink, -self._track_margin)
+        else:
+            shrink = max(0, (track_rect.height() - target_extent) / 2)
+            track_rect.adjust(self._track_margin, shrink, -self._track_margin, -shrink)
+            handle_shrink = max(0, (handle_rect.height() - target_extent) // 2)
+            handle_rect.adjust(self._track_margin, handle_shrink, -self._track_margin, -handle_shrink)
+
+        if track_rect.width() <= 0 or track_rect.height() <= 0:
             painter.restore()
             return
 
         state = slider_option.state
         palette = slider_option.palette
 
+        base_panel = palette.color(QPalette.ColorRole.Window)
+        accent = palette.color(QPalette.ColorRole.Highlight)
+        mid_tone = palette.color(QPalette.ColorRole.Mid)
+
+        # Compute the translucent trough colour by blending the mid-tone over the
+        # window surface.  The Fluent guidelines keep the track subtle so it does
+        # not distract when the handle is idle, yet it should become more obvious
+        # once the user hovers or drags.  We therefore bias the opacity based on
+        # the interaction state.
         if not state & QStyle.StateFlag.State_Enabled:
-            fill_color = self._with_alpha(palette.color(QPalette.ColorRole.Mid), 60)
+            track_opacity = 0.12
         elif state & QStyle.StateFlag.State_Sunken:
-            fill_color = self._with_alpha(palette.color(QPalette.ColorRole.Highlight), 255)
+            track_opacity = 0.28
         elif state & QStyle.StateFlag.State_MouseOver:
-            fill_color = self._with_alpha(palette.color(QPalette.ColorRole.Highlight), 200)
+            track_opacity = 0.22
         else:
-            fill_color = self._with_alpha(palette.color(QPalette.ColorRole.Mid), 140)
+            track_opacity = 0.16
+
+        track_color = self._blend_on(mid_tone, base_panel, track_opacity)
+        track_radius = min(self._handle_radius, min(track_rect.width(), track_rect.height()) / 2)
+        painter.setBrush(track_color)
+        painter.drawRoundedRect(track_rect, track_radius, track_radius)
+
+        if handle_rect.width() <= 0 or handle_rect.height() <= 0:
+            painter.restore()
+            return
+
+        if not state & QStyle.StateFlag.State_Enabled:
+            fill_color = self._with_alpha(mid_tone, 70)
+        elif state & QStyle.StateFlag.State_Sunken:
+            fill_color = self._with_alpha(accent, 255)
+        elif state & QStyle.StateFlag.State_MouseOver:
+            fill_color = self._with_alpha(accent, 210)
+        else:
+            fill_color = self._with_alpha(mid_tone, 170)
 
         radius = min(
             self._handle_radius,
@@ -177,6 +242,32 @@ class FluentScrollbarStyle(QProxyStyle):
         painter.setBrush(fill_color)
         painter.drawRoundedRect(QRectF(handle_rect), radius, radius)
         painter.restore()
+
+    def subControlRect(
+        self,
+        control: QStyle.ComplexControl,
+        option: QStyleOptionComplex,
+        sub_control: QStyle.SubControl,
+        widget: QWidget | None = None,
+    ) -> QRect:
+        """Collapse legacy arrow buttons while preserving slider geometry."""
+
+        rect = super().subControlRect(control, option, sub_control, widget)
+        if control != QStyle.ComplexControl.CC_ScrollBar:
+            return rect
+
+        if sub_control in {
+            QStyle.SubControl.SC_ScrollBarAddLine,
+            QStyle.SubControl.SC_ScrollBarSubLine,
+            QStyle.SubControl.SC_ScrollBarFirst,
+            QStyle.SubControl.SC_ScrollBarLast,
+        }:
+            # The Fluent design omits dedicated arrow buttons in favour of a clean track.
+            # Returning an empty rect tells Qt to skip painting those controls while still
+            # leaving page-step interactions intact.
+            return QRect()
+
+        return rect
 
 class RoundedWindowShell(QWidget):
     """Container that paints an anti-aliased rounded background for the window."""
