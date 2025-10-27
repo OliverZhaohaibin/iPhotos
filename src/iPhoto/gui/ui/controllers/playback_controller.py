@@ -188,6 +188,24 @@ class PlaybackController:
                 self._detail_ui.set_player_position_to_start()
         self._media.toggle()
 
+    def request_next_item(self) -> None:
+        """Advance to the next playlist entry without duplicating debounce logic."""
+
+        # The internal ``_request_next_item`` helper already guards against rapid
+        # navigation events by checking the playback state manager.  Exposing a
+        # thin wrapper keeps keyboard shortcuts and UI affordances aligned while
+        # centralising the debouncing behaviour in a single location.
+        self._request_next_item()
+
+    def request_previous_item(self) -> None:
+        """Navigate to the previous playlist entry while honouring debounce rules."""
+
+        # See :meth:`request_next_item` for the rationale behind the public
+        # wrapper.  The playback controller remains the single source of truth
+        # for playlist navigation, ensuring keyboard shortcuts cannot bypass the
+        # transition guards that keep the UI responsive.
+        self._request_previous_item()
+
     def on_scrub_started(self) -> None:
         """Pause playback while the user scrubs the timeline."""
 

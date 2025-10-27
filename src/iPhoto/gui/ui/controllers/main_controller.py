@@ -27,7 +27,7 @@ from .header_controller import HeaderController
 from .navigation_controller import NavigationController
 from .map_view_controller import LocationMapController
 from .playback_controller import PlaybackController
-from .playback_state_manager import PlaybackStateManager
+from .playback_state_manager import PlaybackStateManager, PlayerState
 from .player_view_controller import PlayerViewController
 from .preference_controller import PreferenceController
 from .preview_controller import PreviewController
@@ -509,6 +509,67 @@ class MainController(QObject):
 
     # -----------------------------------------------------------------
     # Public helpers used by the window
+    def toggle_playback(self) -> None:
+        """Toggle the playback state of the active media item."""
+
+        # Keyboard shortcuts should reuse the same playback entry point the
+        # player bar relies on so both surfaces remain perfectly in sync.  The
+        # controller keeps all playback-related logic encapsulated, allowing
+        # higher-level widgets to stay ignorant of playlist intricacies.
+        self._playback.toggle_playback()
+
+    def replay_live_photo(self) -> None:
+        """Replay the motion component of the currently displayed Live Photo."""
+
+        # Delegating to ``PlaybackController`` ensures Live Photo transitions go
+        # through the state manager so mute state restoration, badge visibility,
+        # and player-bar resets follow the same well-tested path as UI
+        # interactions triggered from the viewer surface.
+        self._playback.replay_live_photo()
+
+    def request_next_item(self) -> None:
+        """Advance the playlist selection to the next asset."""
+
+        # The playback controller owns the debounce timer that avoids thrashing
+        # the media loader during rapid navigation.  Routing shortcut requests
+        # through the controller keeps those safeguards intact.
+        self._playback.request_next_item()
+
+    def request_previous_item(self) -> None:
+        """Select the previous asset in the playlist."""
+
+        self._playback.request_previous_item()
+
+    def current_player_state(self) -> PlayerState:
+        """Return the enumerated playback surface state used for shortcut gating."""
+
+        return self._state_manager.state
+
+    def is_live_context(self) -> bool:
+        """Return ``True`` when the state manager is presenting a Live Photo surface."""
+
+        return self._state_manager.is_live_context()
+
+    def media_volume(self) -> int:
+        """Return the current audio volume in the user-facing 0-100 range."""
+
+        return self._media.volume()
+
+    def set_media_volume(self, volume: int) -> None:
+        """Persist the requested volume change via the media controller."""
+
+        self._media.set_volume(volume)
+
+    def is_media_muted(self) -> bool:
+        """Return whether audio output is currently muted."""
+
+        return self._media.is_muted()
+
+    def set_media_muted(self, muted: bool) -> None:
+        """Toggle the mute state through the media controller."""
+
+        self._media.set_muted(muted)
+
     def open_album_from_path(self, path: Path) -> None:
         """Forward album navigation requests to the navigation controller."""
 
