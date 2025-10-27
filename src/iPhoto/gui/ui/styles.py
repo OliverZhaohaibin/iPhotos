@@ -103,108 +103,6 @@ def build_menu_styles(palette: QPalette) -> tuple[str, str]:
     return qmenu_style, menubar_style
 
 
-def build_scrollbar_styles(palette: QPalette) -> str:
-    """Construct palette-aware rounded scrollbars for both orientations."""
-
-    background_colour = ensure_opaque_color(palette.color(QPalette.ColorRole.Window))
-    window_lightness = background_colour.lightness()
-    if window_lightness < 128:
-        base_value = 190
-        hover_value = 215
-        pressed_value = 165
-    else:
-        base_value = 154
-        hover_value = 127
-        pressed_value = 106
-
-    handle_colour = QColor(base_value, base_value, base_value)
-    hover_colour = QColor(hover_value, hover_value, hover_value)
-    pressed_colour = QColor(pressed_value, pressed_value, pressed_value)
-
-    groove_colour = QColor(background_colour)
-    if window_lightness < 128:
-        groove_colour = groove_colour.lighter(140)
-    else:
-        groove_colour = groove_colour.darker(115)
-    groove_colour.setAlpha(120)
-
-    groove_red, groove_green, groove_blue, groove_alpha = groove_colour.getRgb()
-
-    thickness_px = 10
-    corner_radius_px = 4
-    minimum_handle_length_px = 25
-
-    background_colour_name = background_colour.name()
-    handle_colour_name = handle_colour.name()
-    hover_colour_name = hover_colour.name()
-    pressed_colour_name = pressed_colour.name()
-    groove_colour_name = (
-        f"rgba({groove_red}, {groove_green}, {groove_blue}, {groove_alpha})"
-    )
-
-    scrollbar_style = (
-        "QScrollBar {\n"
-        "    border: none;\n"
-        "    background: transparent;\n"
-        "}\n"
-        "QScrollBar:vertical {\n"
-        f"    width: {thickness_px}px;\n"
-        "    margin: 1px 1px 1px 1px;\n"
-        f"    background-color: {background_colour_name};\n"
-        "}\n"
-        "QScrollBar:horizontal {\n"
-        f"    height: {thickness_px}px;\n"
-        "    margin: 1px 1px 1px 1px;\n"
-        f"    background-color: {background_colour_name};\n"
-        "}\n"
-        "QScrollBar::handle {\n"
-        f"    background-color: {handle_colour_name};\n"
-        "    border-radius: 4px;\n"
-        "    border: none;\n"
-        "}\n"
-        "QScrollBar::handle:vertical {\n"
-        f"    min-height: {minimum_handle_length_px}px;\n"
-        "    margin: 0px 1px 0px 1px;\n"
-        "}\n"
-        "QScrollBar::handle:horizontal {\n"
-        f"    min-width: {minimum_handle_length_px}px;\n"
-        "    margin: 1px 0px 1px 0px;\n"
-        "}\n"
-        "QScrollBar::handle:hover {\n"
-        f"    background-color: {hover_colour_name};\n"
-        "}\n"
-        "QScrollBar::handle:pressed {\n"
-        f"    background-color: {pressed_colour_name};\n"
-        "}\n"
-        "QScrollBar::add-line, QScrollBar::sub-line {\n"
-        "    height: 0px;\n"
-        "    width: 0px;\n"
-        "    border: none;\n"
-        "    background: none;\n"
-        "    subcontrol-position: none;\n"
-        "    subcontrol-origin: margin;\n"
-        "}\n"
-        "QScrollBar::up-arrow, QScrollBar::down-arrow,\n"
-        "QScrollBar::left-arrow, QScrollBar::right-arrow {\n"
-        "    height: 0px;\n"
-        "    width: 0px;\n"
-        "    background: none;\n"
-        "}\n"
-        "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical,\n"
-        "QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {\n"
-        f"    min-height: {minimum_handle_length_px}px;\n"
-        f"    min-width: {minimum_handle_length_px}px;\n"
-        "}\n"
-        "QScrollBar::groove:vertical, QScrollBar::groove:horizontal {\n"
-        f"    background-color: {groove_colour_name};\n"
-        f"    border-radius: {corner_radius_px}px;\n"
-        "    margin: 1px;\n"
-        "}\n"
-    )
-
-    return scrollbar_style
-
-
 def build_tooltip_styles() -> str:
     """Return the stylesheet block that standardises tooltip chrome."""
 
@@ -216,7 +114,6 @@ def build_global_stylesheet(palette: QPalette) -> str:
 
     qmenu_style, menubar_style = build_menu_styles(palette)
     parts = [
-        build_scrollbar_styles(palette),
         build_tooltip_styles(),
         qmenu_style,
         menubar_style,
@@ -227,7 +124,6 @@ def build_global_stylesheet(palette: QPalette) -> str:
 __all__ = [
     "ensure_opaque_color",
     "build_menu_styles",
-    "build_scrollbar_styles",
     "build_tooltip_styles",
     "build_global_stylesheet",
 ]

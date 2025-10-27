@@ -7,7 +7,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QStyleFactory
 
 if __package__ is None or __package__ == "":  # pragma: no cover - script mode
     package_root = Path(__file__).resolve().parents[2]
@@ -15,10 +15,12 @@ if __package__ is None or __package__ == "":  # pragma: no cover - script mode
         sys.path.insert(0, str(package_root))
     from iPhotos.src.iPhoto.appctx import AppContext
     from iPhotos.src.iPhoto.gui.ui.main_window import MainWindow
+    from iPhotos.src.iPhoto.gui.ui.custom_style import CustomScrollBarStyle
     from iPhotos.src.iPhoto.gui.ui.styles import build_global_stylesheet
 else:  # pragma: no cover - normal package execution
     from ..appctx import AppContext
     from .ui.main_window import MainWindow
+    from .ui.custom_style import CustomScrollBarStyle
     from .ui.styles import build_global_stylesheet
 
 
@@ -28,7 +30,15 @@ def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv if argv is None else argv)
     app = QApplication(arguments)
 
-    # Install the combined application stylesheet once so scrollbar, menu, and tooltip rules
+    # Wrap the platform style in our proxy so scroll bars adopt the rounded
+    # Windows 11 look while every other control keeps its native appearance.
+    base_style_name = app.style().objectName()
+    base_style = QStyleFactory.create(base_style_name) if base_style_name else None
+    if base_style is None:
+        base_style = app.style()
+    app.setStyle(CustomScrollBarStyle(base_style))
+
+    # Install the shared application stylesheet once so menu and tooltip rules
     # share a single ``setStyleSheet`` call instead of overwriting each other.
     app.setStyleSheet(build_global_stylesheet(app.palette()))
 
