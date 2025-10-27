@@ -64,7 +64,7 @@ _MENU_STYLE_PROPERTY = "_lexiphoto_menu_style_hook"
 
 
 class FluentScrollbarStyle(QProxyStyle):
-    """Proxy style that paints Fluent-inspired scrollbars without stylesheets."""
+    """Proxy style that mimics the Fluent QSS scrollbars without incurring stylesheet cost."""
 
     _target_extent = 12
     _minimum_slider_length = 24
@@ -87,58 +87,26 @@ class FluentScrollbarStyle(QProxyStyle):
         adjusted.setAlpha(constrained_alpha)
         return adjusted
 
-    @staticmethod
-    def _blend_on(color: QColor, background: QColor, opacity: float) -> QColor:
-        """Return ``color`` composited on ``background`` using ``opacity``.
-
-        ``opacity`` is clamped between 0 and 1 so the helper always returns a
-        valid ``QColor`` even if callers pass a value outside the supported
-        range.  The calculation keeps the resulting RGB channels aligned with
-        Qt's usual ``QPainter`` alpha blending, which prevents subtle colour
-        shifts when the proxy paints into a widget that already uses a custom
-        palette.
-        """
-
-        clamped = max(0.0, min(1.0, float(opacity)))
-        if clamped <= 0.0:
-            return QColor(background)
-        if clamped >= 1.0:
-            return QColor(color)
-
-        fg = QColor(color)
-        bg = QColor(background)
-        result = QColor(bg)
-        for channel_getter, channel_setter in (
-            (QColor.red, QColor.setRed),
-            (QColor.green, QColor.setGreen),
-            (QColor.blue, QColor.setBlue),
-        ):
-            foreground_value = channel_getter(fg)
-            background_value = channel_getter(bg)
-            blended = int(round(background_value + (foreground_value - background_value) * clamped))
-            channel_setter(result, blended)
-        return result
-
     def pixelMetric(
         self,
         metric: QStyle.PixelMetric,
         option: QStyleOptionComplex | None,
         widget: QWidget | None,
     ) -> int:
-        """Tighten scrollbar metrics while respecting the base style defaults."""
+        """Match the thickness and minimum length defined in the Fluent stylesheet."""
 
         base_value = super().pixelMetric(metric, option, widget)
 
         if metric == QStyle.PixelMetric.PM_ScrollBarExtent:
-            # Shrink the track thickness to roughly 75% of the native metric so the control
-            # remains comfortable on high-DPI displays while matching the Fluent silhouette.
-            if base_value <= 0:
-                return self._target_extent
-            scaled = int(round(base_value * 0.75))
-            return max(self._target_extent, scaled)
+            # Keep the control exactly 12 px thick so it floats above the content the same way the
+            # stylesheet-based version did, falling back to the base style only if it requests a
+            # larger footprint (which can happen on accessibility-oriented styles).
+            return max(self._target_extent, base_value)
 
         if metric == QStyle.PixelMetric.PM_ScrollBarSliderMin:
-            # Keep the grab handle long enough to stay precise when dragging quickly.
+            # The previous QSS declared ``min-height``/``min-width`` of 24 px.  Preserving that
+            # value keeps the drag handle easy to grab while still allowing smaller thumbs when Qt
+            # needs to represent large ranges.
             return max(self._minimum_slider_length, base_value)
 
         return base_value
@@ -150,13 +118,19 @@ class FluentScrollbarStyle(QProxyStyle):
         painter: QPainter,
         widget: QWidget | None = None,
     ) -> None:
-        """Render rounded scrollbar handles using palette-aware translucency."""
+        """Render the translucent Fluent handle while leaving the track transparent."""
 
         if control != QStyle.ComplexControl.CC_ScrollBar:
             super().drawComplexControl(control, option, painter, widget)
             return
 
         slider_option = cast(QStyleOptionSlider, option)
+        if not slider_option.subControls & QStyle.SubControl.SC_ScrollBarSlider:
+            # No slider to paint, so fall back to the base implementation.  This scenario is rare
+            # but can occur while Qt computes transient geometries during hover transitions.
+            super().drawComplexControl(control, option, painter, widget)
+            return
+
         handle_rect = self.subControlRect(
             control,
             slider_option,
@@ -164,81 +138,30 @@ class FluentScrollbarStyle(QProxyStyle):
             widget,
         )
 
-        if not handle_rect.isValid():
-            return
-
-        painter.save()
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-        painter.setPen(Qt.PenStyle.NoPen)
-
-        target_extent = self.pixelMetric(
-            QStyle.PixelMetric.PM_ScrollBarExtent,
-            slider_option,
-            widget,
-        )
-
-        track_rect = QRectF(slider_option.rect)
-
-        if slider_option.orientation == Qt.Orientation.Vertical:
-            shrink = max(0, (track_rect.width() - target_extent) / 2)
-            track_rect.adjust(shrink, self._track_margin, -shrink, -self._track_margin)
-            handle_shrink = max(0, (handle_rect.width() - target_extent) // 2)
-            handle_rect.adjust(handle_shrink, self._track_margin, -handle_shrink, -self._track_margin)
-        else:
-            shrink = max(0, (track_rect.height() - target_extent) / 2)
-            track_rect.adjust(self._track_margin, shrink, -self._track_margin, -shrink)
-            handle_shrink = max(0, (handle_rect.height() - target_extent) // 2)
-            handle_rect.adjust(self._track_margin, handle_shrink, -self._track_margin, -handle_shrink)
-
-        if track_rect.width() <= 0 or track_rect.height() <= 0:
-            painter.restore()
+        if not handle_rect.isValid() or handle_rect.isEmpty():
             return
 
         state = slider_option.state
         palette = slider_option.palette
 
-        base_panel = palette.color(QPalette.ColorRole.Window)
-        accent = palette.color(QPalette.ColorRole.Highlight)
         mid_tone = palette.color(QPalette.ColorRole.Mid)
-
-        # Compute the translucent trough colour by blending the mid-tone over the
-        # window surface.  The Fluent guidelines keep the track subtle so it does
-        # not distract when the handle is idle, yet it should become more obvious
-        # once the user hovers or drags.  We therefore bias the opacity based on
-        # the interaction state.
-        if not state & QStyle.StateFlag.State_Enabled:
-            track_opacity = 0.12
-        elif state & QStyle.StateFlag.State_Sunken:
-            track_opacity = 0.28
-        elif state & QStyle.StateFlag.State_MouseOver:
-            track_opacity = 0.22
-        else:
-            track_opacity = 0.16
-
-        track_color = self._blend_on(mid_tone, base_panel, track_opacity)
-        track_radius = min(self._handle_radius, min(track_rect.width(), track_rect.height()) / 2)
-        painter.setBrush(track_color)
-        painter.drawRoundedRect(track_rect, track_radius, track_radius)
-
-        if handle_rect.width() <= 0 or handle_rect.height() <= 0:
-            painter.restore()
-            return
+        accent = palette.color(QPalette.ColorRole.Highlight)
 
         if not state & QStyle.StateFlag.State_Enabled:
             fill_color = self._with_alpha(mid_tone, 70)
         elif state & QStyle.StateFlag.State_Sunken:
             fill_color = self._with_alpha(accent, 255)
         elif state & QStyle.StateFlag.State_MouseOver:
-            fill_color = self._with_alpha(accent, 210)
+            fill_color = self._with_alpha(accent, 200)
         else:
-            fill_color = self._with_alpha(mid_tone, 170)
+            fill_color = self._with_alpha(mid_tone, 140)
 
-        radius = min(
-            self._handle_radius,
-            min(handle_rect.width(), handle_rect.height()) / 2,
-        )
+        radius = min(self._handle_radius, min(handle_rect.width(), handle_rect.height()) / 2)
 
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(fill_color)
         painter.drawRoundedRect(QRectF(handle_rect), radius, radius)
         painter.restore()
@@ -250,7 +173,7 @@ class FluentScrollbarStyle(QProxyStyle):
         sub_control: QStyle.SubControl,
         widget: QWidget | None = None,
     ) -> QRect:
-        """Collapse legacy arrow buttons while preserving slider geometry."""
+        """Collapse arrow buttons and inject the 4 px margins from the Fluent stylesheet."""
 
         rect = super().subControlRect(control, option, sub_control, widget)
         if control != QStyle.ComplexControl.CC_ScrollBar:
@@ -266,6 +189,33 @@ class FluentScrollbarStyle(QProxyStyle):
             # Returning an empty rect tells Qt to skip painting those controls while still
             # leaving page-step interactions intact.
             return QRect()
+
+        slider_option = cast(QStyleOptionSlider, option)
+
+        if sub_control == QStyle.SubControl.SC_ScrollBarGroove:
+            groove = QRect(rect)
+            if slider_option.orientation == Qt.Orientation.Vertical:
+                groove.adjust(0, self._track_margin, 0, -self._track_margin)
+            else:
+                groove.adjust(self._track_margin, 0, -self._track_margin, 0)
+            return groove
+
+        if sub_control == QStyle.SubControl.SC_ScrollBarSlider:
+            slider = QRect(rect)
+            target_extent = self.pixelMetric(
+                QStyle.PixelMetric.PM_ScrollBarExtent,
+                option,
+                widget,
+            )
+
+            if slider_option.orientation == Qt.Orientation.Vertical:
+                slider.setWidth(target_extent)
+                slider.moveLeft(rect.center().x() - target_extent // 2)
+            else:
+                slider.setHeight(target_extent)
+                slider.moveTop(rect.center().y() - target_extent // 2)
+
+            return slider
 
         return rect
 
