@@ -130,6 +130,22 @@ class PlaybackController:
     def _load_new_source(self, source: Path, previous_state: object) -> None:
         """Carry out the deferred media loading after debouncing completes."""
 
+        # ``_load_new_source`` executes after a short delay so the UI stays
+        # responsive while the user scrolls through assets.  By the time the
+        # callback runs the active view may have changed (for example the user
+        # could have switched to the map or gallery view).  Attempting to load
+        # media into a hidden/invalid surface in that situation confuses the
+        # underlying ``QMediaPlayer`` and results in spurious "Could not load"
+        # error dialogs.  Bail out early when the detail view is no longer
+        # visible and return the state manager to a stable idle configuration.
+        if not self._view_controller.is_detail_view_active():
+            if self._state_manager.is_transitioning():
+                self._state_manager.reset(
+                    previous_state=previous_state,
+                    set_idle_state=True,
+                )
+            return
+
         self._state_manager.reset(previous_state=previous_state, set_idle_state=False)
         self._clear_scrub_state()
 
