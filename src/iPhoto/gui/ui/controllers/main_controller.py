@@ -572,6 +572,25 @@ class MainController(QObject):
 
         self._media.set_muted(muted)
 
+    def media_volume(self) -> int:
+        """Return the current output volume as a 0-100 integer."""
+
+        # ``QMediaPlayer`` exposes its volume as an arbitrary integer.  The
+        # controller normalises the value so window-level shortcut handlers can
+        # rely on the familiar 0-100 scale used throughout the UI without
+        # reaching into the media layer.
+        return int(self._media.volume())
+
+    def set_media_volume(self, volume: int) -> None:
+        """Set the audio output volume, clamping it to the valid 0-100 range."""
+
+        # Keyboard shortcuts may add or subtract from the current volume and
+        # therefore overshoot the legal range.  Clamping here keeps the media
+        # backend happy while ensuring the persisted preference mirrors the
+        # exact level that was applied.
+        clamped = max(0, min(100, int(volume)))
+        self._media.set_volume(clamped)
+
     def is_detail_view_active(self) -> bool:
         """Return ``True`` when the detail page is the foreground view."""
 
