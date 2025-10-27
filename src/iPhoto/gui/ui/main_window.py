@@ -540,7 +540,7 @@ class MainWindow(QMainWindow):
         self.ui.live_badge.raise_()
 
     def position_resize_indicator(self) -> None:
-        """Keep the resize affordance label anchored to the shell's lower-left corner."""
+        """Keep the resize affordance label anchored to the shell's lower-right corner."""
 
         indicator = getattr(self.ui, "resize_indicator", None)
         shell = getattr(self, "_rounded_shell", None)
@@ -549,11 +549,12 @@ class MainWindow(QMainWindow):
 
         margin = 5
         # Calculate the target position relative to the shell so the icon always hugs the
-        # lower-left corner with the same padding.  ``max`` clamps the coordinate to zero when the
-        # window becomes smaller than the affordance height, ensuring the indicator never slides
+        # lower-right corner with the same padding.  ``max`` clamps the coordinates to zero when the
+        # window becomes smaller than the affordance footprint, ensuring the indicator never slides
         # out of view while still letting users drag the resize handle beneath it.
+        target_x = max(0, shell.width() - indicator.width() - margin)
         target_y = max(0, shell.height() - indicator.height() - margin)
-        indicator.move(margin, target_y)
+        indicator.move(target_x, target_y)
         indicator.raise_()
 
     def toggle_fullscreen(self) -> None:
