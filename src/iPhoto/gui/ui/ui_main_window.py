@@ -13,7 +13,9 @@ from PySide6.QtWidgets import (
     QMenuBar,
     QProgressBar,
     QSlider,
+    QSizeGrip,
     QSizePolicy,
+    QSpacerItem,
     QSplitter,
     QStackedWidget,
     QToolBar,
@@ -22,7 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .icons import load_icon
+from .icon import load_icon
 from .palette import viewer_surface_color
 from .widgets import (
     AlbumSidebar,
@@ -91,6 +93,19 @@ class ChromeStatusBar(QWidget):
 
         self._progress_bar = self._create_progress_bar()
         layout.addWidget(self._progress_bar, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        # Reserve horizontal space so the floating resize indicator and size grip can occupy
+        # the bottom-right corner without overlapping the progress bar.  A fixed-width spacer
+        # keeps the layout intent explicit and makes future visual adjustments straightforward.
+        resize_overlay_width = 25
+        layout.addSpacerItem(
+            QSpacerItem(
+                resize_overlay_width,
+                1,
+                QSizePolicy.Policy.Fixed,
+                QSizePolicy.Policy.Minimum,
+            )
+        )
 
         self._clear_timer = QTimer(self)
         self._clear_timer.setSingleShot(True)
@@ -173,6 +188,31 @@ class Ui_MainWindow(object):
         self.window_shell_layout = QVBoxLayout(self.window_shell)
         self.window_shell_layout.setContentsMargins(0, 0, 0, 0)
         self.window_shell_layout.setSpacing(0)
+
+        # Place a resize indicator as an overlay widget.  The label is created with the main
+        # window as its initial parent so layout code does not immediately manage it; the real
+        # parent is assigned once ``RoundedWindowShell`` exists inside ``MainWindow``.  The
+        # overlay ignores mouse input to avoid blocking resize drags that originate from the
+        # frameless window edge.
+        self.resize_indicator = QLabel(MainWindow)
+        self.resize_indicator.setObjectName("resizeIndicatorLabel")
+        indicator_size = QSize(20, 20)
+        self.resize_indicator.setFixedSize(indicator_size)
+        self.resize_indicator.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents,
+            True,
+        )
+        self.resize_indicator.setScaledContents(True)
+        self.resize_indicator.setPixmap(load_icon("resize.svg").pixmap(indicator_size))
+        self.resize_indicator.hide()
+
+        # ``QSizeGrip`` is instantiated alongside the icon so the visual affordance can sit directly
+        # above the interactive handle.  Assigning the temporary parent keeps the grip out of the
+        # auto-generated layouts until the main window finishes wrapping the rounded shell.
+        self.size_grip = QSizeGrip(MainWindow)
+        self.size_grip.setObjectName("resizeSizeGrip")
+        self.size_grip.setFixedSize(indicator_size)
+        self.size_grip.hide()
 
         self.menu_bar = QMenuBar(self.window_shell)
         self.menu_bar.setObjectName("chromeMenuBar")
