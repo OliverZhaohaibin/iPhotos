@@ -520,46 +520,65 @@ class MainWindow(QMainWindow):
             pressed_colour = handle_colour.lighter(130)
 
         thickness_px = 12
-        radius_px = thickness_px // 2
+        corner_radius_px = max(4, thickness_px // 2)
+        handle_margin_px = 2
+        minimum_handle_length_px = 32
+
+        groove_colour_name = groove_colour.name()
+        background_colour_name = background_colour.name()
+        handle_colour_name = handle_colour.name()
+        hover_colour_name = hover_colour.name()
+        pressed_colour_name = pressed_colour.name()
 
         scrollbar_style = (
-            "QScrollBar:vertical {\n"
-            f"    background-color: {background_colour.name()};\n"
-            f"    width: {thickness_px}px;\n"
-            "    margin: 12px 0px 12px 0px;\n"
+            "QScrollBar {\n"
             "    border: none;\n"
+            "    background: transparent;\n"
+            f"    border-radius: {corner_radius_px}px;\n"
+            "}\n"
+            "QScrollBar:vertical {\n"
+            f"    width: {thickness_px}px;\n"
+            "    margin: 0px;\n"
+            f"    background-color: {background_colour_name};\n"
             "}\n"
             "QScrollBar:horizontal {\n"
-            f"    background-color: {background_colour.name()};\n"
             f"    height: {thickness_px}px;\n"
-            "    margin: 0px 12px 0px 12px;\n"
-            "    border: none;\n"
+            "    margin: 0px;\n"
+            f"    background-color: {background_colour_name};\n"
             "}\n"
             "QScrollBar::groove:vertical, QScrollBar::groove:horizontal {\n"
-            f"    background-color: {groove_colour.name()};\n"
-            f"    border-radius: {radius_px}px;\n"
-            "    margin: 2px;\n"
+            f"    background-color: {groove_colour_name};\n"
+            f"    border-radius: {corner_radius_px}px;\n"
+            f"    margin: {handle_margin_px}px;\n"
             "}\n"
-            "QScrollBar::handle:vertical, QScrollBar::handle:horizontal {\n"
-            f"    background-color: {handle_colour.name()};\n"
-            f"    border-radius: {radius_px}px;\n"
-            "    min-height: 32px;\n"
-            "    min-width: 32px;\n"
-            "    margin: 2px;\n"
+            "QScrollBar::handle:vertical {\n"
+            f"    background-color: {handle_colour_name};\n"
+            f"    border-radius: {corner_radius_px}px;\n"
+            f"    margin: {handle_margin_px}px;\n"
+            f"    min-height: {minimum_handle_length_px}px;\n"
+            "}\n"
+            "QScrollBar::handle:horizontal {\n"
+            f"    background-color: {handle_colour_name};\n"
+            f"    border-radius: {corner_radius_px}px;\n"
+            f"    margin: {handle_margin_px}px;\n"
+            f"    min-width: {minimum_handle_length_px}px;\n"
             "}\n"
             "QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {\n"
-            f"    background-color: {hover_colour.name()};\n"
+            f"    background-color: {hover_colour_name};\n"
             "}\n"
             "QScrollBar::handle:vertical:pressed, QScrollBar::handle:horizontal:pressed {\n"
-            f"    background-color: {pressed_colour.name()};\n"
+            f"    background-color: {pressed_colour_name};\n"
             "}\n"
             "QScrollBar::add-line, QScrollBar::sub-line {\n"
             "    width: 0px;\n"
             "    height: 0px;\n"
             "    border: none;\n"
+            "    background: none;\n"
             "}\n"
-            "QScrollBar::add-page, QScrollBar::sub-page {\n"
-            "    background: transparent;\n"
+            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical,\n"
+            "QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {\n"
+            f"    background-color: {groove_colour_name};\n"
+            f"    border-radius: {corner_radius_px}px;\n"
             "}\n"
         )
 
