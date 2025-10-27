@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable, Iterator, cast
 
-from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
+from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, QObject
 from PySide6.QtGui import (
     QColor,
     QCloseEvent,
@@ -18,7 +18,17 @@ from PySide6.QtGui import (
     QPalette,
     QResizeEvent,
 )
-from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QMenuBar, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QLineEdit,
+    QMainWindow,
+    QMenu,
+    QMenuBar,
+    QPlainTextEdit,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
 
 # ``main_window`` can be imported either via ``iPhoto.gui`` (package execution)
 # or ``iPhotos.src.iPhoto.gui`` (legacy test harness).  The absolute import
@@ -32,6 +42,7 @@ except ImportError:  # pragma: no cover - script execution fallback
 from ...config import VOLUME_SHORTCUT_STEP
 
 from .controllers.main_controller import MainController
+from .controllers.playback_state_manager import PlayerState
 from .media import require_multimedia
 from .ui_main_window import ChromeStatusBar, Ui_MainWindow
 from .icon import load_icon
@@ -185,9 +196,17 @@ class MainWindow(QMainWindow):
         self._tooltip_filter: ToolTipEventFilter | None = None
         app = QApplication.instance()
         if app is not None:
+            # ``ToolTipEventFilter`` keeps hover hints readable on translucent
+            # windows by redirecting ``QToolTip`` traffic to the floating helper.
             self._tooltip_filter = ToolTipEventFilter(self._window_tooltip, parent=self)
             app.installEventFilter(self._tooltip_filter)
             app.setProperty("floatingToolTipFilter", self._tooltip_filter)
+            # Install the main window as a global event filter so navigation
+            # shortcuts can be intercepted regardless of which widget currently
+            # owns focus.  This is the only reliable way to override Qt's
+            # built-in focus navigation for arrow keys while still allowing the
+            # controls to function normally when the gallery view is active.
+            app.installEventFilter(self)
 
         # ``MainController`` owns every piece of non-view logic so the window
         # can focus purely on QWidget behaviour.
@@ -244,26 +263,11 @@ class MainWindow(QMainWindow):
 
         # ``badge_host`` keeps the Live badge aligned with the video viewport;
         # install the filter separately so geometry changes can reposition the
-        # overlay without being treated as tooltip traffic.
+        # overlay without being treated as tooltip traffic.  Although the window
+        # now listens at the ``QApplication`` level, explicitly registering here
+        # guarantees the geometry updates still arrive even if Qt changes the
+        # propagation order in a future release.
         self.ui.badge_host.installEventFilter(self)
-
-        # Capture the widgets that regularly hold focus inside the detail view so the
-        # main window can intercept navigation keys before the child controls treat
-        # them as scroll or selection commands.  Installing the filter on both the
-        # views and their viewports covers focus changes triggered by Qt's internal
-        # heuristics.
-        detail_shortcut_targets = [
-            self.ui.image_viewer,
-            self.ui.image_viewer.viewport_widget(),
-            self.ui.video_area,
-            self.ui.video_area.video_view(),
-            self.ui.video_area.video_viewport(),
-            self.ui.filmstrip_view,
-            self.ui.filmstrip_view.viewport(),
-        ]
-        self._detail_shortcut_filter_targets: tuple[QWidget, ...] = tuple(detail_shortcut_targets)
-        for target in self._detail_shortcut_filter_targets:
-            target.installEventFilter(self)
 
         # Allow the window itself to accept focus when the user clicks the chrome so
         # ``keyPressEvent`` can act as a fall-back shortcut path if none of the child
@@ -277,13 +281,17 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:  # type: ignore[override]
         """Tear down background services before the window closes."""
 
-        if self._tooltip_filter is not None:
-            app = QApplication.instance()
-            if app is not None:
+        app = QApplication.instance()
+        if app is not None:
+            # Remove the global shortcut filter before Qt starts destroying
+            # widgets to avoid delivering stray events to partially torn-down
+            # objects during shutdown.
+            app.removeEventFilter(self)
+            if self._tooltip_filter is not None:
                 app.removeEventFilter(self._tooltip_filter)
                 if app.property("floatingToolTipFilter") == self._tooltip_filter:
                     app.setProperty("floatingToolTipFilter", None)
-            self._tooltip_filter = None
+        self._tooltip_filter = None
         self._window_tooltip.hide_tooltip()
 
         # ``MainController`` coordinates every component that spawns worker
@@ -523,7 +531,7 @@ class MainWindow(QMainWindow):
     def showEvent(self, event) -> None:  # type: ignore[override]
         super().showEvent(event)
 
-    def eventFilter(self, watched, event):  # type: ignore[override]
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # type: ignore[override]
         if watched in self._drag_sources:
             if self._handle_title_bar_drag(event):
                 return True
@@ -535,15 +543,28 @@ class MainWindow(QMainWindow):
         }:
             self.position_live_badge()
 
-        if (
-            event.type() == QEvent.Type.KeyPress
-            and watched in getattr(self, "_detail_shortcut_filter_targets", ())
-        ):
-            # Intercept keyboard shortcuts emitted while the detail view has focus so
-            # playback navigation remains consistent even when embedded Qt widgets
-            # would normally consume the arrow keys for scrolling.
+        if event.type() == QEvent.Type.KeyPress:
+            key_event = cast(QKeyEvent, event)
+
+            # Always honour Escape presses while immersive mode is active.  Handling
+            # it here avoids waiting for the event to bubble to whichever widget
+            # currently has focus, providing a consistent exit affordance even when
+            # embedded controls consume other navigation keys.
+            if key_event.key() == Qt.Key.Key_Escape and self._immersive_active:
+                self.exit_fullscreen()
+                key_event.accept()
+                return True
+
+            # Text-entry widgets should retain native editing behaviour so shortcuts
+            # such as arrow-key cursor movement continue to work.  If the active
+            # focus widget is a line edit or text editor we bail out early and let
+            # Qt deliver the key press normally.
+            app = QApplication.instance()
+            focus_widget = app.focusWidget() if app is not None else None
+            if isinstance(focus_widget, (QLineEdit, QTextEdit, QPlainTextEdit)):
+                return super().eventFilter(watched, event)
+
             if self.ui.view_stack.currentWidget() is self.ui.detail_page:
-                key_event = cast(QKeyEvent, event)
                 if self._handle_detail_view_shortcut(key_event):
                     return True
 
@@ -576,8 +597,15 @@ class MainWindow(QMainWindow):
             return False
 
         key = event.key()
-        can_control_audio = self.controller.can_control_media_audio()
-        is_live_still = self.controller.is_live_still_visible()
+
+        state = self.controller.current_player_state()
+        is_video_surface = state in {
+            PlayerState.PLAYING_VIDEO,
+            PlayerState.SHOWING_VIDEO_SURFACE,
+        }
+        is_live_motion = state == PlayerState.PLAYING_LIVE_MOTION
+        is_live_still = state == PlayerState.SHOWING_LIVE_STILL
+        can_control_audio = is_video_surface or is_live_motion
 
         if key == Qt.Key.Key_Space:
             if is_live_still:

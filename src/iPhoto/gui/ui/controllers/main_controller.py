@@ -538,6 +538,15 @@ class MainController(QObject):
 
         self._playback.request_previous_item()
 
+    def current_player_state(self) -> PlayerState:
+        """Expose the current playback state for shortcut gating."""
+
+        # The window-level keyboard handler queries this accessor to decide
+        # which shortcuts are valid in the current context.  Returning the raw
+        # state keeps the logic flexible without forcing the UI to duplicate the
+        # state manager's transition rules.
+        return self._state_manager.state
+
     def can_control_media_audio(self) -> bool:
         """Return ``True`` when the active state exposes audio controls."""
 
