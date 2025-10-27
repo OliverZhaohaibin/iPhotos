@@ -26,25 +26,40 @@ class CustomScrollBarStyle(QProxyStyle):
         """Initialise the proxy with an optional *base_style* to delegate to."""
 
         resolved_base = base_style
+        resolved_base_name = None
         if resolved_base is not None:
-            base_name = resolved_base.objectName().lower()
-            if base_name == "windowsvista":
+            # ``objectName`` can only be queried while the underlying C++ instance
+            # is alive, so we cache the string immediately and reuse it later for
+            # debug logging.
+            resolved_base_name = resolved_base.objectName()
+            if resolved_base_name.lower() == "windowsvista":
                 fusion_style = QStyleFactory.create("Fusion")
                 if fusion_style is not None:
                     resolved_base = fusion_style
+                    resolved_base_name = fusion_style.objectName()
         if resolved_base is None:
             # ``QProxyStyle`` requires a backing style to forward unhandled
             # primitives.  Falling back to ``Fusion`` guarantees a predictable
             # baseline even when the platform style cannot be instantiated.
             resolved_base = QStyleFactory.create("Fusion")
+            if resolved_base is not None:
+                resolved_base_name = resolved_base.objectName()
         if resolved_base is None:
             # A final safeguard in case ``Fusion`` could not be created for some
             # reason.  ``QProxyStyle`` accepts ``None`` but that would reintroduce
             # platform specific behaviour that might block rounded handles again.
             raise RuntimeError("Unable to resolve a base style for CustomScrollBarStyle")
-        super().__init__(resolved_base)
+
+        super().__init__()
+        # ``QProxyStyle`` does not retain a reference to the base delegate, so we
+        # store it on ``self`` to keep the Python wrapper alive for the lifetime of
+        # the proxy.  Failing to do so can trigger "Internal C++ object already
+        # deleted" errors once the garbage collector runs.
+        self._base_delegate = resolved_base
+        self.setBaseStyle(resolved_base)
         if __debug__:
-            print(f"CustomScrollBarStyle using base style: {resolved_base.objectName()}")
+            debug_name = resolved_base_name or self.baseStyle().objectName()
+            print(f"CustomScrollBarStyle using base style: {debug_name}")
 
     # ------------------------------------------------------------------
     # Colour helpers
