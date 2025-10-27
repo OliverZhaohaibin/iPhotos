@@ -27,7 +27,7 @@ from .header_controller import HeaderController
 from .navigation_controller import NavigationController
 from .map_view_controller import LocationMapController
 from .playback_controller import PlaybackController
-from .playback_state_manager import PlaybackStateManager
+from .playback_state_manager import PlaybackStateManager, PlayerState
 from .player_view_controller import PlayerViewController
 from .preference_controller import PreferenceController
 from .preview_controller import PreviewController
@@ -456,9 +456,7 @@ class MainController(QObject):
     def _handle_album_opened(self, root: Path) -> None:
         """React to the facade opening a new or refreshed album."""
 
-        is_detail_view_before_handle = (
-            self._window.ui.view_stack.currentWidget() is self._window.ui.detail_page
-        )
+        is_detail_view_before_handle = self._view_controller.is_detail_view_active()
         was_refresh = self._navigation.consume_last_open_refresh()
         self._navigation.handle_album_opened(root)
         self._window.ui.selection_button.setEnabled(True)
@@ -509,6 +507,95 @@ class MainController(QObject):
 
     # -----------------------------------------------------------------
     # Public helpers used by the window
+    def toggle_playback(self) -> None:
+        """Toggle the playback state of the active media item."""
+
+        # Keyboard shortcuts should reuse the same playback entry point the
+        # player bar relies on so both surfaces remain perfectly in sync.  The
+        # controller keeps all playback-related logic encapsulated, allowing
+        # higher-level widgets to stay ignorant of playlist intricacies.
+        self._playback.toggle_playback()
+
+    def replay_live_photo(self) -> None:
+        """Replay the motion component of the currently displayed Live Photo."""
+
+        # Delegating to ``PlaybackController`` ensures Live Photo transitions go
+        # through the state manager so mute state restoration, badge visibility,
+        # and player-bar resets follow the same well-tested path as UI
+        # interactions triggered from the viewer surface.
+        self._playback.replay_live_photo()
+
+    def request_next_item(self) -> None:
+        """Advance the playlist selection to the next asset."""
+
+        # The playback controller owns the debounce timer that avoids thrashing
+        # the media loader during rapid navigation.  Routing shortcut requests
+        # through the controller keeps those safeguards intact.
+        self._playback.request_next_item()
+
+    def request_previous_item(self) -> None:
+        """Select the previous asset in the playlist."""
+
+        self._playback.request_previous_item()
+
+    def current_player_state(self) -> PlayerState:
+        """Expose the current playback state for shortcut gating."""
+
+        # The window-level keyboard handler queries this accessor to decide
+        # which shortcuts are valid in the current context.  Returning the raw
+        # state keeps the logic flexible without forcing the UI to duplicate the
+        # state manager's transition rules.
+        return self._state_manager.state
+
+    def can_control_media_audio(self) -> bool:
+        """Return ``True`` when the active state exposes audio controls."""
+
+        state = self._state_manager.state
+        return state in {
+            PlayerState.PLAYING_VIDEO,
+            PlayerState.SHOWING_VIDEO_SURFACE,
+            PlayerState.PLAYING_LIVE_MOTION,
+        }
+
+    def is_live_still_visible(self) -> bool:
+        """Return ``True`` if the detail view is displaying a Live Photo still frame."""
+
+        return self._state_manager.state == PlayerState.SHOWING_LIVE_STILL
+
+    def is_media_muted(self) -> bool:
+        """Return whether audio output is currently muted."""
+
+        return self._media.is_muted()
+
+    def set_media_muted(self, muted: bool) -> None:
+        """Toggle the mute state through the media controller."""
+
+        self._media.set_muted(muted)
+
+    def media_volume(self) -> int:
+        """Return the current output volume as a 0-100 integer."""
+
+        # ``QMediaPlayer`` exposes its volume as an arbitrary integer.  The
+        # controller normalises the value so window-level shortcut handlers can
+        # rely on the familiar 0-100 scale used throughout the UI without
+        # reaching into the media layer.
+        return int(self._media.volume())
+
+    def set_media_volume(self, volume: int) -> None:
+        """Set the audio output volume, clamping it to the valid 0-100 range."""
+
+        # Keyboard shortcuts may add or subtract from the current volume and
+        # therefore overshoot the legal range.  Clamping here keeps the media
+        # backend happy while ensuring the persisted preference mirrors the
+        # exact level that was applied.
+        clamped = max(0, min(100, int(volume)))
+        self._media.set_volume(clamped)
+
+    def is_detail_view_active(self) -> bool:
+        """Return ``True`` when the detail page is the foreground view."""
+
+        return self._view_controller.is_detail_view_active()
+
     def open_album_from_path(self, path: Path) -> None:
         """Forward album navigation requests to the navigation controller."""
 

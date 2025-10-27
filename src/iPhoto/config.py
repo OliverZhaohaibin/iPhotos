@@ -41,3 +41,9 @@ VIDEO_COMPLETE_HOLD_BACKSTEP_MS: Final[int] = 80
 PLAYER_CONTROLS_HIDE_DELAY_MS: Final[int] = 2000
 PLAYER_FADE_IN_MS: Final[int] = 150
 PLAYER_FADE_OUT_MS: Final[int] = 300
+
+# Keyboard shortcuts bump the output volume by this fixed percentage so repeated presses
+# feel predictable regardless of the current level.  Keeping the value here allows both the
+# window and controller layers to reference a shared constant instead of hard-coding their
+# own step size.
+VOLUME_SHORTCUT_STEP: Final[int] = 5

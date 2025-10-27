@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, cast
 
 from PySide6.QtCore import (
     QEasingCurve,
@@ -77,6 +77,10 @@ class VideoArea(QWidget):
         self._video_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._video_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._video_view.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        # Accept focus so keyboard navigation targets the video viewport without requiring the user
+        # to click a non-interactive chrome element first.
+        self._video_view.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setFocusProxy(self._video_view)
         # Match the photo viewer's light-toned surface so letterboxed video frames sit
         # on the same neutral backdrop.  Using the shared palette value keeps the
         # photo and video experiences visually consistent while avoiding harsh
@@ -276,6 +280,24 @@ class VideoArea(QWidget):
             self._hide_timer.stop()
         elif self._controls_visible:
             self._hide_timer.start(PLAYER_CONTROLS_HIDE_DELAY_MS)
+
+    def video_view(self) -> QGraphicsView:
+        """Return the graphics view hosting the video surface."""
+
+        # Exposing the graphics view allows higher-level widgets to install
+        # shortcut filters directly on the focus target instead of reaching into
+        # private attributes.  The method keeps the detail view wiring explicit
+        # while still encapsulating the scene graph setup within ``VideoArea``.
+        return self._video_view
+
+    def video_viewport(self) -> QWidget:
+        """Return the viewport widget that accepts keyboard focus."""
+
+        # Keyboard shortcuts are intercepted at the viewport level so the main
+        # window can consume navigation keys before Qt treats them as focus
+        # traversal requests.  Providing the widget through a helper keeps the
+        # shortcut configuration readable from the controller layer.
+        return self._video_view.viewport()
 
     def _animate_to(self, value: float, duration: int) -> None:
         self._fade_anim.stop()

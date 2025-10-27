@@ -328,9 +328,16 @@ class ImageViewer(QWidget):
                     return True
         return super().eventFilter(obj, event)
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
+    def viewport_widget(self) -> QWidget:
+        """Expose the scroll area's viewport for higher-level event filters."""
+
+        # The main window installs a keyboard event filter on the viewport so it can
+        # intercept navigation shortcuts before the scroll area claims them for
+        # focus navigation.  Returning the concrete widget keeps the detail view's
+        # shortcut wiring self-documenting while avoiding direct access to private
+        # attributes from outside the class.
+        return self._scroll_area.viewport()
+
     def _render_pixmap(
         self,
         *,

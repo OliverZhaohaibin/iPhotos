@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable, Iterator, cast
 
-from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
+from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, QObject
 from PySide6.QtGui import (
     QColor,
     QCloseEvent,
@@ -18,7 +18,17 @@ from PySide6.QtGui import (
     QPalette,
     QResizeEvent,
 )
-from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QMenuBar, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QLineEdit,
+    QMainWindow,
+    QMenu,
+    QMenuBar,
+    QPlainTextEdit,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
 
 # ``main_window`` can be imported either via ``iPhoto.gui`` (package execution)
 # or ``iPhotos.src.iPhoto.gui`` (legacy test harness).  The absolute import
@@ -29,7 +39,10 @@ try:  # pragma: no cover - exercised in packaging scenarios
 except ImportError:  # pragma: no cover - script execution fallback
     from iPhotos.src.iPhoto.appctx import AppContext
 
+from ...config import VOLUME_SHORTCUT_STEP
+
 from .controllers.main_controller import MainController
+from .controllers.playback_state_manager import PlayerState
 from .media import require_multimedia
 from .ui_main_window import ChromeStatusBar, Ui_MainWindow
 from .icon import load_icon
@@ -38,7 +51,6 @@ from .widgets.custom_tooltip import FloatingToolTip, ToolTipEventFilter
 
 # Small delay that gives Qt time to settle window transitions before resuming playback.
 PLAYBACK_RESUME_DELAY_MS = 120
-
 
 class RoundedWindowShell(QWidget):
     """Container that paints an anti-aliased rounded background for the window."""
@@ -182,11 +194,26 @@ class MainWindow(QMainWindow):
         # helper so every widget inherits the reliable rendering path.
         self._window_tooltip = FloatingToolTip(self)
         self._tooltip_filter: ToolTipEventFilter | None = None
+        # Initialise the drag source registry before installing any event filters.
+        # ``QApplication.installEventFilter`` begins forwarding events immediately, meaning
+        # ``eventFilter`` can run while the constructor is still executing.  Preparing the
+        # attribute upfront guarantees the handler always finds a valid container even if Qt
+        # dispatches paint or hover events during setup.  The collection is populated with the
+        # actual title-bar widgets once they have been constructed a few lines later.
+        self._drag_sources: set[QWidget] = set()
         app = QApplication.instance()
         if app is not None:
+            # ``ToolTipEventFilter`` keeps hover hints readable on translucent
+            # windows by redirecting ``QToolTip`` traffic to the floating helper.
             self._tooltip_filter = ToolTipEventFilter(self._window_tooltip, parent=self)
             app.installEventFilter(self._tooltip_filter)
             app.setProperty("floatingToolTipFilter", self._tooltip_filter)
+            # Install the main window as a global event filter so navigation
+            # shortcuts can be intercepted regardless of which widget currently
+            # owns focus.  This is the only reliable way to override Qt's
+            # built-in focus navigation for arrow keys while still allowing the
+            # controls to function normally when the gallery view is active.
+            app.installEventFilter(self)
 
         # ``MainController`` owns every piece of non-view logic so the window
         # can focus purely on QWidget behaviour.
@@ -243,8 +270,16 @@ class MainWindow(QMainWindow):
 
         # ``badge_host`` keeps the Live badge aligned with the video viewport;
         # install the filter separately so geometry changes can reposition the
-        # overlay without being treated as tooltip traffic.
+        # overlay without being treated as tooltip traffic.  Although the window
+        # now listens at the ``QApplication`` level, explicitly registering here
+        # guarantees the geometry updates still arrive even if Qt changes the
+        # propagation order in a future release.
         self.ui.badge_host.installEventFilter(self)
+
+        # Allow the window itself to accept focus when the user clicks the chrome so
+        # ``keyPressEvent`` can act as a fall-back shortcut path if none of the child
+        # widgets have focus at the moment a key is pressed.
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
 
         self._update_title_bar()
         self._update_fullscreen_button_icon()
@@ -253,13 +288,17 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:  # type: ignore[override]
         """Tear down background services before the window closes."""
 
-        if self._tooltip_filter is not None:
-            app = QApplication.instance()
-            if app is not None:
+        app = QApplication.instance()
+        if app is not None:
+            # Remove the global shortcut filter before Qt starts destroying
+            # widgets to avoid delivering stray events to partially torn-down
+            # objects during shutdown.
+            app.removeEventFilter(self)
+            if self._tooltip_filter is not None:
                 app.removeEventFilter(self._tooltip_filter)
                 if app.property("floatingToolTipFilter") == self._tooltip_filter:
                     app.setProperty("floatingToolTipFilter", None)
-            self._tooltip_filter = None
+        self._tooltip_filter = None
         self._window_tooltip.hide_tooltip()
 
         # ``MainController`` coordinates every component that spawns worker
@@ -499,7 +538,7 @@ class MainWindow(QMainWindow):
     def showEvent(self, event) -> None:  # type: ignore[override]
         super().showEvent(event)
 
-    def eventFilter(self, watched, event):  # type: ignore[override]
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # type: ignore[override]
         if watched in self._drag_sources:
             if self._handle_title_bar_drag(event):
                 return True
@@ -510,16 +549,118 @@ class MainWindow(QMainWindow):
             QEvent.Type.Show,
         }:
             self.position_live_badge()
+
+        if event.type() == QEvent.Type.KeyPress:
+            key_event = cast(QKeyEvent, event)
+
+            # Always honour Escape presses while immersive mode is active.  Handling
+            # it here avoids waiting for the event to bubble to whichever widget
+            # currently has focus, providing a consistent exit affordance even when
+            # embedded controls consume other navigation keys.
+            if key_event.key() == Qt.Key.Key_Escape and self._immersive_active:
+                self.exit_fullscreen()
+                key_event.accept()
+                return True
+
+            # Text-entry widgets should retain native editing behaviour so shortcuts
+            # such as arrow-key cursor movement continue to work.  If the active
+            # focus widget is a line edit or text editor we bail out early and let
+            # Qt deliver the key press normally.
+            app = QApplication.instance()
+            focus_widget = app.focusWidget() if app is not None else None
+            if isinstance(focus_widget, (QLineEdit, QTextEdit, QPlainTextEdit)):
+                return super().eventFilter(watched, event)
+
+            if self.ui.view_stack.currentWidget() is self.ui.detail_page:
+                if self._handle_detail_view_shortcut(key_event):
+                    return True
+
         return super().eventFilter(watched, event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # type: ignore[override]
-        """Allow pressing Escape to exit immersive full screen mode."""
+        """Dispatch global keyboard shortcuts that operate on the detail view."""
 
         if event.key() == Qt.Key.Key_Escape and self._immersive_active:
             self.exit_fullscreen()
             event.accept()
             return
+
+        if self.ui.view_stack.currentWidget() is self.ui.detail_page:
+            if self._handle_detail_view_shortcut(event):
+                return
+
         super().keyPressEvent(event)
+
+    def _handle_detail_view_shortcut(self, event: QKeyEvent) -> bool:
+        """Handle playback, volume, and navigation shortcuts on the detail page."""
+
+        # Ignore modifier combinations other than the keypad flag so we do not
+        # hijack shortcuts that belong to child widgets embedded in the detail
+        # page.  The bitwise check lets the handler accept repeats generated by
+        # the numeric keypad's arrow keys while rejecting Ctrl/Alt based combos.
+        modifiers = event.modifiers()
+        disallowed = modifiers & ~Qt.KeyboardModifier.KeypadModifier
+        if disallowed:
+            return False
+
+        key = event.key()
+
+        state = self.controller.current_player_state()
+        is_video_surface = state in {
+            PlayerState.PLAYING_VIDEO,
+            PlayerState.SHOWING_VIDEO_SURFACE,
+        }
+        is_live_motion = state == PlayerState.PLAYING_LIVE_MOTION
+        is_live_still = state == PlayerState.SHOWING_LIVE_STILL
+        can_control_audio = is_video_surface or is_live_motion
+
+        if key == Qt.Key.Key_Space:
+            if is_live_still:
+                # Replaying a Live Photo while the still frame is on screen
+                # keeps the experience consistent with clicking the on-screen
+                # replay badge.
+                self.controller.replay_live_photo()
+                event.accept()
+                return True
+            if can_control_audio:
+                # ``toggle_playback`` transparently handles both pausing active
+                # playback and resuming a paused clip, mirroring the player
+                # bar's play/pause button.
+                self.controller.toggle_playback()
+                event.accept()
+                return True
+            return False
+
+        if key == Qt.Key.Key_M and can_control_audio:
+            # Toggling mute here lets the keyboard shortcut share the same
+            # state persistence path as the UI controls.
+            self.controller.set_media_muted(not self.controller.is_media_muted())
+            event.accept()
+            return True
+
+        if key in {Qt.Key.Key_Up, Qt.Key.Key_Down} and can_control_audio:
+            step = VOLUME_SHORTCUT_STEP if key == Qt.Key.Key_Up else -VOLUME_SHORTCUT_STEP
+            current_volume = self.controller.media_volume()
+            new_volume = max(0, min(100, current_volume + step))
+            if new_volume != current_volume:
+                self.controller.set_media_volume(new_volume)
+            # Accept the event regardless of whether the volume actually changed so
+            # the focus widget does not attempt to interpret the key press as a
+            # scroll command when already at the boundary.
+            event.accept()
+            return True
+
+        if key == Qt.Key.Key_Left:
+            self.controller.request_previous_item()
+            event.accept()
+            return True
+
+        if key == Qt.Key.Key_Right:
+            self.controller.request_next_item()
+            event.accept()
+            return True
+
+        return False
 
     def changeEvent(self, event: QEvent) -> None:  # type: ignore[override]
         """Refresh the title label whenever Qt updates the window title."""
