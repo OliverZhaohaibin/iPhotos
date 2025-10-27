@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPainter, QPalette
-from PySide6.QtWidgets import QProxyStyle, QStyle, QStyleOptionSlider
+from PySide6.QtWidgets import QProxyStyle, QStyle, QStyleFactory, QStyleOptionSlider
 
 
 class CustomScrollBarStyle(QProxyStyle):
@@ -26,23 +26,29 @@ class CustomScrollBarStyle(QProxyStyle):
     def __init__(self, base_style: QStyle | None = None) -> None:
         """Initialise the proxy with an optional *base_style* to delegate to."""
 
-        super().__init__(base_style)
+        resolved_base = base_style
+        if resolved_base is None:
+            # ``QProxyStyle`` requires a backing style to forward unhandled
+            # primitives.  Falling back to ``Fusion`` guarantees a predictable
+            # baseline even when the platform style cannot be instantiated.
+            resolved_base = QStyleFactory.create("Fusion")
+        super().__init__(resolved_base)
 
     # ------------------------------------------------------------------
     # Colour helpers
     # ------------------------------------------------------------------
     def _resolve_handle_colours(
-        self, option: QStyleOptionSlider
+        self, option: QStyleOptionSlider, widget
     ) -> tuple[QColor, QColor, QColor]:
         """Return handle colours for normal, hover, and pressed states.
 
-        The palette supplied via ``option`` already reflects the application's
-        active theme.  We gently offset the greys depending on the palette's
-        lightness so the handle stands out without clashing with the window
-        chrome.
+        The widget palette takes precedence when available because certain
+        controls update their palette dynamically (for example during theme
+        transitions).  Falling back to the option palette maintains compatibility
+        with standard ``QStyle`` painting paths.
         """
 
-        palette = option.palette
+        palette = widget.palette() if widget is not None else option.palette
         window_colour = palette.color(QPalette.ColorRole.Window)
         if window_colour.lightness() < 128:
             # Dark theme – use lighter greys for contrast.
@@ -51,22 +57,30 @@ class CustomScrollBarStyle(QProxyStyle):
             # Light theme – darker greys ensure the handle remains visible.
             base_value, hover_value, pressed_value = 154, 127, 106
 
+        def _opaque_grey(value: int) -> QColor:
+            colour = QColor(value, value, value)
+            colour.setAlpha(255)
+            return colour
+
         return (
-            QColor(base_value, base_value, base_value),
-            QColor(hover_value, hover_value, hover_value),
-            QColor(pressed_value, pressed_value, pressed_value),
+            _opaque_grey(base_value),
+            _opaque_grey(hover_value),
+            _opaque_grey(pressed_value),
         )
 
-    def _resolve_groove_colour(self, option: QStyleOptionSlider) -> QColor:
+    def _resolve_groove_colour(
+        self, option: QStyleOptionSlider, widget
+    ) -> QColor:
         """Return a semi-transparent groove colour derived from the palette."""
 
-        window_colour = option.palette.color(QPalette.ColorRole.Window)
+        palette = widget.palette() if widget is not None else option.palette
+        window_colour = palette.color(QPalette.ColorRole.Window)
         groove_colour = QColor(window_colour)
         if window_colour.lightness() < 128:
             groove_colour = groove_colour.lighter(140)
         else:
             groove_colour = groove_colour.darker(115)
-        groove_colour.setAlpha(120)
+        groove_colour.setAlpha(150)
         return groove_colour
 
     # ------------------------------------------------------------------
@@ -84,7 +98,9 @@ class CustomScrollBarStyle(QProxyStyle):
         if element == QStyle.ControlElement.CE_ScrollBarSlider and isinstance(
             option, QStyleOptionSlider
         ):
-            normal_colour, hover_colour, pressed_colour = self._resolve_handle_colours(option)
+            normal_colour, hover_colour, pressed_colour = self._resolve_handle_colours(
+                option, widget
+            )
 
             painter.save()
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -106,6 +122,7 @@ class CustomScrollBarStyle(QProxyStyle):
                     0, self._TRACK_MARGIN_PX, 0, -self._TRACK_MARGIN_PX
                 )
 
+            painter.setClipRect(option.rect)
             painter.drawRoundedRect(
                 draw_rect, self._CORNER_RADIUS_PX, self._CORNER_RADIUS_PX
             )
@@ -116,7 +133,7 @@ class CustomScrollBarStyle(QProxyStyle):
             QStyle.ControlElement.CE_ScrollBarAddPage,
             QStyle.ControlElement.CE_ScrollBarSubPage,
         ) and isinstance(option, QStyleOptionSlider):
-            groove_colour = self._resolve_groove_colour(option)
+            groove_colour = self._resolve_groove_colour(option, widget)
 
             painter.save()
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -132,6 +149,7 @@ class CustomScrollBarStyle(QProxyStyle):
                     0, self._TRACK_MARGIN_PX, 0, -self._TRACK_MARGIN_PX
                 )
 
+            painter.setClipRect(option.rect)
             painter.drawRoundedRect(
                 draw_rect, self._CORNER_RADIUS_PX, self._CORNER_RADIUS_PX
             )
@@ -181,6 +199,11 @@ class CustomScrollBarStyle(QProxyStyle):
             # ``0`` disables transient (overlay) mode so Qt keeps the scroll bar visible
             # and reserves layout space for it, which mirrors the native desktop
             # behaviour we are emulating.
+            return 0
+
+        if hint == QStyle.StyleHint.SH_ScrollBar_ContextMenu:
+            # Returning ``0`` prevents Qt from showing the legacy context menu that
+            # exposes arrow controls we no longer draw, keeping the UX consistent.
             return 0
 
         return super().styleHint(hint, option, widget, returnData)
