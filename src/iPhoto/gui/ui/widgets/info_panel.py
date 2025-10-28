@@ -8,18 +8,18 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
-from PySide6.QtCore import QDateTime, QLocale, Qt
-from PySide6.QtWidgets import (
-    QFrame,
-    QHBoxLayout,
-    QLabel,
-    QToolButton,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtCore import QDateTime, QLocale, Qt, QSize
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QToolButton, QVBoxLayout, QWidget
 
 from ..icon import load_icon
-from ..window_chrome import WINDOW_CONTROL_BUTTON_SIZE, WINDOW_CONTROL_GLYPH_SIZE
+
+# ---------------------------------------------------------------------------
+# Window chrome sizing helpers
+# ---------------------------------------------------------------------------
+# Keeping the control sizes local avoids adding another shared module while still ensuring the
+# replacement button has a consistent hit target and icon size.
+WINDOW_CONTROL_GLYPH_SIZE = QSize(16, 16)
+WINDOW_CONTROL_BUTTON_SIZE = QSize(26, 26)
 
 
 @dataclass
@@ -39,10 +39,6 @@ class InfoPanel(QWidget):
     """Small helper window that mirrors macOS Photos' info popover."""
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
-        # ``Qt.Window`` restores the platform-provided frame so the info panel behaves like a
-        # traditional tool window, while ``Qt.Tool`` and ``Qt.WindowStaysOnTopHint`` preserve the
-        # original floating behaviour.  Dropping the frameless flag honours the revised design
-        # direction to keep the default decorations while still letting us style the close button.
         super().__init__(parent, Qt.Window | Qt.Tool | Qt.WindowStaysOnTopHint)
         self.setWindowTitle("Info")
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
@@ -51,20 +47,20 @@ class InfoPanel(QWidget):
         self._metadata: Optional[dict[str, Any]] = None
         self._current_rel: Optional[str] = None
 
-        self._close_button = QToolButton(self)
-        self._configure_close_button()
-
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
-        # ``header_layout`` houses the custom close button while leaving the rest of the panel's
-        # content untouched.  The stretch pushes the control to the right edge, giving the widget a
-        # lightweight, title-bar style affordance even though the native frame is still present.
+        # ``header_layout`` acts as a minimal title strip that only hosts the custom close button.
+        # Keeping the layout small preserves the original content structure while giving us an
+        # easy anchor point for the SVG-based control.
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(0)
         header_layout.addStretch(1)
+
+        self._close_button = QToolButton(self)
+        self._configure_close_button()
         header_layout.addWidget(self._close_button)
         layout.addLayout(header_layout)
 
@@ -92,13 +88,8 @@ class InfoPanel(QWidget):
         self._exposure_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self._exposure_label.setWordWrap(True)
 
-        content_layout = QVBoxLayout()
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(12)
-        layout.addLayout(content_layout)
-
-        content_layout.addWidget(self._filename_label)
-        content_layout.addWidget(self._timestamp_label)
+        layout.addWidget(self._filename_label)
+        layout.addWidget(self._timestamp_label)
 
         metadata_frame = QWidget(self)
         metadata_layout = QVBoxLayout(metadata_frame)
@@ -107,28 +98,29 @@ class InfoPanel(QWidget):
         metadata_layout.addWidget(self._camera_label)
         metadata_layout.addWidget(self._lens_label)
         metadata_layout.addWidget(self._summary_label)
-        content_layout.addWidget(metadata_frame)
+        layout.addWidget(metadata_frame)
 
         separator = QFrame(self)
         separator.setFrameShape(QFrame.HLine)
         separator.setFrameShadow(QFrame.Sunken)
-        content_layout.addWidget(separator)
+        layout.addWidget(separator)
 
         exposure_container = QWidget(self)
         exposure_layout = QHBoxLayout(exposure_container)
         exposure_layout.setContentsMargins(0, 0, 0, 0)
         exposure_layout.addWidget(self._exposure_label)
-        content_layout.addWidget(exposure_container)
+        layout.addWidget(exposure_container)
 
-        content_layout.addStretch(1)
+        layout.addStretch(1)
 
     def _configure_close_button(self) -> None:
         """Create a custom close button that matches the main window controls."""
 
-        # Reuse the shared window-control metrics so the popup's chrome stays visually aligned with
-        # the primary title bar buttons.  ``load_icon`` guarantees the SVG renders crisply at the
+        # The locally defined metrics keep the widget in sync with the main window's chrome without
+        # introducing extra dependencies.  ``load_icon`` guarantees the SVG renders crisply at the
         # chosen size across platforms.
-        self._close_button.setIcon(load_icon("red.close.circle.svg"))
+        icon_size = (WINDOW_CONTROL_GLYPH_SIZE.width(), WINDOW_CONTROL_GLYPH_SIZE.height())
+        self._close_button.setIcon(load_icon("red.close.circle.svg", size=icon_size))
         self._close_button.setIconSize(WINDOW_CONTROL_GLYPH_SIZE)
         self._close_button.setFixedSize(WINDOW_CONTROL_BUTTON_SIZE)
         self._close_button.setAutoRaise(True)
