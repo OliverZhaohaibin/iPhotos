@@ -13,6 +13,7 @@ from PySide6.QtCore import (
     Qt,
     QThreadPool,
     Signal,
+    Slot,
     QTimer,
 )
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPixmap
@@ -79,7 +80,7 @@ class AssetListModel(QAbstractListModel):
         # the entire dataset from disk.
         self._live_map: Dict[str, Dict[str, object]] = {}
 
-        self._facade.linksUpdated.connect(self._handle_links_updated)
+        self._facade.linksUpdated.connect(self.handle_links_updated)
 
     def album_root(self) -> Optional[Path]:
         """Return the path of the currently open album, if any."""
@@ -746,17 +747,47 @@ class AssetListModel(QAbstractListModel):
         self._placeholder_cache[key] = canvas
         return canvas
 
-    def _handle_links_updated(self, root: Path) -> None:
-        """Refresh Live Photo metadata when ``links.json`` changes."""
+    @Slot(Path)
+    def handle_links_updated(self, root: Path) -> None:
+        """React to :mod:`links.json` refreshes triggered by the backend.
 
-        if not self._album_root or not self._rows:
+        The facade emits :pyattr:`linksUpdated` whenever background workers rewrite
+        ``links.json`` for the active album.  Live Photo badges depend on the
+        relationships stored in that file, so the view needs to update as soon as
+        the metadata changes.  Updating happens in two stages:
+
+        * Refresh the in-memory Live Photo cache immediately so rows that are
+          already visible flip their badge without waiting for a worker round-trip.
+        * If a loader is currently ingesting data, cancel it and request a fresh
+          pass once the cancellation has propagated.  Otherwise schedule a new load
+          straight away.  Using :func:`QTimer.singleShot` keeps the reload
+          asynchronous, which prevents recursive model resets inside the signal
+          delivery stack.
+        """
+
+        if not self._album_root:
             return
 
-        album_root = self._album_root
-        if self._normalise_path(album_root) != self._normalise_path(Path(root)):
+        album_root = self._normalise_path(self._album_root)
+        if album_root != self._normalise_path(Path(root)):
             return
 
-        self._reload_live_metadata()
+        if self._rows:
+            # ``_reload_live_metadata`` mutates cached rows in place so the view
+            # reflects the latest Live Photo pairings without delay.
+            self._reload_live_metadata()
+
+        if self._loader_worker is not None:
+            # ``start_load`` also cancels running workers, but we want to avoid
+            # resetting the model twice.  Mark the reload intention and cancel the
+            # worker from here so ``_on_loader_finished`` can honour the request
+            # once the background thread exits.
+            self._pending_reload = True
+            self._loader_worker.cancel()
+            return
+
+        if not self._pending_reload:
+            QTimer.singleShot(0, self.start_load)
 
     def _reload_live_metadata(self) -> None:
         """Re-read ``links.json`` and update cached Live Photo roles."""
