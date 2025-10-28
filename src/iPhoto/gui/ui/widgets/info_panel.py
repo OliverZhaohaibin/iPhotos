@@ -9,7 +9,18 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 from PySide6.QtCore import QDateTime, QLocale, Qt
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtGui import QPaintEvent, QPainter, QPainterPath, QPalette
+from PySide6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
+
+from ..icon import load_icon
+from ..ui_main_window import WINDOW_CONTROL_BUTTON_SIZE, WINDOW_CONTROL_GLYPH_SIZE
 
 
 @dataclass
@@ -29,13 +40,42 @@ class InfoPanel(QWidget):
     """Small helper window that mirrors macOS Photos' info popover."""
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent, Qt.Window | Qt.Tool | Qt.WindowStaysOnTopHint)
+        flags = (
+            Qt.WindowType.Tool
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.FramelessWindowHint
+        )
+        super().__init__(parent, flags)
         self.setWindowTitle("Info")
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
         self.setMinimumWidth(320)
 
+        # ``WA_TranslucentBackground`` allows the custom ``paintEvent`` below to render a rounded
+        # rectangle with transparent corners that blend seamlessly with the desktop wallpaper.
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAutoFillBackground(False)
+
+        # The info panel mirrors the rounded macOS-inspired chrome used by the main window.
+        # Keeping the radius consistent ensures auxiliary popups feel cohesive with the primary
+        # frame.
+        self._corner_radius = 12
+
         self._metadata: Optional[dict[str, Any]] = None
         self._current_rel: Optional[str] = None
+
+        self._close_button = QToolButton(self)
+        self._configure_close_button()
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(0)
+        header_layout.addStretch(1)
+        header_layout.addWidget(self._close_button)
+        layout.addLayout(header_layout)
 
         self._filename_label = QLabel()
         self._filename_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -61,11 +101,13 @@ class InfoPanel(QWidget):
         self._exposure_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self._exposure_label.setWordWrap(True)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
-        layout.addWidget(self._filename_label)
-        layout.addWidget(self._timestamp_label)
+        content_layout = QVBoxLayout()
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(12)
+        layout.addLayout(content_layout)
+
+        content_layout.addWidget(self._filename_label)
+        content_layout.addWidget(self._timestamp_label)
 
         metadata_frame = QWidget(self)
         metadata_layout = QVBoxLayout(metadata_frame)
@@ -74,20 +116,35 @@ class InfoPanel(QWidget):
         metadata_layout.addWidget(self._camera_label)
         metadata_layout.addWidget(self._lens_label)
         metadata_layout.addWidget(self._summary_label)
-        layout.addWidget(metadata_frame)
+        content_layout.addWidget(metadata_frame)
 
         separator = QFrame(self)
         separator.setFrameShape(QFrame.HLine)
         separator.setFrameShadow(QFrame.Sunken)
-        layout.addWidget(separator)
+        content_layout.addWidget(separator)
 
         exposure_container = QWidget(self)
         exposure_layout = QHBoxLayout(exposure_container)
         exposure_layout.setContentsMargins(0, 0, 0, 0)
         exposure_layout.addWidget(self._exposure_label)
-        layout.addWidget(exposure_container)
+        content_layout.addWidget(exposure_container)
 
-        layout.addStretch(1)
+        content_layout.addStretch(1)
+
+    def _configure_close_button(self) -> None:
+        """Create a custom close button that matches the main window controls."""
+
+        # Reuse the shared window-control metrics so the popup's chrome stays visually aligned with
+        # the primary title bar buttons.  ``load_icon`` guarantees the SVG renders crisply at the
+        # chosen size across platforms.
+        self._close_button.setIcon(load_icon("red.close.circle.svg"))
+        self._close_button.setIconSize(WINDOW_CONTROL_GLYPH_SIZE)
+        self._close_button.setFixedSize(WINDOW_CONTROL_BUTTON_SIZE)
+        self._close_button.setAutoRaise(True)
+        self._close_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._close_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self._close_button.setToolTip("Close Info Panel")
+        self._close_button.clicked.connect(self.close)
 
     # ------------------------------------------------------------------
     # Public API
@@ -141,6 +198,32 @@ class InfoPanel(QWidget):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+    def paintEvent(self, event: QPaintEvent) -> None:  # type: ignore[override]
+        """Paint a rounded, anti-aliased background behind the floating window."""
+
+        if self.width() <= 0 or self.height() <= 0:
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        painter.setPen(Qt.PenStyle.NoPen)
+
+        palette = self.palette()
+        background = palette.color(QPalette.ColorRole.Window)
+        rect = self.rect()
+        radius = min(self._corner_radius, min(rect.width(), rect.height()) / 2)
+
+        path = QPainterPath()
+        if radius > 0:
+            # Offsetting the rectangle keeps the curve sharp when Qt applies high-DPI scaling.
+            path.addRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
+        else:
+            path.addRect(rect)
+
+        painter.fillPath(path, background)
+        super().paintEvent(event)
+
     def _format_metadata(self, metadata: Mapping[str, Any]) -> _FormattedMetadata:
         """Return a :class:`_FormattedMetadata` snapshot for *metadata*."""
 
