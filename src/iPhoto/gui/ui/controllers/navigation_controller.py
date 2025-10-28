@@ -230,6 +230,11 @@ class NavigationController:
             self._view_controller.restore_default_gallery()
             self._view_controller.show_gallery_view()
         self._asset_model.set_filter_mode(filter_mode)
+        # Aggregated collections should always present assets chronologically so
+        # that freshly captured media surfaces immediately after move/restore
+        # operations rebuild the index.  Reapplying the sort each time keeps the
+        # proxy aligned even if other workflows temporarily changed it.
+        self._asset_model.ensure_chronological_order()
         self._static_selection = title
         album = self._facade.open_album(root)
         if album is None:
