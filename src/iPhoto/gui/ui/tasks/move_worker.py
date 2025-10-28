@@ -203,11 +203,11 @@ class MoveWorker(QRunnable):
         new_rows = list(
             process_media_paths(self._destination_root, image_paths, video_paths)
         )
-        if (
-            self._is_trash_destination
-            and not self._is_restore
-            and self._library_root is not None
-        ):
+        if self._is_trash_destination and not self._is_restore:
+            if self._library_root is None:
+                raise IPhotoError(
+                    "Library root is required to annotate trash index entries."
+                )
             source_lookup: Dict[str, Path] = {}
             for original, target in moved:
                 target_key = self._normalised_string(target)
@@ -231,7 +231,9 @@ class MoveWorker(QRunnable):
                     annotated_rows.append(row)
                     continue
                 # Persist the original library-relative location so restore operations can
-                # return the asset to its previous album.
+                # return the asset to its previous album. The value is relative to the
+                # Basic Library root which keeps the reference stable even when album
+                # directories are renamed after the deletion.
                 enriched = dict(row)
                 enriched["original_rel_path"] = original_relative
                 annotated_rows.append(enriched)

@@ -157,6 +157,13 @@ class AssetMoveService(QObject):
         is_delete_operation = operation_normalized == "delete"
         is_restore_operation = operation_normalized == "restore"
 
+        if is_delete_operation and library_root is None:
+            self._asset_list_model.rollback_pending_moves()
+            self.errorRaised.emit(
+                "Basic Library root is unavailable; cannot delete items safely."
+            )
+            return
+
         if is_delete_operation and trash_root is None:
             self._asset_list_model.rollback_pending_moves()
             self.errorRaised.emit("Recently Deleted folder is unavailable.")
