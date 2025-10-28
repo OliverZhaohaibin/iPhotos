@@ -23,6 +23,13 @@ class AssetMoveService(QObject):
     moveStarted = Signal(Path, Path)
     moveProgress = Signal(Path, int, int)
     moveFinished = Signal(Path, Path, bool, str)
+    # ``moveCompletedDetailed`` mirrors the worker payload so higher-level
+    # components (such as :class:`AppFacade`) can react to restore operations
+    # with additional bookkeeping, e.g. refreshing album views.  Qt's signal
+    # type system does not understand ``list[tuple[Path, Path]]`` so we emit
+    # the raw ``list`` that contains :class:`pathlib.Path` pairs alongside the
+    # worker flags.
+    moveCompletedDetailed = Signal(Path, Path, list, bool, bool, bool, bool)
     errorRaised = Signal(str)
 
     def __init__(
@@ -258,6 +265,19 @@ class AssetMoveService(QObject):
             return
 
         success = bool(moved_pairs) and source_ok and destination_ok
+
+        # Surface the rich completion payload so listeners can distinguish
+        # between deletes, restores, and plain moves without replicating the
+        # worker bookkeeping logic in multiple layers.
+        self.moveCompletedDetailed.emit(
+            source_root,
+            destination_root,
+            moved_pairs,
+            source_ok,
+            destination_ok,
+            worker.is_trash_destination,
+            worker.is_restore_operation,
+        )
 
         if moved_pairs:
             self._asset_list_model.finalise_move_results(moved_pairs)

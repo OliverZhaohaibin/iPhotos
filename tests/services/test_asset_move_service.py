@@ -123,7 +123,12 @@ def test_move_assets_submits_worker_and_emits_completion(
     )
 
     results: list[tuple[Path, Path, bool, str]] = []
-    service.moveFinished.connect(lambda src, dest, success, message: results.append((src, dest, success, message)))
+    detailed_results: list[tuple] = []
+
+    service.moveFinished.connect(
+        lambda src, dest, success, message: results.append((src, dest, success, message))
+    )
+    service.moveCompletedDetailed.connect(detailed_results.append)
 
     service.move_assets([asset], destination_root)
 
@@ -143,4 +148,15 @@ def test_move_assets_submits_worker_and_emits_completion(
     assert results == [(source_root, destination_root, True, "Moved 1 item.")]
     assert list_model.finalised == [[(asset, destination_root / asset.name)]]
     assert list_model.pending_rolled_back == 0
+    assert detailed_results == [
+        (
+            source_root,
+            destination_root,
+            [(asset, destination_root / asset.name)],
+            True,
+            True,
+            False,
+            False,
+        )
+    ]
 

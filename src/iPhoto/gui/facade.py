@@ -82,6 +82,9 @@ class AppFacade(QObject):
             parent=self,
         )
         self._move_service.errorRaised.connect(self._on_service_error)
+        self._move_service.moveCompletedDetailed.connect(
+            self._handle_move_operation_completed
+        )
 
     @Slot(str)
     def _on_service_error(self, message: str) -> None:
@@ -616,3 +619,99 @@ class AppFacade(QObject):
             if success:
                 self.indexUpdated.emit(root)
                 self.linksUpdated.emit(root)
+
+    @Slot(Path, Path, list, bool, bool, bool, bool)
+    def _handle_move_operation_completed(
+        self,
+        source_root: Path,
+        _destination_root: Path,
+        moved_pairs: list,
+        _source_ok: bool,
+        destination_ok: bool,
+        _is_trash_destination: bool,
+        is_restore_operation: bool,
+    ) -> None:
+        """Refresh destination albums after a successful restore operation."""
+
+        if not is_restore_operation or not destination_ok or not moved_pairs:
+            return
+
+        library = self._get_library_manager()
+        if library is None:
+            return
+
+        trash_root = library.deleted_directory()
+        if trash_root is None:
+            return
+
+        if not self._paths_equal(source_root, trash_root):
+            # Only handle restores that originate from the managed trash
+            # directory.  Standard move and delete operations follow the
+            # existing code paths that rely on filesystem watcher updates.
+            return
+
+        library_root = library.root()
+        library_root_normalised = (
+            self._normalise_path(library_root) if library_root is not None else None
+        )
+
+        unique_album_roots: dict[str, Path] = {}
+        for pair in moved_pairs:
+            if not isinstance(pair, (tuple, list)) or len(pair) != 2:
+                continue
+            _, destination = pair
+            album_root = Path(destination).parent
+            normalised_album = self._normalise_path(album_root)
+            if library_root_normalised is not None:
+                try:
+                    normalised_album.relative_to(library_root_normalised)
+                except ValueError:
+                    continue
+            key = str(normalised_album)
+            if key not in unique_album_roots:
+                unique_album_roots[key] = normalised_album
+
+        if not unique_album_roots:
+            return
+
+        for album_root in unique_album_roots.values():
+            self._refresh_restored_album(album_root)
+
+    def _refresh_restored_album(self, album_root: Path) -> None:
+        """Rescan *album_root* and notify listeners of the updated index."""
+
+        album_root = Path(album_root)
+        if not album_root.exists():
+            return
+
+        try:
+            backend.rescan(album_root)
+        except IPhotoError as exc:
+            self.errorRaised.emit(str(exc))
+            return
+
+        self.indexUpdated.emit(album_root)
+        self.linksUpdated.emit(album_root)
+
+        if self._current_album and self._paths_equal(self._current_album.root, album_root):
+            # ``_restart_asset_load`` expects to receive the exact album root
+            # object stored on ``_current_album`` so we forward that reference
+            # instead of the normalised variant used for comparisons above.
+            self._restart_asset_load(self._current_album.root)
+
+    def _normalise_path(self, path: Optional[Path]) -> Path:
+        """Return a consistently resolved variant of *path* for comparisons."""
+
+        if path is None:
+            raise ValueError("Cannot normalise a null path.")
+        try:
+            return path.resolve()
+        except OSError:
+            return path
+
+    def _paths_equal(self, left: Path, right: Path) -> bool:
+        """Return ``True`` when *left* and *right* refer to the same location."""
+
+        if left == right:
+            return True
+        return self._normalise_path(left) == self._normalise_path(right)
