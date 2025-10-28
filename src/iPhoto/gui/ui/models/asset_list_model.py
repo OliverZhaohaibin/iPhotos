@@ -769,8 +769,26 @@ class AssetListModel(QAbstractListModel):
             return
 
         album_root = self._normalise_path(self._album_root)
-        if album_root != self._normalise_path(Path(root)):
-            return
+        updated_root = self._normalise_path(Path(root))
+
+        # When the view is scoped to a concrete album we only care about
+        # pairings generated for that exact directory.  Virtual collections such
+        # as "All Photos" or "Live Photos" are backed by the library root,
+        # therefore any rescan happening in a child album should also refresh
+        # the active dataset.  ``Path.relative_to`` raises ``ValueError`` when
+        # the latter is not a descendant of ``album_root``, which neatly
+        # distinguishes unrelated updates from those that affect the current
+        # presentation.
+        try:
+            updated_root.relative_to(album_root)
+        except ValueError:
+            if album_root != updated_root:
+                return
+        else:
+            # ``updated_root`` is inside ``album_root``.  The reload logic below
+            # handles both the direct equality case and the virtual collection
+            # scenario described above, so there is nothing extra to do here.
+            pass
 
         if self._rows:
             # ``_reload_live_metadata`` mutates cached rows in place so the view
