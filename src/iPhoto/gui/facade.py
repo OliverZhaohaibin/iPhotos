@@ -665,8 +665,13 @@ class AppFacade(QObject):
         current_root = self._current_album_root()
 
         refresh_targets: dict[str, tuple[Path, bool]] = {}
+        # ``blocked_restarts`` tracks album roots that must not trigger an
+        # immediate reload once the worker finishes (for example the view that
+        # initiated the move).  The flag ensures the UI stays stable while still
+        # allowing the next manual navigation to fetch fresh data.
+        blocked_restarts: set[str] = set()
 
-        def _record_refresh(path: Optional[Path]) -> None:
+        def _record_refresh(path: Optional[Path], *, allow_restart: bool = True) -> None:
             """Remember *path* for signal emission and optional view reload."""
 
             if path is None:
@@ -677,15 +682,20 @@ class AppFacade(QObject):
                 normalised = path
             key = str(normalised)
             self._mark_album_stale(path)
+            if not allow_restart:
+                blocked_restarts.add(key)
             should_restart = bool(
-                current_root is not None and self._paths_equal(current_root, path)
+                allow_restart
+                and key not in blocked_restarts
+                and current_root is not None
+                and self._paths_equal(current_root, path)
             )
             existing = refresh_targets.get(key)
             if existing is None or (not existing[1] and should_restart):
                 refresh_targets[key] = (path, should_restart)
 
         if source_ok:
-            _record_refresh(source_root)
+            _record_refresh(source_root, allow_restart=False)
         if destination_ok:
             _record_refresh(destination_root)
 

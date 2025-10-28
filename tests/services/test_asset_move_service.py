@@ -104,6 +104,7 @@ def test_move_assets_submits_worker_and_emits_completion(
         def __init__(self) -> None:
             self.pending_rolled_back = 0
             self.finalised: list[list[tuple[Path, Path]]] = []
+            self.move_updates: list[tuple[list[str], Path, bool]] = []
 
         def rollback_pending_moves(self) -> None:
             self.pending_rolled_back += 1
@@ -113,6 +114,15 @@ def test_move_assets_submits_worker_and_emits_completion(
 
         def has_pending_move_placeholders(self) -> bool:
             return False
+
+        def update_rows_for_move(
+            self,
+            rels: Iterable[str],
+            destination_root: Path,
+            *,
+            is_source_main_view: bool = False,
+        ) -> None:
+            self.move_updates.append((list(rels), destination_root, is_source_main_view))
 
     list_model = _ListModelSpy()
 
@@ -151,6 +161,9 @@ def test_move_assets_submits_worker_and_emits_completion(
     assert results == [(source_root, destination_root, True, "Moved 1 item.")]
     assert list_model.finalised == [[(asset, destination_root / asset.name)]]
     assert list_model.pending_rolled_back == 0
+    assert list_model.move_updates == [
+        ([asset.relative_to(source_root).as_posix()], destination_root, False)
+    ]
     assert detailed_results == [
         (
             source_root,

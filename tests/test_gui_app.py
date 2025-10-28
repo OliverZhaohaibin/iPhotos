@@ -299,8 +299,7 @@ def test_move_from_library_root_refreshes_virtual_view(
         False,
     )
 
-    assert refreshed, "Expected the library-root view to reload after a move"
-    assert any(facade._paths_equal(root, library_root) for root in refreshed)
+    assert not refreshed, "Library-root moves should not trigger an immediate reload"
     assert any(facade._paths_equal(path, library_root) for path in index_events)
     assert any(facade._paths_equal(path, album_root) for path in index_events)
     assert any(facade._paths_equal(path, library_root) for path in links_events)

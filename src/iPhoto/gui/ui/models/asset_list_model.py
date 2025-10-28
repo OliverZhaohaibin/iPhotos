@@ -69,6 +69,12 @@ class AssetListModel(QAbstractListModel):
         # with the final filesystem locations once the worker thread completes
         # the move, or to roll back the changes if the operation fails.
         self._pending_move_rows: Dict[str, Tuple[int, str]] = {}
+        # ``_pending_row_removals`` caches snapshots of rows trimmed
+        # optimistically when the move originates from a concrete album view.
+        # The cached metadata allows :meth:`rollback_pending_moves` to rebuild
+        # the dataset if the asynchronous filesystem operation ultimately
+        # fails.
+        self._pending_row_removals: List[Tuple[int, Dict[str, object]]] = []
         # ``_recently_removed_rows`` keeps a bounded cache of the most recently
         # removed asset metadata so controller workflows can still resolve
         # information about an item after an optimistic UI update trimmed it
@@ -211,29 +217,74 @@ class AssetListModel(QAbstractListModel):
         self._visible_rows.clear()
 
     def update_rows_for_move(
-        self, rels: list[str], destination_root: Path
+        self,
+        rels: list[str],
+        destination_root: Path,
+        *,
+        is_source_main_view: bool = False,
     ) -> None:
-        """Optimistically update moved rows to reflect their new location.
+        """Apply optimistic UI updates when a move operation is queued.
 
-        The gallery keeps the "All Photos" aggregate visually stable by
-        updating only the affected rows when files are moved into a concrete
-        album.  The method records enough bookkeeping to reconcile the final
-        filesystem locations once the worker thread finishes the move.
+        ``is_source_main_view`` toggles between the two behaviours required by
+        the UX guidelines: concrete album views remove rows immediately to avoid
+        showing stale placeholders, whereas virtual library-wide collections
+        keep the affected entries visible and simply adjust their guessed path
+        until the refreshed index arrives.
         """
 
         if not self._album_root or not rels:
             return
 
         album_root = self._album_root.resolve()
+
+        if not is_source_main_view:
+            rows_to_remove: List[int] = []
+            for original_rel in {Path(rel).as_posix() for rel in rels}:
+                row_index = self._row_lookup.get(original_rel)
+                if row_index is None:
+                    continue
+                rows_to_remove.append(row_index)
+
+            if not rows_to_remove:
+                return
+
+            for row_index in sorted(set(rows_to_remove), reverse=True):
+                if not (0 <= row_index < len(self._rows)):
+                    continue
+
+                row_snapshot = dict(self._rows[row_index])
+                rel_key = str(row_snapshot.get("rel", ""))
+                abs_key = str(row_snapshot.get("abs", "")) if row_snapshot.get("abs") else ""
+
+                self._pending_row_removals.append((row_index, row_snapshot))
+
+                self.beginRemoveRows(QModelIndex(), row_index, row_index)
+                self._rows.pop(row_index)
+                self.endRemoveRows()
+
+                if rel_key:
+                    self._row_lookup.pop(rel_key, None)
+                    self._thumb_cache.pop(rel_key, None)
+                if abs_key:
+                    self._recently_removed_rows[abs_key] = dict(row_snapshot)
+                    self._recently_removed_rows.move_to_end(abs_key)
+                    if len(self._recently_removed_rows) > self._recently_removed_limit:
+                        self._recently_removed_rows.popitem(last=False)
+
+            self._row_lookup = {row["rel"]: index for index, row in enumerate(self._rows)}
+            self._placeholder_cache.clear()
+            self._visible_rows.clear()
+            return
+
         try:
             destination_root = destination_root.resolve()
             dest_prefix = destination_root.relative_to(album_root)
         except OSError:
             return
         except ValueError:
-            # Ignore moves that target folders outside the currently open
-            # library root.  They are not visible in this model so an
-            # optimistic update would be misleading.
+            # Destinations outside the current library root are invisible in
+            # the active aggregate view, so applying an optimistic update would
+            # produce a misleading placeholder.
             return
 
         changed_rows: List[int] = []
@@ -250,8 +301,6 @@ class AssetListModel(QAbstractListModel):
                 guessed_rel = (dest_prefix / file_name).as_posix()
             guessed_abs = destination_root / file_name
 
-            # Re-key caches and lookup tables before mutating the row so all
-            # helper structures stay consistent with the optimistic update.
             self._row_lookup.pop(original_rel, None)
             self._row_lookup[guessed_rel] = row_index
             thumb = self._thumb_cache.pop(original_rel, None)
@@ -324,10 +373,15 @@ class AssetListModel(QAbstractListModel):
                 [Roles.REL, Roles.ABS, Qt.DecorationRole],
             )
 
+        if self._pending_row_removals:
+            # Concrete album moves that removed rows optimistically succeeded,
+            # therefore the cached snapshots are no longer required.
+            self._pending_row_removals.clear()
+
     def rollback_pending_moves(self) -> None:
         """Restore original metadata for moves that failed or were cancelled."""
 
-        if not self._album_root or not self._pending_move_rows:
+        if not self._album_root:
             return
 
         album_root = self._album_root.resolve()
@@ -360,10 +414,26 @@ class AssetListModel(QAbstractListModel):
                 [Roles.REL, Roles.ABS, Qt.DecorationRole],
             )
 
+        if self._pending_row_removals:
+            for row_index, row_data in sorted(self._pending_row_removals, key=lambda entry: entry[0]):
+                insert_at = min(max(row_index, 0), len(self._rows))
+                self.beginInsertRows(QModelIndex(), insert_at, insert_at)
+                restored = dict(row_data)
+                self._rows.insert(insert_at, restored)
+                self.endInsertRows()
+                abs_key = str(restored.get("abs", "")) if restored.get("abs") else ""
+                if abs_key:
+                    self._recently_removed_rows.pop(abs_key, None)
+            self._pending_row_removals.clear()
+            self._row_lookup = {row["rel"]: index for index, row in enumerate(self._rows)}
+            self._thumb_cache.clear()
+            self._placeholder_cache.clear()
+            self._visible_rows.clear()
+
     def has_pending_move_placeholders(self) -> bool:
         """Return ``True`` when optimistic move updates are awaiting results."""
 
-        return bool(self._pending_move_rows)
+        return bool(self._pending_move_rows or self._pending_row_removals)
 
     def populate_from_cache(self, *, max_index_bytes: int = 512 * 1024) -> bool:
         """Synchronously load cached index data when the file is small."""
@@ -500,6 +570,8 @@ class AssetListModel(QAbstractListModel):
         self._row_lookup = {}
         self._thumb_cache.clear()
         self._recently_removed_rows.clear()
+        self._pending_move_rows.clear()
+        self._pending_row_removals.clear()
         self.endResetModel()
         self._live_map = {}
 
