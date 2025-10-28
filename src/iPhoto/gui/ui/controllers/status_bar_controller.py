@@ -10,6 +10,7 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QProgressBar
 
 from ..ui_main_window import ChromeStatusBar
+from ....config import RECENTLY_DELETED_DIR_NAME
 
 class StatusBarController(QObject):
     """Manage progress feedback and transient messages in the status bar."""
@@ -25,6 +26,9 @@ class StatusBarController(QObject):
         self._progress_bar = progress_bar
         self._rescan_action = rescan_action
         self._progress_context: Optional[str] = None
+        # ``_move_context_delete`` keeps track of whether the current move feedback refers
+        # to a deletion into Recently Deleted so we can surface "Delete" specific copy.
+        self._move_context_delete: bool = False
 
     # Generic helpers -------------------------------------------------
     def show_message(self, message: str, timeout_ms: int | None = None) -> None:
@@ -162,10 +166,12 @@ class StatusBarController(QObject):
         """Display an indeterminate indicator while files are being moved."""
 
         self._progress_context = "move"
+        self._move_context_delete = destination.name == RECENTLY_DELETED_DIR_NAME
         self._progress_bar.setRange(0, 0)
         self._progress_bar.setValue(0)
         self._progress_bar.setVisible(True)
-        self.show_message("Starting move…")
+        message = "Starting delete…" if self._move_context_delete else "Starting move…"
+        self.show_message(message)
 
     def handle_move_progress(self, _source: Path, current: int, total: int) -> None:
         """Update the progress bar while the move worker processes files."""
@@ -178,9 +184,11 @@ class StatusBarController(QObject):
             self._progress_bar.setRange(0, total)
             self._progress_bar.setValue(max(0, min(current, total)))
         if 0 < current < total:
-            self.show_message(f"Moving… ({current}/{total})")
+            verb = "Deleting" if self._move_context_delete else "Moving"
+            self.show_message(f"{verb}… ({current}/{total})")
         elif total > 0 and current >= total:
-            self.show_message("Finalising move by rescanning…")
+            tail = "delete" if self._move_context_delete else "move"
+            self.show_message(f"Finalising {tail} by rescanning…")
 
     def handle_move_finished(
         self,
@@ -195,5 +203,6 @@ class StatusBarController(QObject):
             self._progress_bar.setVisible(False)
             self._progress_bar.setRange(0, 0)
             self._progress_context = None
+            self._move_context_delete = False
         self.show_message(message, 5000)
 

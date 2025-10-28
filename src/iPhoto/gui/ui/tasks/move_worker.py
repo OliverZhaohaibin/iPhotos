@@ -66,6 +66,15 @@ class MoveWorker(QRunnable):
 
         return self._signals
 
+    @property
+    def is_trash_destination(self) -> bool:
+        """Return ``True`` when files are being moved into the trash folder."""
+
+        # ``_is_trash_destination`` is computed during initialisation so repeated lookups
+        # do not require resolving the paths again.  The facade uses this property to
+        # adjust user-facing status messages ("Delete" vs. "Move").
+        return self._is_trash_destination
+
     def cancel(self) -> None:
         """Request cancellation of the move operation."""
 

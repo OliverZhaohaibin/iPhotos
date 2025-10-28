@@ -197,19 +197,39 @@ class AssetMoveService(QObject):
         if self._asset_list_model.has_pending_move_placeholders():
             self._asset_list_model.rollback_pending_moves()
 
+        delete_operation = worker.is_trash_destination
         if not moved_pairs:
-            message = "No files were moved."
+            message = (
+                "No items were deleted."
+                if delete_operation
+                else "No files were moved."
+            )
         else:
-            label = "file" if len(moved_pairs) == 1 else "files"
+            label = "item" if len(moved_pairs) == 1 else "items"
+            verb = "Deleted" if delete_operation else "Moved"
             if source_ok and destination_ok:
-                message = f"Moved {len(moved_pairs)} {label}."
+                message = f"{verb} {len(moved_pairs)} {label}."
+            elif delete_operation:
+                if source_ok and not destination_ok:
+                    message = (
+                        f"{verb} {len(moved_pairs)} {label}, but updating Recently Deleted failed."
+                    )
+                elif destination_ok and not source_ok:
+                    message = (
+                        f"{verb} {len(moved_pairs)} {label}, but updating the original album failed."
+                    )
+                else:
+                    message = (
+                        f"{verb} {len(moved_pairs)} {label}, but updating the original album and"
+                        " Recently Deleted failed."
+                    )
             elif source_ok or destination_ok:
                 message = (
-                    f"Moved {len(moved_pairs)} {label}, but refreshing one album failed."
+                    f"{verb} {len(moved_pairs)} {label}, but refreshing one album failed."
                 )
             else:
                 message = (
-                    f"Moved {len(moved_pairs)} {label}, but refreshing both albums failed."
+                    f"{verb} {len(moved_pairs)} {label}, but refreshing both albums failed."
                 )
 
         self.moveFinished.emit(source_root, destination_root, success, message)

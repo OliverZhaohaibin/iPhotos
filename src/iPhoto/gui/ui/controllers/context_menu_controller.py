@@ -108,7 +108,7 @@ class ContextMenuController(QObject):
                 QCoreApplication.translate("MainWindow", "Move to")
             )
             delete_action = menu.addAction(
-                QCoreApplication.translate("MainWindow", "Move to Recently Deleted")
+                QCoreApplication.translate("MainWindow", "Delete")
             )
 
             destinations = self._collect_move_targets()
@@ -182,7 +182,7 @@ class ContextMenuController(QObject):
         finally:
             self._selection_controller.set_selection_mode(False)
 
-        self._toast.show_toast("Moved to Recently Deleted")
+        self._toast.show_toast("Deleted selected items.")
         return True
 
     def _execute_restore(self) -> None:
