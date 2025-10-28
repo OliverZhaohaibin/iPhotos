@@ -17,6 +17,10 @@ THUMBNAIL_SEEK_GUARD_SEC: Final[float] = 0.35
 SCHEMA_DIR: Final[Path] = Path(__file__).resolve().parent / "schemas"
 ALBUM_MANIFEST_NAMES: Final[list[str]] = [".iphoto.album.json", ".iPhoto/manifest.json"]
 WORK_DIR_NAME: Final[str] = ".iPhoto"
+# ``RECENTLY_DELETED_DIR_NAME`` designates the folder that stores assets moved to the
+# trash.  Keeping the name centralised avoids subtle mismatches between the backend
+# worker logic and the GUI controllers when they need to locate the collection.
+RECENTLY_DELETED_DIR_NAME: Final[str] = "deleted"
 
 # ---------------------------------------------------------------------------
 # UI interaction constants

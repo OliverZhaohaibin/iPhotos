@@ -9,7 +9,11 @@ from typing import Dict, Iterable, List, Optional
 
 from PySide6.QtCore import QFileSystemWatcher, QObject, QTimer, Signal
 
-from ..config import ALBUM_MANIFEST_NAMES, WORK_DIR_NAME
+from ..config import (
+    ALBUM_MANIFEST_NAMES,
+    RECENTLY_DELETED_DIR_NAME,
+    WORK_DIR_NAME,
+)
 from ..errors import (
     AlbumDepthError,
     AlbumNameConflictError,
@@ -65,6 +69,7 @@ class LibraryManager(QObject):
         self._albums: list[AlbumNode] = []
         self._children: Dict[Path, list[AlbumNode]] = {}
         self._nodes: Dict[Path, AlbumNode] = {}
+        self._deleted_dir: Path | None = None
         self._watcher = QFileSystemWatcher(self)
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
@@ -92,6 +97,7 @@ class LibraryManager(QObject):
         if not normalized.exists() or not normalized.is_dir():
             raise LibraryUnavailableError(f"Library path does not exist: {root}")
         self._root = normalized
+        self._initialize_deleted_dir()
         self._refresh_tree()
 
     def list_albums(self) -> list[AlbumNode]:
@@ -198,6 +204,39 @@ class LibraryManager(QObject):
         self._refresh_tree()
         return self._node_for_path(target)
 
+    def ensure_deleted_directory(self) -> Path:
+        """Create the dedicated trash directory when missing and return it."""
+
+        root = self._require_root()
+        target = root / WORK_DIR_NAME / RECENTLY_DELETED_DIR_NAME
+        if target.exists() and not target.is_dir():
+            raise AlbumOperationError(
+                f"Deleted items path exists but is not a directory: {target}"
+            )
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise AlbumOperationError(
+                f"Could not prepare deleted items folder: {exc}"
+            ) from exc
+        self._deleted_dir = target
+        return target
+
+    def deleted_directory(self) -> Path | None:
+        """Return the path to the trash directory, creating it on demand."""
+
+        if self._root is None:
+            self._deleted_dir = None
+            return None
+        cached = self._deleted_dir
+        if cached is not None and cached.exists():
+            return cached
+        try:
+            return self.ensure_deleted_directory()
+        except AlbumOperationError as exc:
+            self.errorRaised.emit(str(exc))
+            return None
+
     def create_subalbum(self, parent: AlbumNode, name: str) -> AlbumNode:
         if parent.level != 1:
             raise AlbumDepthError("Sub-albums can only be created under top-level albums.")
@@ -261,6 +300,7 @@ class LibraryManager(QObject):
             self._albums = []
             self._children = {}
             self._nodes = {}
+            self._deleted_dir = None
             self._rebuild_watches()
             self.treeUpdated.emit()
             return
@@ -280,6 +320,19 @@ class LibraryManager(QObject):
         self._nodes = nodes
         self._rebuild_watches()
         self.treeUpdated.emit()
+
+    def _initialize_deleted_dir(self) -> None:
+        """Prepare the deleted-items directory while swallowing recoverable errors."""
+
+        if self._root is None:
+            self._deleted_dir = None
+            return
+        try:
+            self.ensure_deleted_directory()
+        except AlbumOperationError as exc:
+            # Creation failures are surfaced to the UI while the library remains usable.
+            self._deleted_dir = None
+            self.errorRaised.emit(str(exc))
 
     def _iter_album_dirs(self, root: Path) -> Iterable[Path]:
         try:

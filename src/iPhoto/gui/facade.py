@@ -8,7 +8,7 @@ from typing import Iterable, List, Optional, Set, TYPE_CHECKING
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
 from .. import app as backend
-from ..errors import IPhotoError
+from ..errors import AlbumOperationError, IPhotoError
 from ..models.album import Album
 from .background_task_manager import BackgroundTaskManager
 from .services import AlbumMetadataService, AssetImportService, AssetMoveService
@@ -309,6 +309,26 @@ class AppFacade(QObject):
         """Move *sources* into *destination* and refresh the relevant albums."""
 
         self._move_service.move_assets(sources, destination)
+
+    def delete_assets(self, sources: Iterable[Path]) -> None:
+        """Move *sources* into the dedicated deleted-items folder."""
+
+        library = self._get_library_manager()
+        if library is None:
+            self.errorRaised.emit("Basic Library has not been configured.")
+            return
+
+        try:
+            deleted_root = library.ensure_deleted_directory()
+        except AlbumOperationError as exc:
+            self.errorRaised.emit(str(exc))
+            return
+
+        normalized = [Path(path) for path in sources]
+        if not normalized:
+            return
+
+        self._move_service.move_assets(normalized, deleted_root)
 
     def toggle_featured(self, ref: str) -> bool:
         """Toggle *ref* in the active album and mirror the change in the library."""
