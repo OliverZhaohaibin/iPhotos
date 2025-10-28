@@ -107,6 +107,9 @@ class ContextMenuController(QObject):
             move_menu = menu.addMenu(
                 QCoreApplication.translate("MainWindow", "Move to")
             )
+            delete_action = menu.addAction(
+                QCoreApplication.translate("MainWindow", "Delete")
+            )
 
             destinations = self._collect_move_targets()
             if destinations:
@@ -120,6 +123,16 @@ class ContextMenuController(QObject):
 
             copy_action.triggered.connect(self._copy_selection_to_clipboard)
             reveal_action.triggered.connect(self._reveal_selection_in_file_manager)
+            is_recently_deleted = self._navigation.is_recently_deleted_view()
+            if is_recently_deleted:
+                delete_action.setVisible(False)
+                move_menu.menuAction().setVisible(False)
+                restore_action = menu.addAction(
+                    QCoreApplication.translate("MainWindow", "Restore")
+                )
+                restore_action.triggered.connect(self._execute_restore)
+            else:
+                delete_action.triggered.connect(self.delete_selection)
 
         # When the user invokes the context menu over an empty area we show album level actions
         # so that the gallery still offers meaningful commands while nothing is selected.
@@ -136,6 +149,67 @@ class ContextMenuController(QObject):
 
         global_pos = self._grid_view.viewport().mapToGlobal(point)
         menu.exec(global_pos)
+
+    def delete_selection(self) -> bool:
+        """Move the current selection into the deleted-items collection."""
+
+        if self._navigation.is_recently_deleted_view():
+            self._status_bar.show_message(
+                "Items inside Recently Deleted cannot be deleted again.",
+                3000,
+            )
+            return False
+
+        selection_model = self._grid_view.selectionModel()
+        selected_indexes = (
+            list(selection_model.selectedIndexes()) if selection_model else []
+        )
+        paths = self._selected_asset_paths()
+        if not paths:
+            self._status_bar.show_message("Select items to delete first.", 3000)
+            return False
+
+        source_model = self._asset_model.source_model()
+        if selected_indexes:
+            source_model.remove_rows(selected_indexes)
+
+        try:
+            self._facade.delete_assets(paths)
+        except Exception:
+            # Rescanning the album restores the rows we removed optimistically.
+            self._facade.rescan_current()
+            raise
+        finally:
+            self._selection_controller.set_selection_mode(False)
+
+        self._toast.show_toast("Deleted selected items.")
+        return True
+
+    def _execute_restore(self) -> None:
+        """Restore the current selection to the original albums recorded in the index."""
+
+        selection_model = self._grid_view.selectionModel()
+        selected_indexes = (
+            list(selection_model.selectedIndexes()) if selection_model else []
+        )
+        paths = self._selected_asset_paths()
+        if not paths:
+            self._status_bar.show_message("Select items to restore first.", 3000)
+            return
+
+        source_model = self._asset_model.source_model()
+        if selected_indexes:
+            source_model.remove_rows(selected_indexes)
+
+        try:
+            self._facade.restore_assets(paths)
+        except Exception:
+            self._facade.rescan_current()
+            raise
+        finally:
+            self._selection_controller.set_selection_mode(False)
+
+        self._toast.show_toast("Restoring items...")
 
     def _copy_selection_to_clipboard(self) -> None:
         """Copy the selected asset file paths into the system clipboard."""

@@ -21,8 +21,11 @@ pytest.importorskip(
 
 from PySide6.QtWidgets import QApplication
 
+from iPhotos.src.iPhoto.cache.index_store import IndexStore
 from iPhotos.src.iPhoto.gui.services.asset_move_service import AssetMoveService
-from iPhotos.src.iPhoto.gui.ui.tasks.move_worker import MoveWorker
+from iPhotos.src.iPhoto.gui.ui.tasks import move_worker as move_worker_module
+from iPhotos.src.iPhoto.gui.ui.tasks.move_worker import MoveSignals, MoveWorker
+from iPhotos.src.iPhoto.library.manager import LibraryManager
 
 
 @pytest.fixture()
@@ -41,6 +44,7 @@ def _create_service(
     task_manager,
     asset_list_model,
     current_album,
+    library_manager=None,
 ) -> AssetMoveService:
     """Convenience helper that instantiates the service under test."""
 
@@ -48,6 +52,7 @@ def _create_service(
         task_manager=task_manager,
         asset_list_model=asset_list_model,
         current_album_getter=current_album,
+        library_manager_getter=(lambda: library_manager),
     )
 
 
@@ -121,14 +126,21 @@ def test_move_assets_submits_worker_and_emits_completion(
     )
 
     results: list[tuple[Path, Path, bool, str]] = []
-    service.moveFinished.connect(lambda src, dest, success, message: results.append((src, dest, success, message)))
+    detailed_results: list[tuple] = []
+
+    service.moveFinished.connect(
+        lambda src, dest, success, message: results.append((src, dest, success, message))
+    )
+    service.moveCompletedDetailed.connect(detailed_results.append)
 
     service.move_assets([asset], destination_root)
 
     # The task manager should receive a worker submission with a unique identifier.
     assert task_manager.submit_task.call_count == 1
     kwargs = task_manager.submit_task.call_args.kwargs
-    assert kwargs["task_id"].startswith(f"move:{source_root}->{destination_root}:")
+    assert kwargs["task_id"].startswith(
+        f"move:move:{source_root}->{destination_root}:"
+    )
     worker = kwargs["worker"]
     assert isinstance(worker, MoveWorker)
 
@@ -136,7 +148,74 @@ def test_move_assets_submits_worker_and_emits_completion(
     moved_pairs = [(asset, destination_root / asset.name)]
     kwargs["on_finished"](source_root, destination_root, moved_pairs, True, True)
 
-    assert results == [(source_root, destination_root, True, "Moved 1 file.")]
+    assert results == [(source_root, destination_root, True, "Moved 1 item.")]
     assert list_model.finalised == [[(asset, destination_root / asset.name)]]
     assert list_model.pending_rolled_back == 0
+    assert detailed_results == [
+        (
+            source_root,
+            destination_root,
+            [(asset, destination_root / asset.name)],
+            True,
+            True,
+            False,
+            False,
+        )
+    ]
+
+
+def test_restore_repopulates_library_index(
+    tmp_path: Path, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restoring from trash should reinsert rows into the library-wide index."""
+
+    library_root = tmp_path / "Library"
+    album_root = library_root / "AlbumA"
+
+    library_root.mkdir()
+    album_root.mkdir(parents=True)
+
+    library_manager = LibraryManager()
+    library_manager.bind_path(library_root)
+    resolved_trash = library_manager.ensure_deleted_directory()
+    assert resolved_trash is not None
+    trash_root = resolved_trash
+
+    asset_name = "IMG_0001.JPG"
+    trashed_asset = trash_root / asset_name
+    trashed_asset.write_bytes(b"stub")
+
+    def _fake_process_media_paths(root: Path, image_paths, video_paths):
+        """Return minimal index rows keyed by their relative path."""
+
+        rows = []
+        for candidate in list(image_paths) + list(video_paths):
+            rows.append({"rel": candidate.resolve().relative_to(root).as_posix()})
+        return rows
+
+    monkeypatch.setattr(move_worker_module, "process_media_paths", _fake_process_media_paths)
+    monkeypatch.setattr(move_worker_module.backend, "pair", lambda _root: None)
+
+    restore_signals = MoveSignals()
+    worker = MoveWorker(
+        [trashed_asset],
+        trash_root,
+        album_root,
+        restore_signals,
+        library_root=library_root,
+        trash_root=trash_root,
+        is_restore=True,
+    )
+
+    worker.run()
+
+    restored_asset = album_root / asset_name
+    assert restored_asset.exists()
+    assert not trashed_asset.exists()
+
+    library_rows = list(IndexStore(library_root).read_all())
+    assert any(row.get("rel") == f"AlbumA/{asset_name}" for row in library_rows)
+
+    album_rows = list(IndexStore(album_root).read_all())
+    assert any(row.get("rel") == asset_name for row in album_rows)
 

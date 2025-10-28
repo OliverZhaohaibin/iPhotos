@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Iterable, Optional, TYPE_CHECKING
 
 from PySide6.QtCore import QModelIndex, QObject, QThreadPool, Qt
+from PySide6.QtGui import QKeyEvent
 
 # ``main_controller`` shares the same import caveat as ``main_window``.  The
 # fallback ensures running the module as a script still locates ``AppContext``.
@@ -137,6 +138,7 @@ class MainController(QObject):
             window.ui.status_bar,
             window.ui.progress_bar,
             window.ui.rescan_action,
+            context,
         )
         # The notification toast confirms clipboard interactions without cluttering
         # the status bar.  It is instantiated once and reused to minimise
@@ -421,6 +423,10 @@ class MainController(QObject):
             self._map_controller.refresh_assets()
             self._map_controller.show_map_view()
             return
+        if title.casefold() == "recently deleted":
+            self._map_controller.hide_map_view()
+            self._navigation.open_recently_deleted()
+            return
         self._map_controller.hide_map_view()
         self._navigation.open_static_node(title)
 
@@ -665,6 +671,37 @@ class MainController(QObject):
 
         self._detail_ui.show_detail_view()
         self._detail_ui.show_placeholder()
+
+    def handle_global_shortcut(self, event: QKeyEvent) -> bool:
+        """Handle application-wide shortcuts that originate from the main window."""
+
+        # Only honour deletion shortcuts while the gallery grid is visible.  This avoids
+        # surprising behaviour when the user is browsing the detail view or secondary
+        # panes that do not expose a multi-selection model.
+        if self._window.ui.view_stack.currentWidget() is not self._window.ui.gallery_page:
+            return False
+
+        # The trash view intentionally blocks deletion.  It will gain a dedicated empty
+        # workflow in a later iteration; for now we avoid deleting files directly from the
+        # collection to keep the data model consistent.
+        if self._navigation.is_recently_deleted_view():
+            return False
+
+        modifiers = event.modifiers() & ~Qt.KeyboardModifier.KeypadModifier
+        key = event.key()
+
+        handled = False
+        if modifiers == Qt.KeyboardModifier.ControlModifier and key == Qt.Key.Key_D:
+            handled = self._context_menu_controller.delete_selection()
+        elif modifiers == Qt.KeyboardModifier.MetaModifier and key in {
+            Qt.Key.Key_Backspace,
+            Qt.Key.Key_Delete,
+        }:
+            handled = self._context_menu_controller.delete_selection()
+
+        if handled:
+            event.accept()
+        return handled
 
     def suspend_playback_for_transition(self) -> bool:
         """Pause active playback so window state changes do not drop frames."""

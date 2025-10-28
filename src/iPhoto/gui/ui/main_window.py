@@ -571,6 +571,9 @@ class MainWindow(QMainWindow):
             if isinstance(focus_widget, (QLineEdit, QTextEdit, QPlainTextEdit)):
                 return super().eventFilter(watched, event)
 
+            if self.controller.handle_global_shortcut(key_event):
+                return True
+
             if self.ui.view_stack.currentWidget() is self.ui.detail_page:
                 if self._handle_detail_view_shortcut(key_event):
                     return True

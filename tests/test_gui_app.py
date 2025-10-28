@@ -32,6 +32,8 @@ from PySide6.QtWidgets import (
 )
 
 from iPhotos.src.iPhoto.gui.facade import AppFacade
+from iPhotos.src.iPhoto.library.manager import LibraryManager
+from iPhotos.src.iPhoto.models.album import Album
 from iPhotos.src.iPhoto.gui.ui.controllers.detail_ui_controller import DetailUIController
 from iPhotos.src.iPhoto.gui.ui.controllers.header_controller import HeaderController
 from iPhotos.src.iPhoto.gui.ui.controllers.player_view_controller import (
@@ -181,6 +183,69 @@ def test_facade_rescan_emits_links(tmp_path: Path, qapp: QApplication) -> None:
     facade.rescan_current()
     qapp.processEvents()
     assert spy.count() >= 1
+
+
+def test_restore_refreshes_library_views(
+    tmp_path: Path, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restores should refresh the library-root dataset when relevant."""
+
+    library_root = tmp_path / "Library"
+    album_root = library_root / "AlbumA"
+    album_root.mkdir(parents=True)
+
+    facade = AppFacade()
+    library = LibraryManager()
+    library.bind_path(library_root)
+    facade.bind_library(library)
+
+    # Pretend the "All Photos" view is active by marking the library root as
+    # the current album.  ``Album.open`` guarantees the work directory exists
+    # and mimics the state produced by :meth:`AppFacade.open_album` in the GUI.
+    facade._current_album = Album.open(library_root)
+
+    refreshed: list[Path] = []
+
+    def _fake_restart(root: Path, announce_index: bool = False) -> None:
+        refreshed.append(root)
+
+    monkeypatch.setattr(facade, "_restart_asset_load", _fake_restart)
+
+    trash_root = library.ensure_deleted_directory()
+    assert trash_root is not None
+
+    def _fake_submit_task(
+        task_id: str,
+        worker,
+        *,
+        finished,
+        error,
+        on_finished,
+        on_error,
+        result_payload,
+        **kwargs,
+    ) -> None:
+        # Execute the completion callback immediately to simulate a finished
+        # rescan without having to spin up a background thread.
+        on_finished(worker.root, True)
+
+    monkeypatch.setattr(facade._task_manager, "submit_task", _fake_submit_task)
+
+    restored_target = album_root / "IMG_0001.JPG"
+    moved_pairs = [(trash_root / "IMG_0001.JPG", restored_target)]
+
+    facade._handle_move_operation_completed(
+        trash_root,
+        restored_target.parent,
+        moved_pairs,
+        True,
+        True,
+        False,
+        True,
+    )
+
+    assert refreshed, "Expected the library-root view to restart its load"
+    assert any(facade._paths_equal(root, library_root) for root in refreshed)
 
 
 def test_asset_model_populates_rows(tmp_path: Path, qapp: QApplication) -> None:

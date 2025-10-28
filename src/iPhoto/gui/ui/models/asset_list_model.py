@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+import os
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
@@ -12,6 +15,7 @@ from PySide6.QtCore import (
     Qt,
     QThreadPool,
     Signal,
+    Slot,
     QTimer,
 )
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPixmap
@@ -28,6 +32,9 @@ from .roles import Roles, role_names
 
 if TYPE_CHECKING:  # pragma: no cover - import only for type checking
     from ...facade import AppFacade
+
+
+logger = logging.getLogger(__name__)
 
 
 class AssetListModel(QAbstractListModel):
@@ -62,11 +69,79 @@ class AssetListModel(QAbstractListModel):
         # with the final filesystem locations once the worker thread completes
         # the move, or to roll back the changes if the operation fails.
         self._pending_move_rows: Dict[str, Tuple[int, str]] = {}
+        # ``_recently_removed_rows`` keeps a bounded cache of the most recently
+        # removed asset metadata so controller workflows can still resolve
+        # information about an item after an optimistic UI update trimmed it
+        # from the live dataset.  This is essential for operations such as
+        # Live Photo deletion where the still image disappears from the grid
+        # before the facade gathers the paired motion clip path.
+        self._recently_removed_rows: "OrderedDict[str, Dict[str, object]]" = (
+            OrderedDict()
+        )
+        self._recently_removed_limit = 256
+        # ``_live_map`` caches the Live Photo pairings stored in ``links.json``
+        # for the currently active album.  Keeping the mapping around lets the
+        # model react to ``linksUpdated`` notifications without having to reload
+        # the entire dataset from disk.
+        self._live_map: Dict[str, Dict[str, object]] = {}
+
+        self._facade.linksUpdated.connect(self.handle_links_updated)
 
     def album_root(self) -> Optional[Path]:
         """Return the path of the currently open album, if any."""
 
         return self._album_root
+
+    def metadata_for_absolute_path(self, path: Path) -> Optional[Dict[str, object]]:
+        """Return the cached metadata row for *path* if it belongs to the model.
+
+        The asset grid frequently passes absolute filesystem paths around when
+        triggering operations such as copy or delete.  Internally the model
+        indexes rows by their path relative to :attr:`_album_root`, so this
+        helper normalises the provided *path* to the same representation and
+        resolves the matching row when possible.  When the file no longer sits
+        inside the current root—because it was moved externally or is part of a
+        transient virtual collection—the method gracefully falls back to a
+        direct absolute comparison so callers still receive metadata whenever it
+        is available.
+        """
+
+        if not self._rows:
+            return None
+
+        album_root = self._album_root
+        try:
+            normalized_path = path.resolve()
+        except OSError:
+            normalized_path = path
+
+        if album_root is not None:
+            try:
+                normalized_root = album_root.resolve()
+            except OSError:
+                normalized_root = album_root
+            try:
+                rel_key = normalized_path.relative_to(normalized_root).as_posix()
+            except ValueError:
+                rel_key = None
+            else:
+                row_index = self._row_lookup.get(rel_key)
+                if row_index is not None and 0 <= row_index < len(self._rows):
+                    return self._rows[row_index]
+
+        normalized_str = str(normalized_path)
+        for row in self._rows:
+            if str(row.get("abs")) == normalized_str:
+                return row
+        # Fall back to the recently removed cache so operations triggered right
+        # after an optimistic removal can still access metadata that is no
+        # longer present in ``self._rows``.  The cache mirrors the structure of
+        # the live dataset, therefore callers can interact with the returned
+        # dictionary exactly as if the row were still part of the model.
+        cached = self._recently_removed_rows.get(normalized_str)
+        if cached is not None:
+            return cached
+        return None
 
     def remove_rows(self, indexes: list[QModelIndex]) -> None:
         """Remove assets referenced by *indexes*, tolerating proxy selections.
@@ -111,11 +186,21 @@ class AssetListModel(QAbstractListModel):
         for row in sorted(source_rows, reverse=True):
             row_data = self._rows[row]
             rel_key = str(row_data["rel"])
+            abs_key = str(row_data.get("abs"))
             self.beginRemoveRows(QModelIndex(), row, row)
             self._rows.pop(row)
             self.endRemoveRows()
             self._row_lookup.pop(rel_key, None)
             self._thumb_cache.pop(rel_key, None)
+            if abs_key:
+                # Stash the removed row metadata before it disappears from the
+                # live dataset so follow-up commands can still discover details
+                # about the asset.  ``OrderedDict`` keeps the cache bounded by
+                # discarding the oldest entry once the limit is exceeded.
+                self._recently_removed_rows[abs_key] = dict(row_data)
+                self._recently_removed_rows.move_to_end(abs_key)
+                if len(self._recently_removed_rows) > self._recently_removed_limit:
+                    self._recently_removed_rows.popitem(last=False)
 
         # Rebuild lookup tables so callers relying on ``_row_lookup`` continue to
         # receive accurate mappings.  Clearing caches keeps the thumbnail loader
@@ -300,6 +385,9 @@ class AssetListModel(QAbstractListModel):
         manifest = self._facade.current_album.manifest if self._facade.current_album else {}
         featured = manifest.get("featured", []) or []
         live_map = load_live_map(root)
+        # Remember the persisted Live Photo metadata so change notifications can
+        # reuse it without incurring additional disk reads.
+        self._live_map = dict(live_map)
 
         try:
             rows, total = compute_asset_rows(root, featured, live_map)
@@ -411,7 +499,9 @@ class AssetListModel(QAbstractListModel):
         self._rows = []
         self._row_lookup = {}
         self._thumb_cache.clear()
+        self._recently_removed_rows.clear()
         self.endResetModel()
+        self._live_map = {}
 
     def update_featured_status(self, rel: str, is_featured: bool) -> None:
         """Update the cached ``featured`` flag for the asset identified by *rel*."""
@@ -444,6 +534,7 @@ class AssetListModel(QAbstractListModel):
         self.beginResetModel()
         self._rows = []
         self._row_lookup = {}
+        self._recently_removed_rows.clear()
         self.endResetModel()
         manifest = self._facade.current_album.manifest if self._facade.current_album else {}
         featured = manifest.get("featured", []) or []
@@ -454,6 +545,9 @@ class AssetListModel(QAbstractListModel):
         signals.error.connect(self._on_loader_error)
 
         live_map = load_live_map(self._album_root)
+        # Store the snapshot so Live Photo metadata can be refreshed when the
+        # backend updates ``links.json`` without requiring a new loader run.
+        self._live_map = dict(live_map)
 
         worker = AssetLoaderWorker(self._album_root, featured, signals, live_map)
         self._loader_worker = worker
@@ -472,6 +566,12 @@ class AssetListModel(QAbstractListModel):
         self._rows.extend(chunk)
         for offset, row_data in enumerate(chunk):
             self._row_lookup[row_data["rel"]] = start_row + offset
+            abs_key = str(row_data.get("abs"))
+            if abs_key:
+                # Remove any stale cache entry so the freshly loaded metadata
+                # takes precedence over historical snapshots retained for
+                # optimistic UI updates.
+                self._recently_removed_rows.pop(abs_key, None)
         self.endInsertRows()
 
     def _on_loader_progress(self, root: Path, current: int, total: int) -> None:
@@ -651,3 +751,207 @@ class AssetListModel(QAbstractListModel):
         painter.end()
         self._placeholder_cache[key] = canvas
         return canvas
+
+    @Slot(Path)
+    def handle_links_updated(self, root: Path) -> None:
+        """React to :mod:`links.json` refreshes triggered by the backend.
+
+        The facade emits :pyattr:`linksUpdated` whenever background workers rewrite
+        ``links.json`` for the active album.  Live Photo badges depend on the
+        relationships stored in that file, so the view needs to update as soon as
+        the metadata changes.  Updating happens in two stages:
+
+        * Refresh the in-memory Live Photo cache immediately so rows that are
+          already visible flip their badge without waiting for a worker round-trip.
+        * If a loader is currently ingesting data, cancel it and request a fresh
+          pass once the cancellation has propagated.  Otherwise schedule a new load
+          straight away.  Using :func:`QTimer.singleShot` keeps the reload
+          asynchronous, which prevents recursive model resets inside the signal
+          delivery stack.
+        """
+
+        if not self._album_root:
+            logger.debug(
+                "AssetListModel: linksUpdated ignored because no album root is active."
+            )
+            return
+
+        album_root = self._normalise_for_compare(self._album_root)
+        updated_root = self._normalise_for_compare(Path(root))
+
+        if not self._links_update_targets_current_view(album_root, updated_root):
+            logger.debug(
+                "AssetListModel: linksUpdated for %s does not affect current root %s.",
+                updated_root,
+                album_root,
+            )
+            return
+
+        logger.debug(
+            "AssetListModel: linksUpdated for %s requires reloading view rooted at %s.",
+            updated_root,
+            album_root,
+        )
+
+        if self._rows:
+            # ``_reload_live_metadata`` mutates cached rows in place so the view
+            # reflects the latest Live Photo pairings without delay.
+            self._reload_live_metadata()
+
+        if self._loader_worker is not None:
+            # ``start_load`` also cancels running workers, but we want to avoid
+            # resetting the model twice.  Mark the reload intention and cancel the
+            # worker from here so ``_on_loader_finished`` can honour the request
+            # once the background thread exits.
+            self._pending_reload = True
+            if not self._loader_worker.cancelled:
+                self._loader_worker.cancel()
+            return
+
+        if not self._pending_reload:
+            QTimer.singleShot(0, self.start_load)
+
+    def _links_update_targets_current_view(
+        self, album_root: Path, updated_root: Path
+    ) -> bool:
+        """Return ``True`` when ``links.json`` updates should refresh the model.
+
+        The method compares the normalised path of the dataset currently exposed
+        by the model with the path for which the backend rebuilt ``links.json``.
+        A refresh is required in two situations:
+
+        * The backend updated ``links.json`` for the exact same root that feeds
+          the model.
+        * The model shows a library-wide view (for example "All Photos" or
+          "Live Photos") and the backend refreshed ``links.json`` for an album
+          living under that library root.
+
+        Normalising via :func:`os.path.realpath` and :func:`os.path.normcase`
+        ensures that comparisons remain stable across platforms and symbolic
+        link setups where the same directory may be referenced through different
+        aliases.
+        """
+
+        if album_root == updated_root:
+            return True
+
+        return self._is_descendant_path(updated_root, album_root)
+
+    @staticmethod
+    def _is_descendant_path(path: Path, candidate_root: Path) -> bool:
+        """Return ``True`` when *path* is located under *candidate_root*.
+
+        The helper treats equality as a positive match so callers can avoid
+        special casing.  ``Path.parents`` yields every ancestor of *path*, making
+        it a convenient way to check the relationship without manual string
+        operations that could break across platforms.
+        """
+
+        if path == candidate_root:
+            return True
+
+        return candidate_root in path.parents
+
+    @staticmethod
+    def _normalise_for_compare(path: Path) -> Path:
+        """Return a normalised ``Path`` suitable for cross-platform comparisons.
+
+        ``Path.resolve`` is insufficient on its own because it preserves the
+        original casing on case-insensitive filesystems.  Combining
+        :func:`os.path.realpath` with :func:`os.path.normcase` yields a canonical
+        representation that collapses symbolic links and performs the necessary
+        case folding so that two references to the same directory compare equal
+        regardless of how they were produced.
+        """
+
+        try:
+            resolved = os.path.realpath(path)
+        except OSError:
+            resolved = str(path)
+        return Path(os.path.normcase(resolved))
+
+    def _reload_live_metadata(self) -> None:
+        """Re-read ``links.json`` and update cached Live Photo roles."""
+
+        if not self._album_root or not self._rows:
+            return
+
+        live_map = load_live_map(self._album_root)
+        self._live_map = dict(live_map)
+
+        updated_rows: List[int] = []
+        album_root = self._normalise_path(self._album_root)
+
+        for row_index, row in enumerate(self._rows):
+            rel = str(row.get("rel", ""))
+            if not rel:
+                continue
+
+            info = self._live_map.get(rel)
+            new_is_live = False
+            new_motion_rel: Optional[str] = None
+            new_motion_abs: Optional[str] = None
+            new_group_id: Optional[str] = None
+
+            if isinstance(info, dict):
+                group_id = info.get("id")
+                if isinstance(group_id, str):
+                    new_group_id = group_id
+                elif group_id is not None:
+                    new_group_id = str(group_id)
+
+                if info.get("role") == "still":
+                    motion_rel = info.get("motion")
+                    if isinstance(motion_rel, str) and motion_rel:
+                        new_motion_rel = motion_rel
+                        try:
+                            new_motion_abs = str((album_root / motion_rel).resolve())
+                        except OSError:
+                            # ``resolve`` can fail if the filesystem entry has
+                            # just been created and metadata propagation is
+                            # still underway.  Fall back to a best-effort
+                            # absolute path so the UI can continue rendering a
+                            # valid hyperlink.
+                            new_motion_abs = str(album_root / motion_rel)
+                        new_is_live = True
+
+            previous_is_live = bool(row.get("is_live", False))
+            previous_motion_rel = row.get("live_motion")
+            previous_motion_abs = row.get("live_motion_abs")
+            previous_group_id = row.get("live_group_id")
+
+            if (
+                previous_is_live == new_is_live
+                and (previous_motion_rel or None) == new_motion_rel
+                and (previous_motion_abs or None) == new_motion_abs
+                and (previous_group_id or None) == new_group_id
+            ):
+                continue
+
+            row["is_live"] = new_is_live
+            row["live_motion"] = new_motion_rel
+            row["live_motion_abs"] = new_motion_abs
+            row["live_group_id"] = new_group_id
+            updated_rows.append(row_index)
+
+        if not updated_rows:
+            return
+
+        roles_to_refresh = [
+            Roles.IS_LIVE,
+            Roles.LIVE_GROUP_ID,
+            Roles.LIVE_MOTION_REL,
+            Roles.LIVE_MOTION_ABS,
+        ]
+        for row_index in updated_rows:
+            model_index = self.index(row_index, 0)
+            self.dataChanged.emit(model_index, model_index, roles_to_refresh)
+
+    @staticmethod
+    def _normalise_path(path: Path) -> Path:
+        """Return a consistently resolved form of *path* for comparisons."""
+
+        try:
+            return path.resolve()
+        except OSError:
+            return path

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Iterable, List, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from PySide6.QtCore import QObject, QRunnable, Signal
 
@@ -40,6 +40,10 @@ class MoveWorker(QRunnable):
         source_root: Path,
         destination_root: Path,
         signals: MoveSignals,
+        *,
+        library_root: Optional[Path] = None,
+        trash_root: Optional[Path] = None,
+        is_restore: bool = False,
     ) -> None:
         super().__init__()
         self.setAutoDelete(False)
@@ -48,12 +52,41 @@ class MoveWorker(QRunnable):
         self._destination_root = Path(destination_root)
         self._signals = signals
         self._cancel_requested = False
+        self._library_root = self._resolve_optional(library_root)
+        self._trash_root = self._resolve_optional(trash_root)
+        self._destination_resolved = self._resolve_optional(self._destination_root)
+        # ``_is_restore`` distinguishes restore workflows (moving files out of the
+        # trash) from ordinary moves and deletions.  The worker needs this flag to
+        # avoid annotating the destination index with ``original_rel_path`` during
+        # restore operations because the receiving album should keep its standard
+        # schema.
+        self._is_restore = bool(is_restore)
+        self._is_trash_destination = bool(
+            self._destination_resolved
+            and self._trash_root
+            and self._destination_resolved == self._trash_root
+        )
 
     @property
     def signals(self) -> MoveSignals:
         """Expose the signal container to callers."""
 
         return self._signals
+
+    @property
+    def is_trash_destination(self) -> bool:
+        """Return ``True`` when files are being moved into the trash folder."""
+
+        # ``_is_trash_destination`` is computed during initialisation so repeated lookups
+        # do not require resolving the paths again.  The facade uses this property to
+        # adjust user-facing status messages ("Delete" vs. "Move").
+        return self._is_trash_destination
+
+    @property
+    def is_restore_operation(self) -> bool:
+        """Return ``True`` when the worker is performing a restore from trash."""
+
+        return self._is_restore
 
     def cancel(self) -> None:
         """Request cancellation of the move operation."""
@@ -170,8 +203,113 @@ class MoveWorker(QRunnable):
         new_rows = list(
             process_media_paths(self._destination_root, image_paths, video_paths)
         )
+        if self._is_trash_destination and not self._is_restore:
+            if self._library_root is None:
+                raise IPhotoError(
+                    "Library root is required to annotate trash index entries."
+                )
+            source_lookup: Dict[str, Path] = {}
+            for original, target in moved:
+                target_key = self._normalised_string(target)
+                if target_key:
+                    source_lookup[target_key] = original
+
+            annotated_rows: List[Dict[str, object]] = []
+            for row in new_rows:
+                rel_value = row.get("rel") if isinstance(row, dict) else None
+                if not isinstance(rel_value, str):
+                    annotated_rows.append(row)
+                    continue
+                absolute_target = self._destination_root / rel_value
+                target_key = self._normalised_string(absolute_target)
+                original_path = source_lookup.get(target_key) if target_key else None
+                if original_path is None:
+                    annotated_rows.append(row)
+                    continue
+                original_relative = self._library_relative(original_path)
+                if original_relative is None:
+                    annotated_rows.append(row)
+                    continue
+                # Persist the original library-relative location so restore operations can
+                # return the asset to its previous album. The value is relative to the
+                # Basic Library root which keeps the reference stable even when album
+                # directories are renamed after the deletion.
+                enriched = dict(row)
+                enriched["original_rel_path"] = original_relative
+                annotated_rows.append(enriched)
+            new_rows = annotated_rows
         store.append_rows(new_rows)
         backend.pair(self._destination_root)
+
+        # Restores initiated from the virtual "All Photos" / "Live Photos" views remove
+        # entries from the library-root index before the files land in the trash.  Bringing
+        # those assets back therefore requires populating both the concrete album index and
+        # the library aggregate; otherwise the global collections would remain stale until the
+        # user triggers a full rescan.  The following block mirrors the destination update for
+        # the Basic Library root so restores show up immediately in library-scoped filters.
+        if self._is_restore and self._library_root is not None:
+            try:
+                destination_resolved = self._destination_root.resolve()
+            except OSError:
+                destination_resolved = self._destination_root
+            try:
+                library_resolved = self._library_root.resolve()
+            except OSError:
+                library_resolved = self._library_root
+
+            if destination_resolved != library_resolved:
+                library_image_paths: List[Path] = []
+                library_video_paths: List[Path] = []
+                for candidate in image_paths:
+                    if self._library_relative(candidate) is not None:
+                        library_image_paths.append(candidate)
+                for candidate in video_paths:
+                    if self._library_relative(candidate) is not None:
+                        library_video_paths.append(candidate)
+
+                if library_image_paths or library_video_paths:
+                    library_store = IndexStore(self._library_root)
+                    library_rows = list(
+                        process_media_paths(
+                            self._library_root, library_image_paths, library_video_paths
+                        )
+                    )
+                    library_store.append_rows(library_rows)
+                    backend.pair(self._library_root)
+
+    def _resolve_optional(self, path: Optional[Path]) -> Optional[Path]:
+        """Resolve *path* defensively, returning ``None`` when unavailable."""
+
+        if path is None:
+            return None
+        try:
+            return path.resolve()
+        except OSError:
+            return path
+
+    def _normalised_string(self, path: Path) -> Optional[str]:
+        """Return a stable string identifier for *path* suitable for lookups."""
+
+        try:
+            resolved = path.resolve()
+        except OSError:
+            resolved = path
+        return str(resolved)
+
+    def _library_relative(self, original_path: Path) -> Optional[str]:
+        """Compute the original path relative to the library root when possible."""
+
+        library_root = self._library_root
+        if library_root is None:
+            return None
+        try:
+            relative = original_path.resolve().relative_to(library_root)
+        except (OSError, ValueError):
+            try:
+                relative = original_path.relative_to(library_root)
+            except ValueError:
+                return None
+        return relative.as_posix()
 
 
 __all__ = ["MoveSignals", "MoveWorker"]

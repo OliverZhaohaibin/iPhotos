@@ -14,6 +14,7 @@ try:  # pragma: no cover - path-sensitive import
 except ImportError:  # pragma: no cover - executed in script mode
     from iPhotos.src.iPhoto.appctx import AppContext
 from ...facade import AppFacade
+from ...errors import AlbumOperationError
 from ..models.asset_model import AssetModel
 from ..widgets.album_sidebar import AlbumSidebar
 from ..ui_main_window import ChromeStatusBar
@@ -107,9 +108,42 @@ class NavigationController:
 
     def handle_album_opened(self, root: Path) -> None:
         library_root = self._context.library.root()
+        normalized_static = self._static_selection.casefold() if self._static_selection else ""
+
         if self._static_selection and library_root == root:
             title = self._static_selection
             self._sidebar.select_static_node(self._static_selection)
+        elif (
+            self._static_selection
+            and normalized_static == "recently deleted"
+        ):
+            deleted_root = self._context.library.deleted_directory()
+            is_deleted_target = False
+            if deleted_root is not None:
+                try:
+                    deleted_resolved = deleted_root.resolve()
+                except OSError:
+                    deleted_resolved = deleted_root
+                try:
+                    root_resolved = root.resolve()
+                except OSError:
+                    root_resolved = root
+                is_deleted_target = deleted_resolved == root_resolved
+            if is_deleted_target:
+                title = self._static_selection
+                self._sidebar.select_static_node(self._static_selection)
+                self._asset_model.set_filter_mode(None)
+                self._album_label.setText(f"{title} — {root}")
+                self.update_status()
+                return
+            title = (
+                self._facade.current_album.manifest.get("title")
+                if self._facade.current_album
+                else root.name
+            )
+            self._sidebar.select_path(root)
+            self._static_selection = None
+            self._asset_model.set_filter_mode(None)
         else:
             title = (
                 self._facade.current_album.manifest.get("title")
@@ -143,6 +177,33 @@ class NavigationController:
         """Activate the Location view without forcing the gallery grid."""
 
         self.open_static_collection("Location", None, show_gallery=False)
+
+    def open_recently_deleted(self) -> None:
+        """Open the trash collection while ensuring the backing folder exists."""
+
+        root = self._context.library.root()
+        if root is None:
+            self._dialog.bind_library_dialog()
+            return
+
+        try:
+            deleted_root = self._context.library.ensure_deleted_directory()
+        except AlbumOperationError as exc:
+            self._dialog.show_error(str(exc))
+            return
+
+        self._last_open_was_refresh = False
+        self._view_controller.restore_default_gallery()
+        self._view_controller.show_gallery_view()
+        self._asset_model.set_filter_mode(None)
+        self._static_selection = "Recently Deleted"
+
+        album = self._facade.open_album(deleted_root)
+        if album is None:
+            self._static_selection = None
+            return
+
+        album.manifest = {**album.manifest, "title": "Recently Deleted"}
 
     def open_static_collection(
         self,
@@ -268,4 +329,12 @@ class NavigationController:
         return (
             self._static_selection.casefold()
             == AlbumSidebar.ALL_PHOTOS_TITLE.casefold()
+        )
+
+    def is_recently_deleted_view(self) -> bool:
+        """Return ``True`` when the trash collection is the active view."""
+
+        return bool(
+            self._static_selection
+            and self._static_selection.casefold() == "recently deleted"
         )

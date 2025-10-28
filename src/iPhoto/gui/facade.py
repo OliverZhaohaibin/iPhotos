@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import uuid
+from collections import defaultdict
 from pathlib import Path
-from typing import Iterable, List, Optional, Set, TYPE_CHECKING
+from typing import Dict, Iterable, List, Optional, Set, TYPE_CHECKING
 
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
 from .. import app as backend
-from ..errors import IPhotoError
+from ..errors import AlbumOperationError, IPhotoError
 from ..models.album import Album
 from .background_task_manager import BackgroundTaskManager
 from .services import AlbumMetadataService, AssetImportService, AssetMoveService
 from .ui.tasks.scanner_worker import ScannerSignals, ScannerWorker
+from .ui.tasks.rescan_worker import RescanSignals, RescanWorker
 
 if TYPE_CHECKING:
     from ..library.manager import LibraryManager
@@ -77,9 +80,13 @@ class AppFacade(QObject):
             task_manager=self._task_manager,
             asset_list_model=self._asset_list_model,
             current_album_getter=lambda: self._current_album,
+            library_manager_getter=self._get_library_manager,
             parent=self,
         )
         self._move_service.errorRaised.connect(self._on_service_error)
+        self._move_service.moveCompletedDetailed.connect(
+            self._handle_move_operation_completed
+        )
 
     @Slot(str)
     def _on_service_error(self, message: str) -> None:
@@ -310,6 +317,184 @@ class AppFacade(QObject):
 
         self._move_service.move_assets(sources, destination)
 
+    def delete_assets(self, sources: Iterable[Path]) -> None:
+        """Move *sources* into the dedicated deleted-items folder."""
+
+        library = self._get_library_manager()
+        if library is None:
+            self.errorRaised.emit("Basic Library has not been configured.")
+            return
+
+        try:
+            deleted_root = library.ensure_deleted_directory()
+        except AlbumOperationError as exc:
+            self.errorRaised.emit(str(exc))
+            return
+
+        def _normalize(path: Path) -> Path:
+            """Resolve *path* for stable comparisons while tolerating I/O errors."""
+
+            try:
+                return path.resolve()
+            except OSError:
+                return path
+
+        normalized: List[Path] = []
+        seen: Set[str] = set()
+        for raw_path in sources:
+            candidate = _normalize(Path(raw_path))
+            key = str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(candidate)
+
+        if not normalized:
+            return
+
+        # Extend the deletion payload with Live Photo motion clips so that moving the still
+        # automatically collects its paired ``.mov`` asset.  The list model keeps the metadata
+        # for every loaded asset, allowing us to query the Live Photo role without having to
+        # replicate the pairing logic here.
+        model = self._asset_list_model
+        # Extend the restore payload with any Live Photo motion clips that belong to the
+        # selection so the pair returns to the library together.
+        for still_path in list(normalized):
+            metadata = model.metadata_for_absolute_path(still_path)
+            if not metadata or not metadata.get("is_live"):
+                continue
+            motion_raw = metadata.get("live_motion_abs")
+            if not motion_raw:
+                continue
+            motion_path = _normalize(Path(str(motion_raw)))
+            motion_key = str(motion_path)
+            if motion_key not in seen:
+                seen.add(motion_key)
+                normalized.append(motion_path)
+
+        self._move_service.move_assets(normalized, deleted_root, operation="delete")
+
+    def restore_assets(self, sources: Iterable[Path]) -> None:
+        """Return trashed assets in *sources* to their original albums."""
+
+        library = self._get_library_manager()
+        if library is None:
+            self.errorRaised.emit("Basic Library has not been configured.")
+            return
+
+        library_root = library.root()
+        if library_root is None:
+            self.errorRaised.emit("Basic Library has not been configured.")
+            return
+
+        trash_root = library.deleted_directory()
+        if trash_root is None:
+            self.errorRaised.emit("Recently Deleted folder is unavailable.")
+            return
+
+        def _normalize(path: Path) -> Path:
+            """Resolve *path* for comparisons while tolerating resolution errors."""
+
+            try:
+                return path.resolve()
+            except OSError:
+                return path
+
+        normalized: List[Path] = []
+        seen: Set[str] = set()
+        for raw_path in sources:
+            candidate = _normalize(Path(raw_path))
+            key = str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            if not candidate.exists():
+                self.errorRaised.emit(f"File not found: {candidate}")
+                continue
+            try:
+                candidate.relative_to(trash_root)
+            except ValueError:
+                self.errorRaised.emit(
+                    f"Selection is outside Recently Deleted: {candidate}"
+                )
+                continue
+            normalized.append(candidate)
+
+        if not normalized:
+            return
+
+        model = self._asset_list_model
+        for still_path in list(normalized):
+            metadata = model.metadata_for_absolute_path(still_path)
+            if not metadata or not metadata.get("is_live"):
+                continue
+            motion_raw = metadata.get("live_motion_abs")
+            if not motion_raw:
+                continue
+            motion_path = _normalize(Path(str(motion_raw)))
+            motion_key = str(motion_path)
+            if motion_key not in seen and motion_path.exists():
+                seen.add(motion_key)
+                try:
+                    motion_path.relative_to(trash_root)
+                except ValueError:
+                    continue
+                normalized.append(motion_path)
+
+        index_rows = list(backend.IndexStore(trash_root).read_all())
+        row_lookup: Dict[str, dict] = {}
+        for row in index_rows:
+            if not isinstance(row, dict):
+                continue
+            rel_value = row.get("rel")
+            if not isinstance(rel_value, str):
+                continue
+            abs_candidate = trash_root / rel_value
+            key = str(_normalize(abs_candidate))
+            row_lookup[key] = row
+
+        # ``grouped`` collects the restore requests keyed by their target album directory so
+        # that each batch can be forwarded to the existing move service unchanged.
+        grouped: Dict[Path, List[Path]] = defaultdict(list)
+        for path in normalized:
+            try:
+                key = str(_normalize(path))
+                row = row_lookup.get(key)
+                if not row:
+                    raise LookupError("metadata unavailable")
+                original_rel = row.get("original_rel_path")
+                if not isinstance(original_rel, str) or not original_rel:
+                    raise KeyError("original_rel_path")
+                destination_path = library_root / original_rel
+                destination_root = destination_path.parent
+                destination_root.mkdir(parents=True, exist_ok=True)
+            except LookupError:
+                self.errorRaised.emit(
+                    f"Missing index metadata for {path.name}; skipping restore."
+                )
+                continue
+            except KeyError:
+                self.errorRaised.emit(
+                    f"Original location is unknown for {path.name}; skipping restore."
+                )
+                continue
+            except OSError as exc:
+                self.errorRaised.emit(
+                    f"Could not prepare restore destination '{destination_root}': {exc}"
+                )
+                continue
+            grouped[destination_root].append(path)
+
+        if not grouped:
+            return
+
+        for destination_root, paths in grouped.items():
+            self._move_service.move_assets(
+                paths,
+                destination_root,
+                operation="restore",
+            )
+
     def toggle_featured(self, ref: str) -> bool:
         """Toggle *ref* in the active album and mirror the change in the library."""
 
@@ -436,3 +621,173 @@ class AppFacade(QObject):
             if success:
                 self.indexUpdated.emit(root)
                 self.linksUpdated.emit(root)
+
+    @Slot(Path, Path, list, bool, bool, bool, bool)
+    def _handle_move_operation_completed(
+        self,
+        source_root: Path,
+        _destination_root: Path,
+        moved_pairs: list,
+        _source_ok: bool,
+        destination_ok: bool,
+        _is_trash_destination: bool,
+        is_restore_operation: bool,
+    ) -> None:
+        """Refresh destination albums after a successful restore operation."""
+
+        if not is_restore_operation or not destination_ok or not moved_pairs:
+            return
+
+        library = self._get_library_manager()
+        if library is None:
+            return
+
+        trash_root = library.deleted_directory()
+        if trash_root is None:
+            return
+
+        if not self._paths_equal(source_root, trash_root):
+            # Only handle restores that originate from the managed trash
+            # directory.  Standard move and delete operations follow the
+            # existing code paths that rely on filesystem watcher updates.
+            return
+
+        library_root = library.root()
+        library_root_normalised = (
+            self._normalise_path(library_root) if library_root is not None else None
+        )
+
+        unique_album_roots: dict[str, Path] = {}
+        for pair in moved_pairs:
+            if not isinstance(pair, (tuple, list)) or len(pair) != 2:
+                continue
+            _, destination = pair
+            album_root = Path(destination).parent
+            normalised_album = self._normalise_path(album_root)
+            if library_root_normalised is not None:
+                try:
+                    normalised_album.relative_to(library_root_normalised)
+                except ValueError:
+                    continue
+            key = str(normalised_album)
+            if key not in unique_album_roots:
+                unique_album_roots[key] = normalised_album
+
+        if not unique_album_roots:
+            return
+
+        for album_root in unique_album_roots.values():
+            self._refresh_restored_album(album_root, library_root)
+
+    def _refresh_restored_album(self, album_root: Path, library_root: Optional[Path]) -> None:
+        """Queue a background rescan for *album_root* to keep the UI responsive.
+
+        ``library_root`` is forwarded so the method can determine whether the
+        "All Photos"/"Live Photos" composite view—whose dataset is rooted at
+        the Basic Library directory—needs to refresh alongside the concrete
+        album that received the restored files.  This avoids leaving the
+        library-wide views stale after a restore that originated from those
+        virtual collections.
+        """
+
+        album_root = Path(album_root)
+        if not album_root.exists():
+            return
+
+        library_root_path = Path(library_root) if library_root is not None else None
+
+        signals = RescanSignals()
+        worker = RescanWorker(album_root, signals)
+        task_id = self._build_restore_rescan_task_id(album_root)
+
+        def _on_finished(path: Path, succeeded: bool) -> None:
+            """Emit index updates once the rescan completes successfully."""
+
+            if not succeeded:
+                return
+
+            self.indexUpdated.emit(path)
+            self.linksUpdated.emit(path)
+
+            if self._current_album and self._paths_equal(self._current_album.root, path):
+                # ``_restart_asset_load`` expects the canonical album reference, not the
+                # normalised path that may come back from the worker, to avoid needless
+                # detaches of the existing selection model.
+                self._restart_asset_load(self._current_album.root)
+                return
+
+            if (
+                library_root_path is not None
+                and self._current_album is not None
+                and self._paths_equal(self._current_album.root, library_root_path)
+                and self._path_is_descendant(path, library_root_path)
+            ):
+                # When a restore occurs while a library-scoped virtual view (such as
+                # "All Photos" or "Live Photos") is active the asset model is rooted at
+                # the Basic Library directory.  Refresh that dataset so recently
+                # restored Live Photos immediately reappear without requiring a manual
+                # rescan from the user.
+                self._restart_asset_load(self._current_album.root)
+
+        def _on_error(path: Path, message: str) -> None:
+            """Relay background failures with contextual information."""
+
+            self.errorRaised.emit(f"Failed to refresh '{path.name}': {message}")
+
+        self._task_manager.submit_task(
+            task_id=task_id,
+            worker=worker,
+            finished=signals.finished,
+            error=signals.error,
+            pause_watcher=False,
+            on_finished=_on_finished,
+            on_error=_on_error,
+            result_payload=lambda path, succeeded: (path, succeeded),
+        )
+
+    def _build_restore_rescan_task_id(self, album_root: Path) -> str:
+        """Return a stable yet unique identifier for restore-triggered rescans."""
+
+        normalised = self._normalise_path(album_root)
+        return f"restore-rescan:{normalised}:{uuid.uuid4().hex}"
+
+    def _normalise_path(self, path: Optional[Path]) -> Path:
+        """Return a consistently resolved variant of *path* for comparisons."""
+
+        if path is None:
+            raise ValueError("Cannot normalise a null path.")
+        try:
+            return path.resolve()
+        except OSError:
+            return path
+
+    def _paths_equal(self, left: Path, right: Path) -> bool:
+        """Return ``True`` when *left* and *right* refer to the same location."""
+
+        if left == right:
+            return True
+        return self._normalise_path(left) == self._normalise_path(right)
+
+    def _path_is_descendant(self, candidate: Path, ancestor: Path) -> bool:
+        """Return ``True`` when *candidate* is equal to or contained within *ancestor*.
+
+        Both paths are normalised before comparison so that symbolic links and
+        platform-specific casing differences do not cause false negatives.  The
+        helper tolerates resolution errors and simply reports ``False`` when the
+        relationship cannot be established reliably.
+        """
+
+        try:
+            candidate_norm = self._normalise_path(candidate)
+            ancestor_norm = self._normalise_path(ancestor)
+        except ValueError:
+            return False
+
+        if candidate_norm == ancestor_norm:
+            return True
+
+        try:
+            candidate_norm.relative_to(ancestor_norm)
+        except ValueError:
+            return False
+        return True

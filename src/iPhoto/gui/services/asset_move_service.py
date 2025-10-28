@@ -12,6 +12,7 @@ from ..background_task_manager import BackgroundTaskManager
 from ..ui.tasks.move_worker import MoveSignals, MoveWorker
 
 if TYPE_CHECKING:
+    from ...library.manager import LibraryManager
     from ...models.album import Album
     from ..ui.models.asset_list_model import AssetListModel
 
@@ -22,6 +23,13 @@ class AssetMoveService(QObject):
     moveStarted = Signal(Path, Path)
     moveProgress = Signal(Path, int, int)
     moveFinished = Signal(Path, Path, bool, str)
+    # ``moveCompletedDetailed`` mirrors the worker payload so higher-level
+    # components (such as :class:`AppFacade`) can react to restore operations
+    # with additional bookkeeping, e.g. refreshing album views.  Qt's signal
+    # type system does not understand ``list[tuple[Path, Path]]`` so we emit
+    # the raw ``list`` that contains :class:`pathlib.Path` pairs alongside the
+    # worker flags.
+    moveCompletedDetailed = Signal(Path, Path, list, bool, bool, bool, bool)
     errorRaised = Signal(str)
 
     def __init__(
@@ -30,15 +38,36 @@ class AssetMoveService(QObject):
         task_manager: BackgroundTaskManager,
         asset_list_model: "AssetListModel",
         current_album_getter: Callable[[], Optional["Album"]],
+        library_manager_getter: Callable[[], Optional["LibraryManager"]],
         parent: Optional[QObject] = None,
     ) -> None:
         super().__init__(parent)
         self._task_manager = task_manager
         self._asset_list_model = asset_list_model
         self._current_album_getter = current_album_getter
+        self._library_manager_getter = library_manager_getter
 
-    def move_assets(self, sources: Iterable[Path], destination: Path) -> None:
-        """Validate *sources* and schedule a worker to move them into *destination*."""
+    def move_assets(
+        self,
+        sources: Iterable[Path],
+        destination: Path,
+        *,
+        operation: str = "move",
+    ) -> None:
+        """Validate *sources* and queue a worker for the requested *operation*.
+
+        ``operation`` accepts ``"move"`` (default), ``"delete"`` when moving items
+        into Recently Deleted, and ``"restore"`` when returning files from the trash
+        to their original albums.  The distinction matters because restore jobs must
+        avoid annotating the destination index with ``original_rel_path`` entries
+        while delete jobs must do the opposite.
+        """
+
+        operation_normalized = operation.lower()
+        if operation_normalized not in {"move", "delete", "restore"}:
+            self.errorRaised.emit(f"Unsupported move operation: {operation}")
+            self._asset_list_model.rollback_pending_moves()
+            return
 
         album = self._current_album_getter()
         if album is None:
@@ -114,8 +143,81 @@ class AssetMoveService(QObject):
         signals.started.connect(self._on_move_started)
         signals.progress.connect(self._on_move_progress)
 
-        worker = MoveWorker(normalized, source_root, destination_root, signals)
-        unique_task_id = f"move:{source_root}->{destination_root}:{uuid.uuid4().hex}"
+        library_root: Optional[Path] = None
+        trash_root: Optional[Path] = None
+        library_manager = self._library_manager_getter()
+        if library_manager is not None:
+            library_root = library_manager.root()
+            trash_candidate = library_manager.deleted_directory()
+            if trash_candidate is not None:
+                try:
+                    trash_resolved = trash_candidate.resolve()
+                except OSError:
+                    trash_resolved = trash_candidate
+                try:
+                    destination_resolved = destination_root.resolve()
+                except OSError:
+                    destination_resolved = destination_root
+                if destination_resolved == trash_resolved:
+                    trash_root = trash_candidate
+
+        is_delete_operation = operation_normalized == "delete"
+        is_restore_operation = operation_normalized == "restore"
+
+        if is_delete_operation and library_root is None:
+            self._asset_list_model.rollback_pending_moves()
+            self.errorRaised.emit(
+                "Basic Library root is unavailable; cannot delete items safely."
+            )
+            return
+
+        if is_delete_operation and trash_root is None:
+            self._asset_list_model.rollback_pending_moves()
+            self.errorRaised.emit("Recently Deleted folder is unavailable.")
+            return
+
+        if is_restore_operation:
+            if trash_root is None:
+                trash_root = library_manager.deleted_directory() if library_manager else None
+            if trash_root is None:
+                self._asset_list_model.rollback_pending_moves()
+                self.errorRaised.emit("Recently Deleted folder is unavailable.")
+                return
+            try:
+                source_resolved = source_root.resolve()
+            except OSError:
+                source_resolved = source_root
+            try:
+                trash_resolved = trash_root.resolve()
+            except OSError:
+                trash_resolved = trash_root
+            if source_resolved != trash_resolved:
+                self._asset_list_model.rollback_pending_moves()
+                self.errorRaised.emit(
+                    "Restore operations must be triggered from Recently Deleted."
+                )
+                return
+            try:
+                destination_resolved = destination_root.resolve()
+            except OSError:
+                destination_resolved = destination_root
+            if destination_resolved == trash_resolved:
+                self._asset_list_model.rollback_pending_moves()
+                self.errorRaised.emit("Cannot restore items back into Recently Deleted.")
+                return
+
+        worker = MoveWorker(
+            normalized,
+            source_root,
+            destination_root,
+            signals,
+            library_root=library_root,
+            trash_root=trash_root,
+            is_restore=is_restore_operation,
+        )
+        unique_task_id = (
+            f"move:{operation_normalized}:{source_root}->{destination_root}:{uuid.uuid4().hex}"
+        )
         # Move requests share their origin and target directories, so we need a unique
         # suffix on the identifier to allow queuing multiple operations without the
         # BackgroundTaskManager rejecting the submission as a duplicate.
@@ -164,25 +266,78 @@ class AssetMoveService(QObject):
 
         success = bool(moved_pairs) and source_ok and destination_ok
 
+        # Surface the rich completion payload so listeners can distinguish
+        # between deletes, restores, and plain moves without replicating the
+        # worker bookkeeping logic in multiple layers.
+        self.moveCompletedDetailed.emit(
+            source_root,
+            destination_root,
+            moved_pairs,
+            source_ok,
+            destination_ok,
+            worker.is_trash_destination,
+            worker.is_restore_operation,
+        )
+
         if moved_pairs:
             self._asset_list_model.finalise_move_results(moved_pairs)
         if self._asset_list_model.has_pending_move_placeholders():
             self._asset_list_model.rollback_pending_moves()
 
+        delete_operation = worker.is_trash_destination and not worker.is_restore_operation
+        restore_operation = worker.is_restore_operation
         if not moved_pairs:
-            message = "No files were moved."
-        else:
-            label = "file" if len(moved_pairs) == 1 else "files"
-            if source_ok and destination_ok:
-                message = f"Moved {len(moved_pairs)} {label}."
-            elif source_ok or destination_ok:
-                message = (
-                    f"Moved {len(moved_pairs)} {label}, but refreshing one album failed."
-                )
+            if delete_operation:
+                message = "No items were deleted."
+            elif restore_operation:
+                message = "No items were restored."
             else:
-                message = (
-                    f"Moved {len(moved_pairs)} {label}, but refreshing both albums failed."
-                )
+                message = "No files were moved."
+        else:
+            label = "item" if len(moved_pairs) == 1 else "items"
+            if restore_operation:
+                verb = "Restored"
+                if source_ok and destination_ok:
+                    message = f"{verb} {len(moved_pairs)} {label}."
+                elif source_ok and not destination_ok:
+                    message = (
+                        f"{verb} {len(moved_pairs)} {label}, but updating the destination album failed."
+                    )
+                elif destination_ok and not source_ok:
+                    message = (
+                        f"{verb} {len(moved_pairs)} {label}, but updating Recently Deleted failed."
+                    )
+                else:
+                    message = (
+                        f"{verb} {len(moved_pairs)} {label}, but updating Recently Deleted "
+                        "and the destination album failed."
+                    )
+            else:
+                verb = "Deleted" if delete_operation else "Moved"
+                if source_ok and destination_ok:
+                    message = f"{verb} {len(moved_pairs)} {label}."
+                elif delete_operation:
+                    if source_ok and not destination_ok:
+                        message = (
+                            f"{verb} {len(moved_pairs)} {label}, but updating Recently Deleted failed."
+                        )
+                    elif destination_ok and not source_ok:
+                        message = (
+                            f"{verb} {len(moved_pairs)} {label}, but updating the original album failed."
+                        )
+                    else:
+                        message = (
+                            f"{verb} {len(moved_pairs)} {label}, but updating the original album "
+                            "and Recently Deleted failed."
+                        )
+                elif source_ok or destination_ok:
+                    message = (
+                        f"{verb} {len(moved_pairs)} {label}, but refreshing one album failed."
+                    )
+                else:
+                    message = (
+                        f"{verb} {len(moved_pairs)} {label}, but refreshing both albums failed."
+                    )
 
         self.moveFinished.emit(source_root, destination_root, success, message)
 
