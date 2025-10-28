@@ -90,6 +90,14 @@ class AssetListModel(QAbstractListModel):
         # model react to ``linksUpdated`` notifications without having to reload
         # the entire dataset from disk.
         self._live_map: Dict[str, Dict[str, object]] = {}
+        # ``_suppress_virtual_reload`` prevents the model from resetting the
+        # virtual "All Photos" presentation while a move operation is in flight.
+        # Aggregated views perform optimistic, in-place updates to keep the grid
+        # perfectly still; triggering a reload when the backend broadcasts the
+        # matching ``linksUpdated`` signal would undo that effort by resetting
+        # the model.  The flag is lifted as soon as the move either finalises or
+        # rolls back, ensuring future updates are free to reload again.
+        self._suppress_virtual_reload: bool = False
 
         self._facade.linksUpdated.connect(self.handle_links_updated)
 
@@ -323,6 +331,13 @@ class AssetListModel(QAbstractListModel):
                 [Roles.REL, Roles.ABS, Qt.DecorationRole],
             )
 
+        if changed_rows:
+            # ``handle_links_updated`` will fire shortly after the worker
+            # rewrites ``links.json``.  Prevent the ensuing notification from
+            # resetting the model while our optimistic metadata is still being
+            # reconciled.
+            self._suppress_virtual_reload = True
+
     def finalise_move_results(self, moves: List[Tuple[Path, Path]]) -> None:
         """Reconcile optimistic move updates with the worker results."""
 
@@ -378,6 +393,10 @@ class AssetListModel(QAbstractListModel):
             # therefore the cached snapshots are no longer required.
             self._pending_row_removals.clear()
 
+        # The move finished successfully, therefore aggregated views can
+        # safely honour subsequent ``linksUpdated`` notifications.
+        self._suppress_virtual_reload = False
+
     def rollback_pending_moves(self) -> None:
         """Restore original metadata for moves that failed or were cancelled."""
 
@@ -429,6 +448,10 @@ class AssetListModel(QAbstractListModel):
             self._thumb_cache.clear()
             self._placeholder_cache.clear()
             self._visible_rows.clear()
+
+        # The failure/cancellation restored the original dataset.  Allow future
+        # backend refresh events to reload the view normally.
+        self._suppress_virtual_reload = False
 
     def has_pending_move_placeholders(self) -> bool:
         """Return ``True`` when optimistic move updates are awaiting results."""
@@ -857,6 +880,19 @@ class AssetListModel(QAbstractListModel):
                 updated_root,
                 album_root,
             )
+            return
+
+        if self._suppress_virtual_reload:
+            logger.debug(
+                "AssetListModel: suppressing reload for %s because a virtual move requested a stable UI.",
+                updated_root,
+            )
+            self._suppress_virtual_reload = False
+            # Optimistic updates already adjusted the visible rows.  The cached
+            # Live Photo metadata can still change asynchronously, so refresh it
+            # in place without triggering a full model reset.
+            if self._rows:
+                self._reload_live_metadata()
             return
 
         logger.debug(
