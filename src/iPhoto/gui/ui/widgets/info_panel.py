@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..icon import load_icon
-from ..ui_main_window import WINDOW_CONTROL_BUTTON_SIZE, WINDOW_CONTROL_GLYPH_SIZE
+from ..window_chrome import WINDOW_CONTROL_BUTTON_SIZE, WINDOW_CONTROL_GLYPH_SIZE
 
 
 @dataclass

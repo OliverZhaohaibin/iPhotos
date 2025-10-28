@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 
 from .icon import load_icon
 from .palette import viewer_surface_color
+from .window_chrome import WINDOW_CONTROL_BUTTON_SIZE, WINDOW_CONTROL_GLYPH_SIZE
 from .widgets import (
     AlbumSidebar,
     FilmstripView,
@@ -42,12 +43,6 @@ HEADER_ICON_GLYPH_SIZE = QSize(24, 24)
 
 HEADER_BUTTON_SIZE = QSize(36, 38)
 """Hit target size that guarantees a comfortable clickable header button."""
-
-WINDOW_CONTROL_GLYPH_SIZE = QSize(16, 16)
-"""Icon size used for the custom window chrome buttons."""
-
-WINDOW_CONTROL_BUTTON_SIZE = QSize(26, 26)
-"""Provides a reliable click target for the frameless window controls."""
 
 
 class ChromeStatusBar(QWidget):
