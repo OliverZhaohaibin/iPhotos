@@ -206,7 +206,12 @@ def test_restore_refreshes_library_views(
 
     refreshed: list[Path] = []
 
-    def _fake_restart(root: Path, announce_index: bool = False) -> None:
+    def _fake_restart(
+        root: Path,
+        *,
+        announce_index: bool = False,
+        force_reload: bool = False,
+    ) -> None:
         refreshed.append(root)
 
     monkeypatch.setattr(facade, "_restart_asset_load", _fake_restart)
@@ -269,7 +274,12 @@ def test_move_from_library_root_refreshes_virtual_view(
 
     refreshed: list[Path] = []
 
-    def _fake_restart(root: Path, announce_index: bool = False) -> None:
+    def _fake_restart(
+        root: Path,
+        *,
+        announce_index: bool = False,
+        force_reload: bool = False,
+    ) -> None:
         refreshed.append(root)
 
     monkeypatch.setattr(facade, "_restart_asset_load", _fake_restart)

@@ -219,3 +219,54 @@ def test_restore_repopulates_library_index(
     album_rows = list(IndexStore(album_root).read_all())
     assert any(row.get("rel") == asset_name for row in album_rows)
 
+
+def test_move_from_library_root_updates_source_album_index(
+    tmp_path: Path, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Moving from the library view must trim the concrete source album index."""
+
+    library_root = tmp_path / "Library"
+    album_a = library_root / "AlbumA"
+    album_b = library_root / "AlbumB"
+    library_root.mkdir()
+    album_a.mkdir(parents=True)
+    album_b.mkdir(parents=True)
+
+    asset = album_a / "IMG_0100.JPG"
+    asset.write_bytes(b"asset")
+
+    def _fake_process_media_paths(root: Path, image_paths, video_paths):
+        rows = []
+        for candidate in list(image_paths) + list(video_paths):
+            rel = candidate.resolve().relative_to(root).as_posix()
+            rows.append({"rel": rel})
+        return rows
+
+    monkeypatch.setattr(move_worker_module, "process_media_paths", _fake_process_media_paths)
+    monkeypatch.setattr(move_worker_module.backend, "pair", lambda _root: None)
+
+    IndexStore(library_root).write_rows(
+        [{"rel": f"AlbumA/{asset.name}", "abs": str(asset.resolve())}]
+    )
+    IndexStore(album_a).write_rows([{"rel": asset.name, "abs": str(asset.resolve())}])
+
+    signals = MoveSignals()
+    worker = MoveWorker(
+        [asset],
+        library_root,
+        album_b,
+        signals,
+        library_root=library_root,
+    )
+
+    worker.run()
+
+    album_a_rows = list(IndexStore(album_a).read_all())
+    assert album_a_rows == []
+
+    library_rows = list(IndexStore(library_root).read_all())
+    assert library_rows == [{"rel": f"AlbumB/{asset.name}"}]
+
+    album_b_rows = list(IndexStore(album_b).read_all())
+    assert album_b_rows == [{"rel": asset.name}]
+
