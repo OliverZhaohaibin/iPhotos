@@ -241,41 +241,58 @@ class MoveWorker(QRunnable):
         store.append_rows(new_rows)
         backend.pair(self._destination_root)
 
-        # Restores initiated from the virtual "All Photos" / "Live Photos" views remove
-        # entries from the library-root index before the files land in the trash.  Bringing
-        # those assets back therefore requires populating both the concrete album index and
-        # the library aggregate; otherwise the global collections would remain stale until the
-        # user triggers a full rescan.  The following block mirrors the destination update for
-        # the Basic Library root so restores show up immediately in library-scoped filters.
-        if self._is_restore and self._library_root is not None:
-            try:
-                destination_resolved = self._destination_root.resolve()
-            except OSError:
-                destination_resolved = self._destination_root
-            try:
-                library_resolved = self._library_root.resolve()
-            except OSError:
-                library_resolved = self._library_root
+        self._synchronise_library_index(moved, image_paths, video_paths)
 
-            if destination_resolved != library_resolved:
-                library_image_paths: List[Path] = []
-                library_video_paths: List[Path] = []
-                for candidate in image_paths:
-                    if self._library_relative(candidate) is not None:
-                        library_image_paths.append(candidate)
-                for candidate in video_paths:
-                    if self._library_relative(candidate) is not None:
-                        library_video_paths.append(candidate)
+    def _synchronise_library_index(
+        self,
+        moved: List[Tuple[Path, Path]],
+        destination_images: List[Path],
+        destination_videos: List[Path],
+    ) -> None:
+        """Keep the Basic Library index aligned with the latest move results."""
 
-                if library_image_paths or library_video_paths:
-                    library_store = IndexStore(self._library_root)
-                    library_rows = list(
-                        process_media_paths(
-                            self._library_root, library_image_paths, library_video_paths
-                        )
-                    )
-                    library_store.append_rows(library_rows)
-                    backend.pair(self._library_root)
+        library_root = self._library_root
+        if library_root is None:
+            return
+
+        removals: List[str] = []
+        for original, _ in moved:
+            original_rel = self._library_relative(original)
+            if original_rel is not None:
+                removals.append(original_rel)
+
+        if self._is_trash_destination and not self._is_restore:
+            additions_images: List[Path] = []
+            additions_videos: List[Path] = []
+        else:
+            additions_images = [
+                path
+                for path in destination_images
+                if self._library_relative(path) is not None
+            ]
+            additions_videos = [
+                path
+                for path in destination_videos
+                if self._library_relative(path) is not None
+            ]
+
+        if not removals and not additions_images and not additions_videos:
+            return
+
+        store = IndexStore(library_root)
+        if removals:
+            store.remove_rows(removals)
+
+        if additions_images or additions_videos:
+            library_rows = list(
+                process_media_paths(library_root, additions_images, additions_videos)
+            )
+            store.append_rows(library_rows)
+
+        # Pairing the Basic Library after each update keeps library-wide Live Photo metadata
+        # consistent with the concrete album indices, ensuring that aggregated views present
+        # fresh still/motion relationships immediately after moves or restores complete.
+        backend.pair(library_root)
 
     def _resolve_optional(self, path: Optional[Path]) -> Optional[Path]:
         """Resolve *path* defensively, returning ``None`` when unavailable."""

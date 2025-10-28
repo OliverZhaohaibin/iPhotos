@@ -315,16 +315,12 @@ class ContextMenuController(QObject):
 
         source_model = self._asset_model.source_model()
         is_virtual_view_move = self._navigation.is_basic_library_virtual_view()
-        if is_virtual_view_move:
-            rels = [
-                index.data(Roles.REL)
-                for index in selected_indexes
-                if index.isValid()
-            ]
-            source_model.update_rows_for_move(
-                [rel for rel in rels if isinstance(rel, str)], target
-            )
-        elif selected_indexes:
+        if not is_virtual_view_move and selected_indexes:
+            # Concrete albums own their datasets, so trimming the rows immediately keeps
+            # the grid responsive while the worker updates the persistent index in the
+            # background. Virtual library-wide views deliberately skip optimistic
+            # removals so the moved assets remain visible until the refreshed index is
+            # loaded again.
             source_model.remove_rows(selected_indexes)
 
         try:

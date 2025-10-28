@@ -626,19 +626,76 @@ class AppFacade(QObject):
     def _handle_move_operation_completed(
         self,
         source_root: Path,
-        _destination_root: Path,
+        destination_root: Path,
         moved_pairs: list,
-        _source_ok: bool,
+        source_ok: bool,
         destination_ok: bool,
         _is_trash_destination: bool,
         is_restore_operation: bool,
     ) -> None:
-        """Refresh destination albums after a successful restore operation."""
+        """Refresh any views impacted by a completed move or restore."""
 
-        if not is_restore_operation or not destination_ok or not moved_pairs:
+        if not moved_pairs:
             return
 
         library = self._get_library_manager()
+        library_root = library.root() if library is not None else None
+        current_root = self._current_album_root()
+
+        refresh_targets: dict[str, tuple[Path, bool]] = {}
+
+        def _record_refresh(path: Optional[Path]) -> None:
+            """Remember *path* for signal emission and optional view reload."""
+
+            if path is None:
+                return
+            try:
+                normalised = self._normalise_path(path)
+            except ValueError:
+                normalised = path
+            key = str(normalised)
+            should_restart = bool(
+                current_root is not None and self._paths_equal(current_root, path)
+            )
+            existing = refresh_targets.get(key)
+            if existing is None or (not existing[1] and should_restart):
+                refresh_targets[key] = (path, should_restart)
+
+        if source_ok:
+            _record_refresh(source_root)
+        if destination_ok:
+            _record_refresh(destination_root)
+
+        if library_root is not None:
+            touched_library = False
+            if source_ok and self._paths_equal(source_root, library_root):
+                touched_library = True
+            if destination_ok and self._paths_equal(destination_root, library_root):
+                touched_library = True
+            if not touched_library:
+                for original, target in moved_pairs:
+                    try:
+                        original_path = Path(original)
+                        target_path = Path(target)
+                    except TypeError:
+                        continue
+                    if self._path_is_descendant(original_path, library_root) or self._path_is_descendant(
+                        target_path, library_root
+                    ):
+                        touched_library = True
+                        break
+            if touched_library:
+                _record_refresh(library_root)
+
+        for path, should_restart in refresh_targets.values():
+            self.indexUpdated.emit(path)
+            self.linksUpdated.emit(path)
+            if should_restart:
+                self._restart_asset_load(path)
+
+        if not is_restore_operation or not destination_ok:
+            return
+
         if library is None:
             return
 
@@ -652,7 +709,6 @@ class AppFacade(QObject):
             # existing code paths that rely on filesystem watcher updates.
             return
 
-        library_root = library.root()
         library_root_normalised = (
             self._normalise_path(library_root) if library_root is not None else None
         )
