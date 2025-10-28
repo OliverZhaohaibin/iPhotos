@@ -73,6 +73,13 @@ class AssetListModel(QAbstractListModel):
             OrderedDict()
         )
         self._recently_removed_limit = 256
+        # ``_live_map`` caches the Live Photo pairings stored in ``links.json``
+        # for the currently active album.  Keeping the mapping around lets the
+        # model react to ``linksUpdated`` notifications without having to reload
+        # the entire dataset from disk.
+        self._live_map: Dict[str, Dict[str, object]] = {}
+
+        self._facade.linksUpdated.connect(self._handle_links_updated)
 
     def album_root(self) -> Optional[Path]:
         """Return the path of the currently open album, if any."""
@@ -372,6 +379,9 @@ class AssetListModel(QAbstractListModel):
         manifest = self._facade.current_album.manifest if self._facade.current_album else {}
         featured = manifest.get("featured", []) or []
         live_map = load_live_map(root)
+        # Remember the persisted Live Photo metadata so change notifications can
+        # reuse it without incurring additional disk reads.
+        self._live_map = dict(live_map)
 
         try:
             rows, total = compute_asset_rows(root, featured, live_map)
@@ -485,6 +495,7 @@ class AssetListModel(QAbstractListModel):
         self._thumb_cache.clear()
         self._recently_removed_rows.clear()
         self.endResetModel()
+        self._live_map = {}
 
     def update_featured_status(self, rel: str, is_featured: bool) -> None:
         """Update the cached ``featured`` flag for the asset identified by *rel*."""
@@ -528,6 +539,9 @@ class AssetListModel(QAbstractListModel):
         signals.error.connect(self._on_loader_error)
 
         live_map = load_live_map(self._album_root)
+        # Store the snapshot so Live Photo metadata can be refreshed when the
+        # backend updates ``links.json`` without requiring a new loader run.
+        self._live_map = dict(live_map)
 
         worker = AssetLoaderWorker(self._album_root, featured, signals, live_map)
         self._loader_worker = worker
@@ -731,3 +745,101 @@ class AssetListModel(QAbstractListModel):
         painter.end()
         self._placeholder_cache[key] = canvas
         return canvas
+
+    def _handle_links_updated(self, root: Path) -> None:
+        """Refresh Live Photo metadata when ``links.json`` changes."""
+
+        if not self._album_root or not self._rows:
+            return
+
+        album_root = self._album_root
+        if self._normalise_path(album_root) != self._normalise_path(Path(root)):
+            return
+
+        self._reload_live_metadata()
+
+    def _reload_live_metadata(self) -> None:
+        """Re-read ``links.json`` and update cached Live Photo roles."""
+
+        if not self._album_root or not self._rows:
+            return
+
+        live_map = load_live_map(self._album_root)
+        self._live_map = dict(live_map)
+
+        updated_rows: List[int] = []
+        album_root = self._normalise_path(self._album_root)
+
+        for row_index, row in enumerate(self._rows):
+            rel = str(row.get("rel", ""))
+            if not rel:
+                continue
+
+            info = self._live_map.get(rel)
+            new_is_live = False
+            new_motion_rel: Optional[str] = None
+            new_motion_abs: Optional[str] = None
+            new_group_id: Optional[str] = None
+
+            if isinstance(info, dict):
+                group_id = info.get("id")
+                if isinstance(group_id, str):
+                    new_group_id = group_id
+                elif group_id is not None:
+                    new_group_id = str(group_id)
+
+                if info.get("role") == "still":
+                    motion_rel = info.get("motion")
+                    if isinstance(motion_rel, str) and motion_rel:
+                        new_motion_rel = motion_rel
+                        try:
+                            new_motion_abs = str((album_root / motion_rel).resolve())
+                        except OSError:
+                            # ``resolve`` can fail if the filesystem entry has
+                            # just been created and metadata propagation is
+                            # still underway.  Fall back to a best-effort
+                            # absolute path so the UI can continue rendering a
+                            # valid hyperlink.
+                            new_motion_abs = str(album_root / motion_rel)
+                        new_is_live = True
+
+            previous_is_live = bool(row.get("is_live", False))
+            previous_motion_rel = row.get("live_motion")
+            previous_motion_abs = row.get("live_motion_abs")
+            previous_group_id = row.get("live_group_id")
+
+            if (
+                previous_is_live == new_is_live
+                and (previous_motion_rel or None) == new_motion_rel
+                and (previous_motion_abs or None) == new_motion_abs
+                and (previous_group_id or None) == new_group_id
+            ):
+                continue
+
+            row["is_live"] = new_is_live
+            row["live_motion"] = new_motion_rel
+            row["live_motion_abs"] = new_motion_abs
+            row["live_group_id"] = new_group_id
+            updated_rows.append(row_index)
+
+        if not updated_rows:
+            return
+
+        roles_to_refresh = [
+            Roles.IS_LIVE,
+            Roles.LIVE_GROUP_ID,
+            Roles.LIVE_MOTION_REL,
+            Roles.LIVE_MOTION_ABS,
+        ]
+        for row_index in updated_rows:
+            model_index = self.index(row_index, 0)
+            self.dataChanged.emit(model_index, model_index, roles_to_refresh)
+
+    @staticmethod
+    def _normalise_path(path: Path) -> Path:
+        """Return a consistently resolved form of *path* for comparisons."""
+
+        try:
+            return path.resolve()
+        except OSError:
+            return path
