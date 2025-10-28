@@ -289,6 +289,12 @@ class AssetListModel(QAbstractListModel):
             self._row_lookup = {row["rel"]: index for index, row in enumerate(self._rows)}
             self._placeholder_cache.clear()
             self._visible_rows.clear()
+            # Concrete album moves already removed the rows that the worker will
+            # touch, so resetting the model again when ``linksUpdated`` fires
+            # would only introduce a distracting flicker.  Suppress the next
+            # reload notification so the grid remains stable while the
+            # background rescan persists the new index to disk.
+            self._suppress_virtual_reload = True
             return
 
         try:
