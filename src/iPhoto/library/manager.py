@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -208,7 +209,8 @@ class LibraryManager(QObject):
         """Create the dedicated trash directory when missing and return it."""
 
         root = self._require_root()
-        target = root / WORK_DIR_NAME / RECENTLY_DELETED_DIR_NAME
+        target = root / RECENTLY_DELETED_DIR_NAME
+        self._migrate_legacy_deleted_dir(root, target)
         if target.exists() and not target.is_dir():
             raise AlbumOperationError(
                 f"Deleted items path exists but is not a directory: {target}"
@@ -345,7 +347,84 @@ class LibraryManager(QObject):
                 continue
             if entry.name == WORK_DIR_NAME:
                 continue
+            if entry.name == RECENTLY_DELETED_DIR_NAME:
+                # The trash folder should stay hidden from the regular album list
+                # so that it only appears through the dedicated "Recently Deleted"
+                # entry in the sidebar.
+                continue
             yield entry
+
+    def _migrate_legacy_deleted_dir(self, root: Path, target: Path) -> None:
+        """Move data from the legacy ``.iPhoto/deleted`` path into *target*.
+
+        Earlier builds stored trashed assets inside ``.iPhoto/deleted`` which
+        made the collection difficult to locate from outside the application.
+        When upgrading we want to preserve any existing deletions by moving the
+        entire folder into the new root-level trash.  When a plain rename is not
+        possible we fall back to copying individual entries while avoiding
+        filename collisions.
+        """
+
+        legacy = root / WORK_DIR_NAME / "deleted"
+        if not legacy.exists() or not legacy.is_dir():
+            return
+
+        try:
+            if not target.exists():
+                legacy.rename(target)
+                return
+        except OSError as exc:
+            raise AlbumOperationError(
+                f"Could not migrate legacy deleted folder: {exc}"
+            ) from exc
+
+        for entry in legacy.iterdir():
+            if entry.name == WORK_DIR_NAME:
+                destination_parent = target / WORK_DIR_NAME
+                destination_parent.mkdir(parents=True, exist_ok=True)
+                for child in entry.iterdir():
+                    destination = self._unique_child_path(
+                        destination_parent, child.name
+                    )
+                    try:
+                        shutil.move(str(child), str(destination))
+                    except OSError as exc:
+                        raise AlbumOperationError(
+                            f"Could not migrate legacy deleted cache '{child}': {exc}"
+                        ) from exc
+                continue
+
+            destination = self._unique_child_path(target, entry.name)
+            try:
+                shutil.move(str(entry), str(destination))
+            except OSError as exc:
+                raise AlbumOperationError(
+                    f"Could not migrate legacy deleted entry '{entry}': {exc}"
+                ) from exc
+
+        try:
+            legacy.rmdir()
+        except OSError:
+            # Leaving the empty folder behind is harmless and avoids masking
+            # migration successes when the directory still contains temporary
+            # files created by external tools.
+            pass
+
+    def _unique_child_path(self, parent: Path, name: str) -> Path:
+        """Return a path under *parent* that avoids overwriting existing files."""
+
+        candidate = parent / name
+        if not candidate.exists():
+            return candidate
+
+        stem = candidate.stem
+        suffix = candidate.suffix
+        counter = 1
+        while True:
+            next_candidate = parent / f"{stem} ({counter}){suffix}"
+            if not next_candidate.exists():
+                return next_candidate
+            counter += 1
 
     def _build_node(self, path: Path, *, level: int) -> AlbumNode:
         title, has_manifest = self._describe_album(path)
