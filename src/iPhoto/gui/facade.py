@@ -677,14 +677,24 @@ class AppFacade(QObject):
             return
 
         for album_root in unique_album_roots.values():
-            self._refresh_restored_album(album_root)
+            self._refresh_restored_album(album_root, library_root)
 
-    def _refresh_restored_album(self, album_root: Path) -> None:
-        """Queue a background rescan for *album_root* to keep the UI responsive."""
+    def _refresh_restored_album(self, album_root: Path, library_root: Optional[Path]) -> None:
+        """Queue a background rescan for *album_root* to keep the UI responsive.
+
+        ``library_root`` is forwarded so the method can determine whether the
+        "All Photos"/"Live Photos" composite view—whose dataset is rooted at
+        the Basic Library directory—needs to refresh alongside the concrete
+        album that received the restored files.  This avoids leaving the
+        library-wide views stale after a restore that originated from those
+        virtual collections.
+        """
 
         album_root = Path(album_root)
         if not album_root.exists():
             return
+
+        library_root_path = Path(library_root) if library_root is not None else None
 
         signals = RescanSignals()
         worker = RescanWorker(album_root, signals)
@@ -703,6 +713,20 @@ class AppFacade(QObject):
                 # ``_restart_asset_load`` expects the canonical album reference, not the
                 # normalised path that may come back from the worker, to avoid needless
                 # detaches of the existing selection model.
+                self._restart_asset_load(self._current_album.root)
+                return
+
+            if (
+                library_root_path is not None
+                and self._current_album is not None
+                and self._paths_equal(self._current_album.root, library_root_path)
+                and self._path_is_descendant(path, library_root_path)
+            ):
+                # When a restore occurs while a library-scoped virtual view (such as
+                # "All Photos" or "Live Photos") is active the asset model is rooted at
+                # the Basic Library directory.  Refresh that dataset so recently
+                # restored Live Photos immediately reappear without requiring a manual
+                # rescan from the user.
                 self._restart_asset_load(self._current_album.root)
 
         def _on_error(path: Path, message: str) -> None:
@@ -743,3 +767,27 @@ class AppFacade(QObject):
         if left == right:
             return True
         return self._normalise_path(left) == self._normalise_path(right)
+
+    def _path_is_descendant(self, candidate: Path, ancestor: Path) -> bool:
+        """Return ``True`` when *candidate* is equal to or contained within *ancestor*.
+
+        Both paths are normalised before comparison so that symbolic links and
+        platform-specific casing differences do not cause false negatives.  The
+        helper tolerates resolution errors and simply reports ``False`` when the
+        relationship cannot be established reliably.
+        """
+
+        try:
+            candidate_norm = self._normalise_path(candidate)
+            ancestor_norm = self._normalise_path(ancestor)
+        except ValueError:
+            return False
+
+        if candidate_norm == ancestor_norm:
+            return True
+
+        try:
+            candidate_norm.relative_to(ancestor_norm)
+        except ValueError:
+            return False
+        return True
