@@ -68,6 +68,49 @@ class AssetListModel(QAbstractListModel):
 
         return self._album_root
 
+    def metadata_for_absolute_path(self, path: Path) -> Optional[Dict[str, object]]:
+        """Return the cached metadata row for *path* if it belongs to the model.
+
+        The asset grid frequently passes absolute filesystem paths around when
+        triggering operations such as copy or delete.  Internally the model
+        indexes rows by their path relative to :attr:`_album_root`, so this
+        helper normalises the provided *path* to the same representation and
+        resolves the matching row when possible.  When the file no longer sits
+        inside the current root—because it was moved externally or is part of a
+        transient virtual collection—the method gracefully falls back to a
+        direct absolute comparison so callers still receive metadata whenever it
+        is available.
+        """
+
+        if not self._rows:
+            return None
+
+        album_root = self._album_root
+        try:
+            normalized_path = path.resolve()
+        except OSError:
+            normalized_path = path
+
+        if album_root is not None:
+            try:
+                normalized_root = album_root.resolve()
+            except OSError:
+                normalized_root = album_root
+            try:
+                rel_key = normalized_path.relative_to(normalized_root).as_posix()
+            except ValueError:
+                rel_key = None
+            else:
+                row_index = self._row_lookup.get(rel_key)
+                if row_index is not None and 0 <= row_index < len(self._rows):
+                    return self._rows[row_index]
+
+        normalized_str = str(normalized_path)
+        for row in self._rows:
+            if str(row.get("abs")) == normalized_str:
+                return row
+        return None
+
     def remove_rows(self, indexes: list[QModelIndex]) -> None:
         """Remove assets referenced by *indexes*, tolerating proxy selections.
 

@@ -324,9 +324,44 @@ class AppFacade(QObject):
             self.errorRaised.emit(str(exc))
             return
 
-        normalized = [Path(path) for path in sources]
+        def _normalize(path: Path) -> Path:
+            """Resolve *path* for stable comparisons while tolerating I/O errors."""
+
+            try:
+                return path.resolve()
+            except OSError:
+                return path
+
+        normalized: List[Path] = []
+        seen: Set[str] = set()
+        for raw_path in sources:
+            candidate = _normalize(Path(raw_path))
+            key = str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(candidate)
+
         if not normalized:
             return
+
+        # Extend the deletion payload with Live Photo motion clips so that moving the still
+        # automatically collects its paired ``.mov`` asset.  The list model keeps the metadata
+        # for every loaded asset, allowing us to query the Live Photo role without having to
+        # replicate the pairing logic here.
+        model = self._asset_list_model
+        for still_path in list(normalized):
+            metadata = model.metadata_for_absolute_path(still_path)
+            if not metadata or not metadata.get("is_live"):
+                continue
+            motion_raw = metadata.get("live_motion_abs")
+            if not motion_raw:
+                continue
+            motion_path = _normalize(Path(str(motion_raw)))
+            motion_key = str(motion_path)
+            if motion_key not in seen:
+                seen.add(motion_key)
+                normalized.append(motion_path)
 
         self._move_service.move_assets(normalized, deleted_root)
 
