@@ -14,7 +14,7 @@ try:  # pragma: no cover - path-sensitive import
 except ImportError:  # pragma: no cover - executed in script mode
     from iPhotos.src.iPhoto.appctx import AppContext
 from ...facade import AppFacade
-from ...errors import AlbumOperationError
+from ....errors import AlbumOperationError
 from ..models.asset_model import AssetModel
 from ..widgets.album_sidebar import AlbumSidebar
 from ..ui_main_window import ChromeStatusBar

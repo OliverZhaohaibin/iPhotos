@@ -182,7 +182,7 @@ class ContextMenuController(QObject):
         finally:
             self._selection_controller.set_selection_mode(False)
 
-        self._toast.show_toast("Deleted selected items.")
+        self._toast.show_toast("Deleted")
         return True
 
     def _execute_restore(self) -> None:
@@ -209,7 +209,7 @@ class ContextMenuController(QObject):
         finally:
             self._selection_controller.set_selection_mode(False)
 
-        self._toast.show_toast("Restoring items...")
+        self._toast.show_toast("Restoring ...")
 
     def _copy_selection_to_clipboard(self) -> None:
         """Copy the selected asset file paths into the system clipboard."""
