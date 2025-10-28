@@ -95,9 +95,16 @@ class AssetListModel(QAbstractListModel):
         # Aggregated views perform optimistic, in-place updates to keep the grid
         # perfectly still; triggering a reload when the backend broadcasts the
         # matching ``linksUpdated`` signal would undo that effort by resetting
-        # the model.  The flag is lifted as soon as the move either finalises or
-        # rolls back, ensuring future updates are free to reload again.
+        # the model.  The flag remains active until the user navigates away from
+        # the aggregate view, guaranteeing that neither the intermediate rescan
+        # progress nor its completion introduces visual flicker.
         self._suppress_virtual_reload: bool = False
+        # ``_virtual_move_requires_revisit`` tracks whether a library-wide move
+        # asked the model to hold its optimistic state until the user leaves and
+        # returns.  While set, ``linksUpdated`` notifications are ignored so the
+        # UI stays completely static; the next ``prepare_for_album`` call clears
+        # the flag and allows the refreshed dataset to be loaded.
+        self._virtual_move_requires_revisit: bool = False
 
         self._facade.linksUpdated.connect(self.handle_links_updated)
 
@@ -337,6 +344,12 @@ class AssetListModel(QAbstractListModel):
             # resetting the model while our optimistic metadata is still being
             # reconciled.
             self._suppress_virtual_reload = True
+            # Track that the aggregate view must not refresh until the user
+            # revisits it.  The move worker will update the on-disk index in the
+            # background; marking the view as "hold" ensures the final
+            # ``linksUpdated`` announcement does not reset the grid when the
+            # rescan completes.
+            self._virtual_move_requires_revisit = True
 
     def finalise_move_results(self, moves: List[Tuple[Path, Path]]) -> None:
         """Reconcile optimistic move updates with the worker results."""
@@ -393,10 +406,6 @@ class AssetListModel(QAbstractListModel):
             # therefore the cached snapshots are no longer required.
             self._pending_row_removals.clear()
 
-        # The move finished successfully, therefore aggregated views can
-        # safely honour subsequent ``linksUpdated`` notifications.
-        self._suppress_virtual_reload = False
-
     def rollback_pending_moves(self) -> None:
         """Restore original metadata for moves that failed or were cancelled."""
 
@@ -452,6 +461,7 @@ class AssetListModel(QAbstractListModel):
         # The failure/cancellation restored the original dataset.  Allow future
         # backend refresh events to reload the view normally.
         self._suppress_virtual_reload = False
+        self._virtual_move_requires_revisit = False
 
     def has_pending_move_placeholders(self) -> bool:
         """Return ``True`` when optimistic move updates are awaiting results."""
@@ -597,6 +607,8 @@ class AssetListModel(QAbstractListModel):
         self._pending_row_removals.clear()
         self.endResetModel()
         self._live_map = {}
+        self._suppress_virtual_reload = False
+        self._virtual_move_requires_revisit = False
 
     def update_featured_status(self, rel: str, is_featured: bool) -> None:
         """Update the cached ``featured`` flag for the asset identified by *rel*."""
@@ -883,8 +895,15 @@ class AssetListModel(QAbstractListModel):
             return
 
         if self._suppress_virtual_reload:
+            if self._virtual_move_requires_revisit:
+                logger.debug(
+                    "AssetListModel: holding reload for %s until the aggregate view is reopened.",
+                    updated_root,
+                )
+                return
+
             logger.debug(
-                "AssetListModel: suppressing reload for %s because a virtual move requested a stable UI.",
+                "AssetListModel: finishing temporary suppression for %s after non-aggregate move.",
                 updated_root,
             )
             self._suppress_virtual_reload = False
