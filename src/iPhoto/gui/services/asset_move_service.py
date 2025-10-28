@@ -12,6 +12,7 @@ from ..background_task_manager import BackgroundTaskManager
 from ..ui.tasks.move_worker import MoveSignals, MoveWorker
 
 if TYPE_CHECKING:
+    from ...library.manager import LibraryManager
     from ...models.album import Album
     from ..ui.models.asset_list_model import AssetListModel
 
@@ -30,12 +31,14 @@ class AssetMoveService(QObject):
         task_manager: BackgroundTaskManager,
         asset_list_model: "AssetListModel",
         current_album_getter: Callable[[], Optional["Album"]],
+        library_manager_getter: Callable[[], Optional["LibraryManager"]],
         parent: Optional[QObject] = None,
     ) -> None:
         super().__init__(parent)
         self._task_manager = task_manager
         self._asset_list_model = asset_list_model
         self._current_album_getter = current_album_getter
+        self._library_manager_getter = library_manager_getter
 
     def move_assets(self, sources: Iterable[Path], destination: Path) -> None:
         """Validate *sources* and schedule a worker to move them into *destination*."""
@@ -114,7 +117,32 @@ class AssetMoveService(QObject):
         signals.started.connect(self._on_move_started)
         signals.progress.connect(self._on_move_progress)
 
-        worker = MoveWorker(normalized, source_root, destination_root, signals)
+        library_root: Optional[Path] = None
+        trash_root: Optional[Path] = None
+        library_manager = self._library_manager_getter()
+        if library_manager is not None:
+            library_root = library_manager.root()
+            trash_candidate = library_manager.deleted_directory()
+            if trash_candidate is not None:
+                try:
+                    trash_resolved = trash_candidate.resolve()
+                except OSError:
+                    trash_resolved = trash_candidate
+                try:
+                    destination_resolved = destination_root.resolve()
+                except OSError:
+                    destination_resolved = destination_root
+                if destination_resolved == trash_resolved:
+                    trash_root = trash_candidate
+
+        worker = MoveWorker(
+            normalized,
+            source_root,
+            destination_root,
+            signals,
+            library_root=library_root,
+            trash_root=trash_root,
+        )
         unique_task_id = f"move:{source_root}->{destination_root}:{uuid.uuid4().hex}"
         # Move requests share their origin and target directories, so we need a unique
         # suffix on the identifier to allow queuing multiple operations without the

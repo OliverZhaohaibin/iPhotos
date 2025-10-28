@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from pathlib import Path
-from typing import Iterable, List, Optional, Set, TYPE_CHECKING
+from typing import Dict, Iterable, List, Optional, Set, TYPE_CHECKING
 
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
@@ -77,6 +78,7 @@ class AppFacade(QObject):
             task_manager=self._task_manager,
             asset_list_model=self._asset_list_model,
             current_album_getter=lambda: self._current_album,
+            library_manager_getter=self._get_library_manager,
             parent=self,
         )
         self._move_service.errorRaised.connect(self._on_service_error)
@@ -350,6 +352,8 @@ class AppFacade(QObject):
         # for every loaded asset, allowing us to query the Live Photo role without having to
         # replicate the pairing logic here.
         model = self._asset_list_model
+        # Extend the restore payload with any Live Photo motion clips that belong to the
+        # selection so the pair returns to the library together.
         for still_path in list(normalized):
             metadata = model.metadata_for_absolute_path(still_path)
             if not metadata or not metadata.get("is_live"):
@@ -364,6 +368,118 @@ class AppFacade(QObject):
                 normalized.append(motion_path)
 
         self._move_service.move_assets(normalized, deleted_root)
+
+    def restore_assets(self, sources: Iterable[Path]) -> None:
+        """Return trashed assets in *sources* to their original albums."""
+
+        library = self._get_library_manager()
+        if library is None:
+            self.errorRaised.emit("Basic Library has not been configured.")
+            return
+
+        library_root = library.root()
+        if library_root is None:
+            self.errorRaised.emit("Basic Library has not been configured.")
+            return
+
+        trash_root = library.deleted_directory()
+        if trash_root is None:
+            self.errorRaised.emit("Recently Deleted folder is unavailable.")
+            return
+
+        def _normalize(path: Path) -> Path:
+            """Resolve *path* for comparisons while tolerating resolution errors."""
+
+            try:
+                return path.resolve()
+            except OSError:
+                return path
+
+        normalized: List[Path] = []
+        seen: Set[str] = set()
+        for raw_path in sources:
+            candidate = _normalize(Path(raw_path))
+            key = str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            if not candidate.exists():
+                self.errorRaised.emit(f"File not found: {candidate}")
+                continue
+            try:
+                candidate.relative_to(trash_root)
+            except ValueError:
+                self.errorRaised.emit(
+                    f"Selection is outside Recently Deleted: {candidate}"
+                )
+                continue
+            normalized.append(candidate)
+
+        if not normalized:
+            return
+
+        model = self._asset_list_model
+        for still_path in list(normalized):
+            metadata = model.metadata_for_absolute_path(still_path)
+            if not metadata or not metadata.get("is_live"):
+                continue
+            motion_raw = metadata.get("live_motion_abs")
+            if not motion_raw:
+                continue
+            motion_path = _normalize(Path(str(motion_raw)))
+            motion_key = str(motion_path)
+            if motion_key not in seen and motion_path.exists():
+                seen.add(motion_key)
+                try:
+                    motion_path.relative_to(trash_root)
+                except ValueError:
+                    continue
+                normalized.append(motion_path)
+
+        index_rows = list(backend.IndexStore(trash_root).read_all())
+        row_lookup: Dict[str, dict] = {}
+        for row in index_rows:
+            if not isinstance(row, dict):
+                continue
+            rel_value = row.get("rel")
+            if not isinstance(rel_value, str):
+                continue
+            abs_candidate = trash_root / rel_value
+            key = str(_normalize(abs_candidate))
+            row_lookup[key] = row
+
+        # ``grouped`` collects the restore requests keyed by their target album directory so
+        # that each batch can be forwarded to the existing move service unchanged.
+        grouped: Dict[Path, List[Path]] = defaultdict(list)
+        for path in normalized:
+            row = row_lookup.get(str(_normalize(path)))
+            if not row:
+                self.errorRaised.emit(
+                    f"Missing index metadata for {path.name}; skipping restore."
+                )
+                continue
+            original_rel = row.get("original_rel_path")
+            if not isinstance(original_rel, str) or not original_rel:
+                self.errorRaised.emit(
+                    f"Original location is unknown for {path.name}; skipping restore."
+                )
+                continue
+            destination_path = library_root / original_rel
+            destination_root = destination_path.parent
+            try:
+                destination_root.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                self.errorRaised.emit(
+                    f"Could not prepare restore destination '{destination_root}': {exc}"
+                )
+                continue
+            grouped[destination_root].append(path)
+
+        if not grouped:
+            return
+
+        for destination_root, paths in grouped.items():
+            self._move_service.move_assets(paths, destination_root)
 
     def toggle_featured(self, ref: str) -> bool:
         """Toggle *ref* in the active album and mirror the change in the library."""

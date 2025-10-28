@@ -41,6 +41,7 @@ def _create_service(
     task_manager,
     asset_list_model,
     current_album,
+    library_manager=None,
 ) -> AssetMoveService:
     """Convenience helper that instantiates the service under test."""
 
@@ -48,6 +49,7 @@ def _create_service(
         task_manager=task_manager,
         asset_list_model=asset_list_model,
         current_album_getter=current_album,
+        library_manager_getter=(lambda: library_manager),
     )
 
 
