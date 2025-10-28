@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
@@ -62,6 +63,16 @@ class AssetListModel(QAbstractListModel):
         # with the final filesystem locations once the worker thread completes
         # the move, or to roll back the changes if the operation fails.
         self._pending_move_rows: Dict[str, Tuple[int, str]] = {}
+        # ``_recently_removed_rows`` keeps a bounded cache of the most recently
+        # removed asset metadata so controller workflows can still resolve
+        # information about an item after an optimistic UI update trimmed it
+        # from the live dataset.  This is essential for operations such as
+        # Live Photo deletion where the still image disappears from the grid
+        # before the facade gathers the paired motion clip path.
+        self._recently_removed_rows: "OrderedDict[str, Dict[str, object]]" = (
+            OrderedDict()
+        )
+        self._recently_removed_limit = 256
 
     def album_root(self) -> Optional[Path]:
         """Return the path of the currently open album, if any."""
@@ -109,6 +120,14 @@ class AssetListModel(QAbstractListModel):
         for row in self._rows:
             if str(row.get("abs")) == normalized_str:
                 return row
+        # Fall back to the recently removed cache so operations triggered right
+        # after an optimistic removal can still access metadata that is no
+        # longer present in ``self._rows``.  The cache mirrors the structure of
+        # the live dataset, therefore callers can interact with the returned
+        # dictionary exactly as if the row were still part of the model.
+        cached = self._recently_removed_rows.get(normalized_str)
+        if cached is not None:
+            return cached
         return None
 
     def remove_rows(self, indexes: list[QModelIndex]) -> None:
@@ -154,11 +173,21 @@ class AssetListModel(QAbstractListModel):
         for row in sorted(source_rows, reverse=True):
             row_data = self._rows[row]
             rel_key = str(row_data["rel"])
+            abs_key = str(row_data.get("abs"))
             self.beginRemoveRows(QModelIndex(), row, row)
             self._rows.pop(row)
             self.endRemoveRows()
             self._row_lookup.pop(rel_key, None)
             self._thumb_cache.pop(rel_key, None)
+            if abs_key:
+                # Stash the removed row metadata before it disappears from the
+                # live dataset so follow-up commands can still discover details
+                # about the asset.  ``OrderedDict`` keeps the cache bounded by
+                # discarding the oldest entry once the limit is exceeded.
+                self._recently_removed_rows[abs_key] = dict(row_data)
+                self._recently_removed_rows.move_to_end(abs_key)
+                if len(self._recently_removed_rows) > self._recently_removed_limit:
+                    self._recently_removed_rows.popitem(last=False)
 
         # Rebuild lookup tables so callers relying on ``_row_lookup`` continue to
         # receive accurate mappings.  Clearing caches keeps the thumbnail loader
@@ -454,6 +483,7 @@ class AssetListModel(QAbstractListModel):
         self._rows = []
         self._row_lookup = {}
         self._thumb_cache.clear()
+        self._recently_removed_rows.clear()
         self.endResetModel()
 
     def update_featured_status(self, rel: str, is_featured: bool) -> None:
@@ -487,6 +517,7 @@ class AssetListModel(QAbstractListModel):
         self.beginResetModel()
         self._rows = []
         self._row_lookup = {}
+        self._recently_removed_rows.clear()
         self.endResetModel()
         manifest = self._facade.current_album.manifest if self._facade.current_album else {}
         featured = manifest.get("featured", []) or []
@@ -515,6 +546,12 @@ class AssetListModel(QAbstractListModel):
         self._rows.extend(chunk)
         for offset, row_data in enumerate(chunk):
             self._row_lookup[row_data["rel"]] = start_row + offset
+            abs_key = str(row_data.get("abs"))
+            if abs_key:
+                # Remove any stale cache entry so the freshly loaded metadata
+                # takes precedence over historical snapshots retained for
+                # optimistic UI updates.
+                self._recently_removed_rows.pop(abs_key, None)
         self.endInsertRows()
 
     def _on_loader_progress(self, root: Path, current: int, total: int) -> None:
