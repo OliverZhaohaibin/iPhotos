@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 from PySide6.QtCore import QDateTime, QLocale, Qt
-from PySide6.QtGui import QPaintEvent, QPainter, QPainterPath, QPalette
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -40,25 +39,14 @@ class InfoPanel(QWidget):
     """Small helper window that mirrors macOS Photos' info popover."""
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
-        flags = (
-            Qt.WindowType.Tool
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.FramelessWindowHint
-        )
-        super().__init__(parent, flags)
+        # ``Qt.Window`` restores the platform-provided frame so the info panel behaves like a
+        # traditional tool window, while ``Qt.Tool`` and ``Qt.WindowStaysOnTopHint`` preserve the
+        # original floating behaviour.  Dropping the frameless flag honours the revised design
+        # direction to keep the default decorations while still letting us style the close button.
+        super().__init__(parent, Qt.Window | Qt.Tool | Qt.WindowStaysOnTopHint)
         self.setWindowTitle("Info")
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
         self.setMinimumWidth(320)
-
-        # ``WA_TranslucentBackground`` allows the custom ``paintEvent`` below to render a rounded
-        # rectangle with transparent corners that blend seamlessly with the desktop wallpaper.
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setAutoFillBackground(False)
-
-        # The info panel mirrors the rounded macOS-inspired chrome used by the main window.
-        # Keeping the radius consistent ensures auxiliary popups feel cohesive with the primary
-        # frame.
-        self._corner_radius = 12
 
         self._metadata: Optional[dict[str, Any]] = None
         self._current_rel: Optional[str] = None
@@ -70,6 +58,9 @@ class InfoPanel(QWidget):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
+        # ``header_layout`` houses the custom close button while leaving the rest of the panel's
+        # content untouched.  The stretch pushes the control to the right edge, giving the widget a
+        # lightweight, title-bar style affordance even though the native frame is still present.
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(0)
@@ -198,32 +189,6 @@ class InfoPanel(QWidget):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-    def paintEvent(self, event: QPaintEvent) -> None:  # type: ignore[override]
-        """Paint a rounded, anti-aliased background behind the floating window."""
-
-        if self.width() <= 0 or self.height() <= 0:
-            return
-
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-        painter.setPen(Qt.PenStyle.NoPen)
-
-        palette = self.palette()
-        background = palette.color(QPalette.ColorRole.Window)
-        rect = self.rect()
-        radius = min(self._corner_radius, min(rect.width(), rect.height()) / 2)
-
-        path = QPainterPath()
-        if radius > 0:
-            # Offsetting the rectangle keeps the curve sharp when Qt applies high-DPI scaling.
-            path.addRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
-        else:
-            path.addRect(rect)
-
-        painter.fillPath(path, background)
-        super().paintEvent(event)
-
     def _format_metadata(self, metadata: Mapping[str, Any]) -> _FormattedMetadata:
         """Return a :class:`_FormattedMetadata` snapshot for *metadata*."""
 
