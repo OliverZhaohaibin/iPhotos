@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
@@ -30,6 +32,9 @@ from .roles import Roles, role_names
 
 if TYPE_CHECKING:  # pragma: no cover - import only for type checking
     from ...facade import AppFacade
+
+
+logger = logging.getLogger(__name__)
 
 
 class AssetListModel(QAbstractListModel):
@@ -766,29 +771,27 @@ class AssetListModel(QAbstractListModel):
         """
 
         if not self._album_root:
+            logger.debug(
+                "AssetListModel: linksUpdated ignored because no album root is active."
+            )
             return
 
-        album_root = self._normalise_path(self._album_root)
-        updated_root = self._normalise_path(Path(root))
+        album_root = self._normalise_for_compare(self._album_root)
+        updated_root = self._normalise_for_compare(Path(root))
 
-        # When the view is scoped to a concrete album we only care about
-        # pairings generated for that exact directory.  Virtual collections such
-        # as "All Photos" or "Live Photos" are backed by the library root,
-        # therefore any rescan happening in a child album should also refresh
-        # the active dataset.  ``Path.relative_to`` raises ``ValueError`` when
-        # the latter is not a descendant of ``album_root``, which neatly
-        # distinguishes unrelated updates from those that affect the current
-        # presentation.
-        try:
-            updated_root.relative_to(album_root)
-        except ValueError:
-            if album_root != updated_root:
-                return
-        else:
-            # ``updated_root`` is inside ``album_root``.  The reload logic below
-            # handles both the direct equality case and the virtual collection
-            # scenario described above, so there is nothing extra to do here.
-            pass
+        if not self._links_update_targets_current_view(album_root, updated_root):
+            logger.debug(
+                "AssetListModel: linksUpdated for %s does not affect current root %s.",
+                updated_root,
+                album_root,
+            )
+            return
+
+        logger.debug(
+            "AssetListModel: linksUpdated for %s requires reloading view rooted at %s.",
+            updated_root,
+            album_root,
+        )
 
         if self._rows:
             # ``_reload_live_metadata`` mutates cached rows in place so the view
@@ -801,11 +804,71 @@ class AssetListModel(QAbstractListModel):
             # worker from here so ``_on_loader_finished`` can honour the request
             # once the background thread exits.
             self._pending_reload = True
-            self._loader_worker.cancel()
+            if not self._loader_worker.cancelled:
+                self._loader_worker.cancel()
             return
 
         if not self._pending_reload:
             QTimer.singleShot(0, self.start_load)
+
+    def _links_update_targets_current_view(
+        self, album_root: Path, updated_root: Path
+    ) -> bool:
+        """Return ``True`` when ``links.json`` updates should refresh the model.
+
+        The method compares the normalised path of the dataset currently exposed
+        by the model with the path for which the backend rebuilt ``links.json``.
+        A refresh is required in two situations:
+
+        * The backend updated ``links.json`` for the exact same root that feeds
+          the model.
+        * The model shows a library-wide view (for example "All Photos" or
+          "Live Photos") and the backend refreshed ``links.json`` for an album
+          living under that library root.
+
+        Normalising via :func:`os.path.realpath` and :func:`os.path.normcase`
+        ensures that comparisons remain stable across platforms and symbolic
+        link setups where the same directory may be referenced through different
+        aliases.
+        """
+
+        if album_root == updated_root:
+            return True
+
+        return self._is_descendant_path(updated_root, album_root)
+
+    @staticmethod
+    def _is_descendant_path(path: Path, candidate_root: Path) -> bool:
+        """Return ``True`` when *path* is located under *candidate_root*.
+
+        The helper treats equality as a positive match so callers can avoid
+        special casing.  ``Path.parents`` yields every ancestor of *path*, making
+        it a convenient way to check the relationship without manual string
+        operations that could break across platforms.
+        """
+
+        if path == candidate_root:
+            return True
+
+        return candidate_root in path.parents
+
+    @staticmethod
+    def _normalise_for_compare(path: Path) -> Path:
+        """Return a normalised ``Path`` suitable for cross-platform comparisons.
+
+        ``Path.resolve`` is insufficient on its own because it preserves the
+        original casing on case-insensitive filesystems.  Combining
+        :func:`os.path.realpath` with :func:`os.path.normcase` yields a canonical
+        representation that collapses symbolic links and performs the necessary
+        case folding so that two references to the same directory compare equal
+        regardless of how they were produced.
+        """
+
+        try:
+            resolved = os.path.realpath(path)
+        except OSError:
+            resolved = str(path)
+        return Path(os.path.normcase(resolved))
 
     def _reload_live_metadata(self) -> None:
         """Re-read ``links.json`` and update cached Live Photo roles."""
