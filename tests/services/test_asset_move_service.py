@@ -130,7 +130,9 @@ def test_move_assets_submits_worker_and_emits_completion(
     # The task manager should receive a worker submission with a unique identifier.
     assert task_manager.submit_task.call_count == 1
     kwargs = task_manager.submit_task.call_args.kwargs
-    assert kwargs["task_id"].startswith(f"move:{source_root}->{destination_root}:")
+    assert kwargs["task_id"].startswith(
+        f"move:move:{source_root}->{destination_root}:"
+    )
     worker = kwargs["worker"]
     assert isinstance(worker, MoveWorker)
 
@@ -138,7 +140,7 @@ def test_move_assets_submits_worker_and_emits_completion(
     moved_pairs = [(asset, destination_root / asset.name)]
     kwargs["on_finished"](source_root, destination_root, moved_pairs, True, True)
 
-    assert results == [(source_root, destination_root, True, "Moved 1 file.")]
+    assert results == [(source_root, destination_root, True, "Moved 1 item.")]
     assert list_model.finalised == [[(asset, destination_root / asset.name)]]
     assert list_model.pending_rolled_back == 0
 

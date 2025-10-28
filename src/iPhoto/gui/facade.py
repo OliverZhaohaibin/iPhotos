@@ -367,7 +367,7 @@ class AppFacade(QObject):
                 seen.add(motion_key)
                 normalized.append(motion_path)
 
-        self._move_service.move_assets(normalized, deleted_root)
+        self._move_service.move_assets(normalized, deleted_root, operation="delete")
 
     def restore_assets(self, sources: Iterable[Path]) -> None:
         """Return trashed assets in *sources* to their original albums."""
@@ -452,22 +452,27 @@ class AppFacade(QObject):
         # that each batch can be forwarded to the existing move service unchanged.
         grouped: Dict[Path, List[Path]] = defaultdict(list)
         for path in normalized:
-            row = row_lookup.get(str(_normalize(path)))
-            if not row:
+            try:
+                key = str(_normalize(path))
+                row = row_lookup.get(key)
+                if not row:
+                    raise LookupError("metadata unavailable")
+                original_rel = row.get("original_rel_path")
+                if not isinstance(original_rel, str) or not original_rel:
+                    raise KeyError("original_rel_path")
+                destination_path = library_root / original_rel
+                destination_root = destination_path.parent
+                destination_root.mkdir(parents=True, exist_ok=True)
+            except LookupError:
                 self.errorRaised.emit(
                     f"Missing index metadata for {path.name}; skipping restore."
                 )
                 continue
-            original_rel = row.get("original_rel_path")
-            if not isinstance(original_rel, str) or not original_rel:
+            except KeyError:
                 self.errorRaised.emit(
                     f"Original location is unknown for {path.name}; skipping restore."
                 )
                 continue
-            destination_path = library_root / original_rel
-            destination_root = destination_path.parent
-            try:
-                destination_root.mkdir(parents=True, exist_ok=True)
             except OSError as exc:
                 self.errorRaised.emit(
                     f"Could not prepare restore destination '{destination_root}': {exc}"
@@ -479,7 +484,11 @@ class AppFacade(QObject):
             return
 
         for destination_root, paths in grouped.items():
-            self._move_service.move_assets(paths, destination_root)
+            self._move_service.move_assets(
+                paths,
+                destination_root,
+                operation="restore",
+            )
 
     def toggle_featured(self, ref: str) -> bool:
         """Toggle *ref* in the active album and mirror the change in the library."""

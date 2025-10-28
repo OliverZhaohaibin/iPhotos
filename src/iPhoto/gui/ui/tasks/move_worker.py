@@ -43,6 +43,7 @@ class MoveWorker(QRunnable):
         *,
         library_root: Optional[Path] = None,
         trash_root: Optional[Path] = None,
+        is_restore: bool = False,
     ) -> None:
         super().__init__()
         self.setAutoDelete(False)
@@ -54,6 +55,12 @@ class MoveWorker(QRunnable):
         self._library_root = self._resolve_optional(library_root)
         self._trash_root = self._resolve_optional(trash_root)
         self._destination_resolved = self._resolve_optional(self._destination_root)
+        # ``_is_restore`` distinguishes restore workflows (moving files out of the
+        # trash) from ordinary moves and deletions.  The worker needs this flag to
+        # avoid annotating the destination index with ``original_rel_path`` during
+        # restore operations because the receiving album should keep its standard
+        # schema.
+        self._is_restore = bool(is_restore)
         self._is_trash_destination = bool(
             self._destination_resolved
             and self._trash_root
@@ -74,6 +81,12 @@ class MoveWorker(QRunnable):
         # do not require resolving the paths again.  The facade uses this property to
         # adjust user-facing status messages ("Delete" vs. "Move").
         return self._is_trash_destination
+
+    @property
+    def is_restore_operation(self) -> bool:
+        """Return ``True`` when the worker is performing a restore from trash."""
+
+        return self._is_restore
 
     def cancel(self) -> None:
         """Request cancellation of the move operation."""
@@ -190,7 +203,11 @@ class MoveWorker(QRunnable):
         new_rows = list(
             process_media_paths(self._destination_root, image_paths, video_paths)
         )
-        if self._is_trash_destination and self._library_root is not None:
+        if (
+            self._is_trash_destination
+            and not self._is_restore
+            and self._library_root is not None
+        ):
             source_lookup: Dict[str, Path] = {}
             for original, target in moved:
                 target_key = self._normalised_string(target)

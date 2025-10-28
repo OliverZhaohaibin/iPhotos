@@ -138,6 +138,7 @@ class MainController(QObject):
             window.ui.status_bar,
             window.ui.progress_bar,
             window.ui.rescan_action,
+            context,
         )
         # The notification toast confirms clipboard interactions without cluttering
         # the status bar.  It is instantiated once and reused to minimise
