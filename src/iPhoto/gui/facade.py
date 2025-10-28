@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set, TYPE_CHECKING
@@ -14,6 +15,7 @@ from ..models.album import Album
 from .background_task_manager import BackgroundTaskManager
 from .services import AlbumMetadataService, AssetImportService, AssetMoveService
 from .ui.tasks.scanner_worker import ScannerSignals, ScannerWorker
+from .ui.tasks.rescan_worker import RescanSignals, RescanWorker
 
 if TYPE_CHECKING:
     from ..library.manager import LibraryManager
@@ -678,26 +680,52 @@ class AppFacade(QObject):
             self._refresh_restored_album(album_root)
 
     def _refresh_restored_album(self, album_root: Path) -> None:
-        """Rescan *album_root* and notify listeners of the updated index."""
+        """Queue a background rescan for *album_root* to keep the UI responsive."""
 
         album_root = Path(album_root)
         if not album_root.exists():
             return
 
-        try:
-            backend.rescan(album_root)
-        except IPhotoError as exc:
-            self.errorRaised.emit(str(exc))
-            return
+        signals = RescanSignals()
+        worker = RescanWorker(album_root, signals)
+        task_id = self._build_restore_rescan_task_id(album_root)
 
-        self.indexUpdated.emit(album_root)
-        self.linksUpdated.emit(album_root)
+        def _on_finished(path: Path, succeeded: bool) -> None:
+            """Emit index updates once the rescan completes successfully."""
 
-        if self._current_album and self._paths_equal(self._current_album.root, album_root):
-            # ``_restart_asset_load`` expects to receive the exact album root
-            # object stored on ``_current_album`` so we forward that reference
-            # instead of the normalised variant used for comparisons above.
-            self._restart_asset_load(self._current_album.root)
+            if not succeeded:
+                return
+
+            self.indexUpdated.emit(path)
+            self.linksUpdated.emit(path)
+
+            if self._current_album and self._paths_equal(self._current_album.root, path):
+                # ``_restart_asset_load`` expects the canonical album reference, not the
+                # normalised path that may come back from the worker, to avoid needless
+                # detaches of the existing selection model.
+                self._restart_asset_load(self._current_album.root)
+
+        def _on_error(path: Path, message: str) -> None:
+            """Relay background failures with contextual information."""
+
+            self.errorRaised.emit(f"Failed to refresh '{path.name}': {message}")
+
+        self._task_manager.submit_task(
+            task_id=task_id,
+            worker=worker,
+            finished=signals.finished,
+            error=signals.error,
+            pause_watcher=False,
+            on_finished=_on_finished,
+            on_error=_on_error,
+            result_payload=lambda path, succeeded: (path, succeeded),
+        )
+
+    def _build_restore_rescan_task_id(self, album_root: Path) -> str:
+        """Return a stable yet unique identifier for restore-triggered rescans."""
+
+        normalised = self._normalise_path(album_root)
+        return f"restore-rescan:{normalised}:{uuid.uuid4().hex}"
 
     def _normalise_path(self, path: Optional[Path]) -> Path:
         """Return a consistently resolved variant of *path* for comparisons."""
