@@ -450,6 +450,29 @@ class AppFacade(QObject):
             return None
         return self._current_album.root
 
+    def _paths_equal(self, first: Path, second: Path) -> bool:
+        """Return ``True`` when *first* and *second* identify the same location."""
+
+        # Resolve both inputs where possible to neutralise redundant separators,
+        # relative segments, and platform-specific quirks (for instance network
+        # shares on Windows).  The legacy tests – and a few controllers – call
+        # into this helper directly, so we retain the behaviour the GUI relied
+        # upon prior to the service refactor.
+        if first == second:
+            return True
+
+        try:
+            normalised_first = first.resolve()
+        except OSError:
+            normalised_first = first
+
+        try:
+            normalised_second = second.resolve()
+        except OSError:
+            normalised_second = second
+
+        return normalised_first == normalised_second
+
     def _get_library_manager(self) -> Optional["LibraryManager"]:
         return self._library_manager
 
