@@ -591,7 +591,17 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
     preview_source, _ = preview_window.previewed[-1]
     assert Path(str(preview_source)) == motion_abs
     controller.activate_index(index)
-    qapp.processEvents()
+
+    # ``PlaybackController`` defers the heavy lifting to a single-shot timer so the
+    # playlist can update and the UI stays responsive.  A single ``processEvents``
+    # call is therefore not sufficient; drive the event loop until the stub media
+    # controller reports that the Live Photo's motion clip has been loaded or a
+    # conservative timeout expires.  This mirrors the behaviour of the real
+    # application where the video surface only swaps once the asynchronous loader
+    # hands control back to the main thread.
+    deadline = time.monotonic() + 5.0
+    while media.loaded is None and time.monotonic() < deadline:
+        qapp.processEvents(QEventLoop.AllEvents, 50)
 
     assert media.loaded == motion_abs
     assert media.play_calls == 1
