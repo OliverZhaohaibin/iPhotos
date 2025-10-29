@@ -66,7 +66,6 @@ class PlaybackController:
         viewer.nextItemRequested.connect(self._request_next_item)
         viewer.prevItemRequested.connect(self._request_previous_item)
         self._detail_ui.favorite_button.clicked.connect(self._toggle_favorite)
-        self._view_controller.galleryViewShown.connect(self._handle_gallery_view_shown)
         self._detail_ui.scrubbingStarted.connect(self.on_scrub_started)
         self._detail_ui.scrubbingFinished.connect(self.on_scrub_finished)
 
@@ -295,8 +294,19 @@ class PlaybackController:
         self._playlist.set_current(self._pending_load_row)
         self._pending_load_row = -1
 
-    def _handle_gallery_view_shown(self) -> None:
-        """Perform cleanup when the UI switches back to the gallery."""
+    def reset_for_gallery_navigation(self) -> None:
+        """Clear playback state before the UI returns to a gallery-style view.
+
+        The detail pane and playlist remain active while the user inspects
+        individual assets.  Navigating back to any gallery (all photos, albums,
+        static collections, etc.) should leave the playback widgets in a clean
+        state so the grid does not momentarily show stale selections or continue
+        streaming media.  This helper mirrors the logic that previously ran in
+        response to ``ViewController.galleryViewShown`` but exposes it as an
+        explicit call.  Callers can therefore reset the playback layer exactly
+        once during navigation, preventing the redundant model resets that were
+        responsible for tab flicker.
+        """
 
         self._state_manager.reset(previous_state=self._state_manager.state, set_idle_state=True)
         self._clear_scrub_state()
