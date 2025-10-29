@@ -544,7 +544,18 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
 
     qapp.processEvents()
 
-    assert model.rowCount() == 1
+    # ``AssetModel`` is a proxy layered on top of ``AssetListModel``; even though
+    # the backend worker has announced completion, the proxy only surfaces the
+    # loaded rows after Qt dispatches the corresponding ``rowsInserted``
+    # notifications.  Drive the event loop in short bursts until the lone Live
+    # Photo record becomes visible or a conservative timeout expires so the
+    # assertion below no longer races the asynchronous loader on slower machines.
+    playlist_rows_expected = 1
+    playlist_deadline = time.monotonic() + 5.0
+    while model.rowCount() < playlist_rows_expected and time.monotonic() < playlist_deadline:
+        qapp.processEvents(QEventLoop.AllEvents, 50)
+
+    assert model.rowCount() == playlist_rows_expected
     index = model.index(0, 0)
     assert bool(index.data(Roles.IS_LIVE))
     motion_abs_raw = index.data(Roles.LIVE_MOTION_ABS)
