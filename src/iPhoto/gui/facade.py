@@ -480,6 +480,34 @@ class AppFacade(QObject):
                 self.indexUpdated.emit(root)
                 self.linksUpdated.emit(root)
 
+    @Slot(Path, Path, list, bool, bool, bool, bool)
+    def _handle_move_operation_completed(
+        self,
+        source_root: Path,
+        destination_root: Path,
+        moved_pairs: list,
+        source_ok: bool,
+        destination_ok: bool,
+        is_trash_destination: bool,
+        is_restore_operation: bool,
+    ) -> None:
+        """Preserve the legacy private API by delegating to the new service."""
+
+        # The library update service now owns the heavy lifting, but the tests –
+        # and potentially integrations built against older versions – still
+        # reach into this private helper directly.  Forward the invocation so
+        # the updated design remains behaviourally compatible without
+        # reintroducing the duplicated bookkeeping logic here.
+        self._library_update_service.handle_move_operation_completed(
+            source_root,
+            destination_root,
+            moved_pairs,
+            source_ok,
+            destination_ok,
+            is_trash_destination,
+            is_restore_operation,
+        )
+
     @Slot(str)
     def _on_service_error(self, message: str) -> None:
         """Relay service-level failures through the facade-wide error signal."""

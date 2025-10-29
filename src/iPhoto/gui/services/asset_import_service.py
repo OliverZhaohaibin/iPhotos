@@ -29,14 +29,25 @@ class AssetImportService(QObject):
         *,
         task_manager: BackgroundTaskManager,
         current_album_root: Callable[[], Optional[Path]],
-        update_service: LibraryUpdateService,
+        update_service: Optional[LibraryUpdateService] = None,
+        refresh_callback: Optional[Callable[[Path], None]] = None,
         metadata_service: AlbumMetadataService,
         parent: Optional[QObject] = None,
     ) -> None:
         super().__init__(parent)
         self._task_manager = task_manager
         self._current_album_root = current_album_root
+        # ``update_service`` became the preferred integration point during the
+        # facade refactor, however the unit tests – and potentially 3rd party
+        # tooling – still rely on the historical ``refresh_callback``.  Allowing
+        # both keeps the public surface backwards compatible while letting the
+        # GUI bind directly to :class:`LibraryUpdateService` when available.
+        if update_service is None and refresh_callback is None:
+            raise ValueError(
+                "AssetImportService requires either an update service or a refresh callback."
+            )
         self._update_service = update_service
+        self._refresh_callback = refresh_callback
         self._metadata_service = metadata_service
 
     # ------------------------------------------------------------------
@@ -164,7 +175,16 @@ class AssetImportService(QObject):
             self._metadata_service.ensure_featured_entries(root, imported_paths)
 
         if rescan_succeeded and imported_paths:
-            self._update_service.announce_album_refresh(root)
+            if self._update_service is not None:
+                # When the dedicated library update service is available we let
+                # it broadcast the refresh so that all observers receive
+                # consistent indexing and reload notifications.
+                self._update_service.announce_album_refresh(root)
+            elif self._refresh_callback is not None:
+                # Older call sites still inject a plain callback; honour it to
+                # keep the service usable in isolation and inside the existing
+                # unit tests.
+                self._refresh_callback(root)
 
         if imported_paths:
             label = "file" if len(imported_paths) == 1 else "files"
