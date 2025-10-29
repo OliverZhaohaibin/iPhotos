@@ -272,6 +272,14 @@ class LibraryUpdateService(QObject):
             return
 
         if worker.cancelled:
+            self.scanFinished.emit(root, True)
+            should_restart = self._scan_pending
+            self._cleanup_scan_worker()
+            if should_restart:
+                self._schedule_scan_retry()
+            return
+
+        if worker.failed:
             self.scanFinished.emit(root, False)
             should_restart = self._scan_pending
             self._cleanup_scan_worker()
@@ -279,15 +287,30 @@ class LibraryUpdateService(QObject):
                 self._schedule_scan_retry()
             return
 
-        success = bool(rows) and not worker.failed
-        self.scanFinished.emit(root, success)
+        materialised_rows = list(rows)
 
-        if success:
+        try:
+            # Persist the freshly computed index snapshot immediately so future
+            # reloads observe the new metadata rather than the stale cache that
+            # existed before the rescan.  The worker keeps the result in memory,
+            # therefore we flush both ``index.jsonl`` and ``links.json`` here to
+            # mirror the historical facade behaviour before notifying listeners.
+            backend.IndexStore(root).write_rows(materialised_rows)
+            backend._ensure_links(root, materialised_rows)
+        except IPhotoError as exc:
+            self.errorRaised.emit(str(exc))
+            self.scanFinished.emit(root, False)
+        else:
             self.indexUpdated.emit(root)
             self.linksUpdated.emit(root)
             self.assetReloadRequested.emit(root, False, False)
+            self.scanFinished.emit(root, True)
 
+        should_restart = self._scan_pending
         self._cleanup_scan_worker()
+
+        if should_restart:
+            self._schedule_scan_retry()
 
     def _on_scan_error(
         self,
