@@ -944,7 +944,7 @@ class AssetListModel(QAbstractListModel):
             # worker from here so ``_on_loader_finished`` can honour the request
             # once the background thread exits.
             self._pending_reload = True
-            if not self._loader_worker.cancelled:
+            if not self._loader_worker.cancel:
                 self._loader_worker.cancel()
             return
 
