@@ -119,33 +119,42 @@ def test_asset_roles_expose_metadata(tmp_path: Path, qapp: QApplication) -> None
     # only informs listeners that a refresh already happened, so the model would
     # otherwise keep stale data.  Updating the source model directly mirrors the
     # behaviour performed by :meth:`AppFacade.toggle_featured` in production.
-    proxy_data_changed = QSignalSpy(model.dataChanged)
     model.source_model().update_featured_status("IMG_0001.JPG", True)
 
-    # The proxy model relays ``dataChanged`` once it has mapped the source row
-    # to its own index.  Wait for that notification so subsequent assertions do
-    # not race the asynchronous signal propagation across the proxy boundary.
-    if not proxy_data_changed.wait(3000):
+    # ``QSortFilterProxyModel`` propagates :meth:`dataChanged` asynchronously.
+    # Poll the proxy until the featured flag becomes visible while yielding to
+    # the event loop between attempts.  This keeps the test deterministic across
+    # different Qt backends without depending on undocumented signal ordering.
+    deadline = time.monotonic() + 5.0
+    featured_index = None
+    featured_flag = False
+    while time.monotonic() < deadline:
+        qapp.processEvents(QEventLoop.AllEvents, 50)
+        for row in range(model.rowCount()):
+            candidate = model.index(row, 0)
+            if not candidate.isValid():
+                continue
+            rel_value = model.data(candidate, Roles.REL)
+            if rel_value != "IMG_0001.JPG":
+                continue
+            featured_index = candidate
+            featured_flag = bool(model.data(candidate, Roles.FEATURED))
+            break
+        if featured_index is not None and featured_flag:
+            break
+
+    if featured_index is None or not featured_flag:
         debug_rows = [
             (model.data(model.index(row, 0), Roles.REL),
              model.data(model.index(row, 0), Roles.FEATURED))
             for row in range(model.rowCount())
         ]
         pytest.fail(
-            "Timed out waiting for proxy dataChanged after featuring asset; "
+            "Proxy model never exposed the featured flag for IMG_0001.JPG; "
             f"rows observed: {debug_rows}"
         )
 
-    # Process any leftover events enqueued by the signal emission to keep the
-    # assertions below deterministic across different Qt backends.
-    qapp.processEvents(QEventLoop.AllEvents, 50)
-
-    featured_index = next(
-        model.index(row, 0)
-        for row in range(model.rowCount())
-        if model.data(model.index(row, 0), Roles.REL) == "IMG_0001.JPG"
-    )
-    assert featured_index.data(Roles.FEATURED) is True
+    assert featured_flag is True
 
     model.set_filter_mode("favorites")
 
