@@ -27,6 +27,13 @@ class MainWindow(QMainWindow):
         require_multimedia()
 
         self.ui = Ui_MainWindow()
+
+        # ``setupUi`` triggers a handful of ``QEvent`` instances while it
+        # constructs child widgets.  Those events fire before we can build the
+        # frameless chrome helper, so we predeclare the attribute to avoid
+        # ``AttributeError`` during the early lifecycle.
+        self.window_manager: FramelessWindowManager | None = None
+
         self.ui.setupUi(self, context.library)
 
         # ``FramelessWindowManager`` is responsible for every custom chrome
@@ -50,17 +57,22 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:  # type: ignore[override]
         """Tear down background services before the window closes."""
 
-        self.window_manager.cleanup()
+        if self.window_manager is not None:
+            self.window_manager.cleanup()
         self.controller.shutdown()
         super().closeEvent(event)
 
     def resizeEvent(self, event: QResizeEvent) -> None:  # type: ignore[override]
         super().resizeEvent(event)
-        self.window_manager.handle_resize_event(event)
+        # ``setupUi`` can emit a resize event before the frameless manager is
+        # constructed.  Guard against that early call.
+        if self.window_manager is not None:
+            self.window_manager.handle_resize_event(event)
 
     def changeEvent(self, event: QEvent) -> None:  # type: ignore[override]
         super().changeEvent(event)
-        self.window_manager.handle_change_event(event)
+        if self.window_manager is not None:
+            self.window_manager.handle_change_event(event)
 
     # ------------------------------------------------------------------
     # Window chrome accessors used by child widgets
@@ -72,16 +84,22 @@ class MainWindow(QMainWindow):
     def menuBar(self) -> QMenuBar:  # type: ignore[override]
         """Expose the menu bar hosted inside the rounded window shell."""
 
+        if self.window_manager is None:
+            return super().menuBar()
         return self.window_manager.menuBar()
 
     def menu_stylesheet(self) -> str | None:
         """Return the cached ``QMenu`` stylesheet so other widgets can reuse it."""
 
+        if self.window_manager is None:
+            return None
         return self.window_manager.menu_stylesheet()
 
     def get_qmenu_stylesheet(self) -> str | None:
         """Expose the rounded ``QMenu`` stylesheet, rebuilding it if necessary."""
 
+        if self.window_manager is None:
+            return None
         return self.window_manager.get_qmenu_stylesheet()
 
     # ------------------------------------------------------------------
@@ -89,27 +107,32 @@ class MainWindow(QMainWindow):
     def position_live_badge(self) -> None:
         """Allow legacy callers to reposition the Live badge."""
 
-        self.window_manager.position_live_badge()
+        if self.window_manager is not None:
+            self.window_manager.position_live_badge()
 
     def position_resize_widgets(self) -> None:
         """Allow legacy callers to reposition the resize affordances."""
 
-        self.window_manager.position_resize_widgets()
+        if self.window_manager is not None:
+            self.window_manager.position_resize_widgets()
 
     def toggle_fullscreen(self) -> None:
         """Toggle the immersive full screen mode."""
 
-        self.window_manager.toggle_fullscreen()
+        if self.window_manager is not None:
+            self.window_manager.toggle_fullscreen()
 
     def enter_fullscreen(self) -> None:
         """Expand the window into the immersive presentation mode."""
 
-        self.window_manager.enter_fullscreen()
+        if self.window_manager is not None:
+            self.window_manager.enter_fullscreen()
 
     def exit_fullscreen(self) -> None:
         """Restore the standard chrome from immersive mode."""
 
-        self.window_manager.exit_fullscreen()
+        if self.window_manager is not None:
+            self.window_manager.exit_fullscreen()
 
     # ------------------------------------------------------------------
     # Public API used by sidebar/actions
