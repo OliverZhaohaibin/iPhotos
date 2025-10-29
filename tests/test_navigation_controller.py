@@ -78,12 +78,16 @@ class _StubAssetModel:
 
     def __init__(self) -> None:
         self.filter_mode = object()
+        self.sort_calls = 0
 
     def set_filter_mode(self, mode: Optional[str]) -> None:
         self.filter_mode = mode
 
     def rowCount(self) -> int:  # pragma: no cover - unused but required by controller
         return 0
+
+    def ensure_chronological_order(self) -> None:
+        self.sort_calls += 1
 
 
 class _StubSidebar:
@@ -220,3 +224,37 @@ def test_open_album_refresh_detected_without_sidebar_sync(
     assert view_controller.gallery_calls == 1
     assert controller.consume_last_open_refresh() is True
     assert facade.open_requests == [album_path]
+
+
+def test_open_all_photos_applies_chronological_sort(
+    tmp_path: Path, qapp: QApplication
+) -> None:
+    """Switching to "All Photos" must enforce chronological ordering."""
+
+    facade = _StubFacade()
+    context = _StubContext(tmp_path)
+    context.facade = facade
+    asset_model = _StubAssetModel()
+    sidebar = _StubSidebar()
+    album_label = QLabel()
+    status_bar = QStatusBar()
+    dialog = _StubDialog()
+    view_controller = _SpyViewController()
+
+    controller = NavigationController(
+        context,
+        facade,
+        asset_model,
+        sidebar,
+        album_label,
+        status_bar,
+        dialog,  # type: ignore[arg-type]
+        view_controller,
+    )
+
+    tmp_path.mkdir(exist_ok=True)
+    controller.open_all_photos()
+
+    assert asset_model.sort_calls == 1
+    assert asset_model.filter_mode is None
+    assert facade.open_requests == [tmp_path]

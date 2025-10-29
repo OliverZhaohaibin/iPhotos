@@ -16,6 +16,7 @@ from .background_task_manager import BackgroundTaskManager
 from .services import AlbumMetadataService, AssetImportService, AssetMoveService
 from .ui.tasks.scanner_worker import ScannerSignals, ScannerWorker
 from .ui.tasks.rescan_worker import RescanSignals, RescanWorker
+from ..config import WORK_DIR_NAME
 
 if TYPE_CHECKING:
     from ..library.manager import LibraryManager
@@ -46,6 +47,8 @@ class AppFacade(QObject):
         self._library_manager: Optional["LibraryManager"] = None
         self._scanner_worker: Optional[ScannerWorker] = None
         self._scan_pending = False
+        self._stale_album_roots: Dict[str, Path] = {}
+        self._album_root_cache: Dict[str, Optional[Path]] = {}
         self._task_manager = BackgroundTaskManager(
             pause_watcher=self._pause_library_watcher,
             resume_watcher=self._resume_library_watcher,
@@ -168,7 +171,12 @@ class AppFacade(QObject):
         self._asset_list_model.prepare_for_album(album_root)
         self.albumOpened.emit(album_root)
 
-        self._restart_asset_load(album_root, announce_index=True)
+        force_reload = self._consume_forced_reload(album_root)
+        self._restart_asset_load(
+            album_root,
+            announce_index=True,
+            force_reload=force_reload,
+        )
         return album
 
     def rescan_current(self) -> List[dict]:
@@ -290,6 +298,8 @@ class AppFacade(QObject):
         """Remember the library manager so static collections stay in sync."""
 
         self._library_manager = library
+        self._album_root_cache.clear()
+        self._stale_album_roots.clear()
 
     def import_files(
         self,
@@ -587,7 +597,8 @@ class AppFacade(QObject):
         refreshed_root = refreshed.root
         self._asset_list_model.prepare_for_album(refreshed_root)
         self.albumOpened.emit(refreshed_root)
-        self._restart_asset_load(refreshed_root)
+        force_reload = self._consume_forced_reload(refreshed_root)
+        self._restart_asset_load(refreshed_root, force_reload=force_reload)
 
     def _current_album_root(self) -> Optional[Path]:
         """Return the filesystem root of the active album, if any."""
@@ -601,13 +612,24 @@ class AppFacade(QObject):
 
         return self._library_manager
 
-    def _restart_asset_load(self, root: Path, *, announce_index: bool = False) -> None:
+    def _restart_asset_load(
+        self,
+        root: Path,
+        *,
+        announce_index: bool = False,
+        force_reload: bool = False,
+    ) -> None:
         if not (self._current_album and self._current_album.root == root):
             return
+        if force_reload:
+            # ``_consume_forced_reload`` may have already removed the flag; only
+            # discard any lingering entry here so repeated calls in quick
+            # succession cannot accidentally skip the fresh load request.
+            self._consume_forced_reload(root)
         if announce_index:
             self._pending_index_announcements.add(root)
         self.loadStarted.emit(root)
-        if self._asset_list_model.populate_from_cache():
+        if not force_reload and self._asset_list_model.populate_from_cache():
             return
         self._asset_list_model.start_load()
 
@@ -626,19 +648,92 @@ class AppFacade(QObject):
     def _handle_move_operation_completed(
         self,
         source_root: Path,
-        _destination_root: Path,
+        destination_root: Path,
         moved_pairs: list,
-        _source_ok: bool,
+        source_ok: bool,
         destination_ok: bool,
         _is_trash_destination: bool,
         is_restore_operation: bool,
     ) -> None:
-        """Refresh destination albums after a successful restore operation."""
+        """Refresh any views impacted by a completed move or restore."""
 
-        if not is_restore_operation or not destination_ok or not moved_pairs:
+        if not moved_pairs:
             return
 
         library = self._get_library_manager()
+        library_root = library.root() if library is not None else None
+        current_root = self._current_album_root()
+
+        refresh_targets: dict[str, tuple[Path, bool]] = {}
+        # ``blocked_restarts`` tracks album roots that must not trigger an
+        # immediate reload once the worker finishes (for example the view that
+        # initiated the move).  The flag ensures the UI stays stable while still
+        # allowing the next manual navigation to fetch fresh data.
+        blocked_restarts: set[str] = set()
+
+        def _record_refresh(path: Optional[Path], *, allow_restart: bool = True) -> None:
+            """Remember *path* for signal emission and optional view reload."""
+
+            if path is None:
+                return
+            try:
+                normalised = self._normalise_path(path)
+            except ValueError:
+                normalised = path
+            key = str(normalised)
+            self._mark_album_stale(path)
+            if not allow_restart:
+                blocked_restarts.add(key)
+            should_restart = bool(
+                allow_restart
+                and key not in blocked_restarts
+                and current_root is not None
+                and self._paths_equal(current_root, path)
+            )
+            existing = refresh_targets.get(key)
+            if existing is None or (not existing[1] and should_restart):
+                refresh_targets[key] = (path, should_restart)
+
+        if source_ok:
+            _record_refresh(source_root, allow_restart=False)
+        if destination_ok:
+            _record_refresh(destination_root)
+
+        additional_roots = self._collect_album_roots_from_pairs(moved_pairs)
+        for extra_root in additional_roots:
+            _record_refresh(extra_root)
+
+        if library_root is not None:
+            touched_library = False
+            if source_ok and self._paths_equal(source_root, library_root):
+                touched_library = True
+            if destination_ok and self._paths_equal(destination_root, library_root):
+                touched_library = True
+            if not touched_library:
+                for original, target in moved_pairs:
+                    try:
+                        original_path = Path(original)
+                        target_path = Path(target)
+                    except TypeError:
+                        continue
+                    if self._path_is_descendant(original_path, library_root) or self._path_is_descendant(
+                        target_path, library_root
+                    ):
+                        touched_library = True
+                        break
+            if touched_library:
+                _record_refresh(library_root)
+
+        for path, should_restart in refresh_targets.values():
+            self.indexUpdated.emit(path)
+            self.linksUpdated.emit(path)
+            if should_restart:
+                force_reload = self._consume_forced_reload(path)
+                self._restart_asset_load(path, force_reload=force_reload)
+
+        if not is_restore_operation or not destination_ok:
+            return
+
         if library is None:
             return
 
@@ -652,7 +747,6 @@ class AppFacade(QObject):
             # existing code paths that rely on filesystem watcher updates.
             return
 
-        library_root = library.root()
         library_root_normalised = (
             self._normalise_path(library_root) if library_root is not None else None
         )
@@ -678,6 +772,98 @@ class AppFacade(QObject):
 
         for album_root in unique_album_roots.values():
             self._refresh_restored_album(album_root, library_root)
+
+    def _mark_album_stale(self, path: Path) -> None:
+        """Record *path* so the next load bypasses cached index data."""
+
+        try:
+            normalised = self._normalise_path(path)
+        except ValueError:
+            return
+        self._stale_album_roots[str(normalised)] = path
+
+    def _consume_forced_reload(self, path: Path) -> bool:
+        """Return ``True`` when *path* was flagged for a forced reload."""
+
+        try:
+            normalised = self._normalise_path(path)
+        except ValueError:
+            return False
+        key = str(normalised)
+        if key not in self._stale_album_roots:
+            return False
+        self._stale_album_roots.pop(key, None)
+        return True
+
+    def _collect_album_roots_from_pairs(self, pairs: list[tuple[Path, Path]]) -> Set[Path]:
+        """Return album roots referenced by *pairs* of moved assets.
+
+        The move worker reports fully qualified source and destination paths for
+        every relocated asset.  When the move originates from a virtual view
+        such as "All Photos" the worker's ``source_root`` points at the Basic
+        Library rather than the concrete album that owned the asset.  To keep
+        those album views consistent we need to locate the actual album root for
+        each source and destination path and mark them as stale so that the next
+        activation reloads fresh index data from disk.
+        """
+
+        if not pairs:
+            return set()
+
+        library = self._get_library_manager()
+        if library is None:
+            return set()
+        library_root = library.root()
+        if library_root is None:
+            return set()
+
+        library_root_norm = self._normalise_path(library_root)
+
+        affected: Set[Path] = set()
+        for original, target in pairs:
+            for candidate in (original, target):
+                album_root = self._locate_album_root(candidate.parent, library_root_norm)
+                if album_root is not None:
+                    affected.add(album_root)
+        return affected
+
+    def _locate_album_root(self, start: Path, library_root: Path) -> Optional[Path]:
+        """Return the album root that owns *start*, if any.
+
+        The helper walks up the directory tree until it discovers a folder that
+        contains the LexiPhoto work directory (``.lexiphoto``).  Results are
+        cached so repeated moves involving the same directories avoid redundant
+        filesystem probes.
+        """
+
+        try:
+            candidate = self._normalise_path(start)
+        except ValueError:
+            candidate = start
+
+        key = str(candidate)
+        cached = self._album_root_cache.get(key, ...)
+        if cached is not ...:
+            return cached
+
+        visited: list[Path] = []
+        current = candidate
+        while True:
+            visited.append(current)
+            work_dir = current / WORK_DIR_NAME
+            if work_dir.exists():
+                album_root = current
+                break
+            if self._paths_equal(current, library_root) or current.parent == current:
+                album_root = None
+                break
+            current = current.parent
+
+        for entry in visited:
+            cache_key = str(entry)
+            self._album_root_cache[cache_key] = album_root
+
+        return album_root
 
     def _refresh_restored_album(self, album_root: Path, library_root: Optional[Path]) -> None:
         """Queue a background rescan for *album_root* to keep the UI responsive.

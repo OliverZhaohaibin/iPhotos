@@ -63,12 +63,21 @@ class AssetListModel(QAbstractListModel):
         self._loader_signals: Optional[AssetLoaderSignals] = None
         self._pending_reload = False
         self._visible_rows: Set[int] = set()
-        # ``_pending_move_rows`` tracks optimistic UI updates performed when
-        # assets are moved out of the virtual "All Photos" collection.  The
-        # mapping allows the model to reconcile the optimistic path guesses
-        # with the final filesystem locations once the worker thread completes
-        # the move, or to roll back the changes if the operation fails.
-        self._pending_move_rows: Dict[str, Tuple[int, str]] = {}
+        # ``_pending_virtual_moves`` records optimistic path adjustments
+        # performed when assets are moved out of a virtual collection such as
+        # "All Photos".  Each entry maps the original relative path to the
+        # updated row index and guessed relative path so the model can reconcile
+        # the change when the worker thread completes or undo it if the
+        # operation fails.  Concrete album views never populate this mapping
+        # because they physically remove rows instead of updating paths in
+        # place.
+        self._pending_virtual_moves: Dict[str, Tuple[int, str, bool]] = {}
+        # ``_pending_row_removals`` caches snapshots of rows trimmed
+        # optimistically when the move originates from a concrete album view.
+        # The cached metadata allows :meth:`rollback_pending_moves` to rebuild
+        # the dataset if the asynchronous filesystem operation ultimately
+        # fails.
+        self._pending_row_removals: List[Tuple[int, Dict[str, object]]] = []
         # ``_recently_removed_rows`` keeps a bounded cache of the most recently
         # removed asset metadata so controller workflows can still resolve
         # information about an item after an optimistic UI update trimmed it
@@ -84,6 +93,21 @@ class AssetListModel(QAbstractListModel):
         # model react to ``linksUpdated`` notifications without having to reload
         # the entire dataset from disk.
         self._live_map: Dict[str, Dict[str, object]] = {}
+        # ``_suppress_virtual_reload`` prevents the model from resetting the
+        # virtual "All Photos" presentation while a move operation is in flight.
+        # Aggregated views perform optimistic, in-place updates to keep the grid
+        # perfectly still; triggering a reload when the backend broadcasts the
+        # matching ``linksUpdated`` signal would undo that effort by resetting
+        # the model.  The flag remains active until the user navigates away from
+        # the aggregate view, guaranteeing that neither the intermediate rescan
+        # progress nor its completion introduces visual flicker.
+        self._suppress_virtual_reload: bool = False
+        # ``_virtual_move_requires_revisit`` tracks whether a library-wide move
+        # asked the model to hold its optimistic state until the user leaves and
+        # returns.  While set, ``linksUpdated`` notifications are ignored so the
+        # UI stays completely static; the next ``prepare_for_album`` call clears
+        # the flag and allows the refreshed dataset to be loaded.
+        self._virtual_move_requires_revisit: bool = False
 
         self._facade.linksUpdated.connect(self.handle_links_updated)
 
@@ -211,29 +235,80 @@ class AssetListModel(QAbstractListModel):
         self._visible_rows.clear()
 
     def update_rows_for_move(
-        self, rels: list[str], destination_root: Path
+        self,
+        rels: list[str],
+        destination_root: Path,
+        *,
+        is_source_main_view: bool = False,
     ) -> None:
-        """Optimistically update moved rows to reflect their new location.
+        """Apply optimistic UI updates when a move operation is queued.
 
-        The gallery keeps the "All Photos" aggregate visually stable by
-        updating only the affected rows when files are moved into a concrete
-        album.  The method records enough bookkeeping to reconcile the final
-        filesystem locations once the worker thread finishes the move.
+        ``is_source_main_view`` toggles between the two behaviours required by
+        the UX guidelines: concrete album views remove rows immediately to avoid
+        showing stale placeholders, whereas virtual library-wide collections
+        keep the affected entries visible and simply adjust their guessed path
+        until the refreshed index arrives.
         """
 
         if not self._album_root or not rels:
             return
 
         album_root = self._album_root.resolve()
+
+        if not is_source_main_view:
+            rows_to_remove: List[int] = []
+            for original_rel in {Path(rel).as_posix() for rel in rels}:
+                row_index = self._row_lookup.get(original_rel)
+                if row_index is None:
+                    continue
+                rows_to_remove.append(row_index)
+
+            if not rows_to_remove:
+                return
+
+            for row_index in sorted(set(rows_to_remove), reverse=True):
+                if not (0 <= row_index < len(self._rows)):
+                    continue
+
+                row_snapshot = dict(self._rows[row_index])
+                rel_key = str(row_snapshot.get("rel", ""))
+                abs_key = str(row_snapshot.get("abs", "")) if row_snapshot.get("abs") else ""
+
+                self._pending_row_removals.append((row_index, row_snapshot))
+
+                self.beginRemoveRows(QModelIndex(), row_index, row_index)
+                self._rows.pop(row_index)
+                self.endRemoveRows()
+
+                if rel_key:
+                    self._row_lookup.pop(rel_key, None)
+                    self._thumb_cache.pop(rel_key, None)
+                if abs_key:
+                    self._recently_removed_rows[abs_key] = dict(row_snapshot)
+                    self._recently_removed_rows.move_to_end(abs_key)
+                    if len(self._recently_removed_rows) > self._recently_removed_limit:
+                        self._recently_removed_rows.popitem(last=False)
+
+            self._row_lookup = {row["rel"]: index for index, row in enumerate(self._rows)}
+            self._placeholder_cache.clear()
+            self._visible_rows.clear()
+            # Concrete album moves already removed the rows that the worker will
+            # touch, so resetting the model again when ``linksUpdated`` fires
+            # would only introduce a distracting flicker.  Suppress the next
+            # reload notification so the grid remains stable while the
+            # background rescan persists the new index to disk.
+            self._suppress_virtual_reload = True
+            return
+
         try:
             destination_root = destination_root.resolve()
             dest_prefix = destination_root.relative_to(album_root)
         except OSError:
             return
         except ValueError:
-            # Ignore moves that target folders outside the currently open
-            # library root.  They are not visible in this model so an
-            # optimistic update would be misleading.
+            # Destinations outside the current library root are invisible in
+            # the active aggregate view, so applying an optimistic update would
+            # produce a misleading placeholder.
             return
 
         changed_rows: List[int] = []
@@ -250,8 +325,6 @@ class AssetListModel(QAbstractListModel):
                 guessed_rel = (dest_prefix / file_name).as_posix()
             guessed_abs = destination_root / file_name
 
-            # Re-key caches and lookup tables before mutating the row so all
-            # helper structures stay consistent with the optimistic update.
             self._row_lookup.pop(original_rel, None)
             self._row_lookup[guessed_rel] = row_index
             thumb = self._thumb_cache.pop(original_rel, None)
@@ -263,7 +336,9 @@ class AssetListModel(QAbstractListModel):
 
             row_data["rel"] = guessed_rel
             row_data["abs"] = str(guessed_abs)
-            self._pending_move_rows[original_rel] = (row_index, guessed_rel)
+            # ``False`` marks that the row remains visible; rollback should only
+            # restore its metadata instead of re-inserting a duplicate entry.
+            self._pending_virtual_moves[original_rel] = (row_index, guessed_rel, False)
             changed_rows.append(row_index)
 
         for row in changed_rows:
@@ -273,6 +348,19 @@ class AssetListModel(QAbstractListModel):
                 model_index,
                 [Roles.REL, Roles.ABS, Qt.DecorationRole],
             )
+
+        if changed_rows:
+            # ``handle_links_updated`` will fire shortly after the worker
+            # rewrites ``links.json``.  Prevent the ensuing notification from
+            # resetting the model while our optimistic metadata is still being
+            # reconciled.
+            self._suppress_virtual_reload = True
+            # Track that the aggregate view must not refresh until the user
+            # revisits it.  The move worker will update the on-disk index in the
+            # background; marking the view as "hold" ensures the final
+            # ``linksUpdated`` announcement does not reset the grid when the
+            # rescan completes.
+            self._virtual_move_requires_revisit = True
 
     def finalise_move_results(self, moves: List[Tuple[Path, Path]]) -> None:
         """Reconcile optimistic move updates with the worker results."""
@@ -290,10 +378,10 @@ class AssetListModel(QAbstractListModel):
             except ValueError:
                 continue
 
-            pending = self._pending_move_rows.pop(original_rel, None)
+            pending = self._pending_virtual_moves.pop(original_rel, None)
             if pending is None:
                 continue
-            row_index, guessed_rel = pending
+            row_index, guessed_rel, was_removed = pending
             row_data = self._rows[row_index]
 
             try:
@@ -303,14 +391,15 @@ class AssetListModel(QAbstractListModel):
             except ValueError:
                 final_rel = guessed_rel
 
-            self._row_lookup.pop(guessed_rel, None)
-            self._row_lookup[final_rel] = row_index
-            thumb = self._thumb_cache.pop(guessed_rel, None)
-            if thumb is not None:
-                self._thumb_cache[final_rel] = thumb
-            placeholder = self._placeholder_cache.pop(guessed_rel, None)
-            if placeholder is not None:
-                self._placeholder_cache[final_rel] = placeholder
+            if not was_removed:
+                self._row_lookup.pop(guessed_rel, None)
+                self._row_lookup[final_rel] = row_index
+                thumb = self._thumb_cache.pop(guessed_rel, None)
+                if thumb is not None:
+                    self._thumb_cache[final_rel] = thumb
+                placeholder = self._placeholder_cache.pop(guessed_rel, None)
+                if placeholder is not None:
+                    self._placeholder_cache[final_rel] = placeholder
 
             row_data["rel"] = final_rel
             row_data["abs"] = str(target_path.resolve())
@@ -324,29 +413,35 @@ class AssetListModel(QAbstractListModel):
                 [Roles.REL, Roles.ABS, Qt.DecorationRole],
             )
 
+        if self._pending_row_removals:
+            # Concrete album moves that removed rows optimistically succeeded,
+            # therefore the cached snapshots are no longer required.
+            self._pending_row_removals.clear()
+
     def rollback_pending_moves(self) -> None:
         """Restore original metadata for moves that failed or were cancelled."""
 
-        if not self._album_root or not self._pending_move_rows:
+        if not self._album_root:
             return
 
         album_root = self._album_root.resolve()
-        to_restore = list(self._pending_move_rows.items())
-        self._pending_move_rows.clear()
+        to_restore = list(self._pending_virtual_moves.items())
+        self._pending_virtual_moves.clear()
 
         restored_rows: List[int] = []
-        for original_rel, (row_index, guessed_rel) in to_restore:
+        for original_rel, (row_index, guessed_rel, was_removed) in to_restore:
             row_data = self._rows[row_index]
             absolute = (album_root / original_rel).resolve()
 
-            self._row_lookup.pop(guessed_rel, None)
-            self._row_lookup[original_rel] = row_index
-            thumb = self._thumb_cache.pop(guessed_rel, None)
-            if thumb is not None:
-                self._thumb_cache[original_rel] = thumb
-            placeholder = self._placeholder_cache.pop(guessed_rel, None)
-            if placeholder is not None:
-                self._placeholder_cache[original_rel] = placeholder
+            if not was_removed:
+                self._row_lookup.pop(guessed_rel, None)
+                self._row_lookup[original_rel] = row_index
+                thumb = self._thumb_cache.pop(guessed_rel, None)
+                if thumb is not None:
+                    self._thumb_cache[original_rel] = thumb
+                placeholder = self._placeholder_cache.pop(guessed_rel, None)
+                if placeholder is not None:
+                    self._placeholder_cache[original_rel] = placeholder
 
             row_data["rel"] = original_rel
             row_data["abs"] = str(absolute)
@@ -360,10 +455,31 @@ class AssetListModel(QAbstractListModel):
                 [Roles.REL, Roles.ABS, Qt.DecorationRole],
             )
 
+        if self._pending_row_removals:
+            for row_index, row_data in sorted(self._pending_row_removals, key=lambda entry: entry[0]):
+                insert_at = min(max(row_index, 0), len(self._rows))
+                self.beginInsertRows(QModelIndex(), insert_at, insert_at)
+                restored = dict(row_data)
+                self._rows.insert(insert_at, restored)
+                self.endInsertRows()
+                abs_key = str(restored.get("abs", "")) if restored.get("abs") else ""
+                if abs_key:
+                    self._recently_removed_rows.pop(abs_key, None)
+            self._pending_row_removals.clear()
+            self._row_lookup = {row["rel"]: index for index, row in enumerate(self._rows)}
+            self._thumb_cache.clear()
+            self._placeholder_cache.clear()
+            self._visible_rows.clear()
+
+        # The failure/cancellation restored the original dataset.  Allow future
+        # backend refresh events to reload the view normally.
+        self._suppress_virtual_reload = False
+        self._virtual_move_requires_revisit = False
+
     def has_pending_move_placeholders(self) -> bool:
         """Return ``True`` when optimistic move updates are awaiting results."""
 
-        return bool(self._pending_move_rows)
+        return bool(self._pending_virtual_moves or self._pending_row_removals)
 
     def populate_from_cache(self, *, max_index_bytes: int = 512 * 1024) -> bool:
         """Synchronously load cached index data when the file is small."""
@@ -500,8 +616,12 @@ class AssetListModel(QAbstractListModel):
         self._row_lookup = {}
         self._thumb_cache.clear()
         self._recently_removed_rows.clear()
+        self._pending_virtual_moves.clear()
+        self._pending_row_removals.clear()
         self.endResetModel()
         self._live_map = {}
+        self._suppress_virtual_reload = False
+        self._virtual_move_requires_revisit = False
 
     def update_featured_status(self, rel: str, is_featured: bool) -> None:
         """Update the cached ``featured`` flag for the asset identified by *rel*."""
@@ -785,6 +905,26 @@ class AssetListModel(QAbstractListModel):
                 updated_root,
                 album_root,
             )
+            return
+
+        if self._suppress_virtual_reload:
+            if self._virtual_move_requires_revisit:
+                logger.debug(
+                    "AssetListModel: holding reload for %s until the aggregate view is reopened.",
+                    updated_root,
+                )
+                return
+
+            logger.debug(
+                "AssetListModel: finishing temporary suppression for %s after non-aggregate move.",
+                updated_root,
+            )
+            self._suppress_virtual_reload = False
+            # Optimistic updates already adjusted the visible rows.  The cached
+            # Live Photo metadata can still change asynchronously, so refresh it
+            # in place without triggering a full model reset.
+            if self._rows:
+                self._reload_live_metadata()
             return
 
         logger.debug(

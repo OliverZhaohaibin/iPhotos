@@ -139,6 +139,13 @@ class AssetMoveService(QObject):
             self._asset_list_model.rollback_pending_moves()
             return
 
+        rel_paths: List[str] = []
+        for resolved in normalized:
+            try:
+                rel_paths.append(resolved.relative_to(source_root).as_posix())
+            except ValueError:
+                continue
+
         signals = MoveSignals()
         signals.started.connect(self._on_move_started)
         signals.progress.connect(self._on_move_progress)
@@ -205,6 +212,20 @@ class AssetMoveService(QObject):
                 self._asset_list_model.rollback_pending_moves()
                 self.errorRaised.emit("Cannot restore items back into Recently Deleted.")
                 return
+
+        is_source_main_view = False
+        if library_root is not None:
+            try:
+                is_source_main_view = library_root.resolve() == source_root.resolve()
+            except OSError:
+                is_source_main_view = library_root == source_root
+
+        if operation_normalized == "move" and rel_paths:
+            self._asset_list_model.update_rows_for_move(
+                rel_paths,
+                destination_root,
+                is_source_main_view=is_source_main_view,
+            )
 
         worker = MoveWorker(
             normalized,

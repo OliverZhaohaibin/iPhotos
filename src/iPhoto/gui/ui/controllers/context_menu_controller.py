@@ -304,33 +304,15 @@ class ContextMenuController(QObject):
     def _execute_move_to_album(self, target: Path) -> None:
         """Move the currently selected assets to ``target`` while updating the view."""
 
-        selection_model = self._grid_view.selectionModel()
-        selected_indexes = (
-            list(selection_model.selectedIndexes()) if selection_model else []
-        )
         paths = self._selected_asset_paths()
         if not paths:
             self._status_bar.show_message("Select items to move first.", 3000)
             return
 
-        source_model = self._asset_model.source_model()
-        is_virtual_view_move = self._navigation.is_basic_library_virtual_view()
-        if is_virtual_view_move:
-            rels = [
-                index.data(Roles.REL)
-                for index in selected_indexes
-                if index.isValid()
-            ]
-            source_model.update_rows_for_move(
-                [rel for rel in rels if isinstance(rel, str)], target
-            )
-        elif selected_indexes:
-            source_model.remove_rows(selected_indexes)
-
         try:
             self._facade.move_assets(paths, target)
         except Exception:
-            source_model.rollback_pending_moves()
+            self._asset_model.source_model().rollback_pending_moves()
             raise
         finally:
             self._selection_controller.set_selection_mode(False)

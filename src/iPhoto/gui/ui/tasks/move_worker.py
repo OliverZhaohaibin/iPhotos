@@ -13,6 +13,7 @@ from ....errors import IPhotoError
 from ....cache.index_store import IndexStore
 from ....io.scanner import process_media_paths
 from ....media_classifier import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
+from ....config import WORK_DIR_NAME
 
 
 class MoveSignals(QObject):
@@ -66,6 +67,11 @@ class MoveWorker(QRunnable):
             and self._trash_root
             and self._destination_resolved == self._trash_root
         )
+        # ``_album_root_cache`` maps arbitrary directories to the album root that owns
+        # them.  Walking the filesystem for every moved asset would impose a
+        # noticeable overhead on large moves, therefore the cache stores positive and
+        # negative lookups alike.
+        self._album_root_cache: Dict[str, Optional[Path]] = {}
 
     @property
     def signals(self) -> MoveSignals:
@@ -177,14 +183,28 @@ class MoveWorker(QRunnable):
         """Remove moved assets from the source album's index and links."""
 
         store = IndexStore(self._source_root)
-        rels = []
+        rels: List[str] = []
         for original, _ in moved:
             try:
-                rels.append(original.resolve().relative_to(self._source_root).as_posix())
-            except ValueError:
+                rel = original.resolve().relative_to(self._source_root).as_posix()
+            except (OSError, ValueError):
                 continue
-        store.remove_rows(rels)
+            rels.append(rel)
+        if rels:
+            store.remove_rows(rels)
         backend.pair(self._source_root)
+
+        # When moves originate from the Basic Library view ``self._source_root`` is
+        # the virtual aggregate rather than the concrete album that owned the asset.
+        # We therefore need to trim the individual album indexes as well so that
+        # browsing those collections after the move does not reveal ghost entries.
+        additional_rels = self._group_album_relatives(moved)
+        for album_root, album_rels in additional_rels.items():
+            if not album_rels or album_root == self._source_root:
+                continue
+            album_store = IndexStore(album_root)
+            album_store.remove_rows(album_rels)
+            backend.pair(album_root)
 
     def _update_destination_index(self, moved: List[Tuple[Path, Path]]) -> None:
         """Append moved assets to the destination album's index and links."""
@@ -241,41 +261,58 @@ class MoveWorker(QRunnable):
         store.append_rows(new_rows)
         backend.pair(self._destination_root)
 
-        # Restores initiated from the virtual "All Photos" / "Live Photos" views remove
-        # entries from the library-root index before the files land in the trash.  Bringing
-        # those assets back therefore requires populating both the concrete album index and
-        # the library aggregate; otherwise the global collections would remain stale until the
-        # user triggers a full rescan.  The following block mirrors the destination update for
-        # the Basic Library root so restores show up immediately in library-scoped filters.
-        if self._is_restore and self._library_root is not None:
-            try:
-                destination_resolved = self._destination_root.resolve()
-            except OSError:
-                destination_resolved = self._destination_root
-            try:
-                library_resolved = self._library_root.resolve()
-            except OSError:
-                library_resolved = self._library_root
+        self._synchronise_library_index(moved, image_paths, video_paths)
 
-            if destination_resolved != library_resolved:
-                library_image_paths: List[Path] = []
-                library_video_paths: List[Path] = []
-                for candidate in image_paths:
-                    if self._library_relative(candidate) is not None:
-                        library_image_paths.append(candidate)
-                for candidate in video_paths:
-                    if self._library_relative(candidate) is not None:
-                        library_video_paths.append(candidate)
+    def _synchronise_library_index(
+        self,
+        moved: List[Tuple[Path, Path]],
+        destination_images: List[Path],
+        destination_videos: List[Path],
+    ) -> None:
+        """Keep the Basic Library index aligned with the latest move results."""
 
-                if library_image_paths or library_video_paths:
-                    library_store = IndexStore(self._library_root)
-                    library_rows = list(
-                        process_media_paths(
-                            self._library_root, library_image_paths, library_video_paths
-                        )
-                    )
-                    library_store.append_rows(library_rows)
-                    backend.pair(self._library_root)
+        library_root = self._library_root
+        if library_root is None:
+            return
+
+        removals: List[str] = []
+        for original, _ in moved:
+            original_rel = self._library_relative(original)
+            if original_rel is not None:
+                removals.append(original_rel)
+
+        if self._is_trash_destination and not self._is_restore:
+            additions_images: List[Path] = []
+            additions_videos: List[Path] = []
+        else:
+            additions_images = [
+                path
+                for path in destination_images
+                if self._library_relative(path) is not None
+            ]
+            additions_videos = [
+                path
+                for path in destination_videos
+                if self._library_relative(path) is not None
+            ]
+
+        if not removals and not additions_images and not additions_videos:
+            return
+
+        store = IndexStore(library_root)
+        if removals:
+            store.remove_rows(removals)
+
+        if additions_images or additions_videos:
+            library_rows = list(
+                process_media_paths(library_root, additions_images, additions_videos)
+            )
+            store.append_rows(library_rows)
+
+        # Pairing the Basic Library after each update keeps library-wide Live Photo metadata
+        # consistent with the concrete album indices, ensuring that aggregated views present
+        # fresh still/motion relationships immediately after moves or restores complete.
+        backend.pair(library_root)
 
     def _resolve_optional(self, path: Optional[Path]) -> Optional[Path]:
         """Resolve *path* defensively, returning ``None`` when unavailable."""
@@ -286,6 +323,79 @@ class MoveWorker(QRunnable):
             return path.resolve()
         except OSError:
             return path
+
+    def _group_album_relatives(
+        self, moved: List[Tuple[Path, Path]]
+    ) -> Dict[Path, List[str]]:
+        """Return album-relative removal lists for every path in *moved*.
+
+        The helper discovers the concrete album root for each moved source path
+        and expresses the original file location relative to that album.  The
+        resulting mapping allows :meth:`_update_source_index` to prune the
+        correct ``index.jsonl`` files when the move originated from a
+        library-wide virtual view.
+        """
+
+        results: Dict[Path, List[str]] = {}
+        library_root = self._library_root
+        if library_root is None:
+            return results
+
+        library_root_str = self._normalised_string(library_root)
+        for original, _ in moved:
+            album_root = self._discover_album_root(original.parent, library_root_str)
+            if album_root is None:
+                continue
+            try:
+                relative = original.resolve().relative_to(album_root).as_posix()
+            except (OSError, ValueError):
+                continue
+            results.setdefault(album_root, []).append(relative)
+        return results
+
+    def _discover_album_root(
+        self, start: Path, library_root_key: Optional[str]
+    ) -> Optional[Path]:
+        """Return the album root that owns *start*, caching lookups aggressively."""
+
+        key = self._normalised_string(start)
+        if key is None:
+            return None
+        cached = self._album_root_cache.get(key, ...)
+        if cached is not ...:
+            return cached
+
+        try:
+            current = start.resolve()
+        except OSError:
+            current = start
+
+        visited: List[Path] = []
+        while True:
+            visited.append(current)
+            work_dir = current / WORK_DIR_NAME
+            if work_dir.exists():
+                album_root: Optional[Path] = current
+                break
+            parent = current.parent
+            if parent == current:
+                album_root = None
+                break
+            if library_root_key is not None and self._normalised_string(parent) == library_root_key:
+                if (parent / WORK_DIR_NAME).exists():
+                    album_root = parent
+                else:
+                    album_root = None
+                visited.append(parent)
+                break
+            current = parent
+
+        for candidate in visited:
+            candidate_key = self._normalised_string(candidate)
+            if candidate_key is not None:
+                self._album_root_cache[candidate_key] = album_root
+
+        return album_root
 
     def _normalised_string(self, path: Path) -> Optional[str]:
         """Return a stable string identifier for *path* suitable for lookups."""

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Optional, TYPE_CHECKING
 
+from PySide6.QtCore import Qt
+
 if TYPE_CHECKING:  # pragma: no cover - import for type checking only
     from ...facade import AppFacade
 from ..tasks.thumbnail_loader import ThumbnailLoader
@@ -21,6 +23,10 @@ class AssetModel(AssetFilterProxyModel):
         super().__init__()
         self._list_model = facade.asset_list_model
         self.setSourceModel(self._list_model)
+        # Ensure the main proxy always defaults to chronological ordering so the
+        # aggregated collections (All Photos, Videos, Live Photos, Favorites)
+        # surface the newest captures first even after background reloads.
+        self.ensure_chronological_order()
 
     # ------------------------------------------------------------------
     # Convenience accessors
@@ -30,6 +36,14 @@ class AssetModel(AssetFilterProxyModel):
 
     def thumbnail_loader(self) -> ThumbnailLoader:
         return self._list_model.thumbnail_loader()
+
+    # ------------------------------------------------------------------
+    # Sorting helpers
+    # ------------------------------------------------------------------
+    def ensure_chronological_order(self) -> None:
+        """Sort assets by capture timestamp with the newest entries first."""
+
+        self.configure_default_sort(Roles.DT, Qt.SortOrder.DescendingOrder)
 
     # ------------------------------------------------------------------
     # Thumbnail prioritisation helpers

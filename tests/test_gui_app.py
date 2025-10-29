@@ -206,7 +206,12 @@ def test_restore_refreshes_library_views(
 
     refreshed: list[Path] = []
 
-    def _fake_restart(root: Path, announce_index: bool = False) -> None:
+    def _fake_restart(
+        root: Path,
+        *,
+        announce_index: bool = False,
+        force_reload: bool = False,
+    ) -> None:
         refreshed.append(root)
 
     monkeypatch.setattr(facade, "_restart_asset_load", _fake_restart)
@@ -246,6 +251,58 @@ def test_restore_refreshes_library_views(
 
     assert refreshed, "Expected the library-root view to restart its load"
     assert any(facade._paths_equal(root, library_root) for root in refreshed)
+
+
+def test_move_from_library_root_refreshes_virtual_view(
+    tmp_path: Path, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Moving items from the library view should emit refresh signals."""
+
+    library_root = tmp_path / "Library"
+    album_root = library_root / "AlbumB"
+    album_root.mkdir(parents=True)
+
+    source_file = library_root / "IMG_0101.JPG"
+    source_file.touch()
+    destination_file = album_root / source_file.name
+
+    facade = AppFacade()
+    library = LibraryManager()
+    library.bind_path(library_root)
+    facade.bind_library(library)
+    facade._current_album = Album.open(library_root)
+
+    refreshed: list[Path] = []
+
+    def _fake_restart(
+        root: Path,
+        *,
+        announce_index: bool = False,
+        force_reload: bool = False,
+    ) -> None:
+        refreshed.append(root)
+
+    monkeypatch.setattr(facade, "_restart_asset_load", _fake_restart)
+
+    index_events: list[Path] = []
+    links_events: list[Path] = []
+    facade.indexUpdated.connect(index_events.append)
+    facade.linksUpdated.connect(links_events.append)
+
+    facade._handle_move_operation_completed(
+        library_root,
+        album_root,
+        [(source_file, destination_file)],
+        True,
+        True,
+        False,
+        False,
+    )
+
+    assert not refreshed, "Library-root moves should not trigger an immediate reload"
+    assert any(facade._paths_equal(path, library_root) for path in index_events)
+    assert any(facade._paths_equal(path, album_root) for path in index_events)
+    assert any(facade._paths_equal(path, library_root) for path in links_events)
 
 
 def test_asset_model_populates_rows(tmp_path: Path, qapp: QApplication) -> None:
