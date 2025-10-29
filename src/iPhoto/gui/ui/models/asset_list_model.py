@@ -221,8 +221,27 @@ class AssetListModel(QAbstractListModel):
         self._cache_manager.clear_thumbnails_not_in(active)
         self._state_manager.clear_reload_pending()
 
-        self.loadProgress.emit(root, total, total)
-        self.loadFinished.emit(root, True)
+        # ``populate_from_cache`` stays synchronous so very small albums appear instantly.
+        # Signals must remain asynchronous though: the facade opens the album and tests
+        # often attach ``QSignalSpy`` listeners immediately after ``open_album`` returns.
+        # Emitting at this point would allow the signal to fire before listeners connect.
+        # Scheduling via ``QTimer.singleShot`` ensures the event loop spins once before
+        # dispatching, mirroring the worker-based loading path and preventing timing races.
+        def _emit_cached_progress(
+            album_root: Path = root,
+            total_count: int = total,
+        ) -> None:
+            """Send a synthetic progress update once Qt resumes event processing."""
+
+            self.loadProgress.emit(album_root, total_count, total_count)
+
+        def _emit_cached_finished(album_root: Path = root) -> None:
+            """Confirm the cached load finished on the next event loop iteration."""
+
+            self.loadFinished.emit(album_root, True)
+
+        QTimer.singleShot(0, _emit_cached_progress)
+        QTimer.singleShot(0, _emit_cached_finished)
         return True
 
     # ------------------------------------------------------------------
