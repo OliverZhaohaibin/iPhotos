@@ -5,6 +5,7 @@ import pytest
 pytest.importorskip("PySide6", reason="PySide6 is required for GUI tests", exc_type=ImportError)
 pytest.importorskip("PySide6.QtWidgets", reason="Qt widgets not available", exc_type=ImportError)
 
+from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QApplication
 
 from iPhotos.src.iPhoto.gui.facade import AppFacade
@@ -43,7 +44,23 @@ def test_asset_roles_expose_metadata(tmp_path: Path, qapp: QApplication) -> None
 
     facade = AppFacade()
     model = AssetModel(facade)
+
+    # ``AssetListModel`` performs I/O in a background thread, therefore the
+    # model will report ``rowCount == 0`` until the worker announces completion.
+    # ``QSignalSpy`` gives the test an explicit synchronisation point so we only
+    # inspect the model after ``loadFinished`` indicates that rows are ready.
+    load_spy = QSignalSpy(facade.loadFinished)
+
     facade.open_album(tmp_path)
+
+    if not load_spy.wait(5000):
+        pytest.fail("Timed out waiting for the asset list to finish loading")
+
+    # The signal emits ``(album_root: Path, success: bool)``; assert the worker
+    # succeeded so we do not silently mask an unexpected error in the loader.
+    assert load_spy[0][0] == tmp_path
+    assert load_spy[0][1] is True
+
     qapp.processEvents()
 
     assert model.rowCount() == 2
