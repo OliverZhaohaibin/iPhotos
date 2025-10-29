@@ -385,6 +385,15 @@ def test_asset_model_filters_videos(tmp_path: Path, qapp: QApplication) -> None:
     assert model.rowCount() == 2
     model.set_filter_mode("videos")
     qapp.processEvents()
+
+    # ``AssetFilterProxyModel`` performs its filtering logic asynchronously once
+    # the event loop drains.  Poll the proxy row count while processing pending
+    # events so the test remains stable on slower machines instead of assuming a
+    # single ``processEvents`` call is sufficient.
+    deadline = time.monotonic() + 5.0
+    while model.rowCount() != 1 and time.monotonic() < deadline:
+        qapp.processEvents(QEventLoop.AllEvents, 50)
+
     assert model.rowCount() == 1
     index = model.index(0, 0)
     assert bool(model.data(index, Roles.IS_VIDEO))
