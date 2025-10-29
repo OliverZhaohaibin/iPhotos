@@ -63,12 +63,15 @@ class AssetListModel(QAbstractListModel):
         self._loader_signals: Optional[AssetLoaderSignals] = None
         self._pending_reload = False
         self._visible_rows: Set[int] = set()
-        # ``_pending_move_rows`` tracks optimistic UI updates performed when
-        # assets are moved out of the virtual "All Photos" collection.  The
-        # mapping allows the model to reconcile the optimistic path guesses
-        # with the final filesystem locations once the worker thread completes
-        # the move, or to roll back the changes if the operation fails.
-        self._pending_move_rows: Dict[str, Tuple[int, str]] = {}
+        # ``_pending_virtual_moves`` records optimistic path adjustments
+        # performed when assets are moved out of a virtual collection such as
+        # "All Photos".  Each entry maps the original relative path to the
+        # updated row index and guessed relative path so the model can reconcile
+        # the change when the worker thread completes or undo it if the
+        # operation fails.  Concrete album views never populate this mapping
+        # because they physically remove rows instead of updating paths in
+        # place.
+        self._pending_virtual_moves: Dict[str, Tuple[int, str, bool]] = {}
         # ``_pending_row_removals`` caches snapshots of rows trimmed
         # optimistically when the move originates from a concrete album view.
         # The cached metadata allows :meth:`rollback_pending_moves` to rebuild
@@ -333,7 +336,9 @@ class AssetListModel(QAbstractListModel):
 
             row_data["rel"] = guessed_rel
             row_data["abs"] = str(guessed_abs)
-            self._pending_move_rows[original_rel] = (row_index, guessed_rel)
+            # ``False`` marks that the row remains visible; rollback should only
+            # restore its metadata instead of re-inserting a duplicate entry.
+            self._pending_virtual_moves[original_rel] = (row_index, guessed_rel, False)
             changed_rows.append(row_index)
 
         for row in changed_rows:
@@ -373,10 +378,10 @@ class AssetListModel(QAbstractListModel):
             except ValueError:
                 continue
 
-            pending = self._pending_move_rows.pop(original_rel, None)
+            pending = self._pending_virtual_moves.pop(original_rel, None)
             if pending is None:
                 continue
-            row_index, guessed_rel = pending
+            row_index, guessed_rel, was_removed = pending
             row_data = self._rows[row_index]
 
             try:
@@ -386,14 +391,15 @@ class AssetListModel(QAbstractListModel):
             except ValueError:
                 final_rel = guessed_rel
 
-            self._row_lookup.pop(guessed_rel, None)
-            self._row_lookup[final_rel] = row_index
-            thumb = self._thumb_cache.pop(guessed_rel, None)
-            if thumb is not None:
-                self._thumb_cache[final_rel] = thumb
-            placeholder = self._placeholder_cache.pop(guessed_rel, None)
-            if placeholder is not None:
-                self._placeholder_cache[final_rel] = placeholder
+            if not was_removed:
+                self._row_lookup.pop(guessed_rel, None)
+                self._row_lookup[final_rel] = row_index
+                thumb = self._thumb_cache.pop(guessed_rel, None)
+                if thumb is not None:
+                    self._thumb_cache[final_rel] = thumb
+                placeholder = self._placeholder_cache.pop(guessed_rel, None)
+                if placeholder is not None:
+                    self._placeholder_cache[final_rel] = placeholder
 
             row_data["rel"] = final_rel
             row_data["abs"] = str(target_path.resolve())
@@ -419,22 +425,23 @@ class AssetListModel(QAbstractListModel):
             return
 
         album_root = self._album_root.resolve()
-        to_restore = list(self._pending_move_rows.items())
-        self._pending_move_rows.clear()
+        to_restore = list(self._pending_virtual_moves.items())
+        self._pending_virtual_moves.clear()
 
         restored_rows: List[int] = []
-        for original_rel, (row_index, guessed_rel) in to_restore:
+        for original_rel, (row_index, guessed_rel, was_removed) in to_restore:
             row_data = self._rows[row_index]
             absolute = (album_root / original_rel).resolve()
 
-            self._row_lookup.pop(guessed_rel, None)
-            self._row_lookup[original_rel] = row_index
-            thumb = self._thumb_cache.pop(guessed_rel, None)
-            if thumb is not None:
-                self._thumb_cache[original_rel] = thumb
-            placeholder = self._placeholder_cache.pop(guessed_rel, None)
-            if placeholder is not None:
-                self._placeholder_cache[original_rel] = placeholder
+            if not was_removed:
+                self._row_lookup.pop(guessed_rel, None)
+                self._row_lookup[original_rel] = row_index
+                thumb = self._thumb_cache.pop(guessed_rel, None)
+                if thumb is not None:
+                    self._thumb_cache[original_rel] = thumb
+                placeholder = self._placeholder_cache.pop(guessed_rel, None)
+                if placeholder is not None:
+                    self._placeholder_cache[original_rel] = placeholder
 
             row_data["rel"] = original_rel
             row_data["abs"] = str(absolute)
@@ -472,7 +479,7 @@ class AssetListModel(QAbstractListModel):
     def has_pending_move_placeholders(self) -> bool:
         """Return ``True`` when optimistic move updates are awaiting results."""
 
-        return bool(self._pending_move_rows or self._pending_row_removals)
+        return bool(self._pending_virtual_moves or self._pending_row_removals)
 
     def populate_from_cache(self, *, max_index_bytes: int = 512 * 1024) -> bool:
         """Synchronously load cached index data when the file is small."""
@@ -609,7 +616,7 @@ class AssetListModel(QAbstractListModel):
         self._row_lookup = {}
         self._thumb_cache.clear()
         self._recently_removed_rows.clear()
-        self._pending_move_rows.clear()
+        self._pending_virtual_moves.clear()
         self._pending_row_removals.clear()
         self.endResetModel()
         self._live_map = {}
