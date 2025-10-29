@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, Optional, TYPE_CHECKING
+from typing import Iterable, Optional, TYPE_CHECKING, List
 
 from PySide6.QtCore import QModelIndex, QObject, QThreadPool, Qt
 from PySide6.QtGui import QKeyEvent
+
+from ....media_classifier import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 
 # ``main_controller`` shares the same import caveat as ``main_window``.  The
 # fallback ensures running the module as a script still locates ``AppContext``.

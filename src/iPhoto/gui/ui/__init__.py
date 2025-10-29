@@ -3,6 +3,7 @@
 __all__ = ["MainWindow"]
 
 
+
 def __getattr__(name: str) -> object:
     if name == "MainWindow":
         from .main_window import MainWindow as _MainWindow
