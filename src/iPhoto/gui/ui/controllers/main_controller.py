@@ -292,8 +292,10 @@ class MainController(QObject):
         )
         # Facade events
         self._facade.albumOpened.connect(self._handle_album_opened)
-        self._facade.scanProgress.connect(self._status_bar.handle_scan_progress)
-        self._facade.scanFinished.connect(self._status_bar.handle_scan_finished)
+        updates = self._facade.library_updates
+        updates.scanProgress.connect(self._status_bar.handle_scan_progress)
+        updates.scanFinished.connect(self._status_bar.handle_scan_finished)
+        updates.indexUpdated.connect(self._map_controller.handle_index_update)
         self._facade.loadStarted.connect(self._status_bar.handle_load_started)
         self._facade.loadProgress.connect(self._status_bar.handle_load_progress)
         self._facade.loadFinished.connect(self._status_bar.handle_load_finished)
@@ -309,7 +311,6 @@ class MainController(QObject):
         move_service.moveProgress.connect(self._status_bar.handle_move_progress)
         move_service.moveFinished.connect(self._status_bar.handle_move_finished)
         move_service.moveFinished.connect(self._handle_move_finished)
-        self._facade.indexUpdated.connect(self._map_controller.handle_index_update)
 
         # Model housekeeping
         for signal in (
