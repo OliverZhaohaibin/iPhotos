@@ -59,10 +59,12 @@ def test_asset_roles_expose_metadata(tmp_path: Path, qapp: QApplication) -> None
     # ``QSignalSpy`` stores the captured emissions as a list of argument lists,
     # but the spy itself is not subscriptable.  Query ``count`` first to make the
     # following assertions explicit and then inspect the first emission via
-    # :meth:`first`.  This guards against the signal firing multiple times and
-    # prevents ``TypeError`` when the spy has no recorded entries yet.
+    # :meth:`at`.  PySide6 does not implement ``first`` on the spy object, so
+    # ``at(0)`` is the supported way to read the first payload without removing
+    # it from the queue.  This also prevents ``TypeError`` when the spy has no
+    # recorded entries yet.
     assert load_spy.count() == 1
-    load_finished_args = load_spy.first()
+    load_finished_args = load_spy.at(0)
     assert len(load_finished_args) == 2
 
     # The ``loadFinished`` signal emits ``(album_root: Path, success: bool)``;
