@@ -56,10 +56,22 @@ def test_asset_roles_expose_metadata(tmp_path: Path, qapp: QApplication) -> None
     if not load_spy.wait(5000):
         pytest.fail("Timed out waiting for the asset list to finish loading")
 
-    # The signal emits ``(album_root: Path, success: bool)``; assert the worker
-    # succeeded so we do not silently mask an unexpected error in the loader.
-    assert load_spy[0][0] == tmp_path
-    assert load_spy[0][1] is True
+    # ``QSignalSpy`` stores the captured emissions as a list of argument lists,
+    # but the spy itself is not subscriptable.  Query ``count`` first to make the
+    # following assertions explicit and then inspect the first emission via
+    # :meth:`first`.  This guards against the signal firing multiple times and
+    # prevents ``TypeError`` when the spy has no recorded entries yet.
+    assert load_spy.count() == 1
+    load_finished_args = load_spy.first()
+    assert len(load_finished_args) == 2
+
+    # The ``loadFinished`` signal emits ``(album_root: Path, success: bool)``;
+    # validate both so the test fails loudly if the background loader reports an
+    # error for the temporary album used in this fixture.
+    album_root_from_signal, success_flag = load_finished_args
+    assert isinstance(album_root_from_signal, Path)
+    assert album_root_from_signal.resolve() == tmp_path.resolve()
+    assert success_flag is True
 
     qapp.processEvents()
 
