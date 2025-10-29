@@ -18,7 +18,7 @@ except Exception as exc:  # pragma: no cover - pillow missing or broken
 
 pytest.importorskip("PySide6", reason="PySide6 is required for GUI tests", exc_type=ImportError)
 pytest.importorskip("PySide6.QtWidgets", reason="Qt widgets not available", exc_type=ImportError)
-from PySide6.QtCore import Qt, QSize, QObject, Signal
+from PySide6.QtCore import Qt, QSize, QObject, Signal, QEventLoop
 from PySide6.QtGui import QPixmap
 from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import (
@@ -310,19 +310,55 @@ def test_asset_model_populates_rows(tmp_path: Path, qapp: QApplication) -> None:
     _create_image(asset)
     facade = AppFacade()
     model = AssetModel(facade)
+    load_spy = QSignalSpy(facade.loadFinished)
     facade.open_album(tmp_path)
-    qapp.processEvents()
+
+    # ``AssetListModel`` performs I/O in a worker thread.  Wait until the
+    # facade announces the load completed successfully so the proxy can begin
+    # observing inserted rows.
+    if not load_spy.wait(5000):
+        pytest.fail("Timed out waiting for the asset list to finish loading")
+
+    assert load_spy.count() >= 1
+    album_root, success = load_spy.at(load_spy.count() - 1)
+    assert isinstance(album_root, Path)
+    assert album_root.resolve() == tmp_path.resolve()
+    assert success is True
+
+    # The proxy emits ``rowsInserted`` asynchronously after the source model
+    # finishes populating.  Process events in short bursts until the expected
+    # row appears so the assertions become deterministic on slow machines.
+    deadline = time.monotonic() + 5.0
+    while model.rowCount() < 1 and time.monotonic() < deadline:
+        qapp.processEvents(QEventLoop.AllEvents, 50)
+
     assert model.rowCount() == 1
     index = model.index(0, 0)
     assert model.data(index, Roles.REL) == "IMG_2001.JPG"
     assert model.data(index, Roles.FEATURED) is False
-    spy = QSignalSpy(model.dataChanged)
     decoration = model.data(index, Qt.DecorationRole)
     assert isinstance(decoration, QPixmap)
     assert not decoration.isNull()
-    spy.wait(500)
-    qapp.processEvents()
-    refreshed = model.data(index, Qt.DecorationRole)
+    placeholder_key = decoration.cacheKey()
+
+    # Thumbnail generation is asynchronous.  Poll the decoration role while
+    # allowing the event loop to drain until the pixmap changes from the
+    # placeholder returned above.  This avoids relying on arbitrary sleep
+    # intervals that may intermittently fail on slower CI workers.
+    refreshed: QPixmap | None = None
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        qapp.processEvents(QEventLoop.AllEvents, 50)
+        candidate_index = model.index(0, 0)
+        candidate = model.data(candidate_index, Qt.DecorationRole)
+        if isinstance(candidate, QPixmap) and not candidate.isNull():
+            if candidate.cacheKey() != placeholder_key:
+                refreshed = candidate
+                break
+
+    if refreshed is None:
+        pytest.fail("Thumbnail generation did not replace the placeholder in time")
+
     assert isinstance(refreshed, QPixmap)
     assert not refreshed.isNull()
     thumbs_dir = tmp_path / WORK_DIR_NAME / "thumbs"
