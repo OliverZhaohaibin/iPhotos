@@ -500,6 +500,16 @@ def test_asset_model_pairs_live_when_links_missing(
 
     qapp.processEvents()
 
+    # ``AssetModel`` is a proxy layered on top of ``AssetListModel``; although the
+    # source loader already signalled completion, the proxy only updates its public
+    # row count once Qt delivers the asynchronous ``rowsInserted`` notifications.
+    # Drive the event loop in short bursts until the single Live Photo surfaces or
+    # a conservative timeout expires so the subsequent assertions no longer race
+    # the worker thread during slower CI runs.
+    live_deadline = time.monotonic() + 5.0
+    while model.rowCount() < 1 and time.monotonic() < live_deadline:
+        qapp.processEvents(QEventLoop.AllEvents, 50)
+
     assert model.rowCount() == 1
     index = model.index(0, 0)
     assert bool(model.data(index, Roles.IS_LIVE))
