@@ -582,6 +582,14 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
     playlist.currentChanged.connect(controller.handle_playlist_current_changed)
     playlist.sourceChanged.connect(controller.handle_playlist_source_changed)
 
+    # ``PlaybackController`` only proceeds with the expensive media hand-off once
+    # the detail view is active; otherwise `_load_new_source` aborts early to
+    # avoid flashing the video surface while the gallery view is visible.  The
+    # production window switches to the detail page before invoking
+    # ``activate_index``, so mirror that order here to ensure the asynchronous
+    # timer observes ``is_detail_view_active == True`` when it fires.
+    view_controller.show_detail_view()
+
     # Emit the long-press signal directly to simulate a user previewing the Live
     # Photo before activating it.  ``PreviewController`` listens to the signal
     # and routes the preview request to the shared window.
