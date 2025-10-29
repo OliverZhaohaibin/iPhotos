@@ -446,6 +446,16 @@ def test_asset_model_exposes_live_motion_abs(tmp_path: Path, qapp: QApplication)
 
     qapp.processEvents()
 
+    # ``AssetModel`` sits on top of ``AssetListModel`` and therefore only learns
+    # about the freshly loaded rows once Qt has propagated the asynchronous
+    # ``rowsInserted`` signals through the proxy boundary.  Drive the event loop
+    # in small bursts until the proxy exposes the single Live Photo we expect or
+    # a conservative timeout elapses so the assertion below no longer races the
+    # loader thread on slower machines.
+    deadline = time.monotonic() + 5.0
+    while model.rowCount() < 1 and time.monotonic() < deadline:
+        qapp.processEvents(QEventLoop.AllEvents, 50)
+
     assert model.rowCount() == 1
     index = model.index(0, 0)
     assert bool(model.data(index, Roles.IS_LIVE))
