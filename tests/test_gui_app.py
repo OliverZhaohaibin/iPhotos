@@ -379,7 +379,22 @@ def test_asset_model_filters_videos(tmp_path: Path, qapp: QApplication) -> None:
 
     facade = AppFacade()
     model = AssetModel(facade)
+
+    # ``open_album`` triggers the asset list worker on a background thread.
+    # Filtering depends on those rows existing, so wait for ``loadFinished``
+    # rather than assuming a single event-loop iteration fully populates the
+    # proxy model.
+    load_spy = QSignalSpy(facade.loadFinished)
     facade.open_album(tmp_path)
+    if not load_spy.wait(5000):
+        pytest.fail("Timed out waiting for the asset list to finish loading")
+
+    assert load_spy.count() >= 1
+    album_root, success = load_spy.at(load_spy.count() - 1)
+    assert isinstance(album_root, Path)
+    assert album_root.resolve() == tmp_path.resolve()
+    assert success is True
+
     qapp.processEvents()
 
     assert model.rowCount() == 2
@@ -414,7 +429,21 @@ def test_asset_model_exposes_live_motion_abs(tmp_path: Path, qapp: QApplication)
 
     facade = AppFacade()
     model = AssetModel(facade)
+
+    # As with the filtering test above, wait for the asynchronous asset loader
+    # so the live-photo metadata checks operate on a fully populated model
+    # instead of racing the background worker.
+    load_spy = QSignalSpy(facade.loadFinished)
     facade.open_album(tmp_path)
+    if not load_spy.wait(5000):
+        pytest.fail("Timed out waiting for the asset list to finish loading")
+
+    assert load_spy.count() >= 1
+    album_root, success = load_spy.at(load_spy.count() - 1)
+    assert isinstance(album_root, Path)
+    assert album_root.resolve() == tmp_path.resolve()
+    assert success is True
+
     qapp.processEvents()
 
     assert model.rowCount() == 1
@@ -444,7 +473,21 @@ def test_asset_model_pairs_live_when_links_missing(
 
     facade = AppFacade()
     model = AssetModel(facade)
+
+    # As with the previous tests, wait for the asynchronous asset loader so the
+    # pairing logic inspects the fully populated dataset rather than relying on
+    # a single event-loop iteration.
+    load_spy = QSignalSpy(facade.loadFinished)
     facade.open_album(tmp_path)
+    if not load_spy.wait(5000):
+        pytest.fail("Timed out waiting for the asset list to finish loading")
+
+    assert load_spy.count() >= 1
+    album_root, success = load_spy.at(load_spy.count() - 1)
+    assert isinstance(album_root, Path)
+    assert album_root.resolve() == tmp_path.resolve()
+    assert success is True
+
     qapp.processEvents()
 
     assert model.rowCount() == 1
@@ -464,7 +507,21 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
 
     facade = AppFacade()
     model = AssetModel(facade)
+
+    # As with earlier tests, wait for the asynchronous asset loader so the
+    # playback controller operates on a fully populated model before any playlist
+    # wiring occurs.
+    load_spy = QSignalSpy(facade.loadFinished)
     facade.open_album(tmp_path)
+    if not load_spy.wait(5000):
+        pytest.fail("Timed out waiting for the asset list to finish loading")
+
+    assert load_spy.count() >= 1
+    album_root, success = load_spy.at(load_spy.count() - 1)
+    assert isinstance(album_root, Path)
+    assert album_root.resolve() == tmp_path.resolve()
+    assert success is True
+
     qapp.processEvents()
 
     assert model.rowCount() == 1
