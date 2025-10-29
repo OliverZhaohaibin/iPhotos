@@ -108,13 +108,37 @@ def test_asset_roles_expose_metadata(tmp_path: Path, qapp: QApplication) -> None
     # Mark the still as featured and ensure the role updates after reload.
     assert facade.current_album is not None
     facade.current_album.manifest["featured"] = ["IMG_0001.JPG"]
+    # ``AssetModel`` can expose filtered views, therefore explicitly clear any
+    # previously applied filter so we always observe the complete dataset while
+    # waiting for the featured flag to propagate.
+    model.set_filter_mode(None)
+    qapp.processEvents(QEventLoop.AllEvents, 50)
+
     # ``AssetListModel.update_featured_status`` is the supported entry point for
     # synchronising the UI with manifest changes.  Emitting ``indexUpdated``
     # only informs listeners that a refresh already happened, so the model would
     # otherwise keep stale data.  Updating the source model directly mirrors the
     # behaviour performed by :meth:`AppFacade.toggle_featured` in production.
+    proxy_data_changed = QSignalSpy(model.dataChanged)
     model.source_model().update_featured_status("IMG_0001.JPG", True)
-    qapp.processEvents()
+
+    # The proxy model relays ``dataChanged`` once it has mapped the source row
+    # to its own index.  Wait for that notification so subsequent assertions do
+    # not race the asynchronous signal propagation across the proxy boundary.
+    if not proxy_data_changed.wait(3000):
+        debug_rows = [
+            (model.data(model.index(row, 0), Roles.REL),
+             model.data(model.index(row, 0), Roles.FEATURED))
+            for row in range(model.rowCount())
+        ]
+        pytest.fail(
+            "Timed out waiting for proxy dataChanged after featuring asset; "
+            f"rows observed: {debug_rows}"
+        )
+
+    # Process any leftover events enqueued by the signal emission to keep the
+    # assertions below deterministic across different Qt backends.
+    qapp.processEvents(QEventLoop.AllEvents, 50)
 
     featured_index = next(
         model.index(row, 0)
@@ -124,6 +148,14 @@ def test_asset_roles_expose_metadata(tmp_path: Path, qapp: QApplication) -> None
     assert featured_index.data(Roles.FEATURED) is True
 
     model.set_filter_mode("favorites")
-    qapp.processEvents()
+
+    # Filtering happens asynchronously as the proxy re-evaluates each row
+    # against the active predicate.  Poll ``rowCount`` so the test waits for the
+    # filter to stabilise without depending on implementation details of the
+    # proxy implementation.
+    deadline = time.monotonic() + 5.0
+    while model.rowCount() != 1 and time.monotonic() < deadline:
+        qapp.processEvents(QEventLoop.AllEvents, 50)
+
     assert model.rowCount() == 1
     assert model.data(model.index(0, 0), Roles.REL) == "IMG_0001.JPG"
