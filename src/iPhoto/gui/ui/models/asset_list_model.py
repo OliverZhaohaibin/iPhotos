@@ -18,7 +18,6 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QPixmap
 
-from ....config import WORK_DIR_NAME
 from ..tasks.thumbnail_loader import ThumbnailLoader
 from .asset_cache_manager import AssetCacheManager
 from .asset_data_loader import AssetDataLoader
@@ -188,60 +187,34 @@ class AssetListModel(QAbstractListModel):
             return False
 
         root = self._album_root
-        index_path = root / WORK_DIR_NAME / "index.jsonl"
-        try:
-            size = index_path.stat().st_size
-        except OSError:
-            size = 0
-        if size > max_index_bytes:
-            return False
-
         manifest = self._facade.current_album.manifest if self._facade.current_album else {}
         featured = manifest.get("featured", []) or []
         live_map = load_live_map(root)
         self._cache_manager.set_live_map(live_map)
 
-        try:
-            rows, total = self._data_loader.compute_rows(root, featured, live_map)
-        except Exception as exc:  # pragma: no cover - surfaced via GUI
-            self._facade.errorRaised.emit(str(exc))
-            self.loadFinished.emit(root, False)
+        # ``AssetDataLoader.populate_from_cache`` computes the rows immediately yet
+        # defers all signal emission to the next event-loop iteration.  This mirrors
+        # the asynchronous worker behaviour so ``QSignalSpy`` and other listeners
+        # attached right after :meth:`AppFacade.open_album` still observe
+        # ``loadFinished`` notifications.
+        result = self._data_loader.populate_from_cache(
+            root,
+            featured,
+            self._cache_manager.live_map_snapshot(),
+            max_index_bytes=max_index_bytes,
+        )
+        if result is None:
             return False
+
+        rows, _ = result
 
         self.beginResetModel()
         self._state_manager.set_rows(rows)
         self.endResetModel()
 
-        for row in rows:
-            abs_key = str(row.get("abs") or "")
-            if abs_key:
-                self._cache_manager.remove_recently_removed(abs_key)
-
-        active = self._state_manager.active_rel_keys()
-        self._cache_manager.clear_thumbnails_not_in(active)
+        self._cache_manager.reset_caches_for_new_rows(rows)
         self._state_manager.clear_reload_pending()
 
-        # ``populate_from_cache`` stays synchronous so very small albums appear instantly.
-        # Signals must remain asynchronous though: the facade opens the album and tests
-        # often attach ``QSignalSpy`` listeners immediately after ``open_album`` returns.
-        # Emitting at this point would allow the signal to fire before listeners connect.
-        # Scheduling via ``QTimer.singleShot`` ensures the event loop spins once before
-        # dispatching, mirroring the worker-based loading path and preventing timing races.
-        def _emit_cached_progress(
-            album_root: Path = root,
-            total_count: int = total,
-        ) -> None:
-            """Send a synthetic progress update once Qt resumes event processing."""
-
-            self.loadProgress.emit(album_root, total_count, total_count)
-
-        def _emit_cached_finished(album_root: Path = root) -> None:
-            """Confirm the cached load finished on the next event loop iteration."""
-
-            self.loadFinished.emit(album_root, True)
-
-        QTimer.singleShot(0, _emit_cached_progress)
-        QTimer.singleShot(0, _emit_cached_finished)
         return True
 
     # ------------------------------------------------------------------

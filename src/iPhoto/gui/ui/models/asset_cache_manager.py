@@ -54,6 +54,40 @@ class AssetCacheManager(QObject):
 
         self._recently_removed_rows.clear()
 
+    def reset_caches_for_new_rows(self, rows: List[Dict[str, object]]) -> None:
+        """Synchronise transient caches with the freshly loaded *rows*.
+
+        The asset grid keeps placeholder, thumbnail and "recently removed"
+        caches alongside the authoritative dataset maintained by
+        :class:`AssetListStateManager`.  When the model performs a synchronous
+        reload from the index cache we must evict stale entries that belong to
+        the previous snapshot; otherwise thumbnails for assets that no longer
+        exist would linger in memory and optimistic removal snapshots would
+        never be cleared.
+        """
+
+        active_rel_keys: set[str] = set()
+        for row in rows:
+            rel_value = str(row.get("rel", "") or "")
+            if rel_value:
+                active_rel_keys.add(rel_value)
+            abs_value = row.get("abs")
+            if abs_value:
+                self.remove_recently_removed(str(abs_value))
+
+        if not active_rel_keys:
+            self.clear_all_thumbnails()
+            self.clear_placeholders()
+            return
+
+        self.clear_thumbnails_not_in(active_rel_keys)
+        # Placeholders are light-weight so we rebuild them lazily, but removing
+        # stale entries keeps the cache keyed to the active dataset and avoids
+        # accidentally returning templates for rows that no longer exist.
+        obsolete_placeholders = set(self._placeholder_cache.keys()) - active_rel_keys
+        for rel_key in obsolete_placeholders:
+            self._placeholder_cache.pop(rel_key, None)
+
     def set_recently_removed_limit(self, limit: int) -> None:
         """Set the maximum number of cached removal snapshots."""
 
@@ -246,6 +280,11 @@ class AssetCacheManager(QObject):
         """Replace the cached Live Photo mapping."""
 
         self._live_map = dict(mapping)
+
+    def live_map_snapshot(self) -> Dict[str, Dict[str, object]]:
+        """Return a shallow copy of the cached Live Photo information."""
+
+        return dict(self._live_map)
 
     def live_map(self) -> Dict[str, Dict[str, object]]:
         """Return the cached Live Photo mapping."""
