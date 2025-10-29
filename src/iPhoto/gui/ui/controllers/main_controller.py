@@ -134,6 +134,7 @@ class MainController(QObject):
             self._preview_controller,
             self._facade,
         )
+        self._navigation.bind_playback_controller(self._playback)
         self._status_bar = StatusBarController(
             window.ui.status_bar,
             window.ui.progress_bar,
@@ -374,7 +375,7 @@ class MainController(QObject):
             signal.connect(slot)
 
         self._window.ui.back_button.clicked.connect(
-            self._view_controller.show_gallery_view
+            self._handle_back_button_clicked
         )
 
     # -----------------------------------------------------------------
@@ -385,6 +386,19 @@ class MainController(QObject):
         path = self._dialog.open_album_dialog()
         if path:
             self.open_album_from_path(path)
+
+    def _handle_back_button_clicked(self) -> None:
+        """Return to the gallery while resetting playback-related state.
+
+        The playback controller previously listened for ``galleryViewShown`` and
+        performed its own cleanup.  That implicit coupling caused redundant
+        refreshes when navigation actions also manipulated the view, producing
+        visible flicker.  Reset the playback stack explicitly before flipping
+        the stacked widget so the grid redraws only once.
+        """
+
+        self._playback.reset_for_gallery_navigation()
+        self._view_controller.show_gallery_view()
 
     def _handle_rescan_request(self) -> None:
         """Kick off an asynchronous rescan of the current album."""

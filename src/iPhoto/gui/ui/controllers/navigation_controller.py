@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from PySide6.QtWidgets import QLabel
 
@@ -21,6 +21,9 @@ from ..ui_main_window import ChromeStatusBar
 from .dialog_controller import DialogController
 from .view_controller import ViewController
 
+if TYPE_CHECKING:  # pragma: no cover - runtime import cycle guard
+    from .playback_controller import PlaybackController
+
 
 class NavigationController:
     """Handle opening albums and switching between static collections."""
@@ -35,6 +38,7 @@ class NavigationController:
         status_bar: ChromeStatusBar,
         dialog: DialogController,
         view_controller: ViewController,
+        playback_controller: "PlaybackController" | None = None,
     ) -> None:
         self._context = context
         self._facade = facade
@@ -44,6 +48,10 @@ class NavigationController:
         self._status = status_bar
         self._dialog = dialog
         self._view_controller = view_controller
+        # ``PlaybackController`` is injected lazily so the main controller can
+        # finish instantiating the playback stack before wiring the navigation
+        # callbacks.  When ``None`` the helper simply skips the playback reset.
+        self._playback_controller: "PlaybackController" | None = playback_controller
         self._static_selection: Optional[str] = None
         # ``_last_open_was_refresh`` records whether ``open_album`` most recently
         # reissued the currently open album.  When ``True`` the main window can
@@ -56,6 +64,29 @@ class NavigationController:
         # the reaction keeps the gallery from reopening the album mid-operation
         # and avoids replacing the thumbnail grid with placeholders.
         self._suppress_tree_refresh: bool = False
+
+    def bind_playback_controller(self, playback: "PlaybackController") -> None:
+        """Provide the playback controller once it has been constructed.
+
+        ``MainController`` builds the navigation layer before creating the
+        playback stack.  Supplying the reference afterwards avoids a circular
+        dependency while allowing navigation actions to reset the playback state
+        explicitly when returning to gallery-style views.
+        """
+
+        self._playback_controller = playback
+
+    def _reset_playback_for_gallery_navigation(self) -> None:
+        """Reset playback state when a navigation action shows a gallery view.
+
+        Only a subset of navigation paths transition from the detail pane back
+        to a gallery.  Triggering the playback reset at the start of each such
+        path keeps the UI in sync without waiting for late ``galleryViewShown``
+        signals, eliminating duplicate refreshes that previously caused flicker.
+        """
+
+        if self._playback_controller is not None:
+            self._playback_controller.reset_for_gallery_navigation()
 
     # ------------------------------------------------------------------
     # Album management
@@ -95,6 +126,7 @@ class NavigationController:
             # further to do.
             return
 
+        self._reset_playback_for_gallery_navigation()
         self._static_selection = None
         self._asset_model.set_filter_mode(None)
         # Returning to a real album should always restore the traditional grid
@@ -192,6 +224,7 @@ class NavigationController:
             self._dialog.show_error(str(exc))
             return
 
+        self._reset_playback_for_gallery_navigation()
         self._last_open_was_refresh = False
         self._view_controller.restore_default_gallery()
         self._view_controller.show_gallery_view()
@@ -212,6 +245,7 @@ class NavigationController:
         *,
         show_gallery: bool = True,
     ) -> None:
+        self._reset_playback_for_gallery_navigation()
         root = self._context.library.root()
         if root is None:
             self._dialog.bind_library_dialog()

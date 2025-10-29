@@ -1,10 +1,13 @@
 from pathlib import Path
+import time
 
 import pytest
 
 pytest.importorskip("PySide6", reason="PySide6 is required for GUI tests", exc_type=ImportError)
 pytest.importorskip("PySide6.QtWidgets", reason="Qt widgets not available", exc_type=ImportError)
 
+from PySide6.QtCore import QEventLoop
+from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QApplication
 
 from iPhotos.src.iPhoto.gui.facade import AppFacade
@@ -43,10 +46,49 @@ def test_asset_roles_expose_metadata(tmp_path: Path, qapp: QApplication) -> None
 
     facade = AppFacade()
     model = AssetModel(facade)
-    facade.open_album(tmp_path)
-    qapp.processEvents()
 
-    assert model.rowCount() == 2
+    # ``AssetListModel`` performs I/O in a background thread, therefore the
+    # model will report ``rowCount == 0`` until the worker announces completion.
+    # ``QSignalSpy`` gives the test an explicit synchronisation point so we only
+    # inspect the model after ``loadFinished`` indicates that rows are ready.
+    load_spy = QSignalSpy(facade.loadFinished)
+
+    facade.open_album(tmp_path)
+
+    if not load_spy.wait(5000):
+        pytest.fail("Timed out waiting for the asset list to finish loading")
+
+    # ``QSignalSpy`` stores the captured emissions as a list of argument lists,
+    # but the spy itself is not subscriptable.  Query ``count`` first to make the
+    # following assertions explicit and then inspect the first emission via
+    # :meth:`at`.  PySide6 does not implement ``first`` on the spy object, so
+    # ``at(0)`` is the supported way to read the first payload without removing
+    # it from the queue.  This also prevents ``TypeError`` when the spy has no
+    # recorded entries yet.
+    assert load_spy.count() == 1
+    load_finished_args = load_spy.at(0)
+    assert len(load_finished_args) == 2
+
+    # The ``loadFinished`` signal emits ``(album_root: Path, success: bool)``;
+    # validate both so the test fails loudly if the background loader reports an
+    # error for the temporary album used in this fixture.
+    album_root_from_signal, success_flag = load_finished_args
+    assert isinstance(album_root_from_signal, Path)
+    assert album_root_from_signal.resolve() == tmp_path.resolve()
+    assert success_flag is True
+
+    # ``AssetModel`` is a proxy layered on top of ``AssetListModel``.  Although the
+    # source model has finished loading, the proxy only observes the changes after
+    # Qt dispatches the ``rowsInserted`` notifications emitted during
+    # :meth:`AssetListModel._on_loader_chunk_ready`.  Process the event queue in
+    # short bursts until the proxy exposes both assets or a sensible timeout
+    # elapses so the assertion becomes deterministic even on slower CI runners.
+    expected_rows = 2
+    deadline = time.monotonic() + 5.0
+    while model.rowCount() < expected_rows and time.monotonic() < deadline:
+        qapp.processEvents(QEventLoop.AllEvents, 50)
+
+    assert model.rowCount() == expected_rows
     rows = [model.index(row, 0) for row in range(model.rowCount())]
 
     rels = {index.data(Roles.REL) for index in rows}
@@ -66,22 +108,63 @@ def test_asset_roles_expose_metadata(tmp_path: Path, qapp: QApplication) -> None
     # Mark the still as featured and ensure the role updates after reload.
     assert facade.current_album is not None
     facade.current_album.manifest["featured"] = ["IMG_0001.JPG"]
+    # ``AssetModel`` can expose filtered views, therefore explicitly clear any
+    # previously applied filter so we always observe the complete dataset while
+    # waiting for the featured flag to propagate.
+    model.set_filter_mode(None)
+    qapp.processEvents(QEventLoop.AllEvents, 50)
+
     # ``AssetListModel.update_featured_status`` is the supported entry point for
     # synchronising the UI with manifest changes.  Emitting ``indexUpdated``
     # only informs listeners that a refresh already happened, so the model would
     # otherwise keep stale data.  Updating the source model directly mirrors the
     # behaviour performed by :meth:`AppFacade.toggle_featured` in production.
     model.source_model().update_featured_status("IMG_0001.JPG", True)
-    qapp.processEvents()
 
-    featured_index = next(
-        model.index(row, 0)
-        for row in range(model.rowCount())
-        if model.data(model.index(row, 0), Roles.REL) == "IMG_0001.JPG"
-    )
-    assert featured_index.data(Roles.FEATURED) is True
+    # ``QSortFilterProxyModel`` propagates :meth:`dataChanged` asynchronously.
+    # Poll the proxy until the featured flag becomes visible while yielding to
+    # the event loop between attempts.  This keeps the test deterministic across
+    # different Qt backends without depending on undocumented signal ordering.
+    deadline = time.monotonic() + 5.0
+    featured_index = None
+    featured_flag = False
+    while time.monotonic() < deadline:
+        qapp.processEvents(QEventLoop.AllEvents, 50)
+        for row in range(model.rowCount()):
+            candidate = model.index(row, 0)
+            if not candidate.isValid():
+                continue
+            rel_value = model.data(candidate, Roles.REL)
+            if rel_value != "IMG_0001.JPG":
+                continue
+            featured_index = candidate
+            featured_flag = bool(model.data(candidate, Roles.FEATURED))
+            break
+        if featured_index is not None and featured_flag:
+            break
+
+    if featured_index is None or not featured_flag:
+        debug_rows = [
+            (model.data(model.index(row, 0), Roles.REL),
+             model.data(model.index(row, 0), Roles.FEATURED))
+            for row in range(model.rowCount())
+        ]
+        pytest.fail(
+            "Proxy model never exposed the featured flag for IMG_0001.JPG; "
+            f"rows observed: {debug_rows}"
+        )
+
+    assert featured_flag is True
 
     model.set_filter_mode("favorites")
-    qapp.processEvents()
+
+    # Filtering happens asynchronously as the proxy re-evaluates each row
+    # against the active predicate.  Poll ``rowCount`` so the test waits for the
+    # filter to stabilise without depending on implementation details of the
+    # proxy implementation.
+    deadline = time.monotonic() + 5.0
+    while model.rowCount() != 1 and time.monotonic() < deadline:
+        qapp.processEvents(QEventLoop.AllEvents, 50)
+
     assert model.rowCount() == 1
     assert model.data(model.index(0, 0), Roles.REL) == "IMG_0001.JPG"

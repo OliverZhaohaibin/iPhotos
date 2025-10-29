@@ -18,7 +18,7 @@ except Exception as exc:  # pragma: no cover - pillow missing or broken
 
 pytest.importorskip("PySide6", reason="PySide6 is required for GUI tests", exc_type=ImportError)
 pytest.importorskip("PySide6.QtWidgets", reason="Qt widgets not available", exc_type=ImportError)
-from PySide6.QtCore import Qt, QSize, QObject, Signal
+from PySide6.QtCore import Qt, QSize, QObject, Signal, QEventLoop
 from PySide6.QtGui import QPixmap
 from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import (
@@ -310,19 +310,55 @@ def test_asset_model_populates_rows(tmp_path: Path, qapp: QApplication) -> None:
     _create_image(asset)
     facade = AppFacade()
     model = AssetModel(facade)
+    load_spy = QSignalSpy(facade.loadFinished)
     facade.open_album(tmp_path)
-    qapp.processEvents()
+
+    # ``AssetListModel`` performs I/O in a worker thread.  Wait until the
+    # facade announces the load completed successfully so the proxy can begin
+    # observing inserted rows.
+    if not load_spy.wait(5000):
+        pytest.fail("Timed out waiting for the asset list to finish loading")
+
+    assert load_spy.count() >= 1
+    album_root, success = load_spy.at(load_spy.count() - 1)
+    assert isinstance(album_root, Path)
+    assert album_root.resolve() == tmp_path.resolve()
+    assert success is True
+
+    # The proxy emits ``rowsInserted`` asynchronously after the source model
+    # finishes populating.  Process events in short bursts until the expected
+    # row appears so the assertions become deterministic on slow machines.
+    deadline = time.monotonic() + 5.0
+    while model.rowCount() < 1 and time.monotonic() < deadline:
+        qapp.processEvents(QEventLoop.AllEvents, 50)
+
     assert model.rowCount() == 1
     index = model.index(0, 0)
     assert model.data(index, Roles.REL) == "IMG_2001.JPG"
     assert model.data(index, Roles.FEATURED) is False
-    spy = QSignalSpy(model.dataChanged)
     decoration = model.data(index, Qt.DecorationRole)
     assert isinstance(decoration, QPixmap)
     assert not decoration.isNull()
-    spy.wait(500)
-    qapp.processEvents()
-    refreshed = model.data(index, Qt.DecorationRole)
+    placeholder_key = decoration.cacheKey()
+
+    # Thumbnail generation is asynchronous.  Poll the decoration role while
+    # allowing the event loop to drain until the pixmap changes from the
+    # placeholder returned above.  This avoids relying on arbitrary sleep
+    # intervals that may intermittently fail on slower CI workers.
+    refreshed: QPixmap | None = None
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        qapp.processEvents(QEventLoop.AllEvents, 50)
+        candidate_index = model.index(0, 0)
+        candidate = model.data(candidate_index, Qt.DecorationRole)
+        if isinstance(candidate, QPixmap) and not candidate.isNull():
+            if candidate.cacheKey() != placeholder_key:
+                refreshed = candidate
+                break
+
+    if refreshed is None:
+        pytest.fail("Thumbnail generation did not replace the placeholder in time")
+
     assert isinstance(refreshed, QPixmap)
     assert not refreshed.isNull()
     thumbs_dir = tmp_path / WORK_DIR_NAME / "thumbs"
@@ -343,12 +379,46 @@ def test_asset_model_filters_videos(tmp_path: Path, qapp: QApplication) -> None:
 
     facade = AppFacade()
     model = AssetModel(facade)
+
+    # ``open_album`` triggers the asset list worker on a background thread.
+    # Filtering depends on those rows existing, so wait for ``loadFinished``
+    # rather than assuming a single event-loop iteration fully populates the
+    # proxy model.
+    load_spy = QSignalSpy(facade.loadFinished)
     facade.open_album(tmp_path)
+    if not load_spy.wait(5000):
+        pytest.fail("Timed out waiting for the asset list to finish loading")
+
+    assert load_spy.count() >= 1
+    album_root, success = load_spy.at(load_spy.count() - 1)
+    assert isinstance(album_root, Path)
+    assert album_root.resolve() == tmp_path.resolve()
+    assert success is True
+
     qapp.processEvents()
 
-    assert model.rowCount() == 2
+    # ``AssetModel`` wraps the list model with a proxy that only surfaces the
+    # rows once the event loop propagates the ``rowsInserted`` notifications.
+    # Poll the row count with short event loop bursts so the assertion remains
+    # deterministic even when the background worker finishes slightly later on
+    # slower machines.
+    expected_rows = 2
+    deadline = time.monotonic() + 5.0
+    while model.rowCount() < expected_rows and time.monotonic() < deadline:
+        qapp.processEvents(QEventLoop.AllEvents, 50)
+
+    assert model.rowCount() == expected_rows
     model.set_filter_mode("videos")
     qapp.processEvents()
+
+    # ``AssetFilterProxyModel`` performs its filtering logic asynchronously once
+    # the event loop drains.  Poll the proxy row count while processing pending
+    # events so the test remains stable on slower machines instead of assuming a
+    # single ``processEvents`` call is sufficient.
+    deadline = time.monotonic() + 5.0
+    while model.rowCount() != 1 and time.monotonic() < deadline:
+        qapp.processEvents(QEventLoop.AllEvents, 50)
+
     assert model.rowCount() == 1
     index = model.index(0, 0)
     assert bool(model.data(index, Roles.IS_VIDEO))
@@ -369,8 +439,32 @@ def test_asset_model_exposes_live_motion_abs(tmp_path: Path, qapp: QApplication)
 
     facade = AppFacade()
     model = AssetModel(facade)
+
+    # As with the filtering test above, wait for the asynchronous asset loader
+    # so the live-photo metadata checks operate on a fully populated model
+    # instead of racing the background worker.
+    load_spy = QSignalSpy(facade.loadFinished)
     facade.open_album(tmp_path)
+    if not load_spy.wait(5000):
+        pytest.fail("Timed out waiting for the asset list to finish loading")
+
+    assert load_spy.count() >= 1
+    album_root, success = load_spy.at(load_spy.count() - 1)
+    assert isinstance(album_root, Path)
+    assert album_root.resolve() == tmp_path.resolve()
+    assert success is True
+
     qapp.processEvents()
+
+    # ``AssetModel`` sits on top of ``AssetListModel`` and therefore only learns
+    # about the freshly loaded rows once Qt has propagated the asynchronous
+    # ``rowsInserted`` signals through the proxy boundary.  Drive the event loop
+    # in small bursts until the proxy exposes the single Live Photo we expect or
+    # a conservative timeout elapses so the assertion below no longer races the
+    # loader thread on slower machines.
+    deadline = time.monotonic() + 5.0
+    while model.rowCount() < 1 and time.monotonic() < deadline:
+        qapp.processEvents(QEventLoop.AllEvents, 50)
 
     assert model.rowCount() == 1
     index = model.index(0, 0)
@@ -399,8 +493,32 @@ def test_asset_model_pairs_live_when_links_missing(
 
     facade = AppFacade()
     model = AssetModel(facade)
+
+    # As with the previous tests, wait for the asynchronous asset loader so the
+    # pairing logic inspects the fully populated dataset rather than relying on
+    # a single event-loop iteration.
+    load_spy = QSignalSpy(facade.loadFinished)
     facade.open_album(tmp_path)
+    if not load_spy.wait(5000):
+        pytest.fail("Timed out waiting for the asset list to finish loading")
+
+    assert load_spy.count() >= 1
+    album_root, success = load_spy.at(load_spy.count() - 1)
+    assert isinstance(album_root, Path)
+    assert album_root.resolve() == tmp_path.resolve()
+    assert success is True
+
     qapp.processEvents()
+
+    # ``AssetModel`` is a proxy layered on top of ``AssetListModel``; although the
+    # source loader already signalled completion, the proxy only updates its public
+    # row count once Qt delivers the asynchronous ``rowsInserted`` notifications.
+    # Drive the event loop in short bursts until the single Live Photo surfaces or
+    # a conservative timeout expires so the subsequent assertions no longer race
+    # the worker thread during slower CI runs.
+    live_deadline = time.monotonic() + 5.0
+    while model.rowCount() < 1 and time.monotonic() < live_deadline:
+        qapp.processEvents(QEventLoop.AllEvents, 50)
 
     assert model.rowCount() == 1
     index = model.index(0, 0)
@@ -419,10 +537,35 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
 
     facade = AppFacade()
     model = AssetModel(facade)
+
+    # As with earlier tests, wait for the asynchronous asset loader so the
+    # playback controller operates on a fully populated model before any playlist
+    # wiring occurs.
+    load_spy = QSignalSpy(facade.loadFinished)
     facade.open_album(tmp_path)
+    if not load_spy.wait(5000):
+        pytest.fail("Timed out waiting for the asset list to finish loading")
+
+    assert load_spy.count() >= 1
+    album_root, success = load_spy.at(load_spy.count() - 1)
+    assert isinstance(album_root, Path)
+    assert album_root.resolve() == tmp_path.resolve()
+    assert success is True
+
     qapp.processEvents()
 
-    assert model.rowCount() == 1
+    # ``AssetModel`` is a proxy layered on top of ``AssetListModel``; even though
+    # the backend worker has announced completion, the proxy only surfaces the
+    # loaded rows after Qt dispatches the corresponding ``rowsInserted``
+    # notifications.  Drive the event loop in short bursts until the lone Live
+    # Photo record becomes visible or a conservative timeout expires so the
+    # assertion below no longer races the asynchronous loader on slower machines.
+    playlist_rows_expected = 1
+    playlist_deadline = time.monotonic() + 5.0
+    while model.rowCount() < playlist_rows_expected and time.monotonic() < playlist_deadline:
+        qapp.processEvents(QEventLoop.AllEvents, 50)
+
+    assert model.rowCount() == playlist_rows_expected
     index = model.index(0, 0)
     assert bool(index.data(Roles.IS_LIVE))
     motion_abs_raw = index.data(Roles.LIVE_MOTION_ABS)
@@ -537,6 +680,14 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
     playlist.currentChanged.connect(controller.handle_playlist_current_changed)
     playlist.sourceChanged.connect(controller.handle_playlist_source_changed)
 
+    # ``PlaybackController`` only proceeds with the expensive media hand-off once
+    # the detail view is active; otherwise `_load_new_source` aborts early to
+    # avoid flashing the video surface while the gallery view is visible.  The
+    # production window switches to the detail page before invoking
+    # ``activate_index``, so mirror that order here to ensure the asynchronous
+    # timer observes ``is_detail_view_active == True`` when it fires.
+    view_controller.show_detail_view()
+
     # Emit the long-press signal directly to simulate a user previewing the Live
     # Photo before activating it.  ``PreviewController`` listens to the signal
     # and routes the preview request to the shared window.
@@ -546,7 +697,17 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
     preview_source, _ = preview_window.previewed[-1]
     assert Path(str(preview_source)) == motion_abs
     controller.activate_index(index)
-    qapp.processEvents()
+
+    # ``PlaybackController`` defers the heavy lifting to a single-shot timer so the
+    # playlist can update and the UI stays responsive.  A single ``processEvents``
+    # call is therefore not sufficient; drive the event loop until the stub media
+    # controller reports that the Live Photo's motion clip has been loaded or a
+    # conservative timeout expires.  This mirrors the behaviour of the real
+    # application where the video surface only swaps once the asynchronous loader
+    # hands control back to the main thread.
+    deadline = time.monotonic() + 5.0
+    while media.loaded is None and time.monotonic() < deadline:
+        qapp.processEvents(QEventLoop.AllEvents, 50)
 
     assert media.loaded == motion_abs
     assert media.play_calls == 1
