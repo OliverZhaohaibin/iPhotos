@@ -1,10 +1,12 @@
 from pathlib import Path
+import time
 
 import pytest
 
 pytest.importorskip("PySide6", reason="PySide6 is required for GUI tests", exc_type=ImportError)
 pytest.importorskip("PySide6.QtWidgets", reason="Qt widgets not available", exc_type=ImportError)
 
+from PySide6.QtCore import QEventLoop
 from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QApplication
 
@@ -75,9 +77,18 @@ def test_asset_roles_expose_metadata(tmp_path: Path, qapp: QApplication) -> None
     assert album_root_from_signal.resolve() == tmp_path.resolve()
     assert success_flag is True
 
-    qapp.processEvents()
+    # ``AssetModel`` is a proxy layered on top of ``AssetListModel``.  Although the
+    # source model has finished loading, the proxy only observes the changes after
+    # Qt dispatches the ``rowsInserted`` notifications emitted during
+    # :meth:`AssetListModel._on_loader_chunk_ready`.  Process the event queue in
+    # short bursts until the proxy exposes both assets or a sensible timeout
+    # elapses so the assertion becomes deterministic even on slower CI runners.
+    expected_rows = 2
+    deadline = time.monotonic() + 5.0
+    while model.rowCount() < expected_rows and time.monotonic() < deadline:
+        qapp.processEvents(QEventLoop.AllEvents, 50)
 
-    assert model.rowCount() == 2
+    assert model.rowCount() == expected_rows
     rows = [model.index(row, 0) for row in range(model.rowCount())]
 
     rels = {index.data(Roles.REL) for index in rows}
