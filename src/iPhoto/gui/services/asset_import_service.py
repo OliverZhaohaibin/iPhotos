@@ -12,6 +12,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 from ..background_task_manager import BackgroundTaskManager
 from ..ui.tasks.import_worker import ImportSignals, ImportWorker
 from .album_metadata_service import AlbumMetadataService
+from .library_update_service import LibraryUpdateService
 
 
 
@@ -28,14 +29,14 @@ class AssetImportService(QObject):
         *,
         task_manager: BackgroundTaskManager,
         current_album_root: Callable[[], Optional[Path]],
-        refresh_callback: Callable[[Path], None],
+        update_service: LibraryUpdateService,
         metadata_service: AlbumMetadataService,
         parent: Optional[QObject] = None,
     ) -> None:
         super().__init__(parent)
         self._task_manager = task_manager
         self._current_album_root = current_album_root
-        self._refresh_callback = refresh_callback
+        self._update_service = update_service
         self._metadata_service = metadata_service
 
     # ------------------------------------------------------------------
@@ -163,7 +164,7 @@ class AssetImportService(QObject):
             self._metadata_service.ensure_featured_entries(root, imported_paths)
 
         if rescan_succeeded and imported_paths:
-            self._refresh_callback(root)
+            self._update_service.announce_album_refresh(root)
 
         if imported_paths:
             label = "file" if len(imported_paths) == 1 else "files"
