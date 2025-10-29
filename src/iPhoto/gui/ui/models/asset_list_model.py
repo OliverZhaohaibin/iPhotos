@@ -56,6 +56,13 @@ class AssetListModel(QAbstractListModel):
         self._data_loader.error.connect(self._on_loader_error)
         self._state_manager = AssetListStateManager(self, self._cache_manager)
         self._cache_manager.set_recently_removed_limit(256)
+        # ``_pending_rows`` accumulates worker results while a background load is
+        # in flight.  Once :meth:`_on_loader_finished` fires we swap the buffered
+        # snapshot into the model in a single reset so aggregate views only see
+        # one visual refresh instead of flickering through multiple incremental
+        # updates.
+        self._pending_rows: List[Dict[str, object]] = []
+        self._pending_loader_root: Optional[Path] = None
 
         self._facade.linksUpdated.connect(self.handle_links_updated)
 
@@ -208,6 +215,9 @@ class AssetListModel(QAbstractListModel):
 
         rows, _ = result
 
+        self._pending_rows = []
+        self._pending_loader_root = None
+
         self.beginResetModel()
         self._state_manager.set_rows(rows)
         self.endResetModel()
@@ -310,6 +320,8 @@ class AssetListModel(QAbstractListModel):
         self._cache_manager.clear_recently_removed()
         self._state_manager.set_virtual_reload_suppressed(False)
         self._state_manager.set_virtual_move_requires_revisit(False)
+        self._pending_rows = []
+        self._pending_loader_root = None
 
     def update_featured_status(self, rel: str, is_featured: bool) -> None:
         """Update the cached ``featured`` flag for the asset identified by *rel*."""
@@ -341,38 +353,40 @@ class AssetListModel(QAbstractListModel):
             self._state_manager.mark_reload_pending()
             return
 
-        self.beginResetModel()
-        self._state_manager.clear_rows()
-        self.endResetModel()
-        self._cache_manager.clear_recently_removed()
-
         manifest = self._facade.current_album.manifest if self._facade.current_album else {}
         featured = manifest.get("featured", []) or []
 
         live_map = load_live_map(self._album_root)
         self._cache_manager.set_live_map(live_map)
 
+        # Remember which album root is being populated so chunk handlers can
+        # accumulate results while the worker traverses the filesystem.
+        self._pending_rows = []
+        self._pending_loader_root = self._album_root
+
         try:
             self._data_loader.start(self._album_root, featured, live_map)
         except RuntimeError:
             self._state_manager.mark_reload_pending()
+            self._pending_rows = []
+            self._pending_loader_root = None
             return
 
         self._state_manager.clear_reload_pending()
 
     def _on_loader_chunk_ready(self, root: Path, chunk: List[Dict[str, object]]) -> None:
-        if not self._album_root or root != self._album_root or not chunk:
+        if (
+            not self._album_root
+            or root != self._album_root
+            or not chunk
+            or self._pending_loader_root != self._album_root
+        ):
             return
 
-        start_row = self._state_manager.row_count()
-        end_row = start_row + len(chunk) - 1
-        self.beginInsertRows(QModelIndex(), start_row, end_row)
-        self._state_manager.append_chunk(chunk)
-        for row_data in chunk:
-            abs_key = str(row_data.get("abs") or "")
-            if abs_key:
-                self._cache_manager.remove_recently_removed(abs_key)
-        self.endInsertRows()
+        # Buffer worker rows so the view can be refreshed exactly once when the
+        # load completes instead of growing incrementally and triggering a full
+        # resort after every sub-album traversal.
+        self._pending_rows.extend(chunk)
 
     def _on_loader_progress(self, root: Path, current: int, total: int) -> None:
         if not self._album_root or root != self._album_root:
@@ -386,11 +400,18 @@ class AssetListModel(QAbstractListModel):
                 QTimer.singleShot(0, self.start_load)
             return
 
-        if success:
-            active = self._state_manager.active_rel_keys()
-            self._cache_manager.clear_thumbnails_not_in(active)
+        if success and self._pending_loader_root == self._album_root:
+            rows = list(self._pending_rows)
+            self.beginResetModel()
+            self._state_manager.set_rows(rows)
+            self.endResetModel()
+            self._cache_manager.reset_caches_for_new_rows(rows)
+            self._cache_manager.clear_recently_removed()
 
         self.loadFinished.emit(root, success)
+
+        self._pending_rows = []
+        self._pending_loader_root = None
 
         should_restart = self._state_manager.consume_pending_reload(self._album_root, root)
         if should_restart:
@@ -406,6 +427,9 @@ class AssetListModel(QAbstractListModel):
 
         self._facade.errorRaised.emit(message)
         self.loadFinished.emit(root, False)
+
+        self._pending_rows = []
+        self._pending_loader_root = None
 
         should_restart = self._state_manager.consume_pending_reload(self._album_root, root)
         if should_restart:
