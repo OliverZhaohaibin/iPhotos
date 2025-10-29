@@ -141,7 +141,15 @@ def test_move_assets_submits_worker_and_emits_completion(
     service.moveFinished.connect(
         lambda src, dest, success, message: results.append((src, dest, success, message))
     )
-    service.moveCompletedDetailed.connect(detailed_results.append)
+    # ``moveCompletedDetailed`` emits seven individual arguments.  Connecting
+    # the signal directly to :py:meth:`list.append` would therefore raise a
+    # ``TypeError`` because the built-in expects a single object.  Wrap the
+    # parameters into a tuple so the test can capture the payload safely.
+    service.moveCompletedDetailed.connect(
+        lambda src, dest, pairs, src_ok, dest_ok, is_trash, is_restore: detailed_results.append(
+            (src, dest, pairs, src_ok, dest_ok, is_trash, is_restore)
+        )
+    )
 
     service.move_assets([asset], destination_root)
 
