@@ -397,7 +397,17 @@ def test_asset_model_filters_videos(tmp_path: Path, qapp: QApplication) -> None:
 
     qapp.processEvents()
 
-    assert model.rowCount() == 2
+    # ``AssetModel`` wraps the list model with a proxy that only surfaces the
+    # rows once the event loop propagates the ``rowsInserted`` notifications.
+    # Poll the row count with short event loop bursts so the assertion remains
+    # deterministic even when the background worker finishes slightly later on
+    # slower machines.
+    expected_rows = 2
+    deadline = time.monotonic() + 5.0
+    while model.rowCount() < expected_rows and time.monotonic() < deadline:
+        qapp.processEvents(QEventLoop.AllEvents, 50)
+
+    assert model.rowCount() == expected_rows
     model.set_filter_mode("videos")
     qapp.processEvents()
 
