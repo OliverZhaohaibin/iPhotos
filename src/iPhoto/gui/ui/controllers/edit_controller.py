@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import Mapping, Optional
 
-from PySide6.QtCore import QObject, QThreadPool, QRunnable, Signal, QTimer
+from PySide6.QtCore import QObject, QThreadPool, QRunnable, Signal, QTimer, Qt
 from PySide6.QtGui import QImage, QPixmap
 
 from ....core.preview_backends import PreviewBackend, PreviewSession, select_preview_backend
@@ -144,7 +144,8 @@ class EditController(QObject):
         if image is None or image.isNull():
             return
 
-        self._base_image = image
+        preview_image = self._prepare_preview_image(image)
+        self._base_image = preview_image
         self._current_source = source
 
         # Tear down any existing backend session before creating a new one.  This
@@ -152,7 +153,7 @@ class EditController(QObject):
         # without leaving the view first.
         if self._preview_session is not None:
             self._preview_backend.dispose_session(self._preview_session)
-        self._preview_session = self._preview_backend.create_session(image)
+        self._preview_session = self._preview_backend.create_session(preview_image)
 
         adjustments = sidecar.load_adjustments(source)
 
@@ -163,6 +164,9 @@ class EditController(QObject):
 
         self._ui.edit_sidebar.set_session(session)
         self._ui.edit_sidebar.refresh()
+        # Display the unadjusted preview immediately so the user sees feedback
+        # while the first recalculation runs in the background.
+        self._ui.edit_image_viewer.set_pixmap(QPixmap.fromImage(preview_image))
         self._set_mode("adjust")
         self._start_preview_job()
 
@@ -244,6 +248,62 @@ class EditController(QObject):
         # Submitting the worker to the shared thread pool keeps resource usage
         # bounded even when the user adjusts multiple sliders rapidly.
         self._thread_pool.start(worker)
+
+    def _prepare_preview_image(self, image: QImage) -> QImage:
+        """Return an image optimised for preview rendering throughput.
+
+        Applying adjustments to a 1:1 copy of the source file quickly becomes
+        prohibitively expensive for high resolution assets.  The edit preview
+        only needs to match the on-screen size, so the helper scales the source
+        to the current viewer dimensions (or a conservative fallback) while
+        preserving the aspect ratio.  The reduced pixel count keeps CPU based
+        rendering responsive without sacrificing perceived quality.
+        """
+
+        viewport_size = None
+        viewer = self._ui.edit_image_viewer
+
+        # ``ImageViewer`` exposes its scroll area viewport for external event
+        # filters.  Reusing that helper yields the exact drawable surface size
+        # when the widget has already been laid out.
+        if hasattr(viewer, "viewport_widget"):
+            try:
+                viewport = viewer.viewport_widget()
+            except Exception:
+                viewport = None
+            if viewport is not None:
+                size = viewport.size()
+                if size.isValid() and not size.isEmpty():
+                    viewport_size = size
+
+        if viewport_size is None:
+            size = viewer.size()
+            if size.isValid() and not size.isEmpty():
+                viewport_size = size
+
+        # Fall back to a 1600px bounding box when layout information is not yet
+        # available (for example the first time the edit view is opened).  The
+        # limit is high enough to look crisp on typical displays while avoiding
+        # the worst case performance hit of processing multi-tens-of-megapixel
+        # originals on the CPU.
+        max_width = 1600
+        max_height = 1600
+        if viewport_size is not None:
+            max_width = max(1, viewport_size.width())
+            max_height = max(1, viewport_size.height())
+
+        if image.width() <= max_width and image.height() <= max_height:
+            # The source already fits within the requested bounds.  Return a
+            # detached copy so subsequent pixel operations never touch the
+            # caller's instance.
+            return QImage(image)
+
+        return image.scaled(
+            max_width,
+            max_height,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
 
     def _on_preview_ready(self, image: QImage, job_id: int) -> None:
         """Update the preview if the emitted job matches the latest request."""
