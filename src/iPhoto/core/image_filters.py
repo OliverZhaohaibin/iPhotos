@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Mapping
 
-from PySide6.QtGui import QImage
+from PySide6.QtGui import QImage, QColor
 
 
 # Mapping keys used throughout the editing pipeline.  The constants make it easy to
@@ -91,17 +91,72 @@ def apply_adjustments(image: QImage, adjustments: Mapping[str, float]) -> QImage
     # relative to the neutral slope of 1.0.
     contrast_factor = 1.0 + contrast
 
-    # Access the raw pixel buffer once and work with it directly.  Using
-    # :class:`QColor` for each pixel triggers a large amount of Python ↔ Qt
-    # marshalling overhead which quickly becomes noticeable when the user drags
-    # a slider.  The bytes are laid out as BGRA because ``Format_ARGB32`` stores
-    # 32-bit integers in little-endian order.
     bytes_per_line = result.bytesPerLine()
 
-    # Keep a local reference to the guard so Python does not reclaim Qt's
-    # wrapper while we are still iterating over the memoryview.
-    view, buffer_guard = _resolve_pixel_buffer(result)
-    _ = buffer_guard  # Explicitly document that the variable is intentionally unused.
+    try:
+        _apply_adjustments_fast(
+            result,
+            width,
+            height,
+            bytes_per_line,
+            exposure_term,
+            brightness_term,
+            brilliance_strength,
+            highlights,
+            shadows,
+            contrast_factor,
+            black_point,
+        )
+    except (BufferError, RuntimeError, TypeError):
+        # If the fast path fails we degrade gracefully to the slower, but very
+        # reliable, QColor based implementation.  This keeps the editor usable
+        # on platforms where the Qt binding exposes a read-only buffer or an
+        # unsupported wrapper type.  The performance hit is preferable to a
+        # crash that renders the feature unusable.
+        _apply_adjustments_fallback(
+            result,
+            width,
+            height,
+            exposure_term,
+            brightness_term,
+            brilliance_strength,
+            highlights,
+            shadows,
+            contrast_factor,
+            black_point,
+        )
+
+    return result
+
+
+def _apply_adjustments_fast(
+    image: QImage,
+    width: int,
+    height: int,
+    bytes_per_line: int,
+    exposure_term: float,
+    brightness_term: float,
+    brilliance_strength: float,
+    highlights: float,
+    shadows: float,
+    contrast_factor: float,
+    black_point: float,
+) -> None:
+    """Mutate ``image`` in-place using direct pixel buffer access.
+
+    The helper keeps the tight loop isolated so :func:`apply_adjustments` can
+    fall back to a slower implementation when the buffer is not writable.
+    """
+
+    view, buffer_guard = _resolve_pixel_buffer(image)
+
+    # Keep an explicit reference to the guard so the Qt wrapper that exposes
+    # the pixel buffer stays alive for the duration of the processing loop.
+    buffer_handle = buffer_guard
+    _ = buffer_handle
+
+    if getattr(view, "readonly", False):
+        raise BufferError("QImage pixel buffer is read-only")
 
     for y in range(height):
         row_offset = y * bytes_per_line
@@ -146,9 +201,66 @@ def apply_adjustments(image: QImage, adjustments: Mapping[str, float]) -> QImage
             view[pixel_offset] = _float_to_uint8(b)
             view[pixel_offset + 1] = _float_to_uint8(g)
             view[pixel_offset + 2] = _float_to_uint8(r)
-            # Alpha (view[pixel_offset + 3]) is preserved as-is.
+            # The alpha channel (``pixel_offset + 3``) is intentionally left
+            # untouched so transparent assets retain their original opacity.
 
-    return result
+
+def _apply_adjustments_fallback(
+    image: QImage,
+    width: int,
+    height: int,
+    exposure_term: float,
+    brightness_term: float,
+    brilliance_strength: float,
+    highlights: float,
+    shadows: float,
+    contrast_factor: float,
+    black_point: float,
+) -> None:
+    """Slow but robust QColor-based tone mapping fallback.
+
+    Using :class:`QColor` avoids direct buffer manipulation, which means it
+    works even when the Qt binding cannot provide a writable pointer.  The
+    function mirrors the fast path's tone mapping so both implementations yield
+    identical visual output.
+    """
+
+    for y in range(height):
+        for x in range(width):
+            colour = image.pixelColor(x, y)
+
+            r = _apply_channel_adjustments(
+                colour.redF(),
+                exposure_term,
+                brightness_term,
+                brilliance_strength,
+                highlights,
+                shadows,
+                contrast_factor,
+                black_point,
+            )
+            g = _apply_channel_adjustments(
+                colour.greenF(),
+                exposure_term,
+                brightness_term,
+                brilliance_strength,
+                highlights,
+                shadows,
+                contrast_factor,
+                black_point,
+            )
+            b = _apply_channel_adjustments(
+                colour.blueF(),
+                exposure_term,
+                brightness_term,
+                brilliance_strength,
+                highlights,
+                shadows,
+                contrast_factor,
+                black_point,
+            )
+
+            image.setPixelColor(x, y, QColor.fromRgbF(r, g, b, colour.alphaF()))
 
 
 def _resolve_pixel_buffer(image: QImage) -> tuple[memoryview, object]:
@@ -179,17 +291,20 @@ def _resolve_pixel_buffer(image: QImage) -> tuple[memoryview, object]:
     # it in the tuple.
     guard: object = buffer
 
-    try:
-        view = memoryview(buffer)
-    except TypeError:
+    if isinstance(buffer, memoryview):
+        view = buffer
+    else:
         # PyQt requires ``setsize`` to expose the buffer length.  Only call the
         # method when it exists to avoid repeating the PySide crash that stemmed
         # from invoking the non-existent attribute.
-        if hasattr(buffer, "setsize"):
-            buffer.setsize(expected_size)
+        try:
             view = memoryview(buffer)
-        else:
-            raise RuntimeError("Unsupported QImage.bits() buffer wrapper") from None
+        except TypeError:
+            if hasattr(buffer, "setsize"):
+                buffer.setsize(expected_size)
+                view = memoryview(buffer)
+            else:
+                raise RuntimeError("Unsupported QImage.bits() buffer wrapper") from None
 
     # Normalise the layout to unsigned bytes so per-channel offsets are
     # consistent regardless of the binding.  ``cast`` already returns ``self``
