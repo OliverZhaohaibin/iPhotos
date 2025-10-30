@@ -34,7 +34,7 @@ Displays your photo footprints on an interactive map, clustering nearby photos b
 ### 🎞 Live Photo Support
 Seamlessly pairs HEIC/JPG and MOV files using Apple’s `ContentIdentifier`.  
 A “LIVE” badge appears on still photos — click to play the motion video inline.
-
+![Live interface](docs/live.png)
 ### 🧩 Smart Albums
 The sidebar provides an auto-generated **Basic Library**, grouping photos into:
 `All Photos`, `Videos`, `Live Photos`, `Favorites`, and `Recently Deleted`.
