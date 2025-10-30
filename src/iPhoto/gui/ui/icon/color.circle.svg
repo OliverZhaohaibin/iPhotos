@@ -1,0 +1,17 @@
+<svg width="53.1953125" height="59.8125" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="equal colored ring">
+  <defs>
+    <circle id="ring" cx="30" cy="30" r="24" fill="none" stroke-width="6" stroke-linecap="butt"/>
+  </defs>
+
+  <g transform="rotate(-90 30 30)">
+    <!-- 周长 ≈ 150.8；7段均分 -->
+    <!-- 每段长度约 21.54 -->
+    <use href="#ring" stroke="#4285F4" stroke-dasharray="21.54 129.3" stroke-dashoffset="0"/>
+    <use href="#ring" stroke="#A142F4" stroke-dasharray="21.54 129.3" stroke-dashoffset="-21.54"/>
+    <use href="#ring" stroke="#EA4335" stroke-dasharray="21.54 129.3" stroke-dashoffset="-43.08"/>
+    <use href="#ring" stroke="#FBBC05" stroke-dasharray="21.54 129.3" stroke-dashoffset="-64.62"/>
+    <use href="#ring" stroke="#F8D22A" stroke-dasharray="21.54 129.3" stroke-dashoffset="-86.16"/>
+    <use href="#ring" stroke="#34A853" stroke-dasharray="21.54 129.3" stroke-dashoffset="-107.7"/>
+    <use href="#ring" stroke="#00ACC1" stroke-dasharray="21.54 129.3" stroke-dashoffset="-129.24"/>
+  </g>
+</svg>
