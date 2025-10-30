@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Mapping, Optional
 
 from PySide6.QtCore import QObject, QThreadPool, QRunnable, Signal, QTimer
 from PySide6.QtGui import QImage, QPixmap
 
-from ....core.image_filters import apply_adjustments
+from ....core.preview_backends import PreviewBackend, PreviewSession, select_preview_backend
 from ....io import sidecar
 from ...utils import image_loader
 from ..models.asset_model import AssetModel
@@ -19,6 +20,9 @@ from .player_view_controller import PlayerViewController
 from .view_controller import ViewController
 
 
+_LOGGER = logging.getLogger(__name__)
+
+
 class _PreviewSignals(QObject):
     """Signals emitted by :class:`_PreviewWorker` once processing completes."""
 
@@ -27,26 +31,26 @@ class _PreviewSignals(QObject):
 
 
 class _PreviewWorker(QRunnable):
-    """Execute ``apply_adjustments`` in a background thread.
+    """Execute preview rendering in a background thread.
 
-    The worker mirrors the main-thread logic but avoids blocking the user
-    interface.  Each instance carries an immutable snapshot of the adjustment
-    values and emits the resulting image via :class:`_PreviewSignals` when the
-    computation completes.
+    The worker forwards tone-mapping requests to the selected
+    :class:`~iPhoto.core.preview_backends.PreviewBackend` to keep heavy lifting
+    off the UI thread.  Holding a strong reference to the backend session allows
+    hardware accelerated implementations to retain any allocated resources for
+    the duration of the job.
     """
 
     def __init__(
         self,
-        image: QImage,
+        backend: PreviewBackend,
+        session: PreviewSession,
         adjustments: Mapping[str, float],
         job_id: int,
         signals: _PreviewSignals,
     ) -> None:
         super().__init__()
-        # ``QImage`` is implicitly shared and therefore cheap to copy by
-        # reference.  The worker stores the reference so the pixel data remains
-        # accessible within the background thread for the duration of the run.
-        self._image = image
+        self._backend = backend
+        self._session = session
         # Capture the adjustment mapping at the moment the job is created so the
         # session can continue to evolve without affecting in-flight work.
         self._adjustments = dict(adjustments)
@@ -57,7 +61,7 @@ class _PreviewWorker(QRunnable):
         """Perform the tone-mapping work and notify listeners when done."""
 
         try:
-            adjusted = apply_adjustments(self._image, self._adjustments)
+            adjusted = self._backend.render(self._session, self._adjustments)
         except Exception:
             # Propagate failures by emitting a null image.  The controller will
             # discard outdated or invalid results, so surfacing ``None`` keeps
@@ -92,9 +96,13 @@ class EditController(QObject):
         self._asset_model = asset_model
         self._thumbnail_loader: ThumbnailLoader = asset_model.thumbnail_loader()
 
+        self._preview_backend: PreviewBackend = select_preview_backend()
+        _LOGGER.info("Initialised edit preview backend: %s", self._preview_backend.tier_name)
+
         self._session: Optional[EditSession] = None
         self._base_image: Optional[QImage] = None
         self._current_source: Optional[Path] = None
+        self._preview_session: Optional[PreviewSession] = None
 
         # Timer used to debounce expensive preview rendering so the UI thread
         # stays responsive while the user drags a slider continuously.
@@ -139,6 +147,13 @@ class EditController(QObject):
         self._base_image = image
         self._current_source = source
 
+        # Tear down any existing backend session before creating a new one.  This
+        # protects against edge-cases where ``begin_edit`` is called repeatedly
+        # without leaving the view first.
+        if self._preview_session is not None:
+            self._preview_backend.dispose_session(self._preview_session)
+        self._preview_session = self._preview_backend.create_session(image)
+
         adjustments = sidecar.load_adjustments(source)
 
         session = EditSession(self)
@@ -171,6 +186,9 @@ class EditController(QObject):
         self._session = None
         self._base_image = None
         self._current_source = None
+        if self._preview_session is not None:
+            self._preview_backend.dispose_session(self._preview_session)
+            self._preview_session = None
 
     # ------------------------------------------------------------------
     def _handle_session_changed(self, values: dict) -> None:
@@ -190,7 +208,7 @@ class EditController(QObject):
     def _start_preview_job(self) -> None:
         """Queue a background task that recalculates the preview image."""
 
-        if self._base_image is None or self._session is None:
+        if self._preview_session is None or self._session is None:
             self._ui.edit_image_viewer.clear()
             return
 
@@ -200,7 +218,26 @@ class EditController(QObject):
         signals = _PreviewSignals()
         signals.finished.connect(self._on_preview_ready)
 
-        worker = _PreviewWorker(self._base_image, self._session.values(), job_id, signals)
+        if self._preview_backend.supports_realtime:
+            # Hardware accelerated backends are fast enough to run synchronously
+            # on the UI thread, so we render immediately and forward the result.
+            try:
+                image = self._preview_backend.render(
+                    self._preview_session,
+                    self._session.values(),
+                )
+            except Exception:
+                image = QImage()
+            self._on_preview_ready(image, job_id)
+            return
+
+        worker = _PreviewWorker(
+            self._preview_backend,
+            self._preview_session,
+            self._session.values(),
+            job_id,
+            signals,
+        )
         self._active_preview_workers.add(worker)
         signals.finished.connect(lambda *_: self._active_preview_workers.discard(worker))
 
