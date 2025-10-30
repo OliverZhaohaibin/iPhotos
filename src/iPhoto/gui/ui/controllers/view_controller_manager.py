@@ -10,6 +10,7 @@ from ..widgets import InfoPanel
 from .detail_ui_controller import DetailUIController
 from .header_controller import HeaderController
 from .map_view_controller import LocationMapController
+from .edit_controller import EditController
 from .player_view_controller import PlayerViewController
 from .view_controller import ViewController
 
@@ -37,6 +38,7 @@ class ViewControllerManager(QObject):
             ui.view_stack,
             ui.gallery_page,
             ui.detail_page,
+            ui.edit_page,
             map_page=ui.map_page,
             parent=window,
         )
@@ -58,6 +60,7 @@ class ViewControllerManager(QObject):
             self._view_controller,
             self._header,
             ui.favorite_button,
+            ui.edit_button,
             ui.info_button,
             self._info_panel,
             ui.zoom_widget,
@@ -65,6 +68,14 @@ class ViewControllerManager(QObject):
             ui.zoom_in_button,
             ui.zoom_out_button,
             ui.status_bar,
+            window,
+        )
+        self._edit_controller = EditController(
+            ui,
+            self._view_controller,
+            self._player_view,
+            data_manager.playlist(),
+            data_manager.asset_model(),
             window,
         )
         self._map_controller = LocationMapController(
@@ -91,6 +102,9 @@ class ViewControllerManager(QObject):
 
     def map_controller(self) -> LocationMapController:
         return self._map_controller
+
+    def edit_controller(self) -> EditController:
+        return self._edit_controller
 
     # ------------------------------------------------------------------
     # Convenience wrappers

@@ -76,6 +76,7 @@ class MainController(QObject):
         self._playback = self._interaction.playback()
         self._state_manager = self._interaction.state_manager()
         self._selection_controller = self._interaction.selection()
+        self._edit_controller = self._view_manager.edit_controller()
 
         self._playlist.bind_model(self._asset_model)
         self._connect_signals()
@@ -183,6 +184,7 @@ class MainController(QObject):
             signal.connect(slot)
 
         ui.back_button.clicked.connect(self._handle_back_button_clicked)
+        ui.edit_button.clicked.connect(self._edit_controller.begin_edit)
 
     # -----------------------------------------------------------------
     # Slots
@@ -192,6 +194,7 @@ class MainController(QObject):
             self.open_album_from_path(path)
 
     def _handle_back_button_clicked(self) -> None:
+        self._edit_controller.leave_edit_mode()
         self._playback.reset_for_gallery_navigation()
         self._view_controller.show_gallery_view()
 

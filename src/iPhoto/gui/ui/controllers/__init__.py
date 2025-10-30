@@ -12,6 +12,7 @@ from .navigation_controller import NavigationController
 from .playback_controller import PlaybackController
 from .playback_state_manager import PlaybackStateManager
 from .player_view_controller import PlayerViewController
+from .edit_controller import EditController
 from .preference_controller import PreferenceController
 from .preview_controller import PreviewController
 from .selection_controller import SelectionController
@@ -34,6 +35,7 @@ __all__ = [
     "PlaybackController",
     "PlaybackStateManager",
     "PlayerViewController",
+    "EditController",
     "PreferenceController",
     "PreviewController",
     "SelectionController",

@@ -44,11 +44,13 @@ class _SpyViewController(ViewController):
         self._stack = QStackedWidget()
         self._gallery = QWidget()
         self._detail = QWidget()
+        self._edit = QWidget()
         self._stack.addWidget(self._gallery)
         self._stack.addWidget(self._detail)
+        self._stack.addWidget(self._edit)
         self.gallery_calls = 0
         self.detail_calls = 0
-        super().__init__(self._stack, self._gallery, self._detail)
+        super().__init__(self._stack, self._gallery, self._detail, self._edit)
 
     def show_gallery_view(self) -> None:  # type: ignore[override]
         self.gallery_calls += 1

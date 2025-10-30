@@ -15,11 +15,15 @@ class ViewController(QObject):
     detailViewShown = Signal()
     """Signal emitted after the detail view becomes the active page."""
 
+    editViewShown = Signal()
+    """Signal emitted after the edit view becomes the active page."""
+
     def __init__(
         self,
         view_stack: QStackedWidget,
         gallery_page: QWidget | None,
         detail_page: QWidget | None,
+        edit_page: QWidget | None,
         map_page: QWidget | None = None,
         parent: QObject | None = None,
     ) -> None:
@@ -29,6 +33,7 @@ class ViewController(QObject):
         self._view_stack = view_stack
         self._gallery_page = gallery_page
         self._detail_page = detail_page
+        self._edit_page = edit_page
         self._map_page = map_page
         self._active_gallery_page = gallery_page
 
@@ -48,6 +53,15 @@ class ViewController(QObject):
             if self._view_stack.currentWidget() is not self._detail_page:
                 self._view_stack.setCurrentWidget(self._detail_page)
         self.detailViewShown.emit()
+
+    def show_edit_view(self) -> None:
+        """Switch to the edit view and notify listeners."""
+
+        if self._edit_page is None:
+            return
+        if self._view_stack.currentWidget() is not self._edit_page:
+            self._view_stack.setCurrentWidget(self._edit_page)
+        self.editViewShown.emit()
 
     def show_map_view(self) -> None:
         """Switch to the map page and treat it as the active gallery view."""
@@ -72,3 +86,8 @@ class ViewController(QObject):
         # The guard keeps the helper safe to call in those scenarios while still
         # advertising whether the detail UI is presently active when it exists.
         return self._detail_page is not None and self._view_stack.currentWidget() is self._detail_page
+
+    def is_edit_view_active(self) -> bool:
+        """Return ``True`` when the edit page is the current widget."""
+
+        return self._edit_page is not None and self._view_stack.currentWidget() is self._edit_page

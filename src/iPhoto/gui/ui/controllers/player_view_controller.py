@@ -5,9 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QStackedWidget, QWidget
 
 from ...utils import image_loader
+from ....core.image_filters import apply_adjustments
+from ....io import sidecar
 from ..widgets.image_viewer import ImageViewer
 from ..widgets.live_badge import LiveBadge
 from ..widgets.video_area import VideoArea
@@ -80,8 +83,14 @@ class PlayerViewController(QObject):
     def display_image(self, source: Path) -> bool:
         """Load ``source`` into the image viewer, returning success."""
 
-        pixmap = image_loader.load_qpixmap(source)
-        if pixmap is None:
+        image = image_loader.load_qimage(source)
+        if image is None:
+            return False
+        adjustments = sidecar.load_adjustments(source)
+        if adjustments:
+            image = apply_adjustments(image, adjustments)
+        pixmap = QPixmap.fromImage(image)
+        if pixmap.isNull():
             return False
         self._image_viewer.set_pixmap(pixmap)
         self.show_image_surface()

@@ -23,6 +23,8 @@ from PySide6.QtGui import QImage, QPainter, QPixmap
 from ....config import THUMBNAIL_SEEK_GUARD_SEC, WORK_DIR_NAME
 from ....utils.pathutils import ensure_work_dir
 from ...utils import image_loader
+from ....core.image_filters import apply_adjustments
+from ....io import sidecar
 from .video_frame_grabber import grab_video_frame
 
 
@@ -82,6 +84,9 @@ class ThumbnailJob(QRunnable):
         image = image_loader.load_qimage(self._abs_path, self._size)
         if image is None:
             return None
+        adjustments = sidecar.load_adjustments(self._abs_path)
+        if adjustments:
+            image = apply_adjustments(image, adjustments)
         return self._composite_canvas(image)
 
     def _render_video(self) -> Optional[QImage]:  # pragma: no cover - worker helper
@@ -381,6 +386,33 @@ class ThumbnailLoader(QObject):
                 pass
         except OSError:
             pass
+
+    # ------------------------------------------------------------------
+    def invalidate(self, rel: str) -> None:
+        """Remove cached thumbnails associated with *rel*."""
+
+        if self._album_root is None:
+            return
+        to_remove = [key for key in self._memory if key[1] == rel]
+        for key in to_remove:
+            pixmap = self._memory.pop(key, None)
+            if pixmap is not None:
+                del pixmap
+            _, _, width, height, stamp = key
+            size = QSize(width, height)
+            cache_path = self._cache_path(rel, size, stamp)
+            self._safe_unlink(cache_path)
+        self._pending = {key for key in self._pending if key[1] != rel}
+        self._failures = {key for key in self._failures if key[1] != rel}
+        self._missing = {key for key in self._missing if key[1] != rel}
+        obsolete_lookup = [key for key, queue in self._video_queue_lookup.items() if key[1] == rel]
+        for key in obsolete_lookup:
+            priority = self._video_queue_lookup.pop(key, None)
+            if priority is None:
+                continue
+            queue = self._video_queue.get(priority)
+            if queue is not None:
+                queue.pop(key, None)
 
     def _queue_video_job(
         self,

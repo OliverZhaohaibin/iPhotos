@@ -53,6 +53,7 @@ class DetailUIController(QObject):
         view_controller: ViewController,
         header: HeaderController,
         favorite_button: QToolButton,
+        edit_button: QToolButton,
         info_button: QToolButton,
         info_panel: InfoPanel,
         zoom_widget: QWidget,
@@ -72,6 +73,7 @@ class DetailUIController(QObject):
         self._view_controller = view_controller
         self._header = header
         self._favorite_button = favorite_button
+        self._edit_button = edit_button
         self._info_button = info_button
         self._info_panel = info_panel
         self._zoom_widget = zoom_widget
@@ -96,6 +98,7 @@ class DetailUIController(QObject):
 
         self._current_row = current_row
         self.update_favorite_button(current_row)
+        self.update_edit_button(current_row)
         self._update_info_button_state(current_row)
         self._refresh_info_panel(current_row)
 
@@ -185,6 +188,21 @@ class DetailUIController(QObject):
         self._favorite_button.setEnabled(True)
         self._favorite_button.setIcon(load_icon(icon_name))
         self._favorite_button.setToolTip(tooltip)
+
+    def update_edit_button(self, row: int) -> None:
+        """Enable or disable the edit button depending on asset type."""
+
+        if row < 0:
+            self._edit_button.setEnabled(False)
+            return
+
+        index = self._model.index(row, 0)
+        if not index.isValid():
+            self._edit_button.setEnabled(False)
+            return
+
+        is_image = bool(index.data(Roles.IS_IMAGE))
+        self._edit_button.setEnabled(is_image)
 
     def update_header(self, row: Optional[int]) -> None:
         """Update the header metadata for *row*."""
@@ -361,6 +379,9 @@ class DetailUIController(QObject):
         self._favorite_button.setEnabled(False)
         self._favorite_button.setIcon(load_icon("suit.heart.svg"))
         self._favorite_button.setToolTip("Add to Favorites")
+        self._edit_button.setEnabled(False)
+        self._edit_button.setIcon(load_icon("slider.horizontal.3.svg"))
+        self._edit_button.setToolTip("Edit adjustments")
         self._info_button.setEnabled(False)
         self.hide_zoom_controls()
 

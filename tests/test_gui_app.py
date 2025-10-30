@@ -602,8 +602,10 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
     view_stack = QStackedWidget()
     gallery_page = QWidget()
     detail_page = QWidget()
+    edit_page = QWidget()
     view_stack.addWidget(gallery_page)
     view_stack.addWidget(detail_page)
+    view_stack.addWidget(edit_page)
     status_bar = QStatusBar()
     preview_window = _StubPreviewWindow()
     dialog = _StubDialog()
@@ -611,6 +613,7 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
     timestamp_label = QLabel()
     favorite_button = QToolButton()
     info_button = QToolButton()
+    edit_button = QToolButton()
     zoom_widget = QWidget()
     zoom_slider = QSlider(Qt.Orientation.Horizontal)
     zoom_in_button = QToolButton()
@@ -631,6 +634,7 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
         view_stack,
         gallery_page,
         detail_page,
+        edit_page,
     )
     header_controller = HeaderController(
         location_label,
@@ -644,6 +648,7 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
         view_controller,
         header_controller,
         favorite_button,
+        edit_button,
         info_button,
         info_panel,
         zoom_widget,

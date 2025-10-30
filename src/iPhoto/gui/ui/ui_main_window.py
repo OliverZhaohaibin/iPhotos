@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenuBar,
     QProgressBar,
+    QPushButton,
     QSlider,
     QSizeGrip,
     QSizePolicy,
@@ -31,6 +32,7 @@ from .widgets import (
     FilmstripView,
     GalleryGridView,
     ImageViewer,
+    EditSidebar,
     LiveBadge,
     PhotoMapView,
     PreviewWindow,
@@ -424,6 +426,8 @@ class Ui_MainWindow(object):
         self.share_button = QToolButton()
         self.favorite_button = QToolButton()
         self.favorite_button.setEnabled(False)
+        self.edit_button = QToolButton()
+        self.edit_button.setEnabled(False)
         self.zoom_widget = QWidget()
         self.zoom_slider = QSlider(Qt.Orientation.Horizontal)
         self.zoom_in_button = QToolButton()
@@ -553,6 +557,7 @@ class Ui_MainWindow(object):
             (self.info_button, "info.circle.svg", "Info"),
             (self.share_button, "square.and.arrow.up.svg", "Share"),
             (self.favorite_button, "suit.heart.svg", "Add to Favorites"),
+            (self.edit_button, "slider.horizontal.3.svg", "Edit"),
         ):
             self._configure_header_button(button, icon_name, tooltip)
             actions_layout.addWidget(button)
@@ -625,6 +630,75 @@ class Ui_MainWindow(object):
         self.view_stack.addWidget(self.gallery_page)
         self.view_stack.addWidget(self.map_page)
         self.view_stack.addWidget(self.detail_page)
+
+        # Edit page ----------------------------------------------------
+        self.edit_mode_group = QActionGroup(MainWindow)
+        self.edit_mode_group.setExclusive(True)
+        self.edit_adjust_action = QAction(MainWindow)
+        self.edit_adjust_action.setCheckable(True)
+        self.edit_adjust_action.setChecked(True)
+        self.edit_mode_group.addAction(self.edit_adjust_action)
+        self.edit_crop_action = QAction(MainWindow)
+        self.edit_crop_action.setCheckable(True)
+        self.edit_mode_group.addAction(self.edit_crop_action)
+
+        self.edit_reset_button = QPushButton(MainWindow)
+        self.edit_done_button = QPushButton(MainWindow)
+        self.edit_image_viewer = ImageViewer()
+        self.edit_sidebar = EditSidebar()
+        self.edit_sidebar.setMinimumWidth(260)
+        self.edit_sidebar.setMaximumWidth(360)
+
+        edit_page = QWidget()
+        edit_layout = QVBoxLayout(edit_page)
+        edit_layout.setContentsMargins(0, 0, 0, 0)
+        edit_layout.setSpacing(6)
+
+        edit_header_container = QWidget()
+        edit_header_layout = QHBoxLayout(edit_header_container)
+        edit_header_layout.setContentsMargins(12, 0, 12, 0)
+        edit_header_layout.setSpacing(12)
+
+        mode_button_container = QWidget(edit_header_container)
+        mode_button_layout = QHBoxLayout(mode_button_container)
+        mode_button_layout.setContentsMargins(0, 0, 0, 0)
+        mode_button_layout.setSpacing(6)
+        self.edit_mode_buttons: list[QToolButton] = []
+        for action in (self.edit_adjust_action, self.edit_crop_action):
+            button = QToolButton(mode_button_container)
+            button.setDefaultAction(action)
+            button.setCheckable(True)
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+            button.setAutoRaise(True)
+            mode_button_layout.addWidget(button)
+            self.edit_mode_buttons.append(button)
+        edit_header_layout.addWidget(mode_button_container)
+        edit_header_layout.addStretch(1)
+
+        button_container = QWidget(edit_header_container)
+        button_layout = QHBoxLayout(button_container)
+        button_layout.setContentsMargins(0, 0, 0, 0)
+        button_layout.setSpacing(8)
+        button_layout.addWidget(self.edit_reset_button)
+        button_layout.addWidget(self.edit_done_button)
+        edit_header_layout.addWidget(button_container)
+
+        edit_layout.addWidget(edit_header_container)
+
+        edit_body = QWidget(edit_page)
+        edit_body_layout = QHBoxLayout(edit_body)
+        edit_body_layout.setContentsMargins(0, 0, 0, 0)
+        edit_body_layout.setSpacing(12)
+        edit_body_layout.addWidget(self.edit_image_viewer, 1)
+        edit_body_layout.addWidget(self.edit_sidebar)
+        edit_layout.addWidget(edit_body, 1)
+
+        self.edit_header_container = edit_header_container
+        self.edit_page = edit_page
+        self.edit_header_container.hide()
+
+        self.view_stack.addWidget(self.edit_page)
+
         self.view_stack.setCurrentWidget(self.gallery_page)
         right_layout.addWidget(self.view_stack)
 
@@ -703,5 +777,17 @@ class Ui_MainWindow(object):
                 "Toggle multi-selection mode",
                 None,
             )
+        )
+        self.edit_adjust_action.setText(
+            QCoreApplication.translate("MainWindow", "Adjust", None)
+        )
+        self.edit_crop_action.setText(
+            QCoreApplication.translate("MainWindow", "Crop", None)
+        )
+        self.edit_reset_button.setText(
+            QCoreApplication.translate("MainWindow", "Reset Adjustments", None)
+        )
+        self.edit_done_button.setText(
+            QCoreApplication.translate("MainWindow", "Done", None)
         )
 
