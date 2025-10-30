@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Signal, QTimer
 from PySide6.QtGui import QImage, QPixmap
 
 from ....core.image_filters import apply_adjustments
@@ -48,6 +48,13 @@ class EditController(QObject):
         self._session: Optional[EditSession] = None
         self._base_image: Optional[QImage] = None
         self._current_source: Optional[Path] = None
+
+        # Timer used to debounce expensive preview rendering so the UI thread
+        # stays responsive while the user drags a slider continuously.
+        self._preview_update_timer = QTimer(self)
+        self._preview_update_timer.setSingleShot(True)
+        self._preview_update_timer.setInterval(50)
+        self._preview_update_timer.timeout.connect(self._apply_preview)
 
         ui.edit_reset_button.clicked.connect(self._handle_reset_clicked)
         ui.edit_done_button.clicked.connect(self._handle_done_clicked)
@@ -96,6 +103,9 @@ class EditController(QObject):
     def leave_edit_mode(self) -> None:
         """Return to the standard detail view without persisting changes."""
 
+        # Cancel outstanding preview requests so widgets do not update after
+        # the UI has left the edit page.
+        self._preview_update_timer.stop()
         if not self._view_controller.is_edit_view_active():
             return
         self._ui.edit_sidebar.set_session(None)
@@ -110,7 +120,9 @@ class EditController(QObject):
     # ------------------------------------------------------------------
     def _handle_session_changed(self, values: dict) -> None:
         del values  # Unused – the session already stores the authoritative mapping.
-        self._apply_preview()
+        # Debounce preview updates to avoid recalculating the entire image for
+        # every incremental slider movement event.
+        self._preview_update_timer.start()
 
     def _apply_preview(self) -> None:
         if self._base_image is None or self._session is None:
@@ -126,9 +138,13 @@ class EditController(QObject):
     def _handle_reset_clicked(self) -> None:
         if self._session is None:
             return
+        # Stop any pending preview updates so the reset renders immediately.
+        self._preview_update_timer.stop()
         self._session.reset()
 
     def _handle_done_clicked(self) -> None:
+        # Ensure no delayed preview runs after committing the adjustments.
+        self._preview_update_timer.stop()
         if self._session is None or self._current_source is None:
             self.leave_edit_mode()
             return
