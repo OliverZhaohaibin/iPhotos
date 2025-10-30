@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Mapping
 
-from PySide6.QtGui import QColor, QImage
+from PySide6.QtGui import QImage
 
 
 # Mapping keys used throughout the editing pipeline.  The constants make it easy to
@@ -91,12 +91,24 @@ def apply_adjustments(image: QImage, adjustments: Mapping[str, float]) -> QImage
     # relative to the neutral slope of 1.0.
     contrast_factor = 1.0 + contrast
 
+    # Access the raw pixel buffer once and work with it directly.  Using
+    # :class:`QColor` for each pixel triggers a large amount of Python ↔ Qt
+    # marshalling overhead which quickly becomes noticeable when the user drags
+    # a slider.  The bytes are laid out as BGRA because ``Format_ARGB32`` stores
+    # 32-bit integers in little-endian order.
+    buffer = result.bits()
+    bytes_per_line = result.bytesPerLine()
+    buffer.setsize(bytes_per_line * height)
+    view = memoryview(buffer).cast("B")
+
     for y in range(height):
+        row_offset = y * bytes_per_line
         for x in range(width):
-            colour = QColor(result.pixel(x, y))
-            r = colour.redF()
-            g = colour.greenF()
-            b = colour.blueF()
+            pixel_offset = row_offset + x * 4
+
+            b = view[pixel_offset] / 255.0
+            g = view[pixel_offset + 1] / 255.0
+            r = view[pixel_offset + 2] / 255.0
 
             r = _apply_channel_adjustments(
                 r,
@@ -129,10 +141,10 @@ def apply_adjustments(image: QImage, adjustments: Mapping[str, float]) -> QImage
                 black_point,
             )
 
-            colour.setRedF(r)
-            colour.setGreenF(g)
-            colour.setBlueF(b)
-            result.setPixelColor(x, y, colour)
+            view[pixel_offset] = _float_to_uint8(b)
+            view[pixel_offset + 1] = _float_to_uint8(g)
+            view[pixel_offset + 2] = _float_to_uint8(r)
+            # Alpha (view[pixel_offset + 3]) is preserved as-is.
 
     return result
 
@@ -187,3 +199,14 @@ def _clamp01(value: float) -> float:
     if value > 1.0:
         return 1.0
     return value
+
+
+def _float_to_uint8(value: float) -> int:
+    """Convert *value* from ``[0.0, 1.0]`` to an 8-bit channel value."""
+
+    scaled = int(round(value * 255.0))
+    if scaled < 0:
+        return 0
+    if scaled > 255:
+        return 255
+    return scaled
