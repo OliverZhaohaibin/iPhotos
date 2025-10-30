@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Mapping, Optional
 
-from PySide6.QtCore import QObject, Signal, QTimer
+from PySide6.QtCore import QObject, QThreadPool, QRunnable, Signal, QTimer
 from PySide6.QtGui import QImage, QPixmap
 
 from ....core.image_filters import apply_adjustments
@@ -17,6 +17,53 @@ from ..tasks.thumbnail_loader import ThumbnailLoader
 from ..ui_main_window import Ui_MainWindow
 from .player_view_controller import PlayerViewController
 from .view_controller import ViewController
+
+
+class _PreviewSignals(QObject):
+    """Signals emitted by :class:`_PreviewWorker` once processing completes."""
+
+    finished = Signal(QImage, int)
+    """Emitted with the adjusted image and the job identifier."""
+
+
+class _PreviewWorker(QRunnable):
+    """Execute ``apply_adjustments`` in a background thread.
+
+    The worker mirrors the main-thread logic but avoids blocking the user
+    interface.  Each instance carries an immutable snapshot of the adjustment
+    values and emits the resulting image via :class:`_PreviewSignals` when the
+    computation completes.
+    """
+
+    def __init__(
+        self,
+        image: QImage,
+        adjustments: Mapping[str, float],
+        job_id: int,
+        signals: _PreviewSignals,
+    ) -> None:
+        super().__init__()
+        # ``QImage`` is implicitly shared and therefore cheap to copy by
+        # reference.  The worker stores the reference so the pixel data remains
+        # accessible within the background thread for the duration of the run.
+        self._image = image
+        # Capture the adjustment mapping at the moment the job is created so the
+        # session can continue to evolve without affecting in-flight work.
+        self._adjustments = dict(adjustments)
+        self._job_id = job_id
+        self._signals = signals
+
+    def run(self) -> None:  # type: ignore[override]
+        """Perform the tone-mapping work and notify listeners when done."""
+
+        try:
+            adjusted = apply_adjustments(self._image, self._adjustments)
+        except Exception:
+            # Propagate failures by emitting a null image.  The controller will
+            # discard outdated or invalid results, so surfacing ``None`` keeps
+            # the UI responsive even if processing fails unexpectedly.
+            adjusted = QImage()
+        self._signals.finished.emit(adjusted, self._job_id)
 
 
 class EditController(QObject):
@@ -54,7 +101,17 @@ class EditController(QObject):
         self._preview_update_timer = QTimer(self)
         self._preview_update_timer.setSingleShot(True)
         self._preview_update_timer.setInterval(50)
-        self._preview_update_timer.timeout.connect(self._apply_preview)
+        self._preview_update_timer.timeout.connect(self._start_preview_job)
+
+        # ``QThreadPool`` dispatches background preview jobs, preventing the
+        # heavy pixel processing from blocking the event loop.
+        self._thread_pool = QThreadPool.globalInstance()
+        # Monotonic identifier used to discard stale results from superseded
+        # preview jobs.
+        self._preview_job_id = 0
+        # Keep strong references to workers until their completion callbacks run
+        # so they are not garbage collected prematurely.
+        self._active_preview_workers: set[_PreviewWorker] = set()
 
         ui.edit_reset_button.clicked.connect(self._handle_reset_clicked)
         ui.edit_done_button.clicked.connect(self._handle_done_clicked)
@@ -92,7 +149,7 @@ class EditController(QObject):
         self._ui.edit_sidebar.set_session(session)
         self._ui.edit_sidebar.refresh()
         self._set_mode("adjust")
-        self._apply_preview()
+        self._start_preview_job()
 
         self._ui.detail_chrome_container.hide()
         self._ui.edit_header_container.show()
@@ -103,9 +160,7 @@ class EditController(QObject):
     def leave_edit_mode(self) -> None:
         """Return to the standard detail view without persisting changes."""
 
-        # Cancel outstanding preview requests so widgets do not update after
-        # the UI has left the edit page.
-        self._preview_update_timer.stop()
+        self._cancel_pending_previews()
         if not self._view_controller.is_edit_view_active():
             return
         self._ui.edit_sidebar.set_session(None)
@@ -124,27 +179,64 @@ class EditController(QObject):
         # every incremental slider movement event.
         self._preview_update_timer.start()
 
-    def _apply_preview(self) -> None:
+    def _cancel_pending_previews(self) -> None:
+        """Stop timers and invalidate outstanding preview work."""
+
+        self._preview_update_timer.stop()
+        # Incrementing the job identifier causes any in-flight worker results to
+        # be ignored once they finish.
+        self._preview_job_id += 1
+
+    def _start_preview_job(self) -> None:
+        """Queue a background task that recalculates the preview image."""
+
         if self._base_image is None or self._session is None:
             self._ui.edit_image_viewer.clear()
             return
-        adjusted = apply_adjustments(self._base_image, self._session.values())
-        pixmap = QPixmap.fromImage(adjusted)
+
+        self._preview_job_id += 1
+        job_id = self._preview_job_id
+
+        signals = _PreviewSignals()
+        signals.finished.connect(self._on_preview_ready)
+
+        worker = _PreviewWorker(self._base_image, self._session.values(), job_id, signals)
+        self._active_preview_workers.add(worker)
+        signals.finished.connect(lambda *_: self._active_preview_workers.discard(worker))
+
+        # Submitting the worker to the shared thread pool keeps resource usage
+        # bounded even when the user adjusts multiple sliders rapidly.
+        self._thread_pool.start(worker)
+
+    def _on_preview_ready(self, image: QImage, job_id: int) -> None:
+        """Update the preview if the emitted job matches the latest request."""
+
+        if job_id != self._preview_job_id:
+            # A newer preview superseded this result.  Drop it silently so the
+            # UI reflects the most recent slider state.
+            return
+
+        if image.isNull():
+            self._ui.edit_image_viewer.clear()
+            return
+
+        pixmap = QPixmap.fromImage(image)
         if pixmap.isNull():
             self._ui.edit_image_viewer.clear()
             return
+
         self._ui.edit_image_viewer.set_pixmap(pixmap)
 
     def _handle_reset_clicked(self) -> None:
         if self._session is None:
             return
         # Stop any pending preview updates so the reset renders immediately.
-        self._preview_update_timer.stop()
+        self._cancel_pending_previews()
         self._session.reset()
 
     def _handle_done_clicked(self) -> None:
         # Ensure no delayed preview runs after committing the adjustments.
-        self._preview_update_timer.stop()
+        self._cancel_pending_previews()
         if self._session is None or self._current_source is None:
             self.leave_edit_mode()
             return
