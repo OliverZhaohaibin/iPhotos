@@ -98,8 +98,14 @@ def apply_adjustments(image: QImage, adjustments: Mapping[str, float]) -> QImage
     # 32-bit integers in little-endian order.
     buffer = result.bits()
     bytes_per_line = result.bytesPerLine()
-    buffer.setsize(bytes_per_line * height)
-    view = memoryview(buffer).cast("B")
+
+    # ``QImage.bits`` returns a ``memoryview`` in PySide6 whose size already
+    # matches the backing store.  Some Qt bindings expose ``setsize`` to resize
+    # the view explicitly, but PySide6 intentionally omits the API which caused
+    # an ``AttributeError`` to be raised when the preview refreshed.  Casting to
+    # unsigned bytes gives us predictable indexing across platforms without the
+    # now-unsupported ``setsize`` call.
+    view = buffer.cast("B") if isinstance(buffer, memoryview) else memoryview(buffer).cast("B")
 
     for y in range(height):
         row_offset = y * bytes_per_line
