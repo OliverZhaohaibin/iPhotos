@@ -117,15 +117,22 @@ class SlidingSegmentedControl(QWidget):
         highlight_color = palette.color(QPalette.ColorRole.Highlight)
         blend = QColor(highlight_color)
         blend.setAlpha(90)
-        self._highlight.setStyleSheet(
-            "#segmentedHighlight {"
-            f"background-color: {blend.name(QColor.NameFormat.HexArgb)};"
-            "border-radius: 6px;"
-            "}"
+        highlight_stylesheet = "\n".join(
+            [
+                "#segmentedHighlight {",
+                f"background-color: {blend.name(QColor.NameFormat.HexArgb)};",
+                "border-radius: 6px;",
+                "}",
+            ]
         )
-        self.setStyleSheet(
-            "SlidingSegmentedControl {"
-            "background-color: palette(window);"
-            "border-radius: 8px;"
-            "}"
+        control_stylesheet = "\n".join(
+            [
+                "SlidingSegmentedControl {",
+                "background-color: palette(window);",
+                "border-radius: 8px;",
+                "}",
+            ]
         )
+
+        self._highlight.setStyleSheet(highlight_stylesheet)
+        self.setStyleSheet(control_stylesheet)
