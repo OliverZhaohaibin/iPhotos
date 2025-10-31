@@ -801,6 +801,17 @@ class EditController(QObject):
     def _finalise_exit_transition(self) -> None:
         """Tear down the edit UI once the slide-out animation finishes."""
 
+        splitter = self._ui.splitter
+        target_sizes: list[int] | None = None
+        if self._splitter_sizes_before_edit:
+            # Normalise the cached geometry against the splitter's current width so the restored
+            # sizes respect any window resize that happened while the edit tools were visible.
+            total_width = max(1, splitter.width())
+            target_sizes = self._sanitise_splitter_sizes(
+                self._splitter_sizes_before_edit,
+                total=total_width,
+            )
+
         sidebar = self._ui.edit_sidebar
         sidebar.hide()
         sidebar.setMinimumWidth(0)
@@ -819,8 +830,17 @@ class EditController(QObject):
         self._ui.edit_header_container.hide()
         self._edit_header_opacity.setOpacity(1.0)
 
-        # The saved splitter snapshot is left untouched here because the animation has
-        # already applied it; the subsequent state reset simply clears the cached copy.
+        if target_sizes:
+            current_sizes = [int(value) for value in splitter.sizes()]
+            # Reapply the saved layout only when the animation failed to reach the expected end
+            # state (for example after a zero-duration transition or when Qt clamps the values
+            # because a pane temporarily disappears).  Skipping the redundant ``setSizes`` call
+            # prevents the navigation sidebar from snapping at the end of an otherwise smooth
+            # animation while still guaranteeing the geometry recovers after editing.
+            if len(current_sizes) != len(target_sizes) or any(
+                abs(current - expected) > 1 for current, expected in zip(current_sizes, target_sizes)
+            ):
+                splitter.setSizes(target_sizes)
 
         self._ui.edit_sidebar.set_session(None)
         self._ui.edit_image_viewer.clear()
