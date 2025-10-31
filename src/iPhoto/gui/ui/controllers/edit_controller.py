@@ -814,13 +814,9 @@ class EditController(QObject):
         sidebar.setMaximumWidth(self._edit_sidebar_maximum_width)
         sidebar.updateGeometry()
 
-        navigation_sidebar = self._ui.sidebar
-        # Restore the navigation sidebar constraints at the same time as the edit sidebar so the
-        # next transition begins from a consistent geometry state.  Leaving the minimum width at
-        # zero would cause the splitter to snap open instantly when we attempt to expand it during
-        # the exit animation, recreating the "flash" that prompted this fix.
-        navigation_sidebar.restore_minimum_width_after_animation()
-        navigation_sidebar.updateGeometry()
+        # Intentionally keep the navigation sidebar's relaxed constraints in place while edit mode
+        # is active.  The exit transition re-applies the defaults once the user leaves the edit
+        # tools, and forcing them here would immediately re-expand the collapsed sidebar.
 
         # The splitter already reached the collapsed configuration via the property animation, so
         # no additional geometry adjustments are required here.
