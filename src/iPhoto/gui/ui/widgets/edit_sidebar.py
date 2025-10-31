@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Optional
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import (
     QFrame,
     QLabel,
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
 from ..models.edit_session import EditSession
 from .edit_light_section import EditLightSection
 from .collapsible_section import CollapsibleSection
+from ..palette import SIDEBAR_BACKGROUND_COLOR
 
 
 class EditSidebar(QWidget):
@@ -25,6 +27,14 @@ class EditSidebar(QWidget):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._session: Optional[EditSession] = None
+
+        # Match the classic sidebar chrome so the edit tools retain the soft blue
+        # background the rest of the application uses for navigation panes.
+        palette = self.palette()
+        palette.setColor(QPalette.ColorRole.Window, SIDEBAR_BACKGROUND_COLOR)
+        palette.setColor(QPalette.ColorRole.Base, SIDEBAR_BACKGROUND_COLOR)
+        self.setPalette(palette)
+        self.setAutoFillBackground(True)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -43,7 +53,19 @@ class EditSidebar(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
 
+        # Ensure the scroll surface shares the same tint so the viewport and the
+        # surrounding frame render as a single continuous panel.
+        scroll_palette = scroll.palette()
+        scroll_palette.setColor(QPalette.ColorRole.Base, SIDEBAR_BACKGROUND_COLOR)
+        scroll_palette.setColor(QPalette.ColorRole.Window, SIDEBAR_BACKGROUND_COLOR)
+        scroll.setPalette(scroll_palette)
+
         scroll_content = QWidget(scroll)
+        scroll_content_palette = scroll_content.palette()
+        scroll_content_palette.setColor(QPalette.ColorRole.Window, SIDEBAR_BACKGROUND_COLOR)
+        scroll_content_palette.setColor(QPalette.ColorRole.Base, SIDEBAR_BACKGROUND_COLOR)
+        scroll_content.setPalette(scroll_content_palette)
+        scroll_content.setAutoFillBackground(True)
         scroll_layout = QVBoxLayout(scroll_content)
         scroll_layout.setContentsMargins(12, 12, 12, 12)
         scroll_layout.setSpacing(12)
@@ -88,6 +110,11 @@ class EditSidebar(QWidget):
         crop_placeholder.setWordWrap(True)
         crop_placeholder.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
         crop_container = QWidget(self)
+        crop_palette = crop_container.palette()
+        crop_palette.setColor(QPalette.ColorRole.Window, SIDEBAR_BACKGROUND_COLOR)
+        crop_palette.setColor(QPalette.ColorRole.Base, SIDEBAR_BACKGROUND_COLOR)
+        crop_container.setPalette(crop_palette)
+        crop_container.setAutoFillBackground(True)
         crop_layout = QVBoxLayout(crop_container)
         crop_layout.setContentsMargins(24, 24, 24, 24)
         crop_layout.addWidget(crop_placeholder)
