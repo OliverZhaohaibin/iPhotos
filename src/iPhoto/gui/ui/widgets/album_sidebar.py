@@ -222,6 +222,12 @@ class AlbumSidebar(QWidget):
         self._tree.setAutoFillBackground(True)
         self._tree.setStyleSheet(SIDEBAR_TREE_STYLESHEET)
 
+        # Cache the default geometric constraints so the edit controller can relax them
+        # during animated transitions and restore the original layout afterwards.
+        self._default_sidebar_minimum_width = super().minimumWidth()
+        self._default_sidebar_maximum_width = super().maximumWidth()
+        self._default_tree_minimum_width = self._tree.minimumWidth()
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(*SIDEBAR_LAYOUT_MARGIN)
         layout.setSpacing(SIDEBAR_LAYOUT_SPACING)
@@ -232,6 +238,22 @@ class AlbumSidebar(QWidget):
         self._tree.filesDropped.connect(self._on_files_dropped)
         self._expand_defaults()
         self._update_title()
+
+    # ------------------------------------------------------------------
+    # Animation helpers
+    # ------------------------------------------------------------------
+    def relax_minimum_width_for_animation(self) -> None:
+        """Allow the sidebar shell and tree view to shrink to zero width."""
+
+        self.setMinimumWidth(0)
+        self._tree.setMinimumWidth(0)
+
+    def restore_minimum_width_after_animation(self) -> None:
+        """Reapply the sidebar's default size constraints after an animation."""
+
+        self.setMinimumWidth(self._default_sidebar_minimum_width)
+        self.setMaximumWidth(self._default_sidebar_maximum_width)
+        self._tree.setMinimumWidth(self._default_tree_minimum_width)
 
     # ------------------------------------------------------------------
     # Internal helpers

@@ -306,6 +306,7 @@ class EditController(QObject):
 
         splitter_sizes = self._sanitise_splitter_sizes(self._ui.splitter.sizes())
         self._splitter_sizes_before_edit = list(splitter_sizes)
+        self._prepare_navigation_sidebar_for_entry()
         self._prepare_edit_sidebar_for_entry()
         self._view_controller.show_edit_view()
         self._start_transition_animation(entering=True, splitter_start_sizes=splitter_sizes)
@@ -325,6 +326,10 @@ class EditController(QObject):
         # disappearing so the user never sees a partially restored original.
         self._handle_compare_released()
 
+        # Relax the navigation sidebar constraints and capture the edit sidebar's live geometry
+        # prior to hiding the edit stack so the exit animation starts from the widths the user
+        # last observed on-screen.
+        self._prepare_navigation_sidebar_for_exit()
         # Capture the edit sidebar's live geometry prior to hiding the edit stack so the exit
         # animation (or the immediate geometry jump in the no-animation path) starts from the
         # on-screen width that the user observed during editing.
@@ -643,6 +648,13 @@ class EditController(QObject):
         sidebar.setMaximumWidth(0)
         sidebar.updateGeometry()
 
+    def _prepare_navigation_sidebar_for_entry(self) -> None:
+        """Relax the album sidebar so it can collapse without jumping."""
+
+        sidebar = self._ui.sidebar
+        sidebar.relax_minimum_width_for_animation()
+        sidebar.updateGeometry()
+
     def _prepare_edit_sidebar_for_exit(self) -> None:
         """Relax sidebar constraints so it can collapse smoothly when leaving edit mode."""
 
@@ -658,6 +670,13 @@ class EditController(QObject):
         # oversized range on the first frame.  Capturing the live geometry ensures the
         # slide-out begins from the actual on-screen width that the user sees.
         sidebar.setMaximumWidth(int(starting_width))
+        sidebar.updateGeometry()
+
+    def _prepare_navigation_sidebar_for_exit(self) -> None:
+        """Allow the album sidebar to expand from zero width during the exit animation."""
+
+        sidebar = self._ui.sidebar
+        sidebar.relax_minimum_width_for_animation()
         sidebar.updateGeometry()
 
     def _start_transition_animation(
@@ -811,6 +830,10 @@ class EditController(QObject):
                 self._splitter_sizes_before_edit,
                 total=total_width,
             )
+
+        navigation_sidebar = self._ui.sidebar
+        navigation_sidebar.restore_minimum_width_after_animation()
+        navigation_sidebar.updateGeometry()
 
         sidebar = self._ui.edit_sidebar
         sidebar.hide()
