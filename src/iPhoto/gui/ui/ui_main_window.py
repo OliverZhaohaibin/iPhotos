@@ -669,8 +669,21 @@ class Ui_MainWindow(object):
         self.edit_done_button = QPushButton(MainWindow)
         self.edit_image_viewer = ImageViewer()
         self.edit_sidebar = EditSidebar()
-        self.edit_sidebar.setMinimumWidth(260)
-        self.edit_sidebar.setMaximumWidth(360)
+        # Capture the sidebar's default geometry constraints before temporarily collapsing it for
+        # the animated transition.  Stashing these values as dynamic properties keeps them
+        # accessible to the edit controller once the minimum/maximum widths are reduced to zero.
+        default_sidebar_min = self.edit_sidebar.minimumWidth()
+        default_sidebar_max = self.edit_sidebar.maximumWidth()
+        default_sidebar_hint = max(self.edit_sidebar.sizeHint().width(), default_sidebar_min)
+        self.edit_sidebar.setProperty("defaultMinimumWidth", default_sidebar_min)
+        self.edit_sidebar.setProperty("defaultMaximumWidth", default_sidebar_max)
+        self.edit_sidebar.setProperty("defaultPreferredWidth", default_sidebar_hint)
+        # Start the edit sidebar hidden so the first switch into edit mode
+        # can animate the panel sliding out instead of popping to its full
+        # width immediately.
+        self.edit_sidebar.setMinimumWidth(0)
+        self.edit_sidebar.setMaximumWidth(0)
+        self.edit_sidebar.hide()
 
         edit_page = QWidget()
         edit_layout = QVBoxLayout(edit_page)
