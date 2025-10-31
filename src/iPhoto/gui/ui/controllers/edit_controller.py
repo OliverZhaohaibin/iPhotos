@@ -337,12 +337,19 @@ class EditController(QObject):
         if self._session is None or self._current_source is None:
             self.leave_edit_mode()
             return
+        # Store the source path locally before ``leave_edit_mode`` clears the
+        # controller state.  The detail player needs the same asset path to
+        # reload the freshly saved adjustments once the edit chrome is hidden.
+        source = self._current_source
         adjustments = self._session.values()
-        sidecar.save_adjustments(self._current_source, adjustments)
-        self._refresh_thumbnail_cache(self._current_source)
+        sidecar.save_adjustments(source, adjustments)
+        self._refresh_thumbnail_cache(source)
         self.leave_edit_mode()
-        self._player_view.display_image(self._current_source)
-        self.editingFinished.emit(self._current_source)
+        # ``display_image`` schedules an asynchronous reload; logging the
+        # boolean result would not improve the UX, so simply trigger it and
+        # fall back to the playlist selection handlers if scheduling fails.
+        self._player_view.display_image(source)
+        self.editingFinished.emit(source)
 
     def _refresh_thumbnail_cache(self, source: Path) -> None:
         metadata = self._asset_model.source_model().metadata_for_absolute_path(source)
