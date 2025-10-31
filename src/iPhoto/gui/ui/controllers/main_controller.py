@@ -185,6 +185,12 @@ class MainController(QObject):
 
         ui.back_button.clicked.connect(self._handle_back_button_clicked)
         ui.edit_button.clicked.connect(self._edit_controller.begin_edit)
+        # Clearing navigation suppression after edits finish allows sidebar
+        # refreshes triggered by the filesystem watcher to proceed normally once
+        # the detail pane has settled back into its post-edit state.
+        self._edit_controller.editingFinished.connect(
+            self._navigation.clear_tree_refresh_suppression
+        )
 
     # -----------------------------------------------------------------
     # Slots

@@ -287,6 +287,18 @@ class NavigationController:
     def handle_tree_updated(self) -> None:
         """Record tree rebuilds triggered while background jobs are running."""
 
+        if self._view_controller.is_edit_view_active():
+            # Saving edits touches the filesystem, which in turn causes the
+            # library watcher to rebuild the sidebar tree.  Those rebuilds
+            # re-select the active virtual collection (e.g. "All Photos"),
+            # emitting the corresponding navigation signal.  If the detail view
+            # is still showing the edited asset we must ignore the signal to
+            # avoid the gallery stealing focus.  Suppressing sidebar-triggered
+            # navigation keeps the user anchored in the detail surface until the
+            # edit workflow formally ends.
+            self._suppress_tree_refresh = True
+            return
+
         if self._facade.is_performing_background_operation():
             # ``AlbumSidebar`` rebuilds the model whenever the library tree is
             # refreshed.  During a move/import this happens while the index is
