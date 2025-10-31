@@ -612,11 +612,14 @@ class EditController(QObject):
         sidebar = self._ui.edit_sidebar
         sidebar.show()
         sidebar.setMinimumWidth(0)
-        starting_width = max(
-            sidebar.width(),
-            sidebar.maximumWidth(),
-            self._edit_sidebar_preferred_width,
-        )
+        starting_width = sidebar.width()
+        # ``QPropertyAnimation`` inspects the target property's current value when the
+        # animation starts.  Because ``maximumWidth`` was previously relaxed to a very
+        # large sentinel during edit mode (allowing the user to resize the pane), using
+        # that limit as the starting point would yield a value such as ``16777215``.  The
+        # animation would then appear to "jump" closed immediately because Qt clamps the
+        # oversized range on the first frame.  Capturing the live geometry ensures the
+        # slide-out begins from the actual on-screen width that the user sees.
         sidebar.setMaximumWidth(int(starting_width))
         sidebar.updateGeometry()
 
