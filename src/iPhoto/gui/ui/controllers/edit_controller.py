@@ -341,7 +341,6 @@ class EditController(QObject):
         sidecar.save_adjustments(self._current_source, adjustments)
         self._refresh_thumbnail_cache(self._current_source)
         self.leave_edit_mode()
-        self._player_view.display_image(self._current_source)
         self.editingFinished.emit(self._current_source)
 
     def _refresh_thumbnail_cache(self, source: Path) -> None:
