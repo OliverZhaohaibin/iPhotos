@@ -795,12 +795,8 @@ class EditController(QObject):
         sidebar.setMaximumWidth(self._edit_sidebar_maximum_width)
         sidebar.updateGeometry()
 
-        # Explicitly lock the splitter into the collapsed configuration now the animation
-        # is finished. Without an explicit call ``QSplitter`` may revert to its previous
-        # geometry the next time the layout system runs (for example when a resize event
-        # occurs), which would cause the navigation sidebar to pop back open mid-session.
-        total_width = max(1, self._ui.splitter.width())
-        self._ui.splitter.setSizes([0, total_width])
+        # The splitter already reached the collapsed configuration via the property
+        # animation, so no additional geometry adjustments are required here.
 
     def _finalise_exit_transition(self) -> None:
         """Tear down the edit UI once the slide-out animation finishes."""
@@ -823,17 +819,8 @@ class EditController(QObject):
         self._ui.edit_header_container.hide()
         self._edit_header_opacity.setOpacity(1.0)
 
-        if self._splitter_sizes_before_edit:
-            # Restore the exact proportions the navigation and content panes had before
-            # entering edit mode.  Reapplying the saved geometry after the stacked widget
-            # switches pages prevents ``QSplitter`` from collapsing the sidebar again when
-            # the layout recalculates the available space.
-            total = max(1, self._ui.splitter.width())
-            restored = self._sanitise_splitter_sizes(
-                self._splitter_sizes_before_edit,
-                total=total,
-            )
-            self._ui.splitter.setSizes(restored)
+        # The saved splitter snapshot is left untouched here because the animation has
+        # already applied it; the subsequent state reset simply clears the cached copy.
 
         self._ui.edit_sidebar.set_session(None)
         self._ui.edit_image_viewer.clear()
