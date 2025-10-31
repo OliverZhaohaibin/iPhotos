@@ -269,10 +269,33 @@ class PlayerViewController(QObject):
 
         signals.completed.connect(self._on_adjusted_image_ready)
         signals.failed.connect(self._on_adjusted_image_failed)
-        signals.completed.connect(lambda *_: self._release_worker(worker))
-        signals.failed.connect(lambda *_: self._release_worker(worker))
-        signals.completed.connect(signals.deleteLater)
-        signals.failed.connect(signals.deleteLater)
+
+        def _finalize_on_completion(
+            img_source: Path, img: QImage, is_preview: bool
+        ) -> None:
+            """Release worker resources once the terminal frame arrives."""
+
+            # Preview frames are intentionally ignored because the worker still
+            # has to emit the full-resolution result.  Cleaning up at that
+            # point would drop references that the background thread expects to
+            # remain valid for its final signal emission, recreating the race
+            # that originally crashed the zoom flow.
+            if is_preview:
+                return
+            self._release_worker(worker)
+            # ``deleteLater`` queues destruction on the GUI thread, ensuring the
+            # worker never dereferences a signal object that has already been
+            # freed when it posts the completion event.
+            signals.deleteLater()
+
+        def _finalize_on_failure(img_source: Path, message: str) -> None:
+            """Release worker resources after a terminal failure."""
+
+            self._release_worker(worker)
+            signals.deleteLater()
+
+        signals.completed.connect(_finalize_on_completion)
+        signals.failed.connect(_finalize_on_failure)
 
         try:
             self._pool.start(worker)
