@@ -61,6 +61,11 @@ class EditSidebar(QWidget):
         scroll.setPalette(scroll_palette)
 
         scroll_content = QWidget(scroll)
+        # Allow the scroll area content to compress to zero width during the edit transition.  The
+        # animated splitter reduces the sidebar to a sliver before hiding it entirely, so the
+        # interior widget hierarchy must advertise that no minimum space is required; otherwise Qt
+        # clamps the collapse and the sidebar appears to "pop" out of existence.
+        scroll_content.setMinimumWidth(0)
         scroll_content_palette = scroll_content.palette()
         scroll_content_palette.setColor(QPalette.ColorRole.Window, SIDEBAR_BACKGROUND_COLOR)
         scroll_content_palette.setColor(QPalette.ColorRole.Base, SIDEBAR_BACKGROUND_COLOR)
