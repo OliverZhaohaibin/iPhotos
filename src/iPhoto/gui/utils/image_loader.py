@@ -6,7 +6,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QSize
+from PySide6.QtCore import QBuffer, QIODevice, QSize
 from PySide6.QtGui import QImage, QImageReader, QPixmap
 
 from ...utils.deps import load_pillow
@@ -25,17 +25,31 @@ else:  # pragma: no cover - executed when Pillow is unavailable
 def load_qimage(source: Path, target: QSize | None = None) -> Optional[QImage]:
     """Return a :class:`QImage` for *source* with optional scaling."""
 
-    reader = QImageReader(str(source))
-    # Disable the internal cache of QImageReader so that every call re-reads the
-    # underlying file from disk. Without this explicit opt-out Qt may reuse a
-    # previously cached frame, which would bypass newly written sidecar edits
-    # and cause the high resolution preview to display stale pixels even though
-    # thumbnails reflect the latest adjustments.
-    reader.setCacheEnabled(False)
+    buffer: QBuffer | None = None
+    try:
+        # Reading the bytes eagerly guarantees that Qt sees the newest file
+        # contents even when the platform caches file handles aggressively.
+        # We then wrap the bytes in a ``QBuffer`` so ``QImageReader`` can still
+        # apply EXIF-based auto transforms and efficient scaling.
+        data = source.read_bytes()
+    except OSError:
+        reader = QImageReader(str(source))
+    else:
+        buffer = QBuffer()
+        buffer.setData(data)
+        if buffer.open(QIODevice.ReadOnly):
+            reader = QImageReader(buffer)
+        else:
+            # Falling back to reading directly from the file path keeps the
+            # loader resilient when Qt cannot open the in-memory buffer.
+            buffer = None
+            reader = QImageReader(str(source))
     reader.setAutoTransform(True)
     if target is not None and target.isValid() and not target.isEmpty():
         reader.setScaledSize(target)
     image = reader.read()
+    if buffer is not None:
+        buffer.close()
     if not image.isNull():
         return image
     return _load_with_pillow(source, target)
