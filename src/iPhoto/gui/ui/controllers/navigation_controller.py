@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, TYPE_CHECKING
+from typing import Literal, Optional, TYPE_CHECKING
 
 from PySide6.QtWidgets import QLabel
 
@@ -64,6 +64,13 @@ class NavigationController:
         # the reaction keeps the gallery from reopening the album mid-operation
         # and avoids replacing the thumbnail grid with placeholders.
         self._suppress_tree_refresh: bool = False
+        # ``_tree_refresh_suppression_reason`` records why suppression is
+        # currently active so callers can distinguish between long-running
+        # background workflows (which must remain suppressed) and short-lived
+        # edit saves (where we only need to swallow the automatic sidebar
+        # reselection once).  ``Literal`` keeps the intent self-documenting and
+        # avoids mistyped sentinel strings.
+        self._tree_refresh_suppression_reason: Optional[Literal["edit", "operation"]] = None
 
     def bind_playback_controller(self, playback: "PlaybackController") -> None:
         """Provide the playback controller once it has been constructed.
@@ -297,6 +304,17 @@ class NavigationController:
             # navigation keeps the user anchored in the detail surface until the
             # edit workflow formally ends.
             self._suppress_tree_refresh = True
+            self._tree_refresh_suppression_reason = "edit"
+            return
+
+        if (
+            self._tree_refresh_suppression_reason == "edit"
+            and self._suppress_tree_refresh
+        ):
+            # The edit view already closed, but the sidebar has not yet
+            # reissued its selection change.  Keep the suppression active so the
+            # automatic navigation will be ignored once before re-enabling the
+            # normal behaviour.
             return
 
         if self._facade.is_performing_background_operation():
@@ -305,20 +323,30 @@ class NavigationController:
             # still in flux, so we flag the refresh and let the controller skip
             # redundant navigation callbacks.
             self._suppress_tree_refresh = True
+            self._tree_refresh_suppression_reason = "operation"
         else:
             # The tree settled without a concurrent background job, therefore
             # the controller can react to subsequent sidebar events normally.
             self._suppress_tree_refresh = False
+            self._tree_refresh_suppression_reason = None
 
     def should_suppress_tree_refresh(self) -> bool:
         """Return ``True`` when sidebar callbacks should be ignored temporarily."""
 
         return self._suppress_tree_refresh
 
+    def release_tree_refresh_suppression_if_edit(self) -> None:
+        """Stop suppressing sidebar callbacks when the last edit finished."""
+
+        if self._tree_refresh_suppression_reason == "edit":
+            self._suppress_tree_refresh = False
+            self._tree_refresh_suppression_reason = None
+
     def clear_tree_refresh_suppression(self) -> None:
         """Allow sidebar selections to trigger navigation again."""
 
         self._suppress_tree_refresh = False
+        self._tree_refresh_suppression_reason = None
 
     # ------------------------------------------------------------------
     # Status helpers

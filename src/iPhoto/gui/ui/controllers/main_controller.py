@@ -185,13 +185,6 @@ class MainController(QObject):
 
         ui.back_button.clicked.connect(self._handle_back_button_clicked)
         ui.edit_button.clicked.connect(self._edit_controller.begin_edit)
-        # Clearing navigation suppression after edits finish allows sidebar
-        # refreshes triggered by the filesystem watcher to proceed normally once
-        # the detail pane has settled back into its post-edit state.
-        self._edit_controller.editingFinished.connect(
-            self._navigation.clear_tree_refresh_suppression
-        )
-
     # -----------------------------------------------------------------
     # Slots
     def _handle_open_album_dialog(self) -> None:
@@ -216,6 +209,11 @@ class MainController(QObject):
             self._navigation.should_suppress_tree_refresh()
             and self._navigation.is_all_photos_view()
         ):
+            # Sidebar reselections triggered by post-edit tree rebuilds should
+            # not yank the user back to the gallery.  Releasing the suppression
+            # after skipping the automatic callback keeps subsequent user-driven
+            # clicks responsive.
+            self._navigation.release_tree_refresh_suppression_if_edit()
             return
         self._map_controller.hide_map_view()
         self._selection_controller.set_selection_mode(False)
@@ -225,6 +223,7 @@ class MainController(QObject):
         if self._navigation.should_suppress_tree_refresh():
             current_static = self._navigation.static_selection()
             if current_static and current_static.casefold() == title.casefold():
+                self._navigation.release_tree_refresh_suppression_if_edit()
                 return
 
         self._selection_controller.set_selection_mode(False)
@@ -345,6 +344,7 @@ class MainController(QObject):
             if current_album is not None:
                 try:
                     if current_album.root.resolve() == Path(path).resolve():
+                        self._navigation.release_tree_refresh_suppression_if_edit()
                         return
                 except OSError:
                     pass
