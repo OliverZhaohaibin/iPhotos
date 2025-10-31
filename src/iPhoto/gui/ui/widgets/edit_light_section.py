@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...models.edit_session import EditSession
+from ..models.edit_session import EditSession
 
 
 class EditLightSection(QWidget):

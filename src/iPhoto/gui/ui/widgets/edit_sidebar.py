@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..icon import load_icon
-from ...models.edit_session import EditSession
+from ..models.edit_session import EditSession
 from .edit_light_section import EditLightSection
 
 

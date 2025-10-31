@@ -17,7 +17,7 @@ from .status_bar_controller import StatusBarController
 from .view_controller_manager import ViewControllerManager
 
 if TYPE_CHECKING:  # pragma: no cover - import used for typing only
-    from ...appctx import AppContext
+    from ....appctx import AppContext
     from ..main_window import MainWindow
 
 

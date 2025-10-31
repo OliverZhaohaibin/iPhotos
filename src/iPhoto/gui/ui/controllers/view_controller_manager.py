@@ -15,7 +15,7 @@ from .player_view_controller import PlayerViewController
 from .view_controller import ViewController
 
 if TYPE_CHECKING:  # pragma: no cover - import used for typing only
-    from ...appctx import AppContext
+    from ....appctx import AppContext
     from ..main_window import MainWindow
     from ..ui_main_window import Ui_MainWindow
     from ...facade import AppFacade
