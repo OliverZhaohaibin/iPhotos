@@ -6,8 +6,20 @@ import logging
 from pathlib import Path
 from typing import Mapping, Optional, TYPE_CHECKING
 
-from PySide6.QtCore import QObject, QThreadPool, QRunnable, Signal, QTimer, Qt
+from PySide6.QtCore import (
+    QObject,
+    QThreadPool,
+    QRunnable,
+    QEasingCurve,
+    QParallelAnimationGroup,
+    QPropertyAnimation,
+    QTimer,
+    Qt,
+    Signal,
+    QVariantAnimation,
+)
 from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtWidgets import QGraphicsOpacityEffect
 
 from ....core.preview_backends import PreviewBackend, PreviewSession, select_preview_backend
 from ....io import sidecar
@@ -119,6 +131,45 @@ class EditController(QObject):
         self._base_image: Optional[QImage] = None
         self._current_source: Optional[Path] = None
         self._preview_session: Optional[PreviewSession] = None
+        self._current_preview_pixmap: Optional[QPixmap] = None
+        self._compare_active = False
+
+        # Store geometric constraints for the animated sidebar transitions.  The UI layer
+        # annotates the edit sidebar with its preferred dimensions before collapsing it to zero
+        # width, so fall back gracefully if the hints are missing (for example in tests).
+        preferred_width = ui.edit_sidebar.property("defaultPreferredWidth")
+        minimum_width = ui.edit_sidebar.property("defaultMinimumWidth")
+        maximum_width = ui.edit_sidebar.property("defaultMaximumWidth")
+        self._edit_sidebar_preferred_width = max(
+            1,
+            int(preferred_width) if preferred_width else ui.edit_sidebar.sizeHint().width(),
+        )
+        self._edit_sidebar_minimum_width = max(
+            1,
+            int(minimum_width) if minimum_width else ui.edit_sidebar.minimumWidth(),
+        )
+        self._edit_sidebar_maximum_width = max(
+            self._edit_sidebar_preferred_width,
+            int(maximum_width) if maximum_width else ui.edit_sidebar.maximumWidth(),
+        )
+        self._edit_sidebar_preferred_width = min(
+            self._edit_sidebar_preferred_width,
+            self._edit_sidebar_maximum_width,
+        )
+        self._splitter_sizes_before_edit: list[int] | None = None
+        self._transition_group: QParallelAnimationGroup | None = None
+        self._transition_direction: str | None = None
+
+        # ``QGraphicsOpacityEffect`` allows the controller to cross-fade the edit and detail
+        # headers without restructuring the layout tree.  Storing the effects avoids repeated
+        # allocations and keeps the opacity state accessible to the transition helpers.
+        self._edit_header_opacity = QGraphicsOpacityEffect(ui.edit_header_container)
+        self._edit_header_opacity.setOpacity(1.0)
+        ui.edit_header_container.setGraphicsEffect(self._edit_header_opacity)
+
+        self._detail_header_opacity = QGraphicsOpacityEffect(ui.detail_chrome_container)
+        self._detail_header_opacity.setOpacity(1.0)
+        ui.detail_chrome_container.setGraphicsEffect(self._detail_header_opacity)
 
         # Timer used to debounce expensive preview rendering so the UI thread
         # stays responsive while the user drags a slider continuously.
@@ -141,6 +192,8 @@ class EditController(QObject):
         ui.edit_done_button.clicked.connect(self._handle_done_clicked)
         ui.edit_adjust_action.triggered.connect(lambda checked: self._handle_mode_change("adjust", checked))
         ui.edit_crop_action.triggered.connect(lambda checked: self._handle_mode_change("crop", checked))
+        ui.edit_compare_button.pressed.connect(self._handle_compare_pressed)
+        ui.edit_compare_button.released.connect(self._handle_compare_released)
 
         playlist.currentChanged.connect(self._handle_playlist_change)
         playlist.sourceChanged.connect(lambda _path: self._handle_playlist_change())
@@ -182,33 +235,66 @@ class EditController(QObject):
         self._ui.edit_sidebar.refresh()
         # Display the unadjusted preview immediately so the user sees feedback
         # while the first recalculation runs in the background.
-        self._ui.edit_image_viewer.set_pixmap(QPixmap.fromImage(preview_image))
+        initial_pixmap = QPixmap.fromImage(preview_image)
+        self._current_preview_pixmap = initial_pixmap
+        self._compare_active = False
+        self._ui.edit_image_viewer.set_pixmap(initial_pixmap)
         self._set_mode("adjust")
         self._start_preview_job()
 
+        # Reset the header opacity so the detail chrome is fully visible the next time the
+        # detail view appears.  The container is hidden immediately afterwards so the edit
+        # controls can occupy the toolbar area during the edit session.
+        self._detail_header_opacity.setOpacity(1.0)
         self._ui.detail_chrome_container.hide()
+        self._move_header_widgets_for_edit()
+        self._edit_header_opacity.setOpacity(1.0)
         self._ui.edit_header_container.show()
+
+        splitter_sizes = self._sanitise_splitter_sizes(self._ui.splitter.sizes())
+        self._splitter_sizes_before_edit = list(splitter_sizes)
+        self._prepare_navigation_sidebar_for_entry()
+        self._prepare_edit_sidebar_for_entry()
         self._view_controller.show_edit_view()
+        self._start_transition_animation(entering=True, splitter_start_sizes=splitter_sizes)
 
         self.editingStarted.emit(source)
 
-    def leave_edit_mode(self) -> None:
-        """Return to the standard detail view without persisting changes."""
+    def leave_edit_mode(self, animate: bool = True) -> None:
+        """Return to the standard detail view, optionally animating the transition."""
 
         self._cancel_pending_previews()
-        if not self._view_controller.is_edit_view_active():
+        if self._transition_direction == "exit":
             return
-        self._ui.edit_sidebar.set_session(None)
-        self._ui.edit_image_viewer.clear()
-        self._ui.edit_header_container.hide()
+        if not self._view_controller.is_edit_view_active() and self._transition_direction != "enter":
+            return
+
+        # Ensure the preview surface shows the latest adjusted frame before any widgets start
+        # disappearing so the user never sees a partially restored original.
+        self._handle_compare_released()
+
+        # Relax the navigation sidebar constraints and capture the edit sidebar's live geometry
+        # prior to hiding the edit stack so the exit animation starts from the widths the user
+        # last observed on-screen.
+        self._prepare_navigation_sidebar_for_exit()
+        # Capture the edit sidebar's live geometry prior to hiding the edit stack so the exit
+        # animation (or the immediate geometry jump in the no-animation path) starts from the
+        # on-screen width that the user observed during editing.
+        self._prepare_edit_sidebar_for_exit()
+
+        # Keep the edit page visible while the transition plays so the splitter can push the
+        # preview surface smoothly.  Cross-fade the headers instead of swapping the stacked
+        # widget immediately to avoid the visual "jump" reported by the user.
         self._ui.detail_chrome_container.show()
-        self._view_controller.show_detail_view()
-        self._session = None
-        self._base_image = None
-        self._current_source = None
-        if self._preview_session is not None:
-            self._preview_backend.dispose_session(self._preview_session)
-            self._preview_session = None
+        if animate:
+            self._detail_header_opacity.setOpacity(0.0)
+            self._edit_header_opacity.setOpacity(1.0)
+        else:
+            self._detail_header_opacity.setOpacity(1.0)
+            self._edit_header_opacity.setOpacity(0.0)
+        self._ui.edit_header_container.show()
+
+        self._start_transition_animation(entering=False, animate=animate)
 
     # ------------------------------------------------------------------
     def _handle_session_changed(self, values: dict) -> None:
@@ -364,15 +450,37 @@ class EditController(QObject):
             return
 
         if image.isNull():
+            self._current_preview_pixmap = None
             self._ui.edit_image_viewer.clear()
             return
 
         pixmap = QPixmap.fromImage(image)
         if pixmap.isNull():
+            self._current_preview_pixmap = None
             self._ui.edit_image_viewer.clear()
             return
 
-        self._ui.edit_image_viewer.set_pixmap(pixmap)
+        self._current_preview_pixmap = pixmap
+        if not self._compare_active:
+            self._ui.edit_image_viewer.set_pixmap(pixmap)
+
+    def _handle_compare_pressed(self) -> None:
+        """Display the original photo while the compare button is held."""
+
+        if self._base_image is None:
+            return
+        self._compare_active = True
+        self._ui.edit_image_viewer.set_pixmap(QPixmap.fromImage(self._base_image))
+
+    def _handle_compare_released(self) -> None:
+        """Restore the adjusted preview after a comparison glance."""
+
+        self._compare_active = False
+        if self._current_preview_pixmap is not None and not self._current_preview_pixmap.isNull():
+            self._ui.edit_image_viewer.set_pixmap(self._current_preview_pixmap)
+        elif self._base_image is not None:
+            # Fall back to the unadjusted preview if a recalculated frame is not available.
+            self._ui.edit_image_viewer.set_pixmap(QPixmap.fromImage(self._base_image))
 
     def _handle_reset_clicked(self) -> None:
         if self._session is None:
@@ -385,7 +493,7 @@ class EditController(QObject):
         # Ensure no delayed preview runs after committing the adjustments.
         self._cancel_pending_previews()
         if self._session is None or self._current_source is None:
-            self.leave_edit_mode()
+            self.leave_edit_mode(animate=True)
             return
         # Store the source path locally before ``leave_edit_mode`` clears the
         # controller state.  The detail player needs the same asset path to
@@ -410,7 +518,7 @@ class EditController(QObject):
         # restored so the gallery does not briefly become the active view while
         # its thumbnails refresh in the background.
         self._schedule_thumbnail_refresh(source)
-        self.leave_edit_mode()
+        self.leave_edit_mode(animate=True)
         # ``display_image`` schedules an asynchronous reload; logging the
         # boolean result would not improve the UX, so simply trigger it and
         # fall back to the playlist selection handlers if scheduling fails.
@@ -477,6 +585,370 @@ class EditController(QObject):
             self._ui.edit_adjust_action.setChecked(False)
             self._ui.edit_crop_action.setChecked(True)
             self._ui.edit_sidebar.set_mode("crop")
+
+    def _prepare_edit_sidebar_for_entry(self) -> None:
+        """Collapse the edit sidebar before playing the entrance animation."""
+
+        sidebar = self._ui.edit_sidebar
+        sidebar.show()
+        sidebar.setMinimumWidth(0)
+        sidebar.setMaximumWidth(0)
+        sidebar.updateGeometry()
+
+    def _prepare_navigation_sidebar_for_entry(self) -> None:
+        """Relax the album sidebar so it can collapse without jumping."""
+
+        sidebar = self._ui.sidebar
+        sidebar.relax_minimum_width_for_animation()
+        sidebar.updateGeometry()
+
+    def _prepare_edit_sidebar_for_exit(self) -> None:
+        """Relax sidebar constraints so it can collapse smoothly when leaving edit mode."""
+
+        sidebar = self._ui.edit_sidebar
+        sidebar.show()
+        starting_width = sidebar.width()
+        sidebar.setMinimumWidth(int(starting_width))
+        # Keep the minimum width anchored to the live geometry while the animation is prepared.
+        # Resetting the constraint to zero here would let the layout reclaim the space instantly,
+        # producing the "instant collapse" the user observed before the first animation frame ran.
+        # ``QPropertyAnimation`` inspects the target property's current value when the
+        # animation starts.  Because ``maximumWidth`` was previously relaxed to a very
+        # large sentinel during edit mode (allowing the user to resize the pane), using
+        # that limit as the starting point would yield a value such as ``16777215``.  The
+        # animation would then appear to "jump" closed immediately because Qt clamps the
+        # oversized range on the first frame.  Capturing the live geometry ensures the
+        # slide-out begins from the actual on-screen width that the user sees.
+        sidebar.setMaximumWidth(int(starting_width))
+        sidebar.updateGeometry()
+
+    def _prepare_navigation_sidebar_for_exit(self) -> None:
+        """Allow the album sidebar to expand from zero width during the exit animation."""
+
+        sidebar = self._ui.sidebar
+        sidebar.relax_minimum_width_for_animation()
+        sidebar.updateGeometry()
+
+    def _start_transition_animation(
+        self,
+        *,
+        entering: bool,
+        splitter_start_sizes: list[int] | None = None,
+        animate: bool = True,
+    ) -> None:
+        """Animate the splitter, edit sidebar, and header cross-fade."""
+
+        if self._transition_group is not None:
+            # Stop any in-flight transition so the new animation starts from the current
+            # geometry instead of the previous animation's goal state.
+            self._transition_group.stop()
+            self._transition_group.deleteLater()
+            self._transition_group = None
+            self._transition_direction = None
+
+        splitter = self._ui.splitter
+        if splitter_start_sizes is None:
+            splitter_start_sizes = self._sanitise_splitter_sizes(splitter.sizes())
+        total = sum(splitter_start_sizes)
+        if total <= 0:
+            total = max(1, splitter.width())
+
+        # Preserve a single code path for animated and instant transitions.  Qt treats a
+        # zero-duration animation as "apply the end state immediately" while still emitting
+        # the usual ``finished`` signal, which keeps the controller's cleanup logic identical.
+        duration = 250 if animate else 0
+
+        if entering:
+            splitter_end_sizes = self._sanitise_splitter_sizes([0, total], total=total)
+            sidebar_start = 0
+            sidebar_end = min(self._edit_sidebar_preferred_width, self._edit_sidebar_maximum_width)
+        else:
+            previous_sizes = self._splitter_sizes_before_edit or []
+            splitter_end_sizes = self._sanitise_splitter_sizes(previous_sizes, total=total)
+            if not splitter_end_sizes:
+                # Fall back to a 25/75 split that mirrors the typical navigation layout.
+                fallback_left = max(int(total * 0.25), 1)
+                splitter_end_sizes = self._sanitise_splitter_sizes([fallback_left, total - fallback_left], total=total)
+            sidebar_start = self._ui.edit_sidebar.width()
+            sidebar_end = 0
+
+        sidebar_start = int(sidebar_start)
+        sidebar_end = int(sidebar_end)
+
+        animation_group = QParallelAnimationGroup(self)
+
+        splitter_animation = QVariantAnimation(animation_group)
+        splitter_animation.setDuration(duration)
+        splitter_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        splitter_animation.setStartValue(0.0)
+        splitter_animation.setEndValue(1.0)
+
+        start_sizes = list(splitter_start_sizes)
+        end_sizes = list(splitter_end_sizes)
+        pane_count = splitter.count()
+
+        # ``_sanitise_splitter_sizes`` already clamps the arrays to the splitter child count, but
+        # pad the copies defensively so the interpolation code below can treat them uniformly even
+        # when future UI tweaks add more panes.
+        if len(start_sizes) < pane_count:
+            start_sizes.extend(0 for _ in range(pane_count - len(start_sizes)))
+        if len(end_sizes) < pane_count:
+            end_sizes.extend(0 for _ in range(pane_count - len(end_sizes)))
+
+        def _apply_splitter_progress(value: float) -> None:
+            """Interpolate the splitter pane widths for the given animation progress."""
+
+            progress = max(0.0, min(1.0, float(value)))
+            interpolated: list[int] = []
+            accumulated = 0
+            for index in range(pane_count):
+                start = start_sizes[index]
+                end = end_sizes[index]
+                raw = start + (end - start) * progress
+                if index == pane_count - 1:
+                    # Force the final pane to absorb any rounding error so the total width stays
+                    # perfectly aligned with the splitter's current geometry.  Without this guard
+                    # the animation would occasionally leave a one-pixel gap after the slider
+                    # reaches its target value.
+                    rounded = max(0, total - accumulated)
+                else:
+                    rounded = max(0, int(round(raw)))
+                    accumulated += rounded
+                interpolated.append(rounded)
+            splitter.setSizes(interpolated)
+
+        splitter_animation.valueChanged.connect(_apply_splitter_progress)
+
+        def _apply_final_sizes() -> None:
+            """Snap the splitter to the exact target sizes once the animation stops."""
+
+            splitter.setSizes(end_sizes[:pane_count])
+
+        splitter_animation.finished.connect(_apply_final_sizes)
+        animation_group.addAnimation(splitter_animation)
+
+        def _add_sidebar_dimension_animation(property_name: bytes) -> None:
+            """Animate *property_name* so the layout tracks the sidebar width every frame."""
+
+            animation = QPropertyAnimation(
+                self._ui.edit_sidebar,
+                property_name,
+                animation_group,
+            )
+            animation.setDuration(duration)
+            animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
+            animation.setStartValue(sidebar_start)
+            animation.setEndValue(sidebar_end)
+            animation_group.addAnimation(animation)
+
+        # Animate both the minimum and maximum width to identical values.  Keeping the bounds in
+        # lockstep ensures Qt's layout engine reallocates space smoothly instead of waiting for the
+        # animation to finish before it honours the sidebar's preferred size.
+        _add_sidebar_dimension_animation(b"minimumWidth")
+        _add_sidebar_dimension_animation(b"maximumWidth")
+
+        if not entering:
+            edit_header_fade = QPropertyAnimation(
+                self._edit_header_opacity,
+                b"opacity",
+                animation_group,
+            )
+            edit_header_fade.setDuration(duration)
+            edit_header_fade.setEasingCurve(QEasingCurve.Type.InOutQuad)
+            edit_header_fade.setStartValue(self._edit_header_opacity.opacity())
+            edit_header_fade.setEndValue(0.0)
+            animation_group.addAnimation(edit_header_fade)
+
+            detail_header_fade = QPropertyAnimation(
+                self._detail_header_opacity,
+                b"opacity",
+                animation_group,
+            )
+            detail_header_fade.setDuration(duration)
+            detail_header_fade.setEasingCurve(QEasingCurve.Type.InOutQuad)
+            detail_header_fade.setStartValue(self._detail_header_opacity.opacity())
+            detail_header_fade.setEndValue(1.0)
+            animation_group.addAnimation(detail_header_fade)
+
+        animation_group.finished.connect(self._on_transition_finished)
+
+        self._transition_direction = "enter" if entering else "exit"
+        self._transition_group = animation_group
+        if duration == 0:
+            # Immediate transitions should update the UI synchronously so callers can assume the
+            # state reflects the requested mode change as soon as this method returns.
+            splitter.setSizes(splitter_end_sizes)
+            self._ui.edit_sidebar.setMinimumWidth(sidebar_end)
+            self._ui.edit_sidebar.setMaximumWidth(sidebar_end)
+            if entering:
+                self._ui.edit_sidebar.updateGeometry()
+            else:
+                self._edit_header_opacity.setOpacity(0.0)
+                self._detail_header_opacity.setOpacity(1.0)
+            self._on_transition_finished()
+            return
+
+        animation_group.start()
+
+    def _on_transition_finished(self) -> None:
+        """Reset widget constraints and clean up after an animated transition."""
+
+        direction = self._transition_direction
+        if self._transition_group is not None:
+            self._transition_group.deleteLater()
+            self._transition_group = None
+        self._transition_direction = None
+
+        if direction == "enter":
+            self._finalise_enter_transition()
+        elif direction == "exit":
+            self._finalise_exit_transition()
+
+    def _finalise_enter_transition(self) -> None:
+        """Restore the edit sidebar's normal width constraints after sliding in."""
+
+        sidebar = self._ui.edit_sidebar
+        sidebar.setMinimumWidth(self._edit_sidebar_minimum_width)
+        sidebar.setMaximumWidth(self._edit_sidebar_maximum_width)
+        sidebar.updateGeometry()
+
+        # Intentionally keep the navigation sidebar's relaxed constraints in place while edit mode
+        # is active.  The exit transition re-applies the defaults once the user leaves the edit
+        # tools, and forcing them here would immediately re-expand the collapsed sidebar.
+
+        # The splitter already reached the collapsed configuration via the property animation, so
+        # no additional geometry adjustments are required here.
+
+    def _finalise_exit_transition(self) -> None:
+        """Tear down the edit UI once the slide-out animation finishes."""
+
+        splitter = self._ui.splitter
+        target_sizes: list[int] | None = None
+        if self._splitter_sizes_before_edit:
+            # Normalise the cached geometry against the splitter's current width so the restored
+            # sizes respect any window resize that happened while the edit tools were visible.
+            total_width = max(1, splitter.width())
+            target_sizes = self._sanitise_splitter_sizes(
+                self._splitter_sizes_before_edit,
+                total=total_width,
+            )
+
+        navigation_sidebar = self._ui.sidebar
+        navigation_sidebar.restore_minimum_width_after_animation()
+        navigation_sidebar.updateGeometry()
+
+        sidebar = self._ui.edit_sidebar
+        sidebar.hide()
+        sidebar.setMinimumWidth(0)
+        sidebar.setMaximumWidth(0)
+        sidebar.updateGeometry()
+
+        # With the animation complete it is safe to switch the stacked widget back to the detail
+        # view.  Doing so earlier would compress the edit page mid-animation, producing the
+        # "jump" the user reported.  Restoring the shared toolbar widgets at the same time keeps
+        # the controls consistent with the now-visible header.
+        self._restore_header_widgets_after_edit()
+        self._view_controller.show_detail_view()
+        self._ui.detail_chrome_container.show()
+        self._detail_header_opacity.setOpacity(1.0)
+
+        self._ui.edit_header_container.hide()
+        self._edit_header_opacity.setOpacity(1.0)
+
+        if target_sizes:
+            current_sizes = [int(value) for value in splitter.sizes()]
+            # Reapply the saved layout only when the animation failed to reach the expected end
+            # state (for example after a zero-duration transition or when Qt clamps the values
+            # because a pane temporarily disappears).  Skipping the redundant ``setSizes`` call
+            # prevents the navigation sidebar from snapping at the end of an otherwise smooth
+            # animation while still guaranteeing the geometry recovers after editing.
+            if len(current_sizes) != len(target_sizes) or any(
+                abs(current - expected) > 1 for current, expected in zip(current_sizes, target_sizes)
+            ):
+                splitter.setSizes(target_sizes)
+
+        self._ui.edit_sidebar.set_session(None)
+        self._ui.edit_image_viewer.clear()
+
+        self._session = None
+        self._base_image = None
+        self._current_source = None
+        self._current_preview_pixmap = None
+        self._compare_active = False
+        if self._preview_session is not None:
+            self._preview_backend.dispose_session(self._preview_session)
+            self._preview_session = None
+        self._splitter_sizes_before_edit = None
+
+    def _sanitise_splitter_sizes(
+        self,
+        sizes,
+        *,
+        total: int | None = None,
+    ) -> list[int]:
+        """Clamp *sizes* to the splitter child count and normalise their sum."""
+
+        splitter = self._ui.splitter
+        count = splitter.count()
+        if count == 0:
+            return []
+        try:
+            raw = [int(value) for value in sizes] if sizes is not None else []
+        except TypeError:
+            raw = []
+        if len(raw) < count:
+            raw.extend(0 for _ in range(count - len(raw)))
+        elif len(raw) > count:
+            raw = raw[:count]
+        sanitised = [max(0, value) for value in raw]
+        current_total = sum(sanitised)
+        if total is None or total <= 0:
+            total = current_total if current_total > 0 else max(1, splitter.width())
+        if current_total <= 0:
+            # Distribute the available space evenly to keep the splitter geometry stable.
+            base = total // count
+            sanitised = [base] * count
+            if sanitised:
+                sanitised[-1] += total - base * count
+            return sanitised
+        if current_total == total:
+            return sanitised
+        scaled: list[int] = []
+        accumulated = 0
+        for index, value in enumerate(sanitised):
+            if index == count - 1:
+                scaled_value = total - accumulated
+            else:
+                scaled_value = int(round(value * total / current_total))
+                accumulated += scaled_value
+            scaled.append(max(0, scaled_value))
+        difference = total - sum(scaled)
+        if scaled and difference != 0:
+            scaled[-1] += difference
+        return scaled
+
+    def _move_header_widgets_for_edit(self) -> None:
+        """Reparent shared toolbar widgets into the edit header."""
+
+        ui = self._ui
+        if ui.edit_zoom_host_layout.indexOf(ui.zoom_widget) == -1:
+            ui.edit_zoom_host_layout.addWidget(ui.zoom_widget)
+        ui.zoom_widget.show()
+
+        right_layout = ui.edit_right_controls_layout
+        if right_layout.indexOf(ui.info_button) == -1:
+            right_layout.insertWidget(0, ui.info_button)
+        if right_layout.indexOf(ui.favorite_button) == -1:
+            right_layout.insertWidget(1, ui.favorite_button)
+
+    def _restore_header_widgets_after_edit(self) -> None:
+        """Return shared toolbar widgets to the detail header layout."""
+
+        ui = self._ui
+        ui.detail_actions_layout.insertWidget(ui.detail_info_button_index, ui.info_button)
+        ui.detail_actions_layout.insertWidget(ui.detail_favorite_button_index, ui.favorite_button)
+        ui.detail_header_layout.insertWidget(ui.detail_zoom_widget_index, ui.zoom_widget)
+        ui.zoom_widget.hide()
 
     def _handle_playlist_change(self) -> None:
         if self._view_controller.is_edit_view_active():

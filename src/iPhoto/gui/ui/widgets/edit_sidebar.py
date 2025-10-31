@@ -5,18 +5,20 @@ from __future__ import annotations
 from typing import Optional
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import (
+    QFrame,
     QLabel,
     QScrollArea,
     QStackedWidget,
-    QToolBox,
     QVBoxLayout,
     QWidget,
 )
 
-from ..icon import load_icon
 from ..models.edit_session import EditSession
 from .edit_light_section import EditLightSection
+from .collapsible_section import CollapsibleSection
+from ..palette import SIDEBAR_BACKGROUND_COLOR
 
 
 class EditSidebar(QWidget):
@@ -25,6 +27,14 @@ class EditSidebar(QWidget):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._session: Optional[EditSession] = None
+
+        # Match the classic sidebar chrome so the edit tools retain the soft blue
+        # background the rest of the application uses for navigation panes.
+        palette = self.palette()
+        palette.setColor(QPalette.ColorRole.Window, SIDEBAR_BACKGROUND_COLOR)
+        palette.setColor(QPalette.ColorRole.Base, SIDEBAR_BACKGROUND_COLOR)
+        self.setPalette(palette)
+        self.setAutoFillBackground(True)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -43,34 +53,52 @@ class EditSidebar(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
 
+        # Ensure the scroll surface shares the same tint so the viewport and the
+        # surrounding frame render as a single continuous panel.
+        scroll_palette = scroll.palette()
+        scroll_palette.setColor(QPalette.ColorRole.Base, SIDEBAR_BACKGROUND_COLOR)
+        scroll_palette.setColor(QPalette.ColorRole.Window, SIDEBAR_BACKGROUND_COLOR)
+        scroll.setPalette(scroll_palette)
+
         scroll_content = QWidget(scroll)
+        # Allow the scroll area content to compress to zero width during the edit transition.  The
+        # animated splitter reduces the sidebar to a sliver before hiding it entirely, so the
+        # interior widget hierarchy must advertise that no minimum space is required; otherwise Qt
+        # clamps the collapse and the sidebar appears to "pop" out of existence.
+        scroll_content.setMinimumWidth(0)
+        scroll_content_palette = scroll_content.palette()
+        scroll_content_palette.setColor(QPalette.ColorRole.Window, SIDEBAR_BACKGROUND_COLOR)
+        scroll_content_palette.setColor(QPalette.ColorRole.Base, SIDEBAR_BACKGROUND_COLOR)
+        scroll_content.setPalette(scroll_content_palette)
+        scroll_content.setAutoFillBackground(True)
         scroll_layout = QVBoxLayout(scroll_content)
         scroll_layout.setContentsMargins(12, 12, 12, 12)
         scroll_layout.setSpacing(12)
 
-        self._toolbox = QToolBox(scroll_content)
-        self._light_section = EditLightSection(self._toolbox)
-        self._toolbox.addItem(
-            self._light_section,
-            load_icon("sun.max.svg"),
-            "Light",
-        )
-        color_placeholder = QLabel("Color adjustments are coming soon.", self._toolbox)
-        color_placeholder.setWordWrap(True)
-        self._toolbox.addItem(
-            color_placeholder,
-            load_icon("color.circle.svg"),
-            "Color",
-        )
-        bw_placeholder = QLabel("Black & White adjustments are coming soon.", self._toolbox)
-        bw_placeholder.setWordWrap(True)
-        self._toolbox.addItem(
-            bw_placeholder,
-            load_icon("circle.lefthalf.fill.svg"),
-            "Black & White",
-        )
+        self._light_section = EditLightSection(scroll_content)
+        light_container = CollapsibleSection("Light", "sun.max.svg", self._light_section, scroll_content)
+        scroll_layout.addWidget(light_container)
 
-        scroll_layout.addWidget(self._toolbox)
+        scroll_layout.addWidget(self._build_separator(scroll_content))
+
+        color_placeholder = QLabel("Color adjustments are coming soon.", scroll_content)
+        color_placeholder.setWordWrap(True)
+        color_container = CollapsibleSection("Color", "color.circle.svg", color_placeholder, scroll_content)
+        color_container.set_expanded(False)
+        scroll_layout.addWidget(color_container)
+
+        scroll_layout.addWidget(self._build_separator(scroll_content))
+
+        bw_placeholder = QLabel("Black & White adjustments are coming soon.", scroll_content)
+        bw_placeholder.setWordWrap(True)
+        bw_container = CollapsibleSection(
+            "Black & White",
+            "circle.lefthalf.fill.svg",
+            bw_placeholder,
+            scroll_content,
+        )
+        bw_container.set_expanded(False)
+        scroll_layout.addWidget(bw_container)
         scroll_layout.addStretch(1)
         scroll_content.setLayout(scroll_layout)
         scroll.setWidget(scroll_content)
@@ -87,6 +115,11 @@ class EditSidebar(QWidget):
         crop_placeholder.setWordWrap(True)
         crop_placeholder.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
         crop_container = QWidget(self)
+        crop_palette = crop_container.palette()
+        crop_palette.setColor(QPalette.ColorRole.Window, SIDEBAR_BACKGROUND_COLOR)
+        crop_palette.setColor(QPalette.ColorRole.Base, SIDEBAR_BACKGROUND_COLOR)
+        crop_container.setPalette(crop_palette)
+        crop_container.setAutoFillBackground(True)
         crop_layout = QVBoxLayout(crop_container)
         crop_layout.setContentsMargins(24, 24, 24, 24)
         crop_layout.addWidget(crop_placeholder)
@@ -117,3 +150,13 @@ class EditSidebar(QWidget):
         """Force the currently visible sections to sync with the session."""
 
         self._light_section.refresh_from_session()
+
+    def _build_separator(self, parent: QWidget) -> QFrame:
+        """Return a subtle divider separating adjacent section headers."""
+
+        separator = QFrame(parent)
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setFrameShadow(QFrame.Shadow.Plain)
+        separator.setStyleSheet("QFrame { background-color: palette(mid); }")
+        separator.setFixedHeight(1)
+        return separator
