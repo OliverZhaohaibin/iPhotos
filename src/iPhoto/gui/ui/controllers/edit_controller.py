@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Mapping, Optional
+from typing import Mapping, Optional, TYPE_CHECKING
 
 from PySide6.QtCore import QObject, QThreadPool, QRunnable, Signal, QTimer, Qt
 from PySide6.QtGui import QImage, QPixmap
@@ -18,6 +18,9 @@ from ..tasks.thumbnail_loader import ThumbnailLoader
 from ..ui_main_window import Ui_MainWindow
 from .player_view_controller import PlayerViewController
 from .view_controller import ViewController
+
+if TYPE_CHECKING:  # pragma: no cover - import only for typing
+    from ...facade import AppFacade
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -86,6 +89,7 @@ class EditController(QObject):
         player_view: PlayerViewController,
         playlist,
         asset_model: AssetModel,
+        facade: "AppFacade",
         parent: Optional[QObject] = None,
     ) -> None:
         super().__init__(parent)
@@ -94,6 +98,7 @@ class EditController(QObject):
         self._player_view = player_view
         self._playlist = playlist
         self._asset_model = asset_model
+        self._facade = facade
         self._thumbnail_loader: ThumbnailLoader = asset_model.thumbnail_loader()
 
         self._preview_backend: PreviewBackend = select_preview_backend()
@@ -338,7 +343,24 @@ class EditController(QObject):
             self.leave_edit_mode()
             return
         adjustments = self._session.values()
-        sidecar.save_adjustments(self._current_source, adjustments)
+        facade = self._facade
+        watcher_paused = False
+        try:
+            # Temporarily suspend the filesystem watcher so saving the sidecar
+            # does not trigger an expensive album-wide rescan.
+            facade.pause_library_watcher()
+            watcher_paused = True
+        except Exception:
+            # Pausing the watcher is a best-effort optimisation.  Failure to do
+            # so should not block the save operation, therefore we continue even
+            # if the underlying implementation raised unexpectedly.
+            watcher_paused = False
+
+        try:
+            sidecar.save_adjustments(self._current_source, adjustments)
+        finally:
+            if watcher_paused:
+                facade.resume_library_watcher()
         self._refresh_thumbnail_cache(self._current_source)
         self.leave_edit_mode()
         self.editingFinished.emit(self._current_source)

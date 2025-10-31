@@ -153,6 +153,20 @@ class AppFacade(QObject):
 
         return self._library_update_service
 
+    def pause_library_watcher(self) -> None:
+        """Pause filesystem notifications while the GUI performs local writes."""
+
+        manager = self._get_library_manager()
+        if manager is not None:
+            manager.pause_watcher()
+
+    def resume_library_watcher(self) -> None:
+        """Resume filesystem notifications previously paused by the GUI."""
+
+        manager = self._get_library_manager()
+        if manager is not None:
+            manager.resume_watcher()
+
     def open_album(self, root: Path) -> Optional[Album]:
         """Open *root* and trigger background work as needed."""
 

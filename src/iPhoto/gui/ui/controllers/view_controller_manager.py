@@ -76,6 +76,7 @@ class ViewControllerManager(QObject):
             self._player_view,
             data_manager.playlist(),
             data_manager.asset_model(),
+            data_manager.facade(),
             window,
         )
         self._map_controller = LocationMapController(

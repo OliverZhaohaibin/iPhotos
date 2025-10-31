@@ -21,6 +21,40 @@ from ..widgets.video_area import VideoArea
 _LOGGER = logging.getLogger(__name__)
 
 
+class _ImageLoadSignals(QObject):
+    """Signals emitted by :class:`_ImageLoadWorker` while decoding images."""
+
+    finished = Signal(QImage, str, int)
+    """Emitted with the decoded image, source path, and job identifier."""
+
+    error = Signal(str, int, str)
+    """Emitted when decoding fails, providing the path, job id, and message."""
+
+
+class _ImageLoadWorker(QRunnable):
+    """Decode images in a background thread to avoid blocking the UI."""
+
+    def __init__(self, source_path: Path, signals: _ImageLoadSignals, job_id: int) -> None:
+        super().__init__()
+        self._source_path = Path(source_path)
+        self._signals = signals
+        self._job_id = job_id
+
+    def run(self) -> None:  # type: ignore[override]
+        """Load the image from disk and emit the result."""
+
+        try:
+            image = image_loader.load_qimage(self._source_path)
+        except Exception:  # pragma: no cover - defensive logging path
+            _LOGGER.exception("Failed to load image for %s", self._source_path)
+            image = None
+        if image is None or image.isNull():
+            message = "Decoded image is empty"
+            self._signals.error.emit(str(self._source_path), self._job_id, message)
+            return
+        self._signals.finished.emit(image, str(self._source_path), self._job_id)
+
+
 class _AdjustSignals(QObject):
     """Signals emitted by :class:`_AdjustWorker` when processing completes."""
 
@@ -94,13 +128,16 @@ class PlayerViewController(QObject):
         # compared against worker emissions to avoid flashing stale results when
         # the user navigates quickly between images.
         self._current_source_path: Optional[Path] = None
-        # Incremented whenever ``display_image`` is called; workers include this
-        # identifier in their ``finished`` signal so the controller can ignore
-        # jobs that were superseded by newer navigation events.
-        self._adjust_job_id = 0
-        # Strong reference to the active worker prevents it from being garbage
-        # collected while still queued in the thread pool.
+        # Monotonic generation counter shared by image decoding and adjustment
+        # workers so outdated results are ignored automatically.
+        self._load_job_id = 0
+        # Strong references to the active workers prevent them from being garbage
+        # collected while queued in the thread pool.
         self._active_worker: Optional[_AdjustWorker] = None
+        self._active_image_worker: Optional[_ImageLoadWorker] = None
+        # Cached state remembered between worker emissions.
+        self._pending_adjustments: dict[str, float] = {}
+        self._current_base_image: Optional[QImage] = None
 
     # ------------------------------------------------------------------
     # High-level surface selection helpers
@@ -145,35 +182,28 @@ class PlayerViewController(QObject):
         """Load ``source`` into the image viewer using asynchronous adjustments."""
 
         self._current_source_path = source
-        # Increment the job identifier immediately so any pending worker results
-        # are ignored if they emit after this call returns.
-        self._adjust_job_id += 1
-        job_id = self._adjust_job_id
+        # Increment the generation immediately so pending worker emissions from
+        # earlier loads are discarded as soon as they complete.
+        self._load_job_id += 1
+        job_id = self._load_job_id
 
-        image = image_loader.load_qimage(source)
-        if image is None or image.isNull():
+        if not source.exists():
+            self.show_placeholder()
             return False
 
-        adjustments = sidecar.load_adjustments(source)
+        self._pending_adjustments = dict(sidecar.load_adjustments(source))
+        self._current_base_image = None
+        self._active_worker = None
 
-        pixmap = QPixmap.fromImage(image)
-        if pixmap.isNull():
-            return False
+        signals = _ImageLoadSignals()
+        signals.finished.connect(self._handle_image_loaded)
+        signals.error.connect(self._handle_image_load_error)
+        worker = _ImageLoadWorker(source, signals, job_id)
+        self._active_image_worker = worker
 
-        # Show the base image instantly so users receive immediate feedback,
-        # then let the worker update the view once the adjustments complete.
-        self._image_viewer.set_pixmap(pixmap)
-        self.show_image_surface()
-
-        if not adjustments:
-            # No adjustments recorded; nothing else to do.
-            self._active_worker = None
-            return True
-
-        signals = _AdjustSignals()
-        signals.finished.connect(self._handle_adjustment_finished)
-        worker = _AdjustWorker(image, adjustments, signals, source, job_id)
-        self._active_worker = worker
+        # Reveal the placeholder immediately so the UI acknowledges the
+        # navigation event while the worker decodes the image in the background.
+        self.show_placeholder()
         self._thread_pool.start(worker)
         return True
 
@@ -181,6 +211,63 @@ class PlayerViewController(QObject):
         """Remove any pixmap currently shown in the image viewer."""
 
         self._image_viewer.clear()
+
+    def _handle_image_loaded(self, image: QImage, source: str, job_id: int) -> None:
+        """Update the viewer once the background decoder finishes."""
+
+        if job_id != self._load_job_id:
+            return
+        if self._current_source_path is None or str(self._current_source_path) != source:
+            return
+
+        self._active_image_worker = None
+        self._current_base_image = QImage(image)
+
+        pixmap = QPixmap.fromImage(image)
+        if pixmap.isNull():
+            _LOGGER.error("Decoded pixmap for %s was null", source)
+            self.show_placeholder()
+            return
+
+        if self._player_stack.currentWidget() is not self._image_viewer:
+            self.show_image_surface()
+        self._image_viewer.set_pixmap(pixmap)
+
+        pending = self._pending_adjustments
+        if pending:
+            self._start_adjustment_worker(image, pending, job_id, Path(source))
+            self._pending_adjustments = {}
+        else:
+            self._active_worker = None
+
+    def _handle_image_load_error(self, source: str, job_id: int, message: str) -> None:
+        """Log loader failures and keep the UI responsive."""
+
+        if job_id != self._load_job_id:
+            return
+        if self._current_source_path is None or str(self._current_source_path) != source:
+            return
+
+        self._active_image_worker = None
+        self._current_base_image = None
+        self._pending_adjustments = {}
+        _LOGGER.error("Failed to load image %s: %s", source, message)
+        self.show_placeholder()
+
+    def _start_adjustment_worker(
+        self,
+        base_image: QImage,
+        adjustments: Mapping[str, float],
+        job_id: int,
+        source_path: Path,
+    ) -> None:
+        """Launch the adjustment worker using *base_image* as its input."""
+
+        signals = _AdjustSignals()
+        signals.finished.connect(self._handle_adjustment_finished)
+        worker = _AdjustWorker(base_image, adjustments, signals, source_path, job_id)
+        self._active_worker = worker
+        self._thread_pool.start(worker)
 
     # ------------------------------------------------------------------
     # Live badge helpers
@@ -242,7 +329,7 @@ class PlayerViewController(QObject):
     def _handle_adjustment_finished(self, image: QImage, source: str, job_id: int) -> None:
         """Update the viewer when a background adjustment job completes."""
 
-        if job_id != self._adjust_job_id:
+        if job_id != self._load_job_id:
             # A newer call to ``display_image`` superseded this worker.  Ignore
             # the stale result so the viewer keeps showing the latest asset.
             return

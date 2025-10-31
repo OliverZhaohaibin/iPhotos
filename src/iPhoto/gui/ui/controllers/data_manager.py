@@ -55,6 +55,11 @@ class DataManager(QObject):
 
         return self._playlist
 
+    def facade(self) -> "AppFacade":
+        """Return the application facade so controllers can access services."""
+
+        return self._facade
+
     def grid_delegate(self) -> AssetGridDelegate | None:
         """Return the grid delegate once it has been created."""
 
