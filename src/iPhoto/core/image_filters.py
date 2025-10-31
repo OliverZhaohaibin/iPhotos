@@ -53,6 +53,14 @@ def apply_adjustments(image: QImage, adjustments: Mapping[str, float]) -> QImage
     # guaranteeing we never mutate the caller's instance in-place.
     result = image.convertToFormat(QImage.Format.Format_ARGB32)
 
+    # ``convertToFormat`` can return a shallow copy that still references the
+    # original pixel buffer when no conversion was required.  Calling
+    # ``detach`` eagerly forces Qt to allocate a dedicated, writable buffer so
+    # the fast adjustment path below never attempts to mutate a read-only view.
+    # Without this explicit detachment, edits made to previously cached images
+    # could crash when the shared buffer exposes a read-only ``memoryview``.
+    result.detach()
+
     brilliance = float(adjustments.get("Brilliance", 0.0))
     exposure = float(adjustments.get("Exposure", 0.0))
     highlights = float(adjustments.get("Highlights", 0.0))
