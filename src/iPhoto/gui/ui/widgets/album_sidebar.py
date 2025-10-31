@@ -165,6 +165,17 @@ class AlbumSidebar(QWidget):
         self.setPalette(palette)
         self.setAutoFillBackground(True)
 
+        # Give the widget a stable object name so the stylesheet targets only the
+        # sidebar shell and does not bleed into child controls such as the tree view.
+        self.setObjectName("albumSidebar")
+        # Apply the light blue background with a stylesheet to override the
+        # transparent background inherited from the frameless window chrome.
+        self.setStyleSheet(
+            "QWidget#albumSidebar {\n"
+            f"    background-color: {SIDEBAR_BACKGROUND_COLOR.name()};\n"
+            "}"
+        )
+
         self._title = QLabel("Basic Library")
         self._title.setObjectName("albumSidebarTitle")
         self._title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
