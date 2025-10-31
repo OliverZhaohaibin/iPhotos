@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Mapping, Optional
+from typing import Mapping, Optional, TYPE_CHECKING
 
 from PySide6.QtCore import QObject, QThreadPool, QRunnable, Signal, QTimer, Qt
 from PySide6.QtGui import QImage, QPixmap
@@ -18,6 +18,9 @@ from ..tasks.thumbnail_loader import ThumbnailLoader
 from ..ui_main_window import Ui_MainWindow
 from .player_view_controller import PlayerViewController
 from .view_controller import ViewController
+
+if TYPE_CHECKING:  # pragma: no cover - import for typing only
+    from .navigation_controller import NavigationController
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -87,6 +90,8 @@ class EditController(QObject):
         playlist,
         asset_model: AssetModel,
         parent: Optional[QObject] = None,
+        *,
+        navigation: "NavigationController" | None = None,
     ) -> None:
         super().__init__(parent)
         self._ui = ui
@@ -94,6 +99,11 @@ class EditController(QObject):
         self._player_view = player_view
         self._playlist = playlist
         self._asset_model = asset_model
+        # ``_navigation`` is injected lazily so the controller can coordinate
+        # with :class:`NavigationController` without creating an import cycle
+        # during startup.  The reference stays optional because unit tests may
+        # exercise the edit workflow without bootstrapping the full GUI stack.
+        self._navigation: "NavigationController" | None = navigation
         self._thumbnail_loader: ThumbnailLoader = asset_model.thumbnail_loader()
         # ``_pending_thumbnail_refreshes`` tracks relative asset identifiers with
         # a refresh queued via :meth:`_schedule_thumbnail_refresh`.  Deferring
@@ -352,6 +362,15 @@ class EditController(QObject):
         # keeps the pixmap alive after the edit widgets tear down their state.
         preview_pixmap = self._ui.edit_image_viewer.pixmap()
         adjustments = self._session.values()
+        if self._navigation is not None:
+            # Saving adjustments writes sidecar files, which triggers the
+            # filesystem watcher to rebuild the sidebar tree.  That rebuild
+            # reselects the active collection ("All Photos", etc.) and would
+            # otherwise emit navigation signals that yank the UI back to the
+            # gallery.  Arm the suppression guard *before* touching the disk so
+            # those callbacks are ignored until the detail surface finishes
+            # updating.
+            self._navigation.suppress_tree_refresh_for_edit()
         sidecar.save_adjustments(source, adjustments)
         # Defer cache invalidation until after the detail surface has been
         # restored so the gallery does not briefly become the active view while
@@ -428,3 +447,14 @@ class EditController(QObject):
     def _handle_playlist_change(self) -> None:
         if self._view_controller.is_edit_view_active():
             self.leave_edit_mode()
+    def set_navigation_controller(self, navigation: "NavigationController") -> None:
+        """Attach the navigation controller after construction.
+
+        The main window builds the view controllers before wiring the
+        navigation stack.  Providing a setter keeps the constructor flexible
+        while still allowing the edit workflow to coordinate suppression of
+        sidebar-driven navigation callbacks when adjustments are saved.
+        """
+
+        self._navigation = navigation
+

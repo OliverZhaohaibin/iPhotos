@@ -20,6 +20,7 @@ if TYPE_CHECKING:  # pragma: no cover - import used for typing only
     from ..ui_main_window import Ui_MainWindow
     from ...facade import AppFacade
     from .data_manager import DataManager
+    from .navigation_controller import NavigationController
 
 
 class ViewControllerManager(QObject):
@@ -30,6 +31,7 @@ class ViewControllerManager(QObject):
         window: "MainWindow",
         context: AppContext,
         data_manager: "DataManager",
+        navigation: "NavigationController" | None = None,
     ) -> None:
         super().__init__(window)
         ui: Ui_MainWindow = window.ui
@@ -77,6 +79,7 @@ class ViewControllerManager(QObject):
             data_manager.playlist(),
             data_manager.asset_model(),
             window,
+            navigation=navigation,
         )
         self._map_controller = LocationMapController(
             context.library,

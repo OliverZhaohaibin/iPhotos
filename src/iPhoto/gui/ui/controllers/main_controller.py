@@ -53,6 +53,11 @@ class MainController(QObject):
             self._dialog,
             self._view_manager.view_controller(),
         )
+        # The navigation controller is created after the edit controller, so
+        # provide the reference now that the instance exists.  This keeps the
+        # edit workflow free to coordinate sidebar suppression before it writes
+        # sidecar files on disk.
+        self._view_manager.edit_controller().set_navigation_controller(self._navigation)
         self._interaction = InteractionManager(
             window=window,
             context=context,

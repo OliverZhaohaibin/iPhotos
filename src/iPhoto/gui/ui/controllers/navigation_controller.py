@@ -330,6 +330,17 @@ class NavigationController:
             self._suppress_tree_refresh = False
             self._tree_refresh_suppression_reason = None
 
+    def suppress_tree_refresh_for_edit(self) -> None:
+        """Ignore sidebar reselections triggered by edit saves."""
+
+        # Saving adjustments writes sidecar files, which in turn causes the
+        # library watcher to rebuild the sidebar tree.  Those rebuilds reselect
+        # the active virtual collection and emit navigation signals.  Mark the
+        # tree as suppressed ahead of the disk write so the automatic callback
+        # is swallowed exactly once while the detail pane remains visible.
+        self._suppress_tree_refresh = True
+        self._tree_refresh_suppression_reason = "edit"
+
     def should_suppress_tree_refresh(self) -> bool:
         """Return ``True`` when sidebar callbacks should be ignored temporarily."""
 
