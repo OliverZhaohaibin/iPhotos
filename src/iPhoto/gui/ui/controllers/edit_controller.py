@@ -225,6 +225,40 @@ class EditController(QObject):
         # be ignored once they finish.
         self._preview_job_id += 1
 
+        # ``_PreviewWorker`` instances keep a strong reference to the signals
+        # object that in turn owns the connections back to this controller.  The
+        # global thread pool does not offer a way to cancel queued runnables, so
+        # we proactively sever those connections and drop our strong references.
+        # Doing so ensures the worker can finish at its leisure without keeping
+        # the edit controller, the preview session, or large intermediate images
+        # alive indefinitely.
+        for worker in list(self._active_preview_workers):
+            signals = getattr(worker, "_signals", None)
+            if signals is not None:
+                try:
+                    # Disconnect the completion signal from the slot on this
+                    # controller.  Qt raises ``TypeError`` when the link was
+                    # never created and ``RuntimeError`` when it has already
+                    # been severed, so both cases are silently ignored.
+                    signals.finished.disconnect(self._on_preview_ready)
+                except (TypeError, RuntimeError):
+                    pass
+                # Mark the signal helper for deletion on the GUI thread once
+                # control returns to the event loop.  This avoids destroying
+                # QObject instances from worker threads.
+                signals.deleteLater()
+                # Drop the back-reference from the worker to the signal helper
+                # so Python's garbage collector can reclaim both objects once
+                # the worker finishes executing.
+                setattr(worker, "_signals", None)
+            # Allow the QRunnable to clean itself up after ``run`` completes so
+            # the thread pool does not retain it longer than necessary.
+            worker.setAutoDelete(True)
+        # Clearing the set removes our strong references which breaks the final
+        # reference cycle.  Any worker that is still running will complete and
+        # be destroyed automatically without holding on to the controller.
+        self._active_preview_workers.clear()
+
     def _start_preview_job(self) -> None:
         """Queue a background task that recalculates the preview image."""
 

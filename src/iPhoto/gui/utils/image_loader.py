@@ -31,6 +31,15 @@ def load_qimage(source: Path, target: QSize | None = None) -> Optional[QImage]:
     # optimisations, so we prefer to hand the path to Qt and only fall back to
     # Pillow if decoding fails entirely.
     reader = QImageReader(str(source))
+    # Qt maintains a process-wide image cache that is enabled by default.
+    # Large libraries can end up decoding hundreds of images during a single
+    # browsing session which would otherwise accumulate in that cache.  The
+    # additional allocations not only increase peak memory usage but can also
+    # hold operating system file handles open.  Disabling the cache keeps the
+    # application's memory footprint predictable and avoids lingering locks on
+    # the original media files while still allowing higher level components to
+    # implement their own caching policies.
+    reader.setCacheEnabled(False)
     reader.setAutoTransform(True)
     if target is not None and target.isValid() and not target.isEmpty():
         original_size = reader.size()
