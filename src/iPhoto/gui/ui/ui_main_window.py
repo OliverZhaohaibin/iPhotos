@@ -38,6 +38,7 @@ from .widgets import (
     PreviewWindow,
     VideoArea,
 )
+from .widgets.sliding_segmented_control import SlidingSegmentedControl
 
 HEADER_ICON_GLYPH_SIZE = QSize(24, 24)
 """Standard glyph size (in device-independent pixels) for header icons."""
@@ -562,12 +563,21 @@ class Ui_MainWindow(object):
             self._configure_header_button(button, icon_name, tooltip)
             actions_layout.addWidget(button)
 
+        # Store the layout references so the edit controller can temporarily move
+        # the information and favourite buttons into the edit toolbar without
+        # losing their original position within the detail header.
+        self.detail_actions_layout = actions_layout
+        self.detail_info_button_index = actions_layout.indexOf(self.info_button)
+        self.detail_favorite_button_index = actions_layout.indexOf(self.favorite_button)
+
         # Place the zoom widget directly beside the back button so the control cluster
         # mirrors the macOS Photos layout (navigation on the far left, actions on the right).
         header_layout.addWidget(self.zoom_widget)
         self.zoom_widget.hide()
         header_layout.addWidget(info_container, 1)
         header_layout.addWidget(actions_container)
+        self.detail_header_layout = header_layout
+        self.detail_zoom_widget_index = header_layout.indexOf(self.zoom_widget)
         # Group the header widgets under a single container so the immersive mode only needs to
         # toggle one widget to hide every metadata chrome element above the viewer.
         detail_chrome_container = QWidget()
@@ -642,6 +652,7 @@ class Ui_MainWindow(object):
         self.edit_crop_action.setCheckable(True)
         self.edit_mode_group.addAction(self.edit_crop_action)
 
+        self.edit_compare_button = QToolButton(MainWindow)
         self.edit_reset_button = QPushButton(MainWindow)
         self.edit_done_button = QPushButton(MainWindow)
         self.edit_image_viewer = ImageViewer()
@@ -659,29 +670,54 @@ class Ui_MainWindow(object):
         edit_header_layout.setContentsMargins(12, 0, 12, 0)
         edit_header_layout.setSpacing(12)
 
-        mode_button_container = QWidget(edit_header_container)
-        mode_button_layout = QHBoxLayout(mode_button_container)
-        mode_button_layout.setContentsMargins(0, 0, 0, 0)
-        mode_button_layout.setSpacing(6)
-        self.edit_mode_buttons: list[QToolButton] = []
-        for action in (self.edit_adjust_action, self.edit_crop_action):
-            button = QToolButton(mode_button_container)
-            button.setDefaultAction(action)
-            button.setCheckable(True)
-            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-            button.setAutoRaise(True)
-            mode_button_layout.addWidget(button)
-            self.edit_mode_buttons.append(button)
-        edit_header_layout.addWidget(mode_button_container)
-        edit_header_layout.addStretch(1)
+        left_controls_container = QWidget(edit_header_container)
+        left_controls_layout = QHBoxLayout(left_controls_container)
+        left_controls_layout.setContentsMargins(0, 0, 0, 0)
+        left_controls_layout.setSpacing(8)
+        left_controls_container.setSizePolicy(
+            QSizePolicy.Policy.Maximum,
+            QSizePolicy.Policy.Preferred,
+        )
 
-        button_container = QWidget(edit_header_container)
-        button_layout = QHBoxLayout(button_container)
-        button_layout.setContentsMargins(0, 0, 0, 0)
-        button_layout.setSpacing(8)
-        button_layout.addWidget(self.edit_reset_button)
-        button_layout.addWidget(self.edit_done_button)
-        edit_header_layout.addWidget(button_container)
+        self.edit_compare_button.setIcon(load_icon("square.fill.and.line.vertical.and.square.svg"))
+        self.edit_compare_button.setIconSize(HEADER_ICON_GLYPH_SIZE)
+        self.edit_compare_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self.edit_compare_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.edit_compare_button.setAutoRaise(True)
+        left_controls_layout.addWidget(self.edit_compare_button)
+
+        self.edit_reset_button.setAutoDefault(False)
+        self.edit_reset_button.setDefault(False)
+        left_controls_layout.addWidget(self.edit_reset_button)
+
+        self.edit_zoom_host = QWidget(left_controls_container)
+        self.edit_zoom_host_layout = QHBoxLayout(self.edit_zoom_host)
+        self.edit_zoom_host_layout.setContentsMargins(0, 0, 0, 0)
+        self.edit_zoom_host_layout.setSpacing(4)
+        left_controls_layout.addWidget(self.edit_zoom_host)
+
+        edit_header_layout.addWidget(left_controls_container)
+
+        self.edit_mode_control = SlidingSegmentedControl(
+            (self.edit_adjust_action, self.edit_crop_action),
+            edit_header_container,
+        )
+        edit_header_layout.addWidget(self.edit_mode_control, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        right_controls_container = QWidget(edit_header_container)
+        right_controls_layout = QHBoxLayout(right_controls_container)
+        right_controls_layout.setContentsMargins(0, 0, 0, 0)
+        right_controls_layout.setSpacing(8)
+        right_controls_container.setSizePolicy(
+            QSizePolicy.Policy.Maximum,
+            QSizePolicy.Policy.Preferred,
+        )
+        right_controls_layout.addWidget(self.edit_done_button)
+        edit_header_layout.addWidget(right_controls_container)
+
+        # Preserve a handle to the layout so the edit controller can move detail
+        # action buttons (info and favourite) into this container while editing.
+        self.edit_right_controls_layout = right_controls_layout
 
         edit_layout.addWidget(edit_header_container)
 
@@ -696,6 +732,11 @@ class Ui_MainWindow(object):
         self.edit_header_container = edit_header_container
         self.edit_page = edit_page
         self.edit_header_container.hide()
+
+        # Ensure the segmented control positions its highlight over the checked
+        # mode before the first paint event so the edit bar looks finalised as
+        # soon as it appears.
+        self.edit_mode_control.sync_to_checked_action()
 
         self.view_stack.addWidget(self.edit_page)
 
@@ -784,8 +825,22 @@ class Ui_MainWindow(object):
         self.edit_crop_action.setText(
             QCoreApplication.translate("MainWindow", "Crop", None)
         )
+        self.edit_compare_button.setToolTip(
+            QCoreApplication.translate(
+                "MainWindow",
+                "Press and hold to preview the unedited photo",
+                None,
+            )
+        )
         self.edit_reset_button.setText(
-            QCoreApplication.translate("MainWindow", "Reset Adjustments", None)
+            QCoreApplication.translate("MainWindow", "Revert to Original", None)
+        )
+        self.edit_reset_button.setToolTip(
+            QCoreApplication.translate(
+                "MainWindow",
+                "Restore every adjustment to its original value",
+                None,
+            )
         )
         self.edit_done_button.setText(
             QCoreApplication.translate("MainWindow", "Done", None)

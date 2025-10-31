@@ -119,6 +119,8 @@ class EditController(QObject):
         self._base_image: Optional[QImage] = None
         self._current_source: Optional[Path] = None
         self._preview_session: Optional[PreviewSession] = None
+        self._current_preview_pixmap: Optional[QPixmap] = None
+        self._compare_active = False
 
         # Timer used to debounce expensive preview rendering so the UI thread
         # stays responsive while the user drags a slider continuously.
@@ -141,6 +143,8 @@ class EditController(QObject):
         ui.edit_done_button.clicked.connect(self._handle_done_clicked)
         ui.edit_adjust_action.triggered.connect(lambda checked: self._handle_mode_change("adjust", checked))
         ui.edit_crop_action.triggered.connect(lambda checked: self._handle_mode_change("crop", checked))
+        ui.edit_compare_button.pressed.connect(self._handle_compare_pressed)
+        ui.edit_compare_button.released.connect(self._handle_compare_released)
 
         playlist.currentChanged.connect(self._handle_playlist_change)
         playlist.sourceChanged.connect(lambda _path: self._handle_playlist_change())
@@ -182,11 +186,15 @@ class EditController(QObject):
         self._ui.edit_sidebar.refresh()
         # Display the unadjusted preview immediately so the user sees feedback
         # while the first recalculation runs in the background.
-        self._ui.edit_image_viewer.set_pixmap(QPixmap.fromImage(preview_image))
+        initial_pixmap = QPixmap.fromImage(preview_image)
+        self._current_preview_pixmap = initial_pixmap
+        self._compare_active = False
+        self._ui.edit_image_viewer.set_pixmap(initial_pixmap)
         self._set_mode("adjust")
         self._start_preview_job()
 
         self._ui.detail_chrome_container.hide()
+        self._move_header_widgets_for_edit()
         self._ui.edit_header_container.show()
         self._view_controller.show_edit_view()
 
@@ -198,14 +206,18 @@ class EditController(QObject):
         self._cancel_pending_previews()
         if not self._view_controller.is_edit_view_active():
             return
+        self._handle_compare_released()
         self._ui.edit_sidebar.set_session(None)
         self._ui.edit_image_viewer.clear()
+        self._restore_header_widgets_after_edit()
         self._ui.edit_header_container.hide()
         self._ui.detail_chrome_container.show()
         self._view_controller.show_detail_view()
         self._session = None
         self._base_image = None
         self._current_source = None
+        self._current_preview_pixmap = None
+        self._compare_active = False
         if self._preview_session is not None:
             self._preview_backend.dispose_session(self._preview_session)
             self._preview_session = None
@@ -364,15 +376,37 @@ class EditController(QObject):
             return
 
         if image.isNull():
+            self._current_preview_pixmap = None
             self._ui.edit_image_viewer.clear()
             return
 
         pixmap = QPixmap.fromImage(image)
         if pixmap.isNull():
+            self._current_preview_pixmap = None
             self._ui.edit_image_viewer.clear()
             return
 
-        self._ui.edit_image_viewer.set_pixmap(pixmap)
+        self._current_preview_pixmap = pixmap
+        if not self._compare_active:
+            self._ui.edit_image_viewer.set_pixmap(pixmap)
+
+    def _handle_compare_pressed(self) -> None:
+        """Display the original photo while the compare button is held."""
+
+        if self._base_image is None:
+            return
+        self._compare_active = True
+        self._ui.edit_image_viewer.set_pixmap(QPixmap.fromImage(self._base_image))
+
+    def _handle_compare_released(self) -> None:
+        """Restore the adjusted preview after a comparison glance."""
+
+        self._compare_active = False
+        if self._current_preview_pixmap is not None and not self._current_preview_pixmap.isNull():
+            self._ui.edit_image_viewer.set_pixmap(self._current_preview_pixmap)
+        elif self._base_image is not None:
+            # Fall back to the unadjusted preview if a recalculated frame is not available.
+            self._ui.edit_image_viewer.set_pixmap(QPixmap.fromImage(self._base_image))
 
     def _handle_reset_clicked(self) -> None:
         if self._session is None:
@@ -477,6 +511,29 @@ class EditController(QObject):
             self._ui.edit_adjust_action.setChecked(False)
             self._ui.edit_crop_action.setChecked(True)
             self._ui.edit_sidebar.set_mode("crop")
+
+    def _move_header_widgets_for_edit(self) -> None:
+        """Reparent shared toolbar widgets into the edit header."""
+
+        ui = self._ui
+        if ui.edit_zoom_host_layout.indexOf(ui.zoom_widget) == -1:
+            ui.edit_zoom_host_layout.addWidget(ui.zoom_widget)
+        ui.zoom_widget.show()
+
+        right_layout = ui.edit_right_controls_layout
+        if right_layout.indexOf(ui.info_button) == -1:
+            right_layout.insertWidget(0, ui.info_button)
+        if right_layout.indexOf(ui.favorite_button) == -1:
+            right_layout.insertWidget(1, ui.favorite_button)
+
+    def _restore_header_widgets_after_edit(self) -> None:
+        """Return shared toolbar widgets to the detail header layout."""
+
+        ui = self._ui
+        ui.detail_actions_layout.insertWidget(ui.detail_info_button_index, ui.info_button)
+        ui.detail_actions_layout.insertWidget(ui.detail_favorite_button_index, ui.favorite_button)
+        ui.detail_header_layout.insertWidget(ui.detail_zoom_widget_index, ui.zoom_widget)
+        ui.zoom_widget.hide()
 
     def _handle_playlist_change(self) -> None:
         if self._view_controller.is_edit_view_active():

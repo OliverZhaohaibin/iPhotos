@@ -6,17 +6,17 @@ from typing import Optional
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QFrame,
     QLabel,
     QScrollArea,
     QStackedWidget,
-    QToolBox,
     QVBoxLayout,
     QWidget,
 )
 
-from ..icon import load_icon
 from ..models.edit_session import EditSession
 from .edit_light_section import EditLightSection
+from .collapsible_section import CollapsibleSection
 
 
 class EditSidebar(QWidget):
@@ -48,29 +48,30 @@ class EditSidebar(QWidget):
         scroll_layout.setContentsMargins(12, 12, 12, 12)
         scroll_layout.setSpacing(12)
 
-        self._toolbox = QToolBox(scroll_content)
-        self._light_section = EditLightSection(self._toolbox)
-        self._toolbox.addItem(
-            self._light_section,
-            load_icon("sun.max.svg"),
-            "Light",
-        )
-        color_placeholder = QLabel("Color adjustments are coming soon.", self._toolbox)
-        color_placeholder.setWordWrap(True)
-        self._toolbox.addItem(
-            color_placeholder,
-            load_icon("color.circle.svg"),
-            "Color",
-        )
-        bw_placeholder = QLabel("Black & White adjustments are coming soon.", self._toolbox)
-        bw_placeholder.setWordWrap(True)
-        self._toolbox.addItem(
-            bw_placeholder,
-            load_icon("circle.lefthalf.fill.svg"),
-            "Black & White",
-        )
+        self._light_section = EditLightSection(scroll_content)
+        light_container = CollapsibleSection("Light", "sun.max.svg", self._light_section, scroll_content)
+        scroll_layout.addWidget(light_container)
 
-        scroll_layout.addWidget(self._toolbox)
+        scroll_layout.addWidget(self._build_separator(scroll_content))
+
+        color_placeholder = QLabel("Color adjustments are coming soon.", scroll_content)
+        color_placeholder.setWordWrap(True)
+        color_container = CollapsibleSection("Color", "color.circle.svg", color_placeholder, scroll_content)
+        color_container.set_expanded(False)
+        scroll_layout.addWidget(color_container)
+
+        scroll_layout.addWidget(self._build_separator(scroll_content))
+
+        bw_placeholder = QLabel("Black & White adjustments are coming soon.", scroll_content)
+        bw_placeholder.setWordWrap(True)
+        bw_container = CollapsibleSection(
+            "Black & White",
+            "circle.lefthalf.fill.svg",
+            bw_placeholder,
+            scroll_content,
+        )
+        bw_container.set_expanded(False)
+        scroll_layout.addWidget(bw_container)
         scroll_layout.addStretch(1)
         scroll_content.setLayout(scroll_layout)
         scroll.setWidget(scroll_content)
@@ -117,3 +118,13 @@ class EditSidebar(QWidget):
         """Force the currently visible sections to sync with the session."""
 
         self._light_section.refresh_from_session()
+
+    def _build_separator(self, parent: QWidget) -> QFrame:
+        """Return a subtle divider separating adjacent section headers."""
+
+        separator = QFrame(parent)
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setFrameShadow(QFrame.Shadow.Plain)
+        separator.setStyleSheet("QFrame { background-color: palette(mid); }")
+        separator.setFixedHeight(1)
+        return separator
