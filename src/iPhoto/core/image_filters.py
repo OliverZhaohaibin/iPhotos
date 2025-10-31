@@ -200,13 +200,21 @@ def _apply_adjustments_with_lut(image: QImage, lut: Sequence[int]) -> QImage | N
         height = image.height()
         bytes_per_line = image.bytesPerLine()
 
-        # ``Image.frombuffer`` expects a bytes-like object, so we copy the Qt
-        # buffer once.  The overhead is negligible compared to the Python loop
-        # it replaces, while the subsequent ``point`` call executes entirely in
-        # C.
-        ptr = image.bits()
-        ptr.setsize(bytes_per_line * height)
-        buffer = bytes(ptr)
+        # ``_resolve_pixel_buffer`` already performs the heavy lifting required
+        # to expose a contiguous ``memoryview`` over the QImage data across the
+        # various Qt/Python binding permutations.  Reusing it avoids the
+        # ``setsize`` AttributeError that PySide raises (and which previously
+        # forced us down the slow fallback path).
+        view, buffer_guard = _resolve_pixel_buffer(image)
+
+        # Pillow is only interested in the raw byte sequence and copies it once
+        # we immediately call ``copy()`` on the resulting image.  Passing the
+        # ``memoryview`` directly therefore avoids an intermediate ``bytes``
+        # allocation while the guard keeps the underlying Qt wrapper alive long
+        # enough for Pillow to finish its own copy.
+        buffer = view if isinstance(view, memoryview) else memoryview(view)
+        guard = buffer_guard
+        _ = guard  # Explicitly anchor the guard for the duration of the call.
         pil_image = support.Image.frombuffer(
             "RGBA",
             (width, height),
