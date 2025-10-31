@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional, Set
 
-from PySide6.QtCore import QObject, Signal
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
+from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QStackedWidget, QWidget
 
 from ...utils import image_loader
@@ -16,11 +17,65 @@ from ..widgets.live_badge import LiveBadge
 from ..widgets.video_area import VideoArea
 
 
+class _AdjustedImageSignals(QObject):
+    """Relay worker completion events back to the GUI thread."""
+
+    completed = Signal(Path, QImage)
+    """Emitted when the adjusted image finished loading successfully."""
+
+    failed = Signal(Path, str)
+    """Emitted when loading or processing the image fails."""
+
+
+class _AdjustedImageWorker(QRunnable):
+    """Load and tone-map an image on a background thread."""
+
+    def __init__(self, source: Path, signals: _AdjustedImageSignals) -> None:
+        super().__init__()
+        self.setAutoDelete(False)
+        self._source = source
+        self._signals = signals
+
+    def run(self) -> None:  # pragma: no cover - executed on a worker thread
+        """Perform the expensive image work outside the GUI thread."""
+
+        try:
+            image = image_loader.load_qimage(self._source)
+        except Exception as exc:  # pragma: no cover - Qt loader errors are rare
+            self._signals.failed.emit(self._source, str(exc))
+            return
+
+        if image is None or image.isNull():
+            self._signals.failed.emit(
+                self._source,
+                "Image decoder returned an empty frame",
+            )
+            return
+
+        try:
+            adjustments = sidecar.load_adjustments(self._source)
+        except Exception as exc:  # pragma: no cover - filesystem errors are rare
+            self._signals.failed.emit(self._source, str(exc))
+            return
+
+        if adjustments:
+            try:
+                image = apply_adjustments(image, adjustments)
+            except Exception as exc:  # pragma: no cover - defensive safeguard
+                self._signals.failed.emit(self._source, str(exc))
+                return
+
+        self._signals.completed.emit(self._source, image)
+
+
 class PlayerViewController(QObject):
     """Control which player surface is visible and manage related UI state."""
 
     liveReplayRequested = Signal()
     """Re-emitted when the image viewer asks to replay a Live Photo."""
+
+    imageLoadingFailed = Signal(Path, str)
+    """Emitted when a still image fails to load or post-process."""
 
     def __init__(
         self,
@@ -40,6 +95,9 @@ class PlayerViewController(QObject):
         self._placeholder = placeholder
         self._live_badge = live_badge
         self._image_viewer.replayRequested.connect(self.liveReplayRequested)
+        self._pool = QThreadPool.globalInstance()
+        self._active_workers: Set[_AdjustedImageWorker] = set()
+        self._loading_source: Optional[Path] = None
 
     # ------------------------------------------------------------------
     # High-level surface selection helpers
@@ -81,19 +139,32 @@ class PlayerViewController(QObject):
     # Content helpers
     # ------------------------------------------------------------------
     def display_image(self, source: Path) -> bool:
-        """Load ``source`` into the image viewer, returning success."""
+        """Begin loading ``source`` asynchronously, returning scheduling success."""
 
-        image = image_loader.load_qimage(source)
-        if image is None:
-            return False
-        adjustments = sidecar.load_adjustments(source)
-        if adjustments:
-            image = apply_adjustments(image, adjustments)
-        pixmap = QPixmap.fromImage(image)
-        if pixmap.isNull():
-            return False
-        self._image_viewer.set_pixmap(pixmap)
+        self._loading_source = source
+        # Clearing the viewer up-front avoids displaying stale content while the
+        # worker processes large RAW conversions or applies expensive edits.
+        self._image_viewer.clear()
         self.show_image_surface()
+
+        signals = _AdjustedImageSignals()
+        worker = _AdjustedImageWorker(source, signals)
+        self._active_workers.add(worker)
+
+        signals.completed.connect(self._on_adjusted_image_ready)
+        signals.failed.connect(self._on_adjusted_image_failed)
+        signals.completed.connect(lambda *_: self._release_worker(worker))
+        signals.failed.connect(lambda *_: self._release_worker(worker))
+        signals.completed.connect(signals.deleteLater)
+        signals.failed.connect(signals.deleteLater)
+
+        try:
+            self._pool.start(worker)
+        except RuntimeError as exc:  # pragma: no cover - thread pool exhaustion is rare
+            self._release_worker(worker)
+            self._loading_source = None
+            self.imageLoadingFailed.emit(source, str(exc))
+            return False
         return True
 
     def clear_image(self) -> None:
@@ -154,3 +225,45 @@ class PlayerViewController(QObject):
         """Expose the video area for media output bindings."""
 
         return self._video_area
+
+    # ------------------------------------------------------------------
+    # Worker callbacks
+    # ------------------------------------------------------------------
+    def _on_adjusted_image_ready(self, source: Path, image: QImage) -> None:
+        """Render *image* when the matching worker completes successfully."""
+
+        if self._loading_source != source:
+            return
+
+        self._loading_source = None
+
+        if image.isNull():
+            self._image_viewer.clear()
+            self.imageLoadingFailed.emit(source, "Image decoder returned an empty frame")
+            return
+
+        pixmap = QPixmap.fromImage(image)
+        if pixmap.isNull():
+            self._image_viewer.clear()
+            self.imageLoadingFailed.emit(source, "Failed to convert image to pixmap")
+            return
+
+        self._image_viewer.set_pixmap(pixmap)
+        self.show_image_surface()
+
+    def _on_adjusted_image_failed(self, source: Path, message: str) -> None:
+        """Propagate worker failures while ensuring stale results are ignored."""
+
+        if self._loading_source != source:
+            return
+
+        self._loading_source = None
+        self._image_viewer.clear()
+        self.imageLoadingFailed.emit(source, message)
+
+    def _release_worker(self, worker: _AdjustedImageWorker) -> None:
+        """Drop completed workers so the thread pool can reclaim resources."""
+
+        if worker in self._active_workers:
+            self._active_workers.remove(worker)
+        worker.setAutoDelete(True)
