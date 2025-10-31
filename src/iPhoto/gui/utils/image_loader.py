@@ -26,6 +26,12 @@ def load_qimage(source: Path, target: QSize | None = None) -> Optional[QImage]:
     """Return a :class:`QImage` for *source* with optional scaling."""
 
     reader = QImageReader(str(source))
+    # Disable the internal cache of QImageReader so that every call re-reads the
+    # underlying file from disk. Without this explicit opt-out Qt may reuse a
+    # previously cached frame, which would bypass newly written sidecar edits
+    # and cause the high resolution preview to display stale pixels even though
+    # thumbnails reflect the latest adjustments.
+    reader.setCacheEnabled(False)
     reader.setAutoTransform(True)
     if target is not None and target.isValid() and not target.isEmpty():
         reader.setScaledSize(target)
