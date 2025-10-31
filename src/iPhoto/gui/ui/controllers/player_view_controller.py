@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional, Set
 
-from PySide6.QtCore import QObject, QRunnable, QSize, QThreadPool, Signal
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QStackedWidget, QWidget
 
@@ -34,18 +34,14 @@ class _AdjustedImageWorker(QRunnable):
         self,
         source: Path,
         signals: _AdjustedImageSignals,
-        target_size: QSize | None,
     ) -> None:
         super().__init__()
         self.setAutoDelete(False)
         self._source = source
         self._signals = signals
-        # ``_target_size`` bounds the decode to roughly match the viewport.
-        # Streaming directly to the requested dimensions is far cheaper than
-        # loading the full-resolution frame and scaling afterwards, yet the
-        # ``KeepAspectRatio`` behaviour of ``QImageReader`` still preserves the
-        # original proportions of the asset.
-        self._target_size = target_size
+        # The worker always decodes the original frame at full fidelity.  The
+        # GUI thread performs any downscaling so zooming and full-screen views
+        # can leverage every available pixel.
 
     def run(self) -> None:  # pragma: no cover - executed on a worker thread
         """Perform the expensive image work outside the GUI thread."""
@@ -56,12 +52,12 @@ class _AdjustedImageWorker(QRunnable):
             self._signals.failed.emit(self._source, str(exc))
             return
 
-        target = None
-        if self._target_size is not None and self._target_size.isValid() and not self._target_size.isEmpty():
-            target = self._target_size
-
         try:
-            image = image_loader.load_qimage(self._source, target)
+            # Requesting ``None`` as the target size forces ``QImageReader`` to
+            # decode the full-resolution frame.  The detail view later scales
+            # the resulting pixmap to fit the viewport while maintaining the
+            # original aspect ratio, ensuring sharp results without distortion.
+            image = image_loader.load_qimage(self._source, None)
         except Exception as exc:  # pragma: no cover - Qt loader errors are rare
             self._signals.failed.emit(self._source, str(exc))
             return
@@ -178,24 +174,7 @@ class PlayerViewController(QObject):
 
         signals = _AdjustedImageSignals()
 
-        # Requesting an image that roughly matches the viewport dramatically
-        # reduces decode and adjustment costs for high-resolution originals
-        # while still allowing Pillow fallbacks to operate at full fidelity when
-        # the size is unavailable.  We copy the ``QSize`` so worker threads never
-        # access a widget instance from outside the GUI thread.
-        viewport_size: QSize | None = None
-        try:
-            candidate = self._image_viewer.viewport_widget().size()
-        except Exception:
-            candidate = QSize()
-        if candidate.isValid() and not candidate.isEmpty():
-            viewport_size = QSize(candidate)
-        else:
-            fallback = self._player_stack.size()
-            if fallback.isValid() and not fallback.isEmpty():
-                viewport_size = QSize(fallback)
-
-        worker = _AdjustedImageWorker(source, signals, viewport_size)
+        worker = _AdjustedImageWorker(source, signals)
         self._active_workers.add(worker)
 
         signals.completed.connect(self._on_adjusted_image_ready)
