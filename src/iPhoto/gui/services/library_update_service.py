@@ -14,6 +14,7 @@ from ...errors import IPhotoError
 from ..background_task_manager import BackgroundTaskManager
 from ..ui.tasks.rescan_worker import RescanSignals, RescanWorker
 from ..ui.tasks.scanner_worker import ScannerSignals, ScannerWorker
+from ..ui.tasks.single_asset_worker import SingleAssetSignals, SingleAssetWorker
 
 if TYPE_CHECKING:
     from ...library.manager import LibraryManager
@@ -28,6 +29,7 @@ class LibraryUpdateService(QObject):
     indexUpdated = Signal(Path)
     linksUpdated = Signal(Path)
     assetReloadRequested = Signal(Path, bool, bool)
+    assetRefreshed = Signal(Path, dict)
     errorRaised = Signal(str)
 
     def __init__(
@@ -63,6 +65,59 @@ class LibraryUpdateService(QObject):
         self.linksUpdated.emit(album.root)
         self.assetReloadRequested.emit(album.root, False, False)
         return rows
+
+    def refresh_single_asset(self, asset_path: Path) -> None:
+        """Refresh metadata for *asset_path* without forcing a model reset."""
+
+        album = self._current_album_getter()
+        if album is None:
+            return
+
+        root = album.root
+        if root is None:
+            return
+
+        candidate = Path(asset_path)
+        if not candidate.is_absolute():
+            candidate = root / candidate
+
+        try:
+            normalised_root = self._normalise_path(root)
+        except ValueError:
+            normalised_root = root
+
+        try:
+            resolved_candidate = candidate.resolve()
+        except OSError:
+            resolved_candidate = candidate
+
+        try:
+            resolved_candidate.relative_to(normalised_root)
+        except ValueError:
+            # The requested asset does not belong to the active album.
+            return
+
+        signals = SingleAssetSignals()
+        worker = SingleAssetWorker(normalised_root, resolved_candidate, signals)
+
+        task_id = f"refresh-asset:{resolved_candidate}:{uuid.uuid4().hex}"
+
+        def _on_finished(root_path: Path, row: dict) -> None:
+            self._handle_single_asset_finished(root_path, row)
+
+        def _on_error(root_path: Path, message: str) -> None:
+            self._handle_single_asset_error(root_path, resolved_candidate, message)
+
+        self._task_manager.submit_task(
+            task_id=task_id,
+            worker=worker,
+            finished=signals.finished,
+            error=signals.error,
+            pause_watcher=False,
+            on_finished=_on_finished,
+            on_error=_on_error,
+            result_payload=lambda _root, row: row,
+        )
 
     def rescan_album_async(self, album: "Album") -> None:
         """Start an asynchronous rescan for *album* using the background pool."""
@@ -342,6 +397,20 @@ class LibraryUpdateService(QObject):
         if album is None:
             return
         self.rescan_album_async(album)
+
+    def _handle_single_asset_finished(self, album_root: Path, row: dict) -> None:
+        """Relay single-asset refresh completions to downstream listeners."""
+
+        self.assetRefreshed.emit(album_root, row)
+
+    def _handle_single_asset_error(
+        self, album_root: Path, asset_path: Path, message: str
+    ) -> None:
+        """Surface single-asset refresh errors without interrupting the UI."""
+
+        self.errorRaised.emit(
+            f"Failed to refresh asset '{asset_path}' in '{album_root}': {message}"
+        )
 
     # ------------------------------------------------------------------
     # Album bookkeeping helpers

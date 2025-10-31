@@ -6,7 +6,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QSize
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QSize
 from PySide6.QtGui import QImage, QImageReader, QPixmap
 
 from ...utils.deps import load_pillow
@@ -25,11 +25,32 @@ else:  # pragma: no cover - executed when Pillow is unavailable
 def load_qimage(source: Path, target: QSize | None = None) -> Optional[QImage]:
     """Return a :class:`QImage` for *source* with optional scaling."""
 
-    reader = QImageReader(str(source))
+    try:
+        # ``QImageReader`` caches results by the file path when it owns the
+        # device.  Reading the bytes explicitly ensures every invocation sees
+        # the latest on-disk contents, which is essential once sidecar edits
+        # have been saved alongside the original file.
+        payload = source.read_bytes()
+    except OSError:
+        # Fall back to Pillow when the file cannot be read directly.  This
+        # mirrors the legacy behaviour and keeps error handling consistent.
+        return _load_with_pillow(source, target)
+
+    reader = QImageReader()
     reader.setAutoTransform(True)
     if target is not None and target.isValid() and not target.isEmpty():
         reader.setScaledSize(target)
-    image = reader.read()
+
+    buffer = QBuffer()
+    buffer.setData(QByteArray(payload))
+    if not buffer.open(QIODevice.OpenModeFlag.ReadOnly):
+        return _load_with_pillow(source, target)
+    try:
+        reader.setDevice(buffer)
+        image = reader.read()
+    finally:
+        buffer.close()
+
     if not image.isNull():
         return image
     return _load_with_pillow(source, target)

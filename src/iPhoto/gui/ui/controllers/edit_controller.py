@@ -362,6 +362,14 @@ class EditController(QObject):
             if watcher_paused:
                 facade.resume_library_watcher()
         self._refresh_thumbnail_cache(self._current_source)
+        try:
+            # Trigger a light-weight metadata refresh so the grid model updates
+            # the corresponding row without issuing a full album reload.
+            facade.refresh_single_asset(self._current_source)
+        except Exception:  # pragma: no cover - defensive logging path
+            _LOGGER.exception(
+                "Failed to schedule metadata refresh for %s", self._current_source
+            )
         self.leave_edit_mode()
         self.editingFinished.emit(self._current_source)
 

@@ -19,6 +19,8 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QPixmap
 
 from ..tasks.thumbnail_loader import ThumbnailLoader
+from ...media_classifier import classify_media
+from ...utils.geocoding import resolve_location_name
 from .asset_cache_manager import AssetCacheManager
 from .asset_data_loader import AssetDataLoader
 from .asset_state_manager import AssetListStateManager
@@ -317,6 +319,90 @@ class AssetListModel(QAbstractListModel):
             return
         model_index = self.index(row_index, 0)
         self.dataChanged.emit(model_index, model_index, [Qt.DecorationRole])
+
+    def update_row_data(self, album_root: Path, row_data: Dict[str, object]) -> None:
+        """Merge fresh metadata for a single asset into the model."""
+
+        if not row_data:
+            return
+        if self._album_root is None:
+            return
+
+        def _normalise(path: Path) -> Path:
+            try:
+                return path.resolve()
+            except OSError:
+                return path
+
+        current_root = _normalise(self._album_root)
+        if current_root != _normalise(album_root):
+            return
+
+        rel_value = row_data.get("rel")
+        rel = Path(str(rel_value or "")).as_posix()
+        if not rel:
+            return
+
+        row_index = self._state_manager.row_lookup.get(rel)
+        rows = self._state_manager.rows
+        if row_index is None or not (0 <= row_index < len(rows)):
+            return
+
+        row = rows[row_index]
+        is_image, is_video = classify_media(row_data)
+        row["is_image"] = is_image
+        row["is_video"] = is_video
+
+        row["id"] = row_data.get("id", row.get("id", rel))
+        row["dt"] = row_data.get("dt", row.get("dt"))
+        row["bytes"] = row_data.get("bytes", row.get("bytes"))
+        row["mime"] = row_data.get("mime", row.get("mime"))
+        row["still_image_time"] = row_data.get("still_image_time")
+        row["dur"] = row_data.get("dur")
+        row["content_id"] = row_data.get("content_id")
+        row["frame_rate"] = row_data.get("frame_rate")
+        row["codec"] = row_data.get("codec")
+        row["make"] = row_data.get("make")
+        row["model"] = row_data.get("model")
+        row["lens"] = row_data.get("lens")
+        row["iso"] = row_data.get("iso")
+        row["f_number"] = row_data.get("f_number")
+        row["exposure_time"] = row_data.get("exposure_time")
+        row["exposure_compensation"] = row_data.get("exposure_compensation")
+        row["focal_length"] = row_data.get("focal_length")
+        gps_candidate = row_data.get("gps")
+        if isinstance(gps_candidate, dict):
+            row["gps"] = gps_candidate
+            row["location"] = resolve_location_name(gps_candidate)
+        else:
+            existing_gps = row.get("gps") if isinstance(row.get("gps"), dict) else None
+            row["location"] = resolve_location_name(existing_gps)
+
+        try:
+            absolute_path = (current_root / Path(rel)).resolve()
+        except OSError:
+            absolute_path = current_root / Path(rel)
+        row["abs"] = str(absolute_path)
+        row["name"] = Path(rel).name
+
+        if is_image:
+            width = row_data.get("w")
+            height = row_data.get("h")
+            row["w"] = width
+            row["h"] = height
+            row["size"] = (width, height)
+        else:
+            duration = row_data.get("dur")
+            byte_size = row_data.get("bytes")
+            row["size"] = {"bytes": byte_size, "duration": duration}
+
+        # The cached thumbnail and live metadata may reference stale attributes,
+        # therefore we invalidate them before notifying views of the refresh.
+        self._cache_manager.remove_thumbnail(rel)
+        self._cache_manager.reload_live_metadata([row])
+
+        model_index = self.index(row_index, 0)
+        self.dataChanged.emit(model_index, model_index, [])
 
     # ------------------------------------------------------------------
     # Facade callbacks

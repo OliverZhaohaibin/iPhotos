@@ -91,6 +91,7 @@ class AppFacade(QObject):
         self._library_update_service.assetReloadRequested.connect(
             self._on_asset_reload_requested
         )
+        self._library_update_service.assetRefreshed.connect(self._on_asset_refreshed)
         self._library_update_service.errorRaised.connect(self._on_service_error)
 
         self._import_service = AssetImportService(
@@ -152,6 +153,11 @@ class AppFacade(QObject):
         """Expose the library update service for direct signal subscriptions."""
 
         return self._library_update_service
+
+    def refresh_single_asset(self, asset_path: Path) -> None:
+        """Request a light-weight metadata refresh for *asset_path*."""
+
+        self._library_update_service.refresh_single_asset(asset_path)
 
     def pause_library_watcher(self) -> None:
         """Pause filesystem notifications while the GUI performs local writes."""
@@ -589,6 +595,12 @@ class AppFacade(QObject):
             announce_index=announce_index,
             force_reload=force_reload,
         )
+
+    @Slot(Path, dict)
+    def _on_asset_refreshed(self, album_root: Path, row_data: dict) -> None:
+        """Update the asset list model with fresh metadata for a single asset."""
+
+        self._asset_list_model.update_row_data(album_root, row_data)
 
 
 __all__ = ["AppFacade"]
