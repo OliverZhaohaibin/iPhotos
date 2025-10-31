@@ -95,6 +95,12 @@ class EditController(QObject):
         self._playlist = playlist
         self._asset_model = asset_model
         self._thumbnail_loader: ThumbnailLoader = asset_model.thumbnail_loader()
+        # ``_pending_thumbnail_refreshes`` tracks relative asset identifiers with
+        # a refresh queued via :meth:`_schedule_thumbnail_refresh`.  Deferring
+        # the cache invalidation keeps the detail pane visible when edits are
+        # saved, preventing the grid view from temporarily reclaiming focus just
+        # so it can reload its thumbnails.
+        self._pending_thumbnail_refreshes: set[str] = set()
 
         self._preview_backend: PreviewBackend = select_preview_backend()
         _LOGGER.info("Initialised edit preview backend: %s", self._preview_backend.tier_name)
@@ -347,7 +353,10 @@ class EditController(QObject):
         preview_pixmap = self._ui.edit_image_viewer.pixmap()
         adjustments = self._session.values()
         sidecar.save_adjustments(source, adjustments)
-        self._refresh_thumbnail_cache(source)
+        # Defer cache invalidation until after the detail surface has been
+        # restored so the gallery does not briefly become the active view while
+        # its thumbnails refresh in the background.
+        self._schedule_thumbnail_refresh(source)
         self.leave_edit_mode()
         # ``display_image`` schedules an asynchronous reload; logging the
         # boolean result would not improve the UX, so simply trigger it and
@@ -362,11 +371,44 @@ class EditController(QObject):
         rel_value = metadata.get("rel")
         if not rel_value:
             return
-        rel = str(rel_value)
+        self._refresh_thumbnail_cache_for_rel(str(rel_value))
+
+    def _refresh_thumbnail_cache_for_rel(self, rel: str) -> None:
+        """Invalidate cached thumbnails identified by *rel*."""
+
+        if not rel:
+            return
         source_model = self._asset_model.source_model()
         if hasattr(source_model, "invalidate_thumbnail"):
             source_model.invalidate_thumbnail(rel)
         self._thumbnail_loader.invalidate(rel)
+
+    def _schedule_thumbnail_refresh(self, source: Path) -> None:
+        """Refresh thumbnails for *source* on the next event loop turn.
+
+        The deferment avoids jarring view changes that occur when the gallery
+        reacts to cache invalidation while the user is still focused on the
+        detail surface.
+        """
+
+        metadata = self._asset_model.source_model().metadata_for_absolute_path(source)
+        if metadata is None:
+            return
+        rel_value = metadata.get("rel")
+        if not rel_value:
+            return
+        rel = str(rel_value)
+        if rel in self._pending_thumbnail_refreshes:
+            return
+
+        def _run_refresh(rel_key: str) -> None:
+            try:
+                self._refresh_thumbnail_cache_for_rel(rel_key)
+            finally:
+                self._pending_thumbnail_refreshes.discard(rel_key)
+
+        self._pending_thumbnail_refreshes.add(rel)
+        QTimer.singleShot(0, lambda rel_key=rel: _run_refresh(rel_key))
 
     def _handle_mode_change(self, mode: str, checked: bool) -> None:
         if not checked:
