@@ -149,6 +149,19 @@ class ImageViewer(QWidget):
         QTimer.singleShot(0, self._render_pixmap)
         self.zoomChanged.emit(self._zoom_factor)
 
+    def pixmap(self) -> Optional[QPixmap]:
+        """Return a defensive copy of the currently rendered pixmap.
+
+        The edit controller reuses the preview image when leaving the edit view
+        so the detail view can display the final adjustments immediately.  A
+        copy keeps that hand-off safe even if the caller clears the viewer while
+        the pixmap is still referenced elsewhere.
+        """
+
+        if self._pixmap is None or self._pixmap.isNull():
+            return None
+        return QPixmap(self._pixmap)
+
     def clear(self) -> None:
         """Remove any currently displayed image."""
 

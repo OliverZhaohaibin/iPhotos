@@ -149,13 +149,30 @@ class PlayerViewController(QObject):
     # ------------------------------------------------------------------
     # Content helpers
     # ------------------------------------------------------------------
-    def display_image(self, source: Path) -> bool:
-        """Begin loading ``source`` asynchronously, returning scheduling success."""
+    def display_image(self, source: Path, *, placeholder: Optional[QPixmap] = None) -> bool:
+        """Begin loading ``source`` asynchronously, returning scheduling success.
+
+        Parameters
+        ----------
+        source:
+            The asset that should appear in the detail viewer.
+        placeholder:
+            An optional pixmap that is displayed immediately while the worker
+            recalculates the full-resolution image.  Supplying a placeholder is
+            especially useful when returning from the edit view because it
+            preserves the user's last preview instead of flashing a blank frame.
+        """
 
         self._loading_source = source
-        # Clearing the viewer up-front avoids displaying stale content while the
-        # worker processes large RAW conversions or applies expensive edits.
-        self._image_viewer.clear()
+        if placeholder is None or placeholder.isNull():
+            # Without a placeholder we fall back to the traditional behaviour of
+            # clearing stale content so the worker paints a fresh frame.
+            self._image_viewer.clear()
+        else:
+            # Reusing the provided pixmap keeps the surface populated while the
+            # asynchronous load runs, eliminating distracting flashes to the
+            # placeholder panel.
+            self._image_viewer.set_pixmap(placeholder)
         self.show_image_surface()
 
         signals = _AdjustedImageSignals()

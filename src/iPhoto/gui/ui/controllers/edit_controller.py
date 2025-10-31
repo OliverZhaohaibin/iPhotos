@@ -341,6 +341,10 @@ class EditController(QObject):
         # controller state.  The detail player needs the same asset path to
         # reload the freshly saved adjustments once the edit chrome is hidden.
         source = self._current_source
+        # Capture the rendered preview so the detail view can reuse it while
+        # the background worker recalculates the full-resolution frame.  A copy
+        # keeps the pixmap alive after the edit widgets tear down their state.
+        preview_pixmap = self._ui.edit_image_viewer.pixmap()
         adjustments = self._session.values()
         sidecar.save_adjustments(source, adjustments)
         self._refresh_thumbnail_cache(source)
@@ -348,7 +352,7 @@ class EditController(QObject):
         # ``display_image`` schedules an asynchronous reload; logging the
         # boolean result would not improve the UX, so simply trigger it and
         # fall back to the playlist selection handlers if scheduling fails.
-        self._player_view.display_image(source)
+        self._player_view.display_image(source, placeholder=preview_pixmap)
         self.editingFinished.emit(source)
 
     def _refresh_thumbnail_cache(self, source: Path) -> None:
