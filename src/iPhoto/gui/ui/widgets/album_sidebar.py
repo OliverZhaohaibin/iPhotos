@@ -227,6 +227,10 @@ class AlbumSidebar(QWidget):
         self._default_sidebar_minimum_width = super().minimumWidth()
         self._default_sidebar_maximum_width = super().maximumWidth()
         self._default_tree_minimum_width = self._tree.minimumWidth()
+        # ``QLabel`` derives its minimum width from the rendered text.  We cache this value so
+        # the transition controller can temporarily relax it to zero during splitter animations
+        # and later restore the original geometry without losing the layout's preferred sizing.
+        self._default_title_minimum_width = self._title.minimumWidth()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(*SIDEBAR_LAYOUT_MARGIN)
@@ -247,6 +251,9 @@ class AlbumSidebar(QWidget):
 
         self.setMinimumWidth(0)
         self._tree.setMinimumWidth(0)
+        # Allow the title label to compress as well so the sidebar shell can shrink all the way
+        # to zero pixels instead of stopping at the label's intrinsic width.
+        self._title.setMinimumWidth(0)
 
     def restore_minimum_width_after_animation(self) -> None:
         """Reapply the sidebar's default size constraints after an animation."""
@@ -254,6 +261,9 @@ class AlbumSidebar(QWidget):
         self.setMinimumWidth(self._default_sidebar_minimum_width)
         self.setMaximumWidth(self._default_sidebar_maximum_width)
         self._tree.setMinimumWidth(self._default_tree_minimum_width)
+        # Restore the cached minimum width so the title text regains the spacing chosen by the
+        # base layout once the animation has finished.
+        self._title.setMinimumWidth(self._default_title_minimum_width)
 
     # ------------------------------------------------------------------
     # Internal helpers
