@@ -15,8 +15,8 @@ from PySide6.QtCore import (
     QPropertyAnimation,
     QTimer,
     Qt,
-    Property,
     Signal,
+    QVariantAnimation,
 )
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QGraphicsOpacityEffect
@@ -83,58 +83,6 @@ class _PreviewWorker(QRunnable):
             # the UI responsive even if processing fails unexpectedly.
             adjusted = QImage()
         self._signals.finished.emit(adjusted, self._job_id)
-
-
-class _SplitterSizeAdapter(QObject):
-    """Expose a Qt property that maps to :class:`QSplitter.setSizes`.
-
-    ``QPropertyAnimation`` can only operate on QObject properties, which
-    ``QSplitter`` does not provide for its child pane sizes.  The adapter wraps
-    the splitter and forwards values from the animation back to
-    :meth:`QSplitter.setSizes`, allowing the controller to animate the collapse
-    and expansion of the navigation sidebar.
-    """
-
-    sizesChanged = Signal()
-    """Signal emitted whenever the adapter writes a new size vector."""
-
-    def __init__(self, splitter) -> None:  # type: ignore[override]
-        super().__init__(splitter)
-        self._splitter = splitter
-
-    def _get_sizes(self) -> list[int]:
-        """Return the current child pane sizes as a list of integers."""
-
-        return [int(value) for value in self._splitter.sizes()]
-
-    def _set_sizes(self, value) -> None:
-        """Validate *value* and forward it to :meth:`QSplitter.setSizes`."""
-
-        if value is None:
-            return
-        try:
-            raw_values = list(value)
-        except TypeError:
-            return
-        count = self._splitter.count()
-        if count == 0:
-            return
-        # Clamp the list to the splitter's child count while preserving the total width.
-        if len(raw_values) < count:
-            raw_values.extend(0 for _ in range(count - len(raw_values)))
-        elif len(raw_values) > count:
-            raw_values = raw_values[:count]
-        sanitised = [max(0, int(size)) for size in raw_values]
-        total = sum(sanitised)
-        if total <= 0:
-            # ``QSplitter`` treats a zeroed vector as "collapse every pane".  Provide
-            # a tiny non-zero width so the widget has meaningful geometry while the
-            # animation initialises.
-            sanitised[-1] = max(1, self._splitter.width())
-        self._splitter.setSizes(sanitised)
-        self.sizesChanged.emit()
-
-    sizes = Property("QVariantList", _get_sizes, _set_sizes, notify=sizesChanged)
 
 
 class EditController(QObject):
@@ -209,7 +157,6 @@ class EditController(QObject):
             self._edit_sidebar_maximum_width,
         )
         self._splitter_sizes_before_edit: list[int] | None = None
-        self._splitter_animation_adapter = _SplitterSizeAdapter(ui.splitter)
         self._transition_group: QParallelAnimationGroup | None = None
         self._transition_direction: str | None = None
 
@@ -726,16 +673,55 @@ class EditController(QObject):
         sidebar_end = int(sidebar_end)
 
         animation_group = QParallelAnimationGroup(self)
-        splitter_animation = QPropertyAnimation(
-            self._splitter_animation_adapter,
-            b"sizes",
-            animation_group,
-        )
+
+        splitter_animation = QVariantAnimation(animation_group)
         splitter_animation.setDuration(duration)
         splitter_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
-        splitter_animation.setStartValue(splitter_start_sizes)
-        splitter_animation.setEndValue(splitter_end_sizes)
+        splitter_animation.setStartValue(0.0)
+        splitter_animation.setEndValue(1.0)
 
+        start_sizes = list(splitter_start_sizes)
+        end_sizes = list(splitter_end_sizes)
+        pane_count = splitter.count()
+
+        # ``_sanitise_splitter_sizes`` already clamps the arrays to the splitter child count, but
+        # pad the copies defensively so the interpolation code below can treat them uniformly even
+        # when future UI tweaks add more panes.
+        if len(start_sizes) < pane_count:
+            start_sizes.extend(0 for _ in range(pane_count - len(start_sizes)))
+        if len(end_sizes) < pane_count:
+            end_sizes.extend(0 for _ in range(pane_count - len(end_sizes)))
+
+        def _apply_splitter_progress(value: float) -> None:
+            """Interpolate the splitter pane widths for the given animation progress."""
+
+            progress = max(0.0, min(1.0, float(value)))
+            interpolated: list[int] = []
+            accumulated = 0
+            for index in range(pane_count):
+                start = start_sizes[index]
+                end = end_sizes[index]
+                raw = start + (end - start) * progress
+                if index == pane_count - 1:
+                    # Force the final pane to absorb any rounding error so the total width stays
+                    # perfectly aligned with the splitter's current geometry.  Without this guard
+                    # the animation would occasionally leave a one-pixel gap after the slider
+                    # reaches its target value.
+                    rounded = max(0, total - accumulated)
+                else:
+                    rounded = max(0, int(round(raw)))
+                    accumulated += rounded
+                interpolated.append(rounded)
+            splitter.setSizes(interpolated)
+
+        splitter_animation.valueChanged.connect(_apply_splitter_progress)
+
+        def _apply_final_sizes() -> None:
+            """Snap the splitter to the exact target sizes once the animation stops."""
+
+            splitter.setSizes(end_sizes[:pane_count])
+
+        splitter_animation.finished.connect(_apply_final_sizes)
         animation_group.addAnimation(splitter_animation)
 
         sidebar_animation = QPropertyAnimation(
@@ -779,7 +765,7 @@ class EditController(QObject):
         if duration == 0:
             # Immediate transitions should update the UI synchronously so callers can assume the
             # state reflects the requested mode change as soon as this method returns.
-            self._splitter_animation_adapter.sizes = splitter_end_sizes
+            splitter.setSizes(splitter_end_sizes)
             self._ui.edit_sidebar.setMaximumWidth(sidebar_end)
             if entering:
                 self._ui.edit_sidebar.setMinimumWidth(self._edit_sidebar_minimum_width)
