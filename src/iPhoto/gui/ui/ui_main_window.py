@@ -773,7 +773,11 @@ class Ui_MainWindow(object):
         self.splitter.addWidget(right_panel)
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
-        self.splitter.setCollapsible(0, False)
+        # Allow the album sidebar (the first splitter pane) to collapse so the
+        # edit-mode animation can drive its width to zero without fighting the
+        # splitter's built-in constraints.  The second pane remains fixed to
+        # preserve the main content area's minimum footprint.
+        self.splitter.setCollapsible(0, True)
         self.splitter.setCollapsible(1, False)
 
         self.window_shell_layout.addWidget(self.splitter)
