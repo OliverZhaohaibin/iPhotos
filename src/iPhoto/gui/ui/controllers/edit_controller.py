@@ -121,6 +121,11 @@ class EditController(QObject):
         # ``_detail_ui_controller`` provides access to the detail view's zoom wiring helpers so the
         # shared zoom toolbar can swap targets cleanly when the edit tools take over the header.
         self._detail_ui_controller: "DetailUIController" | None = detail_ui_controller
+        # Track whether the shared zoom controls are currently routed to the edit viewer so we can
+        # disconnect them without relying on Qt to silently drop redundant requests.  Qt logs a
+        # warning when asked to disconnect a link that was never created, so this boolean keeps the
+        # console clean while still allowing repeated hand-overs between the detail and edit views.
+        self._edit_zoom_controls_connected = False
         self._thumbnail_loader: ThumbnailLoader = asset_model.thumbnail_loader()
         # ``_pending_thumbnail_refreshes`` tracks relative asset identifiers with
         # a refresh queued via :meth:`_schedule_thumbnail_refresh`.  Deferring
@@ -211,19 +216,21 @@ class EditController(QObject):
     def _connect_edit_zoom_controls(self) -> None:
         """Connect the shared zoom toolbar to the edit image viewer."""
 
+        if self._edit_zoom_controls_connected:
+            return
+
         viewer = self._ui.edit_image_viewer
-        try:
-            self._ui.zoom_in_button.clicked.connect(viewer.zoom_in)
-            self._ui.zoom_out_button.clicked.connect(viewer.zoom_out)
-            self._ui.zoom_slider.valueChanged.connect(self._handle_edit_zoom_slider_changed)
-            viewer.zoomChanged.connect(self._handle_edit_viewer_zoom_changed)
-        except (RuntimeError, TypeError):
-            # Qt emits ``RuntimeError``/``TypeError`` when a duplicate link is created, so silence
-            # those errors to keep reconnect attempts safe when edit mode is re-entered quickly.
-            pass
+        self._ui.zoom_in_button.clicked.connect(viewer.zoom_in)
+        self._ui.zoom_out_button.clicked.connect(viewer.zoom_out)
+        self._ui.zoom_slider.valueChanged.connect(self._handle_edit_zoom_slider_changed)
+        viewer.zoomChanged.connect(self._handle_edit_viewer_zoom_changed)
+        self._edit_zoom_controls_connected = True
 
     def _disconnect_edit_zoom_controls(self) -> None:
         """Detach the shared zoom toolbar from the edit image viewer."""
+
+        if not self._edit_zoom_controls_connected:
+            return
 
         viewer = self._ui.edit_image_viewer
         try:
@@ -231,10 +238,12 @@ class EditController(QObject):
             self._ui.zoom_out_button.clicked.disconnect(viewer.zoom_out)
             self._ui.zoom_slider.valueChanged.disconnect(self._handle_edit_zoom_slider_changed)
             viewer.zoomChanged.disconnect(self._handle_edit_viewer_zoom_changed)
-        except (RuntimeError, TypeError):
-            # Leaving edit mode before wiring the toolbar can raise these exceptions; ignore them so
-            # repeated teardowns remain safe and idempotent.
-            pass
+        finally:
+            # Ensure the state flag is cleared even if Qt reports that some of the links had already
+            # been severed.  The warning-prone duplicate disconnect attempts should now be guarded by
+            # the boolean check above, but resetting the flag keeps the controller resilient in case
+            # future refactors bypass the helper inadvertently.
+            self._edit_zoom_controls_connected = False
 
     def _handle_edit_zoom_slider_changed(self, value: int) -> None:
         """Translate slider *value* percentages into edit viewer zoom factors."""
@@ -306,7 +315,6 @@ class EditController(QObject):
         self._move_header_widgets_for_edit()
         if self._detail_ui_controller is not None:
             self._detail_ui_controller.disconnect_zoom_controls()
-        self._disconnect_edit_zoom_controls()
         self._connect_edit_zoom_controls()
         self._ui.edit_image_viewer.reset_zoom()
         self._edit_header_opacity.setOpacity(1.0)
