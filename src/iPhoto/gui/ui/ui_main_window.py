@@ -442,6 +442,18 @@ class Ui_MainWindow(object):
         self.timestamp_label = QLabel()
 
         right_panel = QWidget()
+        # Ensure the main content area paints an opaque surface even though the frameless
+        # window shell relies on ``WA_TranslucentBackground`` for rounded corners.
+        right_panel.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        right_panel.setAutoFillBackground(True)
+        # Copy a bright neutral colour into the palette so every child widget (image
+        # viewer, video placeholder, etc.) reads the same base tone for their window
+        # surfaces.  This keeps the editing area aligned with the original light theme.
+        light_content_palette = right_panel.palette()
+        content_bg_color = QColor(Qt.GlobalColor.white)
+        light_content_palette.setColor(QPalette.ColorRole.Window, content_bg_color)
+        light_content_palette.setColor(QPalette.ColorRole.Base, content_bg_color)
+        right_panel.setPalette(light_content_palette)
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(8, 8, 8, 8)
 

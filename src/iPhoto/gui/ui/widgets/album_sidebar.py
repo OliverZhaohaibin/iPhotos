@@ -168,6 +168,9 @@ class AlbumSidebar(QWidget):
         # Give the widget a stable object name so the stylesheet targets only the
         # sidebar shell and does not bleed into child controls such as the tree view.
         self.setObjectName("albumSidebar")
+        # ``WA_StyledBackground`` tells Qt to honour our palette/stylesheet even when the
+        # parent widgets are translucent (required for the rounded window shell).
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         # Apply the light blue background with a stylesheet to override the
         # transparent background inherited from the frameless window chrome.
         self.setStyleSheet(
