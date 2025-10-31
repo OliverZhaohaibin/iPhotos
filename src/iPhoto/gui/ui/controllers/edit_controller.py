@@ -607,8 +607,11 @@ class EditController(QObject):
 
         sidebar = self._ui.edit_sidebar
         sidebar.show()
-        sidebar.setMinimumWidth(0)
         starting_width = sidebar.width()
+        sidebar.setMinimumWidth(int(starting_width))
+        # Keep the minimum width anchored to the live geometry while the animation is prepared.
+        # Resetting the constraint to zero here would let the layout reclaim the space instantly,
+        # producing the "instant collapse" the user observed before the first animation frame ran.
         # ``QPropertyAnimation`` inspects the target property's current value when the
         # animation starts.  Because ``maximumWidth`` was previously relaxed to a very
         # large sentinel during edit mode (allowing the user to resize the pane), using
@@ -724,16 +727,25 @@ class EditController(QObject):
         splitter_animation.finished.connect(_apply_final_sizes)
         animation_group.addAnimation(splitter_animation)
 
-        sidebar_animation = QPropertyAnimation(
-            self._ui.edit_sidebar,
-            b"maximumWidth",
-            animation_group,
-        )
-        sidebar_animation.setDuration(duration)
-        sidebar_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
-        sidebar_animation.setStartValue(sidebar_start)
-        sidebar_animation.setEndValue(sidebar_end)
-        animation_group.addAnimation(sidebar_animation)
+        def _add_sidebar_dimension_animation(property_name: bytes) -> None:
+            """Animate *property_name* so the layout tracks the sidebar width every frame."""
+
+            animation = QPropertyAnimation(
+                self._ui.edit_sidebar,
+                property_name,
+                animation_group,
+            )
+            animation.setDuration(duration)
+            animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
+            animation.setStartValue(sidebar_start)
+            animation.setEndValue(sidebar_end)
+            animation_group.addAnimation(animation)
+
+        # Animate both the minimum and maximum width to identical values.  Keeping the bounds in
+        # lockstep ensures Qt's layout engine reallocates space smoothly instead of waiting for the
+        # animation to finish before it honours the sidebar's preferred size.
+        _add_sidebar_dimension_animation(b"minimumWidth")
+        _add_sidebar_dimension_animation(b"maximumWidth")
 
         if not entering:
             edit_header_fade = QPropertyAnimation(
@@ -766,9 +778,9 @@ class EditController(QObject):
             # Immediate transitions should update the UI synchronously so callers can assume the
             # state reflects the requested mode change as soon as this method returns.
             splitter.setSizes(splitter_end_sizes)
+            self._ui.edit_sidebar.setMinimumWidth(sidebar_end)
             self._ui.edit_sidebar.setMaximumWidth(sidebar_end)
             if entering:
-                self._ui.edit_sidebar.setMinimumWidth(self._edit_sidebar_minimum_width)
                 self._ui.edit_sidebar.updateGeometry()
             else:
                 self._edit_header_opacity.setOpacity(0.0)
