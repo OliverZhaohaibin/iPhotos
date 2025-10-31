@@ -6,7 +6,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QSize
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QImage, QImageReader, QPixmap
 
 from ...utils.deps import load_pillow
@@ -35,19 +35,29 @@ def load_qimage(source: Path, target: QSize | None = None) -> Optional[QImage]:
     if target is not None and target.isValid() and not target.isEmpty():
         original_size = reader.size()
         if original_size.isValid() and not original_size.isEmpty():
-            # ``QImageReader`` will happily upscale when ``setScaledSize`` is asked
-            # for a larger frame.  We only downscale here so callers continue to
-            # receive pristine results for small assets.
+            # ``QImageReader.setScaledSize`` always interprets the requested
+            # dimensions literally, even when that would distort the image.  We
+            # pre-compute a size that preserves the source aspect ratio so the
+            # decoder performs a proportional downscale rather than stretching to
+            # fill the viewport bounds supplied by the caller.
+            scaled_target = original_size.scaled(
+                target,
+                Qt.AspectRatioMode.KeepAspectRatio,
+            )
+            # Only request scaling when the destination is genuinely smaller; this
+            # avoids unnecessary interpolation for thumbnails that are already
+            # below the desired output resolution.
             if (
-                target.width() < original_size.width()
-                or target.height() < original_size.height()
+                scaled_target.width() < original_size.width()
+                or scaled_target.height() < original_size.height()
             ):
-                reader.setScaledSize(target)
+                reader.setScaledSize(scaled_target)
         else:
-            # Some formats only disclose their intrinsic size during ``read``;
-            # for those we optimistically ask Qt to scale and fall back to the
-            # original resolution if the decoder declines.
-            reader.setScaledSize(target)
+            # Some formats only disclose their intrinsic size during ``read``. In
+            # those cases we skip ``setScaledSize`` entirely to avoid guessing an
+            # aspect ratio that might be wildly incorrect.  The caller will still
+            # downscale the resulting pixmap once Qt reports the true dimensions.
+            pass
     image = reader.read()
     if not image.isNull():
         return image
