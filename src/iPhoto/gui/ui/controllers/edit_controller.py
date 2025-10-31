@@ -295,17 +295,33 @@ class EditController(QObject):
 
         self.editingStarted.emit(source)
 
-    def leave_edit_mode(self) -> None:
-        """Return to the standard detail view without persisting changes."""
+    def leave_edit_mode(self, animate: bool = True) -> None:
+        """Return to the standard detail view, optionally animating the transition."""
 
         self._cancel_pending_previews()
         if self._transition_direction == "exit":
             return
         if not self._view_controller.is_edit_view_active() and self._transition_direction != "enter":
             return
+
+        # Ensure the preview surface shows the latest adjusted frame before any widgets start
+        # disappearing so the user never sees a partially restored original.
         self._handle_compare_released()
+
+        # Capture the edit sidebar's live geometry prior to hiding the edit stack so the exit
+        # animation (or the immediate geometry jump in the no-animation path) starts from the
+        # on-screen width that the user observed during editing.
         self._prepare_edit_sidebar_for_exit()
-        self._start_transition_animation(entering=False)
+
+        # Switch back to the detail view before the splitter begins expanding the navigation
+        # sidebar.  The detail layout is designed to resize alongside the splitter whereas the
+        # edit page would simply be compressed, producing the visual "jump" the user reported.
+        self._view_controller.show_detail_view()
+        self._ui.detail_chrome_container.show()
+        self._restore_header_widgets_after_edit()
+        self._ui.edit_header_container.hide()
+
+        self._start_transition_animation(entering=False, animate=animate)
 
     # ------------------------------------------------------------------
     def _handle_session_changed(self, values: dict) -> None:
@@ -504,7 +520,7 @@ class EditController(QObject):
         # Ensure no delayed preview runs after committing the adjustments.
         self._cancel_pending_previews()
         if self._session is None or self._current_source is None:
-            self.leave_edit_mode()
+            self.leave_edit_mode(animate=True)
             return
         # Store the source path locally before ``leave_edit_mode`` clears the
         # controller state.  The detail player needs the same asset path to
@@ -529,7 +545,7 @@ class EditController(QObject):
         # restored so the gallery does not briefly become the active view while
         # its thumbnails refresh in the background.
         self._schedule_thumbnail_refresh(source)
-        self.leave_edit_mode()
+        self.leave_edit_mode(animate=True)
         # ``display_image`` schedules an asynchronous reload; logging the
         # boolean result would not improve the UX, so simply trigger it and
         # fall back to the playlist selection handlers if scheduling fails.
@@ -628,6 +644,7 @@ class EditController(QObject):
         *,
         entering: bool,
         splitter_start_sizes: list[int] | None = None,
+        animate: bool = True,
     ) -> None:
         """Animate the splitter and sidebar between detail and edit layouts."""
 
@@ -646,6 +663,11 @@ class EditController(QObject):
         if total <= 0:
             total = max(1, splitter.width())
 
+        # Preserve a single code path for animated and instant transitions.  Qt treats a
+        # zero-duration animation as "apply the end state immediately" while still emitting
+        # the usual ``finished`` signal, which keeps the controller's cleanup logic identical.
+        duration = 250 if animate else 0
+
         if entering:
             splitter_end_sizes = self._sanitise_splitter_sizes([0, total], total=total)
             sidebar_start = 0
@@ -657,11 +679,7 @@ class EditController(QObject):
                 # Fall back to a 25/75 split that mirrors the typical navigation layout.
                 fallback_left = max(int(total * 0.25), 1)
                 splitter_end_sizes = self._sanitise_splitter_sizes([fallback_left, total - fallback_left], total=total)
-            sidebar_start = max(
-                self._ui.edit_sidebar.maximumWidth(),
-                self._ui.edit_sidebar.width(),
-                self._edit_sidebar_preferred_width,
-            )
+            sidebar_start = self._ui.edit_sidebar.width()
             sidebar_end = 0
 
         sidebar_start = int(sidebar_start)
@@ -673,23 +691,29 @@ class EditController(QObject):
             b"sizes",
             animation_group,
         )
-        splitter_animation.setDuration(250)
+        splitter_animation.setDuration(duration)
         splitter_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
         splitter_animation.setStartValue(splitter_start_sizes)
         splitter_animation.setEndValue(splitter_end_sizes)
 
-        sidebar_animation = QPropertyAnimation(
-            self._ui.edit_sidebar,
-            b"maximumWidth",
-            animation_group,
-        )
-        sidebar_animation.setDuration(250)
-        sidebar_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
-        sidebar_animation.setStartValue(sidebar_start)
-        sidebar_animation.setEndValue(sidebar_end)
-
         animation_group.addAnimation(splitter_animation)
-        animation_group.addAnimation(sidebar_animation)
+
+        if entering:
+            sidebar_animation = QPropertyAnimation(
+                self._ui.edit_sidebar,
+                b"maximumWidth",
+                animation_group,
+            )
+            sidebar_animation.setDuration(duration)
+            sidebar_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
+            sidebar_animation.setStartValue(sidebar_start)
+            sidebar_animation.setEndValue(sidebar_end)
+            animation_group.addAnimation(sidebar_animation)
+        else:
+            # With the detail page already visible the edit sidebar is hidden from the user.
+            # Collapsing it immediately prevents a redundant animation that would otherwise
+            # waste a frame compressing an invisible widget.
+            self._ui.edit_sidebar.hide()
         animation_group.finished.connect(self._on_transition_finished)
 
         self._transition_direction = "enter" if entering else "exit"
@@ -733,11 +757,6 @@ class EditController(QObject):
         sidebar.setMinimumWidth(0)
         sidebar.setMaximumWidth(0)
         sidebar.updateGeometry()
-
-        self._restore_header_widgets_after_edit()
-        self._ui.edit_header_container.hide()
-        self._view_controller.show_detail_view()
-        self._ui.detail_chrome_container.show()
 
         if self._splitter_sizes_before_edit:
             # Restore the exact proportions the navigation and content panes had before
