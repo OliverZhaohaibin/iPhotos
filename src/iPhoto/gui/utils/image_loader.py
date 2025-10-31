@@ -6,7 +6,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QBuffer, QIODevice, QSize
+from PySide6.QtCore import QSize
 from PySide6.QtGui import QImage, QImageReader, QPixmap
 
 from ...utils.deps import load_pillow
@@ -25,31 +25,30 @@ else:  # pragma: no cover - executed when Pillow is unavailable
 def load_qimage(source: Path, target: QSize | None = None) -> Optional[QImage]:
     """Return a :class:`QImage` for *source* with optional scaling."""
 
-    buffer: QBuffer | None = None
-    try:
-        # Reading the bytes eagerly guarantees that Qt sees the newest file
-        # contents even when the platform caches file handles aggressively.
-        # We then wrap the bytes in a ``QBuffer`` so ``QImageReader`` can still
-        # apply EXIF-based auto transforms and efficient scaling.
-        data = source.read_bytes()
-    except OSError:
-        reader = QImageReader(str(source))
-    else:
-        buffer = QBuffer()
-        buffer.setData(data)
-        if buffer.open(QIODevice.ReadOnly):
-            reader = QImageReader(buffer)
-        else:
-            # Falling back to reading directly from the file path keeps the
-            # loader resilient when Qt cannot open the in-memory buffer.
-            buffer = None
-            reader = QImageReader(str(source))
+    # ``QImageReader`` is most efficient when it can stream directly from the
+    # filename because many formats (JPEG, HEIC, etc.) expose fast-paths for
+    # downscaling during decode.  Reading the bytes eagerly would defeat those
+    # optimisations, so we prefer to hand the path to Qt and only fall back to
+    # Pillow if decoding fails entirely.
+    reader = QImageReader(str(source))
     reader.setAutoTransform(True)
     if target is not None and target.isValid() and not target.isEmpty():
-        reader.setScaledSize(target)
+        original_size = reader.size()
+        if original_size.isValid() and not original_size.isEmpty():
+            # ``QImageReader`` will happily upscale when ``setScaledSize`` is asked
+            # for a larger frame.  We only downscale here so callers continue to
+            # receive pristine results for small assets.
+            if (
+                target.width() < original_size.width()
+                or target.height() < original_size.height()
+            ):
+                reader.setScaledSize(target)
+        else:
+            # Some formats only disclose their intrinsic size during ``read``;
+            # for those we optimistically ask Qt to scale and fall back to the
+            # original resolution if the decoder declines.
+            reader.setScaledSize(target)
     image = reader.read()
-    if buffer is not None:
-        buffer.close()
     if not image.isNull():
         return image
     return _load_with_pillow(source, target)

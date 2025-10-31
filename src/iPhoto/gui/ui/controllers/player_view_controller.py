@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional, Set
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
+from PySide6.QtCore import QObject, QRunnable, QSize, QThreadPool, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QStackedWidget, QWidget
 
@@ -30,17 +30,28 @@ class _AdjustedImageSignals(QObject):
 class _AdjustedImageWorker(QRunnable):
     """Load and tone-map an image on a background thread."""
 
-    def __init__(self, source: Path, signals: _AdjustedImageSignals) -> None:
+    def __init__(
+        self,
+        source: Path,
+        signals: _AdjustedImageSignals,
+        target_size: QSize | None,
+    ) -> None:
         super().__init__()
         self.setAutoDelete(False)
         self._source = source
         self._signals = signals
+        self._target_size = target_size
 
     def run(self) -> None:  # pragma: no cover - executed on a worker thread
         """Perform the expensive image work outside the GUI thread."""
 
         try:
-            image = image_loader.load_qimage(self._source)
+            target = self._target_size
+            if target is not None and (not target.isValid() or target.isEmpty()):
+                # A defensive guard keeps Qt from attempting to scale to invalid
+                # sizes when the caller could not determine a meaningful target.
+                target = None
+            image = image_loader.load_qimage(self._source, target)
         except Exception as exc:  # pragma: no cover - Qt loader errors are rare
             self._signals.failed.emit(self._source, str(exc))
             return
@@ -148,7 +159,25 @@ class PlayerViewController(QObject):
         self.show_image_surface()
 
         signals = _AdjustedImageSignals()
-        worker = _AdjustedImageWorker(source, signals)
+
+        # Requesting an image that roughly matches the viewport dramatically
+        # reduces decode and adjustment costs for high-resolution originals
+        # while still allowing Pillow fallbacks to operate at full fidelity when
+        # the size is unavailable.  We copy the ``QSize`` so worker threads never
+        # access a widget instance from outside the GUI thread.
+        viewport_size: QSize | None = None
+        try:
+            candidate = self._image_viewer.viewport_widget().size()
+        except Exception:
+            candidate = QSize()
+        if candidate.isValid() and not candidate.isEmpty():
+            viewport_size = QSize(candidate)
+        else:
+            fallback = self._player_stack.size()
+            if fallback.isValid() and not fallback.isEmpty():
+                viewport_size = QSize(fallback)
+
+        worker = _AdjustedImageWorker(source, signals, viewport_size)
         self._active_workers.add(worker)
 
         signals.completed.connect(self._on_adjusted_image_ready)
