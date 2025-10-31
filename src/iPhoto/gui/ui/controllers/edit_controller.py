@@ -19,6 +19,7 @@ from PySide6.QtCore import (
     Signal,
 )
 from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtWidgets import QGraphicsOpacityEffect
 
 from ....core.preview_backends import PreviewBackend, PreviewSession, select_preview_backend
 from ....io import sidecar
@@ -212,6 +213,17 @@ class EditController(QObject):
         self._transition_group: QParallelAnimationGroup | None = None
         self._transition_direction: str | None = None
 
+        # ``QGraphicsOpacityEffect`` allows the controller to cross-fade the edit and detail
+        # headers without restructuring the layout tree.  Storing the effects avoids repeated
+        # allocations and keeps the opacity state accessible to the transition helpers.
+        self._edit_header_opacity = QGraphicsOpacityEffect(ui.edit_header_container)
+        self._edit_header_opacity.setOpacity(1.0)
+        ui.edit_header_container.setGraphicsEffect(self._edit_header_opacity)
+
+        self._detail_header_opacity = QGraphicsOpacityEffect(ui.detail_chrome_container)
+        self._detail_header_opacity.setOpacity(1.0)
+        ui.detail_chrome_container.setGraphicsEffect(self._detail_header_opacity)
+
         # Timer used to debounce expensive preview rendering so the UI thread
         # stays responsive while the user drags a slider continuously.
         self._preview_update_timer = QTimer(self)
@@ -283,8 +295,13 @@ class EditController(QObject):
         self._set_mode("adjust")
         self._start_preview_job()
 
+        # Reset the header opacity so the detail chrome is fully visible the next time the
+        # detail view appears.  The container is hidden immediately afterwards so the edit
+        # controls can occupy the toolbar area during the edit session.
+        self._detail_header_opacity.setOpacity(1.0)
         self._ui.detail_chrome_container.hide()
         self._move_header_widgets_for_edit()
+        self._edit_header_opacity.setOpacity(1.0)
         self._ui.edit_header_container.show()
 
         splitter_sizes = self._sanitise_splitter_sizes(self._ui.splitter.sizes())
@@ -313,13 +330,17 @@ class EditController(QObject):
         # on-screen width that the user observed during editing.
         self._prepare_edit_sidebar_for_exit()
 
-        # Switch back to the detail view before the splitter begins expanding the navigation
-        # sidebar.  The detail layout is designed to resize alongside the splitter whereas the
-        # edit page would simply be compressed, producing the visual "jump" the user reported.
-        self._view_controller.show_detail_view()
+        # Keep the edit page visible while the transition plays so the splitter can push the
+        # preview surface smoothly.  Cross-fade the headers instead of swapping the stacked
+        # widget immediately to avoid the visual "jump" reported by the user.
         self._ui.detail_chrome_container.show()
-        self._restore_header_widgets_after_edit()
-        self._ui.edit_header_container.hide()
+        if animate:
+            self._detail_header_opacity.setOpacity(0.0)
+            self._edit_header_opacity.setOpacity(1.0)
+        else:
+            self._detail_header_opacity.setOpacity(1.0)
+            self._edit_header_opacity.setOpacity(0.0)
+        self._ui.edit_header_container.show()
 
         self._start_transition_animation(entering=False, animate=animate)
 
@@ -646,7 +667,7 @@ class EditController(QObject):
         splitter_start_sizes: list[int] | None = None,
         animate: bool = True,
     ) -> None:
-        """Animate the splitter and sidebar between detail and edit layouts."""
+        """Animate the splitter, edit sidebar, and header cross-fade."""
 
         if self._transition_group is not None:
             # Stop any in-flight transition so the new animation starts from the current
@@ -698,26 +719,58 @@ class EditController(QObject):
 
         animation_group.addAnimation(splitter_animation)
 
-        if entering:
-            sidebar_animation = QPropertyAnimation(
-                self._ui.edit_sidebar,
-                b"maximumWidth",
+        sidebar_animation = QPropertyAnimation(
+            self._ui.edit_sidebar,
+            b"maximumWidth",
+            animation_group,
+        )
+        sidebar_animation.setDuration(duration)
+        sidebar_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        sidebar_animation.setStartValue(sidebar_start)
+        sidebar_animation.setEndValue(sidebar_end)
+        animation_group.addAnimation(sidebar_animation)
+
+        if not entering:
+            edit_header_fade = QPropertyAnimation(
+                self._edit_header_opacity,
+                b"opacity",
                 animation_group,
             )
-            sidebar_animation.setDuration(duration)
-            sidebar_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
-            sidebar_animation.setStartValue(sidebar_start)
-            sidebar_animation.setEndValue(sidebar_end)
-            animation_group.addAnimation(sidebar_animation)
-        else:
-            # With the detail page already visible the edit sidebar is hidden from the user.
-            # Collapsing it immediately prevents a redundant animation that would otherwise
-            # waste a frame compressing an invisible widget.
-            self._ui.edit_sidebar.hide()
+            edit_header_fade.setDuration(duration)
+            edit_header_fade.setEasingCurve(QEasingCurve.Type.InOutQuad)
+            edit_header_fade.setStartValue(self._edit_header_opacity.opacity())
+            edit_header_fade.setEndValue(0.0)
+            animation_group.addAnimation(edit_header_fade)
+
+            detail_header_fade = QPropertyAnimation(
+                self._detail_header_opacity,
+                b"opacity",
+                animation_group,
+            )
+            detail_header_fade.setDuration(duration)
+            detail_header_fade.setEasingCurve(QEasingCurve.Type.InOutQuad)
+            detail_header_fade.setStartValue(self._detail_header_opacity.opacity())
+            detail_header_fade.setEndValue(1.0)
+            animation_group.addAnimation(detail_header_fade)
+
         animation_group.finished.connect(self._on_transition_finished)
 
         self._transition_direction = "enter" if entering else "exit"
         self._transition_group = animation_group
+        if duration == 0:
+            # Immediate transitions should update the UI synchronously so callers can assume the
+            # state reflects the requested mode change as soon as this method returns.
+            self._splitter_animation_adapter.sizes = splitter_end_sizes
+            self._ui.edit_sidebar.setMaximumWidth(sidebar_end)
+            if entering:
+                self._ui.edit_sidebar.setMinimumWidth(self._edit_sidebar_minimum_width)
+                self._ui.edit_sidebar.updateGeometry()
+            else:
+                self._edit_header_opacity.setOpacity(0.0)
+                self._detail_header_opacity.setOpacity(1.0)
+            self._on_transition_finished()
+            return
+
         animation_group.start()
 
     def _on_transition_finished(self) -> None:
@@ -757,6 +810,18 @@ class EditController(QObject):
         sidebar.setMinimumWidth(0)
         sidebar.setMaximumWidth(0)
         sidebar.updateGeometry()
+
+        # With the animation complete it is safe to switch the stacked widget back to the detail
+        # view.  Doing so earlier would compress the edit page mid-animation, producing the
+        # "jump" the user reported.  Restoring the shared toolbar widgets at the same time keeps
+        # the controls consistent with the now-visible header.
+        self._restore_header_widgets_after_edit()
+        self._view_controller.show_detail_view()
+        self._ui.detail_chrome_container.show()
+        self._detail_header_opacity.setOpacity(1.0)
+
+        self._ui.edit_header_container.hide()
+        self._edit_header_opacity.setOpacity(1.0)
 
         if self._splitter_sizes_before_edit:
             # Restore the exact proportions the navigation and content panes had before
