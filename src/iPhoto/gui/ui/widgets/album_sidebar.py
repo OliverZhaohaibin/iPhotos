@@ -182,7 +182,11 @@ class AlbumSidebar(QWidget):
         self._title = QLabel("Basic Library")
         self._title.setObjectName("albumSidebarTitle")
         self._title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self._title.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        # ``Ignored`` allows the label to be compressed below its size hint so the navigation
+        # pane can animate all the way to zero width without the title text imposing a hard
+        # minimum size.  The text will be elided once the layout becomes narrower than the
+        # rendered string, which keeps the animation visually smooth.
+        self._title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         title_font = QFont(self._title.font())
         title_font.setPointSizeF(title_font.pointSizeF() + 0.5)
         title_font.setBold(True)
@@ -201,7 +205,6 @@ class AlbumSidebar(QWidget):
         self._tree.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self._tree.doubleClicked.connect(self._on_double_clicked)
         self._tree.clicked.connect(self._on_clicked)
-        self._tree.setMinimumWidth(SIDEBAR_TREE_MIN_WIDTH)
         self._tree.setIndentation(0)
         self._tree.setIconSize(QSize(SIDEBAR_ICON_SIZE, SIDEBAR_ICON_SIZE))
         self._tree.setMouseTracking(True)
@@ -222,21 +225,26 @@ class AlbumSidebar(QWidget):
         self._tree.setAutoFillBackground(True)
         self._tree.setStyleSheet(SIDEBAR_TREE_STYLESHEET)
 
-        # Cache the default geometric constraints so the edit controller can relax them
-        # during animated transitions and restore the original layout afterwards.
-        self._default_sidebar_minimum_width = super().minimumWidth()
+        # Track the minimum width that should apply when the user resizes the splitter manually.
+        # The sidebar should never collapse completely in that situation, so we keep a computed
+        # "manual" minimum width and only relax it when an animated transition is in progress.
+        self._manual_minimum_width = max(
+            SIDEBAR_TREE_MIN_WIDTH,
+            self._title.sizeHint().width(),
+        )
         self._default_sidebar_maximum_width = super().maximumWidth()
-        self._default_tree_minimum_width = self._tree.minimumWidth()
-        # ``QLabel`` derives its minimum width from the rendered text.  We cache this value so
-        # the transition controller can temporarily relax it to zero during splitter animations
-        # and later restore the original geometry without losing the layout's preferred sizing.
-        self._default_title_minimum_width = self._title.minimumWidth()
+        self._minimum_width_relaxed = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(*SIDEBAR_LAYOUT_MARGIN)
         layout.setSpacing(SIDEBAR_LAYOUT_SPACING)
         layout.addWidget(self._title)
         layout.addWidget(self._tree, stretch=1)
+
+        # Apply the initial manual minimum width so the splitter respects the configured
+        # constraint during user-driven resizing.  This call also covers the case where Qt
+        # calculates a slightly different minimum width once the layout has been populated.
+        self._apply_current_minimum_width()
 
         self._model.modelReset.connect(self._on_model_reset)
         self._tree.filesDropped.connect(self._on_files_dropped)
@@ -247,23 +255,43 @@ class AlbumSidebar(QWidget):
     # Animation helpers
     # ------------------------------------------------------------------
     def relax_minimum_width_for_animation(self) -> None:
-        """Allow the sidebar shell and tree view to shrink to zero width."""
+        """Temporarily relax the sidebar so splitter animations can collapse it to zero."""
 
-        self.setMinimumWidth(0)
-        self._tree.setMinimumWidth(0)
-        # Allow the title label to compress as well so the sidebar shell can shrink all the way
-        # to zero pixels instead of stopping at the label's intrinsic width.
-        self._title.setMinimumWidth(0)
+        if self._minimum_width_relaxed:
+            return
+        self._minimum_width_relaxed = True
+        # When the relaxed flag is set we force the minimum width to zero so that the surrounding
+        # splitter can animate the pane without being clamped by our manual constraint.
+        self._apply_current_minimum_width()
 
     def restore_minimum_width_after_animation(self) -> None:
-        """Reapply the sidebar's default size constraints after an animation."""
+        """Reapply the manual minimum width once an animation has completed."""
 
-        self.setMinimumWidth(self._default_sidebar_minimum_width)
+        if not self._minimum_width_relaxed:
+            return
+        self._minimum_width_relaxed = False
+        # Refresh the manual constraint in case the title text (and therefore the size hint)
+        # changed while the sidebar was collapsed, then apply the non-relaxed minimum width.
+        self._refresh_manual_minimum_width()
         self.setMaximumWidth(self._default_sidebar_maximum_width)
-        self._tree.setMinimumWidth(self._default_tree_minimum_width)
-        # Restore the cached minimum width so the title text regains the spacing chosen by the
-        # base layout once the animation has finished.
-        self._title.setMinimumWidth(self._default_title_minimum_width)
+        self.updateGeometry()
+
+    def _apply_current_minimum_width(self) -> None:
+        """Synchronise the widget's minimum width with the current relaxation state."""
+
+        if self._minimum_width_relaxed:
+            self.setMinimumWidth(0)
+            return
+        self.setMinimumWidth(self._manual_minimum_width)
+
+    def _refresh_manual_minimum_width(self) -> None:
+        """Recalculate the manual minimum width based on the current title text."""
+
+        self._manual_minimum_width = max(
+            SIDEBAR_TREE_MIN_WIDTH,
+            self._title.sizeHint().width(),
+        )
+        self._apply_current_minimum_width()
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -303,6 +331,9 @@ class AlbumSidebar(QWidget):
             self._title.setText("Basic Library — not bound")
         else:
             self._title.setText(f"Basic Library — {root}")
+        # Recalculate the manual minimum so manual splitter drags continue to honour the
+        # configured width even if the displayed path becomes longer or shorter.
+        self._refresh_manual_minimum_width()
 
     def _on_selection_changed(self, _selected, _deselected) -> None:
         index = self._tree.currentIndex()
