@@ -35,11 +35,13 @@ def load_qimage(source: Path, target: QSize | None = None) -> Optional[QImage]:
     # Large libraries can end up decoding hundreds of images during a single
     # browsing session which would otherwise accumulate in that cache.  The
     # additional allocations not only increase peak memory usage but can also
-    # hold operating system file handles open.  Disabling the cache keeps the
-    # application's memory footprint predictable and avoids lingering locks on
-    # the original media files while still allowing higher level components to
-    # implement their own caching policies.
-    reader.setCacheEnabled(False)
+    # hold operating system file handles open.  Older PySide6 builds do not
+    # expose ``setCacheEnabled`` though, so we guard the call to keep the code
+    # compatible with those runtimes while still disabling the cache whenever
+    # the API is available.
+    disable_cache = getattr(reader, "setCacheEnabled", None)
+    if callable(disable_cache):
+        disable_cache(False)
     reader.setAutoTransform(True)
     if target is not None and target.isValid() and not target.isEmpty():
         original_size = reader.size()
