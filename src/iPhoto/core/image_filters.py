@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Mapping
+from typing import Mapping, Sequence
 
 from PySide6.QtGui import QImage, QColor
+
+from ..utils.deps import load_pillow
+
+
+_PILLOW_SUPPORT = load_pillow()
 
 
 # Mapping keys used throughout the editing pipeline.  The constants make it easy to
@@ -53,6 +58,14 @@ def apply_adjustments(image: QImage, adjustments: Mapping[str, float]) -> QImage
     # guaranteeing we never mutate the caller's instance in-place.
     result = image.convertToFormat(QImage.Format.Format_ARGB32)
 
+    # ``convertToFormat`` can return a shallow copy that still references the
+    # original pixel buffer when no conversion was required.  Creating an
+    # explicit deep copy ensures Qt allocates a dedicated, writable buffer so
+    # the fast adjustment path below never attempts to mutate a read-only view.
+    # Without this defensive copy, edits made to previously cached images could
+    # crash when the shared buffer exposes a read-only ``memoryview``.
+    result = result.copy()
+
     brilliance = float(adjustments.get("Brilliance", 0.0))
     exposure = float(adjustments.get("Exposure", 0.0))
     highlights = float(adjustments.get("Highlights", 0.0))
@@ -82,14 +95,32 @@ def apply_adjustments(image: QImage, adjustments: Mapping[str, float]) -> QImage
     exposure_term = exposure * 1.5
     brightness_term = brightness * 0.75
 
-    # ``brilliance`` targets mid-tones.  A positive value brightens mid-tones
-    # while a negative value deepens them.  Compute the strength once so it can
-    # be reused across channels.
+    # ``brilliance`` targets mid-tones while preserving highlights and deep
+    # shadows.  Computing the strength once keeps the lookup-table builder
+    # simple and avoids recalculating identical values inside tight loops.
     brilliance_strength = brilliance * 0.6
 
     # Pre-compute the contrast factor.  ``contrast`` is expressed as a delta
     # relative to the neutral slope of 1.0.
     contrast_factor = 1.0 + contrast
+
+    # A lookup table allows Pillow to apply the tone curve using C-optimised
+    # routines, dramatically reducing the time spent on large full-resolution
+    # images compared to the original Python double loop.  When Pillow is not
+    # available we gracefully fall back to the legacy buffer walker.
+    lut = _build_adjustment_lut(
+        exposure_term,
+        brightness_term,
+        brilliance_strength,
+        highlights,
+        shadows,
+        contrast_factor,
+        black_point,
+    )
+
+    transformed = _apply_adjustments_with_lut(result, lut)
+    if transformed is not None:
+        return transformed
 
     bytes_per_line = result.bytesPerLine()
 
@@ -127,6 +158,88 @@ def apply_adjustments(image: QImage, adjustments: Mapping[str, float]) -> QImage
         )
 
     return result
+
+
+def _build_adjustment_lut(
+    exposure: float,
+    brightness: float,
+    brilliance: float,
+    highlights: float,
+    shadows: float,
+    contrast_factor: float,
+    black_point: float,
+) -> list[int]:
+    """Pre-compute the tone curve for every possible 8-bit channel value."""
+
+    lut: list[int] = []
+    for channel_value in range(256):
+        normalised = channel_value / 255.0
+        adjusted = _apply_channel_adjustments(
+            normalised,
+            exposure,
+            brightness,
+            brilliance,
+            highlights,
+            shadows,
+            contrast_factor,
+            black_point,
+        )
+        lut.append(_float_to_uint8(adjusted))
+    return lut
+
+
+def _apply_adjustments_with_lut(image: QImage, lut: Sequence[int]) -> QImage | None:
+    """Attempt to transform *image* via a pre-computed lookup table."""
+
+    support = _PILLOW_SUPPORT
+    if support is None or support.Image is None or support.ImageQt is None:
+        return None
+
+    try:
+        width = image.width()
+        height = image.height()
+        bytes_per_line = image.bytesPerLine()
+
+        # ``_resolve_pixel_buffer`` already performs the heavy lifting required
+        # to expose a contiguous ``memoryview`` over the QImage data across the
+        # various Qt/Python binding permutations.  Reusing it avoids the
+        # ``setsize`` AttributeError that PySide raises (and which previously
+        # forced us down the slow fallback path).
+        view, buffer_guard = _resolve_pixel_buffer(image)
+
+        # Pillow is only interested in the raw byte sequence and copies it once
+        # we immediately call ``copy()`` on the resulting image.  Passing the
+        # ``memoryview`` directly therefore avoids an intermediate ``bytes``
+        # allocation while the guard keeps the underlying Qt wrapper alive long
+        # enough for Pillow to finish its own copy.
+        buffer = view if isinstance(view, memoryview) else memoryview(view)
+        guard = buffer_guard
+        _ = guard  # Explicitly anchor the guard for the duration of the call.
+        pil_image = support.Image.frombuffer(
+            "RGBA",
+            (width, height),
+            buffer,
+            "raw",
+            "BGRA",
+            bytes_per_line,
+            1,
+        ).copy()
+
+        # ``Image.point`` applies per-channel lookup tables in native code.  We
+        # reuse the same curve for RGB while preserving the alpha channel via an
+        # identity table to ensure transparency remains untouched.
+        alpha_table = list(range(256))
+        table: list[int] = list(lut) * 3 + alpha_table
+        pil_image = pil_image.point(table)
+
+        qt_image = QImage(support.ImageQt(pil_image))
+        if qt_image.format() != QImage.Format.Format_ARGB32:
+            qt_image = qt_image.convertToFormat(QImage.Format.Format_ARGB32)
+        return qt_image
+    except Exception:
+        # Pillow is optional; if anything goes wrong we fall back to the
+        # original buffer-walking implementation.
+        return None
 
 
 def _apply_adjustments_fast(

@@ -53,6 +53,11 @@ class MainController(QObject):
             self._dialog,
             self._view_manager.view_controller(),
         )
+        # The navigation controller is created after the edit controller, so
+        # provide the reference now that the instance exists.  This keeps the
+        # edit workflow free to coordinate sidebar suppression before it writes
+        # sidecar files on disk.
+        self._view_manager.edit_controller().set_navigation_controller(self._navigation)
         self._interaction = InteractionManager(
             window=window,
             context=context,
@@ -185,7 +190,6 @@ class MainController(QObject):
 
         ui.back_button.clicked.connect(self._handle_back_button_clicked)
         ui.edit_button.clicked.connect(self._edit_controller.begin_edit)
-
     # -----------------------------------------------------------------
     # Slots
     def _handle_open_album_dialog(self) -> None:
@@ -210,6 +214,11 @@ class MainController(QObject):
             self._navigation.should_suppress_tree_refresh()
             and self._navigation.is_all_photos_view()
         ):
+            # Sidebar reselections triggered by post-edit tree rebuilds should
+            # not yank the user back to the gallery.  Releasing the suppression
+            # after skipping the automatic callback keeps subsequent user-driven
+            # clicks responsive.
+            self._navigation.release_tree_refresh_suppression_if_edit()
             return
         self._map_controller.hide_map_view()
         self._selection_controller.set_selection_mode(False)
@@ -219,6 +228,7 @@ class MainController(QObject):
         if self._navigation.should_suppress_tree_refresh():
             current_static = self._navigation.static_selection()
             if current_static and current_static.casefold() == title.casefold():
+                self._navigation.release_tree_refresh_suppression_if_edit()
                 return
 
         self._selection_controller.set_selection_mode(False)
@@ -339,6 +349,7 @@ class MainController(QObject):
             if current_album is not None:
                 try:
                     if current_album.root.resolve() == Path(path).resolve():
+                        self._navigation.release_tree_refresh_suppression_if_edit()
                         return
                 except OSError:
                     pass

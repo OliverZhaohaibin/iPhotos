@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Mapping, Optional
+from typing import Mapping, Optional, TYPE_CHECKING
 
 from PySide6.QtCore import QObject, QThreadPool, QRunnable, Signal, QTimer, Qt
 from PySide6.QtGui import QImage, QPixmap
@@ -18,6 +18,9 @@ from ..tasks.thumbnail_loader import ThumbnailLoader
 from ..ui_main_window import Ui_MainWindow
 from .player_view_controller import PlayerViewController
 from .view_controller import ViewController
+
+if TYPE_CHECKING:  # pragma: no cover - import for typing only
+    from .navigation_controller import NavigationController
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -87,6 +90,8 @@ class EditController(QObject):
         playlist,
         asset_model: AssetModel,
         parent: Optional[QObject] = None,
+        *,
+        navigation: "NavigationController" | None = None,
     ) -> None:
         super().__init__(parent)
         self._ui = ui
@@ -94,7 +99,18 @@ class EditController(QObject):
         self._player_view = player_view
         self._playlist = playlist
         self._asset_model = asset_model
+        # ``_navigation`` is injected lazily so the controller can coordinate
+        # with :class:`NavigationController` without creating an import cycle
+        # during startup.  The reference stays optional because unit tests may
+        # exercise the edit workflow without bootstrapping the full GUI stack.
+        self._navigation: "NavigationController" | None = navigation
         self._thumbnail_loader: ThumbnailLoader = asset_model.thumbnail_loader()
+        # ``_pending_thumbnail_refreshes`` tracks relative asset identifiers with
+        # a refresh queued via :meth:`_schedule_thumbnail_refresh`.  Deferring
+        # the cache invalidation keeps the detail pane visible when edits are
+        # saved, preventing the grid view from temporarily reclaiming focus just
+        # so it can reload its thumbnails.
+        self._pending_thumbnail_refreshes: set[str] = set()
 
         self._preview_backend: PreviewBackend = select_preview_backend()
         _LOGGER.info("Initialised edit preview backend: %s", self._preview_backend.tier_name)
@@ -208,6 +224,40 @@ class EditController(QObject):
         # Incrementing the job identifier causes any in-flight worker results to
         # be ignored once they finish.
         self._preview_job_id += 1
+
+        # ``_PreviewWorker`` instances keep a strong reference to the signals
+        # object that in turn owns the connections back to this controller.  The
+        # global thread pool does not offer a way to cancel queued runnables, so
+        # we proactively sever those connections and drop our strong references.
+        # Doing so ensures the worker can finish at its leisure without keeping
+        # the edit controller, the preview session, or large intermediate images
+        # alive indefinitely.
+        for worker in list(self._active_preview_workers):
+            signals = getattr(worker, "_signals", None)
+            if signals is not None:
+                try:
+                    # Disconnect the completion signal from the slot on this
+                    # controller.  Qt raises ``TypeError`` when the link was
+                    # never created and ``RuntimeError`` when it has already
+                    # been severed, so both cases are silently ignored.
+                    signals.finished.disconnect(self._on_preview_ready)
+                except (TypeError, RuntimeError):
+                    pass
+                # Mark the signal helper for deletion on the GUI thread once
+                # control returns to the event loop.  This avoids destroying
+                # QObject instances from worker threads.
+                signals.deleteLater()
+                # Drop the back-reference from the worker to the signal helper
+                # so Python's garbage collector can reclaim both objects once
+                # the worker finishes executing.
+                setattr(worker, "_signals", None)
+            # Allow the QRunnable to clean itself up after ``run`` completes so
+            # the thread pool does not retain it longer than necessary.
+            worker.setAutoDelete(True)
+        # Clearing the set removes our strong references which breaks the final
+        # reference cycle.  Any worker that is still running will complete and
+        # be destroyed automatically without holding on to the controller.
+        self._active_preview_workers.clear()
 
     def _start_preview_job(self) -> None:
         """Queue a background task that recalculates the preview image."""
@@ -337,12 +387,35 @@ class EditController(QObject):
         if self._session is None or self._current_source is None:
             self.leave_edit_mode()
             return
+        # Store the source path locally before ``leave_edit_mode`` clears the
+        # controller state.  The detail player needs the same asset path to
+        # reload the freshly saved adjustments once the edit chrome is hidden.
+        source = self._current_source
+        # Capture the rendered preview so the detail view can reuse it while
+        # the background worker recalculates the full-resolution frame.  A copy
+        # keeps the pixmap alive after the edit widgets tear down their state.
+        preview_pixmap = self._ui.edit_image_viewer.pixmap()
         adjustments = self._session.values()
-        sidecar.save_adjustments(self._current_source, adjustments)
-        self._refresh_thumbnail_cache(self._current_source)
+        if self._navigation is not None:
+            # Saving adjustments writes sidecar files, which triggers the
+            # filesystem watcher to rebuild the sidebar tree.  That rebuild
+            # reselects the active collection ("All Photos", etc.) and would
+            # otherwise emit navigation signals that yank the UI back to the
+            # gallery.  Arm the suppression guard *before* touching the disk so
+            # those callbacks are ignored until the detail surface finishes
+            # updating.
+            self._navigation.suppress_tree_refresh_for_edit()
+        sidecar.save_adjustments(source, adjustments)
+        # Defer cache invalidation until after the detail surface has been
+        # restored so the gallery does not briefly become the active view while
+        # its thumbnails refresh in the background.
+        self._schedule_thumbnail_refresh(source)
         self.leave_edit_mode()
-        self._player_view.display_image(self._current_source)
-        self.editingFinished.emit(self._current_source)
+        # ``display_image`` schedules an asynchronous reload; logging the
+        # boolean result would not improve the UX, so simply trigger it and
+        # fall back to the playlist selection handlers if scheduling fails.
+        self._player_view.display_image(source, placeholder=preview_pixmap)
+        self.editingFinished.emit(source)
 
     def _refresh_thumbnail_cache(self, source: Path) -> None:
         metadata = self._asset_model.source_model().metadata_for_absolute_path(source)
@@ -351,11 +424,44 @@ class EditController(QObject):
         rel_value = metadata.get("rel")
         if not rel_value:
             return
-        rel = str(rel_value)
+        self._refresh_thumbnail_cache_for_rel(str(rel_value))
+
+    def _refresh_thumbnail_cache_for_rel(self, rel: str) -> None:
+        """Invalidate cached thumbnails identified by *rel*."""
+
+        if not rel:
+            return
         source_model = self._asset_model.source_model()
         if hasattr(source_model, "invalidate_thumbnail"):
             source_model.invalidate_thumbnail(rel)
         self._thumbnail_loader.invalidate(rel)
+
+    def _schedule_thumbnail_refresh(self, source: Path) -> None:
+        """Refresh thumbnails for *source* on the next event loop turn.
+
+        The deferment avoids jarring view changes that occur when the gallery
+        reacts to cache invalidation while the user is still focused on the
+        detail surface.
+        """
+
+        metadata = self._asset_model.source_model().metadata_for_absolute_path(source)
+        if metadata is None:
+            return
+        rel_value = metadata.get("rel")
+        if not rel_value:
+            return
+        rel = str(rel_value)
+        if rel in self._pending_thumbnail_refreshes:
+            return
+
+        def _run_refresh(rel_key: str) -> None:
+            try:
+                self._refresh_thumbnail_cache_for_rel(rel_key)
+            finally:
+                self._pending_thumbnail_refreshes.discard(rel_key)
+
+        self._pending_thumbnail_refreshes.add(rel)
+        QTimer.singleShot(0, lambda rel_key=rel: _run_refresh(rel_key))
 
     def _handle_mode_change(self, mode: str, checked: bool) -> None:
         if not checked:
@@ -375,3 +481,14 @@ class EditController(QObject):
     def _handle_playlist_change(self) -> None:
         if self._view_controller.is_edit_view_active():
             self.leave_edit_mode()
+    def set_navigation_controller(self, navigation: "NavigationController") -> None:
+        """Attach the navigation controller after construction.
+
+        The main window builds the view controllers before wiring the
+        navigation stack.  Providing a setter keeps the constructor flexible
+        while still allowing the edit workflow to coordinate suppression of
+        sidebar-driven navigation callbacks when adjustments are saved.
+        """
+
+        self._navigation = navigation
+

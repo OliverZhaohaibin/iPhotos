@@ -122,21 +122,23 @@ class PlaybackController:
         self._state_manager.begin_transition()
         self._media.stop()
 
-        # Postpone the media loading work until the next event loop iteration
-        # so quick successive selections keep the UI responsive.
-        QTimer.singleShot(0, lambda: self._load_new_source(source, previous_state))
+        # Load the new source immediately.  Deferring via ``QTimer.singleShot``
+        # meant the heavy ``currentChanged`` UI updates from the model ran to
+        # completion *before* we even queued the media work, which made preview
+        # activation feel sluggish.  Running the load in the same event loop
+        # turn keeps the visual transition and media hand-off tightly coupled.
+        self._load_new_source(source, previous_state)
 
     def _load_new_source(self, source: Path, previous_state: object) -> None:
-        """Carry out the deferred media loading after debouncing completes."""
+        """Finalise media loading after a playlist change has been committed."""
 
-        # ``_load_new_source`` executes after a short delay so the UI stays
-        # responsive while the user scrolls through assets.  By the time the
-        # callback runs the active view may have changed (for example the user
-        # could have switched to the map or gallery view).  Attempting to load
-        # media into a hidden/invalid surface in that situation confuses the
-        # underlying ``QMediaPlayer`` and results in spurious "Could not load"
-        # error dialogs.  Bail out early when the detail view is no longer
-        # visible and return the state manager to a stable idle configuration.
+        # Even though ``handle_playlist_source_changed`` now invokes this helper
+        # immediately, selection changes can still be deferred via
+        # ``_perform_delayed_load`` while the user scrolls quickly.  By the time
+        # this method executes the UI might have switched back to a gallery or
+        # map view, so attempting to drive the player would target hidden
+        # widgets.  Bail out early in that scenario and reset the playback state
+        # to avoid confusing the underlying ``QMediaPlayer``.
         if not self._view_controller.is_detail_view_active():
             if self._state_manager.is_transitioning():
                 self._state_manager.reset(
