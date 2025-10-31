@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QLabel,
+    QSizePolicy,
     QSlider,
     QVBoxLayout,
     QWidget,
@@ -124,7 +125,11 @@ class _SliderRow(QFrame):
 
         self.value_label = QLabel("0.00", self)
         self.value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.value_label.setMinimumWidth(48)
+        # The value read-out previously enforced a 48px minimum width, which prevented the
+        # surrounding layout from shrinking during the sidebar collapse animation.  Allow Qt to
+        # squeeze the label instead so the entire control stack can be animated smoothly while
+        # keeping enough horizontal stretch to display the formatted value when space permits.
+        self.value_label.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Preferred)
 
         layout.addWidget(self.name_label, 0, 0)
         layout.addWidget(self.slider, 0, 1)
