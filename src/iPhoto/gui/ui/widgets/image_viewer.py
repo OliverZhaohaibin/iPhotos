@@ -42,10 +42,19 @@ class ImageViewer(QWidget):
         self._pixmap: Optional[QPixmap] = None
         self._label = QLabel(self)
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Use a ``Fixed`` size policy along both axes so the scroll area honours
+        # whichever explicit dimensions we assign to the label.  Allowing Qt to
+        # treat the widget as resizable encourages it to stretch the pixmap to
+        # fill the viewport, which distorts photos whose aspect ratio differs
+        # from the window.
         self._label.setSizePolicy(
-            QSizePolicy.Policy.Ignored,
-            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Fixed,
         )
+        # ``scaledContents`` defaults to ``False`` but we set it explicitly to
+        # document the intent that the pixmap should never be stretched to cover
+        # the widget's rectangle.
+        self._label.setScaledContents(False)
 
         self._scroll_area = QScrollArea(self)
         self._scroll_area.setWidgetResizable(False)
@@ -108,7 +117,9 @@ class ImageViewer(QWidget):
         self._pixmap = pixmap
         if self._pixmap is None or self._pixmap.isNull():
             self._label.clear()
-            self._label.setMinimumSize(0, 0)
+            # Collapse the label to a zero-sized footprint so the scroll area
+            # does not retain stale minimum dimensions from the previous image.
+            self._label.setFixedSize(0, 0)
             self._base_size = None
             # Notify observers that the zoom factor has reset along with the pixmap
             # content so UI controls (such as sliders) stay in sync with the cleared
@@ -143,7 +154,9 @@ class ImageViewer(QWidget):
 
         self._pixmap = None
         self._label.clear()
-        self._label.setMinimumSize(0, 0)
+        # Reset the label to an empty frame to avoid inherited geometry forcing
+        # subsequent renders to occupy an incorrect aspect ratio.
+        self._label.setFixedSize(0, 0)
         self._base_size = None
         self._zoom_factor = 1.0
         self.zoomChanged.emit(self._zoom_factor)
@@ -346,7 +359,7 @@ class ImageViewer(QWidget):
     ) -> None:
         if self._pixmap is None or self._pixmap.isNull():
             self._label.clear()
-            self._label.setMinimumSize(0, 0)
+            self._label.setFixedSize(0, 0)
             self._base_size = None
             return
 
@@ -357,7 +370,7 @@ class ImageViewer(QWidget):
         pix_size = self._pixmap.size()
         if pix_size.isEmpty():
             self._label.clear()
-            self._label.setMinimumSize(0, 0)
+            self._label.setFixedSize(0, 0)
             self._base_size = None
             return
 
@@ -381,8 +394,10 @@ class ImageViewer(QWidget):
             Qt.TransformationMode.SmoothTransformation,
         )
         self._label.setPixmap(scaled)
-        self._label.resize(scaled.size())
-        self._label.setMinimumSize(scaled.size())
+        # Match the label's geometry exactly to the scaled pixmap so Qt does
+        # not perform any additional scaling when laying the widget out inside
+        # the scroll area.
+        self._label.setFixedSize(scaled.size())
 
         h_bar = self._scroll_area.horizontalScrollBar()
         v_bar = self._scroll_area.verticalScrollBar()
