@@ -292,6 +292,38 @@ class LibraryManager(QObject):
         if not normalized:
             return None
         needle = normalized.casefold()
+
+        # The library root is not included in ``self._nodes`` because the tree
+        # structure focuses on first- and second-level albums.  However,
+        # trashed assets can originate directly from the root (for example when
+        # deleted via the "All Photos" aggregate view).  Those entries store
+        # the root's UUID, so we need to compare against the root manifest
+        # explicitly before scanning child nodes.
+        root = self._root
+        if root is not None:
+            manifest_path = self._find_manifest(root)
+            if manifest_path is not None:
+                try:
+                    data = read_json(manifest_path)
+                except Exception as exc:  # pragma: no cover - defensive guard
+                    # Surfacing the failure keeps the UI informed without
+                    # breaking the fallback search that follows.
+                    self.errorRaised.emit(f"Failed to read root manifest: {exc}")
+                else:
+                    candidate = data.get("id")
+                    if isinstance(candidate, str) and candidate.strip().casefold() == needle:
+                        try:
+                            album = Album.open(root)
+                        except Exception as exc:  # pragma: no cover - defensive guard
+                            # If opening the album fails we cannot build a
+                            # representative node, so emit the error and allow
+                            # the regular search to continue.
+                            self.errorRaised.emit(f"Failed to open root album: {exc}")
+                        else:
+                            title = album.manifest.get("title")
+                            if not isinstance(title, str) or not title:
+                                title = root.name
+                            return AlbumNode(root, level=0, title=title, has_manifest=True)
         for path, node in self._nodes.items():
             manifest_path = self._find_manifest(path)
             if manifest_path is None:
