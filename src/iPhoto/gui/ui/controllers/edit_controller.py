@@ -244,7 +244,9 @@ class EditController(QObject):
         self._default_sidebar_stylesheet = ui.sidebar.styleSheet()
         self._default_statusbar_stylesheet = ui.status_bar.styleSheet()
         self._default_window_chrome_stylesheet = ui.window_chrome.styleSheet()
+        self._default_window_shell_stylesheet = ui.window_shell.styleSheet()
         self._default_title_bar_stylesheet = ui.title_bar.styleSheet()
+        self._default_title_separator_stylesheet = ui.title_separator.styleSheet()
         self._default_main_toolbar_stylesheet = ui.main_toolbar.styleSheet()
         self._default_menu_bar_stylesheet = ui.menu_bar.styleSheet()
         self._default_album_header_stylesheet = ui.album_header.styleSheet()
@@ -253,7 +255,9 @@ class EditController(QObject):
         self._default_sidebar_palette = QPalette(ui.sidebar.palette())
         self._default_statusbar_palette = QPalette(ui.status_bar.palette())
         self._default_window_chrome_palette = QPalette(ui.window_chrome.palette())
+        self._default_window_shell_palette = QPalette(ui.window_shell.palette())
         self._default_title_bar_palette = QPalette(ui.title_bar.palette())
+        self._default_title_separator_palette = QPalette(ui.title_separator.palette())
         self._default_main_toolbar_palette = QPalette(ui.main_toolbar.palette())
         self._default_menu_bar_palette = QPalette(ui.menu_bar.palette())
         self._default_album_header_palette = QPalette(ui.album_header.palette())
@@ -267,7 +271,9 @@ class EditController(QObject):
         self._default_sidebar_autofill = ui.sidebar.autoFillBackground()
         self._default_statusbar_autofill = ui.status_bar.autoFillBackground()
         self._default_window_chrome_autofill = ui.window_chrome.autoFillBackground()
+        self._default_window_shell_autofill = ui.window_shell.autoFillBackground()
         self._default_title_bar_autofill = ui.title_bar.autoFillBackground()
+        self._default_title_separator_autofill = ui.title_separator.autoFillBackground()
         self._default_main_toolbar_autofill = ui.main_toolbar.autoFillBackground()
         self._default_menu_bar_autofill = ui.menu_bar.autoFillBackground()
         self._default_album_header_autofill = ui.album_header.autoFillBackground()
@@ -811,10 +817,12 @@ class EditController(QObject):
             self._ui.sidebar,
             self._ui.status_bar,
             self._ui.window_chrome,
+            self._ui.window_shell,
             self._ui.main_toolbar,
             self._ui.menu_bar,
             self._ui.album_header,
             self._ui.title_bar,
+            self._ui.title_separator,
         ]
         for widget in widgets_to_update:
             widget.setPalette(dark_palette)
@@ -832,15 +840,24 @@ class EditController(QObject):
         # Replace the light-theme style sheets so the dark palette remains visible.  Qt gives
         # style sheets precedence over palettes once ``WA_StyledBackground`` is set, therefore
         # each chrome widget explicitly receives a dark background while edit mode is active.
+        # ``window_shell`` acts as the rounded container for the entire window, so tinting it
+        # alongside the toolbar and sidebar prevents the pale frame visible in the bug report.
         dark_background = "#1C1C1E"
         self._ui.sidebar.setStyleSheet(
             f"QWidget#albumSidebar {{ background-color: {dark_background}; }}"
         )
+        self._ui.window_shell.setStyleSheet(f"background-color: {dark_background};")
         self._ui.status_bar.setStyleSheet(
             f"QWidget#chromeStatusBar {{ background-color: {dark_background}; }}"
         )
         self._ui.title_bar.setStyleSheet(
             f"QWidget#windowTitleBar {{ background-color: {dark_background}; }}"
+        )
+        self._ui.title_separator.setStyleSheet(
+            "QFrame#windowTitleSeparator {"
+            f"  background-color: {outline_color.name()};"
+            "  border: none;"
+            "}"
         )
         self._ui.menu_bar.setStyleSheet(
             f"QMenuBar#chromeMenuBar {{ background-color: {dark_background}; }}"
@@ -867,10 +884,12 @@ class EditController(QObject):
             (self._ui.sidebar, self._default_sidebar_palette, self._default_sidebar_autofill),
             (self._ui.status_bar, self._default_statusbar_palette, self._default_statusbar_autofill),
             (self._ui.window_chrome, self._default_window_chrome_palette, self._default_window_chrome_autofill),
+            (self._ui.window_shell, self._default_window_shell_palette, self._default_window_shell_autofill),
             (self._ui.main_toolbar, self._default_main_toolbar_palette, self._default_main_toolbar_autofill),
             (self._ui.menu_bar, self._default_menu_bar_palette, self._default_menu_bar_autofill),
             (self._ui.album_header, self._default_album_header_palette, self._default_album_header_autofill),
             (self._ui.title_bar, self._default_title_bar_palette, self._default_title_bar_autofill),
+            (self._ui.title_separator, self._default_title_separator_palette, self._default_title_separator_autofill),
         ]
         for widget, palette, autofill in widgets_to_restore:
             widget.setPalette(QPalette(palette))
@@ -896,7 +915,9 @@ class EditController(QObject):
         )
         self._ui.status_bar.setStyleSheet(self._default_statusbar_stylesheet)
         self._ui.window_chrome.setStyleSheet(self._default_window_chrome_stylesheet)
+        self._ui.window_shell.setStyleSheet(self._default_window_shell_stylesheet)
         self._ui.title_bar.setStyleSheet(self._default_title_bar_stylesheet)
+        self._ui.title_separator.setStyleSheet(self._default_title_separator_stylesheet)
         self._ui.main_toolbar.setStyleSheet(self._default_main_toolbar_stylesheet)
         self._ui.menu_bar.setStyleSheet(self._default_menu_bar_stylesheet)
         self._ui.album_header.setStyleSheet(self._default_album_header_stylesheet)

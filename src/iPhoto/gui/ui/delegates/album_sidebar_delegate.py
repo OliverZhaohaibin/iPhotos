@@ -16,7 +16,7 @@ from PySide6.QtCore import (
     QPersistentModelIndex,
 )
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPalette, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import QStyledItemDelegate, QStyleOptionViewItem, QTreeView, QStyle
+from PySide6.QtWidgets import QStyledItemDelegate, QStyleOptionViewItem, QTreeView, QStyle, QWidget
 
 from ..icon import load_icon
 from ..models.album_tree_model import AlbumTreeItem, AlbumTreeModel, AlbumTreeRole, NodeType
@@ -24,7 +24,6 @@ from ..palette import (
     SIDEBAR_BRANCH_CONTENT_GAP,
     SIDEBAR_HIGHLIGHT_MARGIN_X,
     SIDEBAR_HIGHLIGHT_MARGIN_Y,
-    SIDEBAR_HOVER_BACKGROUND,
     SIDEBAR_ICON_SIZE,
     SIDEBAR_ICON_TEXT_GAP,
     SIDEBAR_INDENT_PER_LEVEL,
@@ -302,11 +301,54 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
 
         if state.node_type in {NodeType.SECTION, NodeType.SEPARATOR}:
             return None
+
+        palette = self._palette_for_state(state)
+        base_colour = palette.color(QPalette.ColorRole.Base)
+        highlight = palette.color(QPalette.ColorRole.Highlight)
+        if not highlight.isValid() or highlight == QColor():
+            # Fall back to the light-theme constant so headless tests still pick up a visible
+            # highlight.  This path executes when the view inherits a palette without a highlight
+            # role, which can happen in synthetic QWidget setups.
+            highlight = QColor(SIDEBAR_SELECTED_BACKGROUND)
+        else:
+            highlight = QColor(highlight)
+
+        if base_colour.isValid() and highlight == base_colour:
+            # Guard against themes that reuse the base colour for the highlight role by nudging the
+            # tone slightly brighter than the background.
+            highlight = highlight.lighter(115)
+
         if state.is_selected:
-            return SIDEBAR_SELECTED_BACKGROUND
+            colour = self._soften_colour(highlight, base_colour, 0.8)
+            minimum_alpha = int(0.65 * 255)
+            alpha = colour.alpha() if colour.alpha() > 0 else minimum_alpha
+            colour.setAlpha(max(alpha, minimum_alpha))
+            return colour
+
         if state.is_hover and state.is_enabled:
-            return SIDEBAR_HOVER_BACKGROUND
+            colour = self._soften_colour(highlight, base_colour, 0.6)
+            minimum_alpha = int(0.35 * 255)
+            base_alpha = colour.alpha() if colour.alpha() > 0 else minimum_alpha
+            colour.setAlpha(max(int(base_alpha * 0.5), minimum_alpha))
+            return colour
+
         return None
+
+    @staticmethod
+    def _soften_colour(source: QColor, background: QColor, mix: float) -> QColor:
+        """Blend ``source`` with ``background`` to produce a softer shade."""
+
+        mix = max(0.0, min(1.0, mix))
+        if not background.isValid():
+            return QColor(source)
+        red = int(round(source.red() * mix + background.red() * (1.0 - mix)))
+        green = int(round(source.green() * mix + background.green() * (1.0 - mix)))
+        blue = int(round(source.blue() * mix + background.blue() * (1.0 - mix)))
+        softened = QColor(source)
+        softened.setRed(red)
+        softened.setGreen(green)
+        softened.setBlue(blue)
+        return softened
 
     def _draw_background(self, painter: QPainter, rect: QRect, colour: QColor) -> None:
         """Paint the rounded selection background using *colour*."""
@@ -447,8 +489,15 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
     def _draw_separator(self, painter: QPainter, rect: QRect) -> None:
         """Render a horizontal rule used to group tree sections."""
 
-        pen = QPen(SIDEBAR_SEPARATOR_COLOR)
-        pen.setWidth(1)
+        palette = self._resolve_separator_palette()
+        colour = palette.color(QPalette.ColorRole.Mid)
+        if not colour.isValid() or colour.alpha() == 0:
+            # Preserve the light-theme aesthetic when the palette does not expose a mid-tone that
+            # can double as a separator colour.
+            colour = SIDEBAR_SEPARATOR_COLOR
+
+        pen = QPen(colour)
+        pen.setWidthF(1.0)
         painter.setPen(pen)
         y = rect.center().y()
         painter.drawLine(
@@ -457,6 +506,14 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
             rect.right() - SIDEBAR_LEFT_PADDING,
             y,
         )
+
+    def _resolve_separator_palette(self) -> QPalette:
+        """Return the palette used when painting separators."""
+
+        parent = self.parent()
+        if isinstance(parent, QWidget):
+            return parent.palette()
+        return QPalette()
 
 
 __all__ = [
