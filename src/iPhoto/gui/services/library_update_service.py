@@ -9,7 +9,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tupl
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
 from ... import app as backend
-from ...config import WORK_DIR_NAME
+from ...config import RECENTLY_DELETED_DIR_NAME, WORK_DIR_NAME
 from ...errors import IPhotoError
 from ..background_task_manager import BackgroundTaskManager
 from ..ui.tasks.rescan_worker import RescanSignals, RescanWorker
@@ -288,6 +288,39 @@ class LibraryUpdateService(QObject):
             return
 
         materialised_rows = list(rows)
+
+        if root.name == RECENTLY_DELETED_DIR_NAME:
+            # When the Recently Deleted album is rescanned we must not lose the
+            # ``original_rel_path`` metadata that was captured at deletion time.
+            # The field tells the restore workflow where an asset should be moved
+            # back to, so we merge the existing value from the previous index if
+            # the new scan produced a row for the same relative path.
+            preserved_rows: Dict[str, dict] = {}
+            try:
+                for old_row in backend.IndexStore(root).read_all():
+                    rel_value = old_row.get("rel")
+                    original_rel = old_row.get("original_rel_path")
+                    if rel_value is None or original_rel is None:
+                        continue
+                    preserved_rows[str(rel_value)] = old_row
+            except IPhotoError:
+                # If the old index is unavailable (missing or corrupted) we have
+                # nothing to merge, therefore the rescan falls back to fresh
+                # metadata produced by the worker.
+                preserved_rows = {}
+
+            if preserved_rows:
+                for new_row in materialised_rows:
+                    rel_value = new_row.get("rel")
+                    if rel_value is None:
+                        continue
+                    cached_row = preserved_rows.get(str(rel_value))
+                    if cached_row is None:
+                        continue
+                    original_rel = cached_row.get("original_rel_path")
+                    if original_rel is None:
+                        continue
+                    new_row["original_rel_path"] = original_rel
 
         try:
             # Persist the freshly computed index snapshot immediately so future
