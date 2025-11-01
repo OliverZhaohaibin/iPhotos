@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Iterable, Iterator, TYPE_CHECKING, cast
 
-from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QTimer
+from PySide6.QtCore import Property, QEvent, QObject, QPoint, Qt, QTimer
 from PySide6.QtGui import (
     QColor,
     QMouseEvent,
@@ -65,6 +65,19 @@ class RoundedWindowShell(QWidget):
 
     # ------------------------------------------------------------------
     # Public API used by ``FramelessWindowManager``
+    def _get_override_color(self) -> QColor:
+        """Return the colour currently used when painting the rounded shell."""
+
+        # ``QPropertyAnimation`` requires a getter when driving a ``Property``
+        # on PySide.  Returning the active override keeps the animation in sync
+        # with whatever value :meth:`set_override_color` most recently applied.
+        return self._override_color or self.palette().color(QPalette.ColorRole.Window)
+
+    # Expose a Qt property so controllers can animate the background colour
+    # without reaching into private attributes.  The setter already triggers a
+    # repaint, so the animation simply drives the property and the shell reacts.
+    overrideColor = Property(QColor, _get_override_color, set_override_color)  # type: ignore[assignment]
+
     def set_corner_radius(self, radius: int) -> None:
         """Update the corner radius and repaint if it changed."""
 
