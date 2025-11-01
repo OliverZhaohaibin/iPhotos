@@ -314,6 +314,22 @@ class EditController(QObject):
             self._default_rounded_shell_palette = None
             self._default_rounded_shell_override = None
         self._edit_theme_applied = False
+        # Track the light and dark chrome foreground colours so the theme can fade smoothly when
+        # leaving edit mode.  Falling back to a neutral dark grey keeps the transition predictable
+        # if the palette omits the expected role.
+        light_title_colour = self._default_window_title_palette.color(
+            QPalette.ColorRole.WindowText
+        )
+        if not light_title_colour.isValid():
+            light_title_colour = QColor("#1A1A1A")
+        self._light_chrome_foreground = light_title_colour
+        self._dark_chrome_foreground = QColor("#F5F5F7")
+        self._current_chrome_foreground_name: str | None = None
+        self._chrome_transition_start_color: QColor | None = None
+        self._chrome_transition_end_color: QColor | None = None
+        self._current_toolbar_icon_tint: str | None = None
+        self._dark_theme_accent_color = QColor("#0A84FF")
+        self._dark_theme_outline_color = QColor("#323236")
 
         ui.edit_reset_button.clicked.connect(self._handle_reset_clicked)
         ui.edit_done_button.clicked.connect(self._handle_done_clicked)
@@ -798,12 +814,6 @@ class EditController(QObject):
         # Use a bright white tint so icons remain legible against the dark header chrome.
         dark_icon_color = QColor("#FFFFFF")
         dark_icon_hex = dark_icon_color.name(QColor.NameFormat.HexArgb)
-        self._ui.edit_compare_button.setIcon(
-            load_icon(
-                "square.fill.and.line.vertical.and.square.svg",
-                color=dark_icon_hex,
-            )
-        )
         for section in self._ui.edit_sidebar.findChildren(CollapsibleSection):
             toggle_button = getattr(section, "_toggle_button", None)
             if toggle_button is not None:
@@ -819,21 +829,7 @@ class EditController(QObject):
                 )
 
         # Match the zoom controls to the dark chrome so the +/- affordances stay legible.
-        self._ui.zoom_out_button.setIcon(load_icon("minus.svg", color=dark_icon_hex))
-        self._ui.zoom_in_button.setIcon(load_icon("plus.svg", color=dark_icon_hex))
-
-        # Ask the detail controller to tint the info and favourite icons if it is available.
-        if self._detail_ui_controller is not None:
-            self._detail_ui_controller.set_toolbar_icon_tint(dark_icon_color)
-        else:
-            # Fallback for tests where the detail controller is not wired yet.  Tint both buttons
-            # directly so the edit toolbar still offers sufficient contrast in isolated harnesses.
-            self._ui.info_button.setIcon(
-                load_icon("info.circle.svg", color=dark_icon_hex)
-            )
-            self._ui.favorite_button.setIcon(
-                load_icon("suit.heart.svg", color=dark_icon_hex)
-            )
+        self._tint_toolbar_icons(dark_icon_color)
 
         # Construct a palette that mirrors macOS Photos' edit chrome so each widget picks up the
         # same deep greys and bright foreground colours.
@@ -847,6 +843,9 @@ class EditController(QObject):
         accent_color = QColor("#0A84FF")
         outline_color = QColor("#323236")
         placeholder_text = QColor(245, 245, 247, 160)
+
+        self._dark_theme_accent_color = accent_color
+        self._dark_theme_outline_color = outline_color
 
         dark_palette.setColor(QPalette.ColorRole.Window, window_color)
         dark_palette.setColor(QPalette.ColorRole.Base, window_color)
@@ -932,112 +931,11 @@ class EditController(QObject):
         self._refresh_menu_styles()
         self._ui.menu_bar.setAutoFillBackground(False)
 
-        # Replace the light-theme style sheets while keeping the chrome transparent.  The palette
-        # now supplies the foreground colours, so only the text metrics and highlight accents are
-        # overridden explicitly.  Leaving the background transparent allows the rounded shell to
-        # show through and maintain its corner treatment.
-        foreground_color = text_color.name()
-        accent_color_name = accent_color.name()
-        outline_color_name = outline_color.name()
-        self._ui.sidebar.setStyleSheet(
-            "\n".join(
-                [
-                    "QWidget#albumSidebar {",
-                    "  background-color: transparent;",
-                    f"  color: {foreground_color};",
-                    "}",
-                    "QWidget#albumSidebar QLabel {",
-                    f"  color: {foreground_color};",
-                    "}",
-                ]
-            )
-        )
-        self._ui.status_bar.setStyleSheet(
-            "\n".join(
-                [
-                    "QWidget#chromeStatusBar {",
-                    "  background-color: transparent;",
-                    f"  color: {foreground_color};",
-                    "}",
-                    "QWidget#chromeStatusBar QLabel {",
-                    f"  color: {foreground_color};",
-                    "}",
-                ]
-            )
-        )
-        self._ui.title_bar.setStyleSheet(
-            "\n".join(
-                [
-                    "QWidget#windowTitleBar {",
-                    "  background-color: transparent;",
-                    f"  color: {foreground_color};",
-                    "}",
-                    "QWidget#windowTitleBar QLabel {",
-                    f"  color: {foreground_color};",
-                    "}",
-                    "QWidget#windowTitleBar QToolButton {",
-                    f"  color: {foreground_color};",
-                    "}",
-                ]
-            )
-        )
-        self._ui.title_separator.setStyleSheet(
-            "QFrame#windowTitleSeparator {"
-            f"  background-color: {outline_color_name};"
-            "  border: none;"
-            "}"
-        )
-        self._ui.menu_bar.setStyleSheet(
-            "\n".join(
-                [
-                    "QMenuBar#chromeMenuBar {",
-                    "  background-color: transparent;",
-                    f"  color: {foreground_color};",
-                    "}",
-                    "QMenuBar#chromeMenuBar::item {",
-                    f"  color: {foreground_color};",
-                    "}",
-                    "QMenuBar#chromeMenuBar::item:selected {",
-                    f"  background-color: {outline_color_name};",
-                    "  border-radius: 6px;",
-                    "}",
-                    "QMenuBar#chromeMenuBar::item:pressed {",
-                    f"  background-color: {accent_color_name};",
-                    "}",
-                ]
-            )
-        )
-        self._ui.main_toolbar.setStyleSheet(
-            "\n".join(
-                [
-                    "QToolBar#mainToolbar {",
-                    "  background-color: transparent;",
-                    f"  color: {foreground_color};",
-                    "}",
-                    "QToolBar#mainToolbar QToolButton {",
-                    f"  color: {foreground_color};",
-                    "}",
-                ]
-            )
-        )
-        # ``window_chrome`` and ``album_header`` do not expose object names, so we rely on their
-        # top-level selectors to enforce the background tint and text colour.
-        self._ui.window_chrome.setStyleSheet(
-            "\n".join(
-                [
-                    "background-color: transparent;",
-                    f"color: {foreground_color};",
-                ]
-            )
-        )
-        self._ui.album_header.setStyleSheet(
-            "\n".join(
-                [
-                    "background-color: transparent;",
-                    f"color: {foreground_color};",
-                ]
-            )
-        )
+        # Replace the light-theme style sheets while keeping the chrome transparent.  The helper
+        # also updates the nested label palettes so text can fade between light and dark colours
+        # during the exit animation without fighting the stylesheet overrides.
+        self._current_chrome_foreground_name = None
+        self._apply_chrome_foreground_colour(text_color)
 
         self._edit_theme_applied = True
 
@@ -1049,10 +947,13 @@ class EditController(QObject):
         self._ui.edit_page.setStyleSheet(self._default_edit_page_stylesheet)
         self._ui.edit_image_viewer.set_surface_color_override(None)
 
+        # Cancel any in-flight colour interpolation so the next transition starts cleanly.
+        self._chrome_transition_start_color = None
+        self._chrome_transition_end_color = None
+        self._current_chrome_foreground_name = None
+
         # Restore the untinted icons now that the interface has returned to the light theme.
-        self._ui.edit_compare_button.setIcon(
-            load_icon("square.fill.and.line.vertical.and.square.svg")
-        )
+        self._tint_toolbar_icons(None)
         for section in self._ui.edit_sidebar.findChildren(CollapsibleSection):
             toggle_button = getattr(section, "_toggle_button", None)
             if toggle_button is not None:
@@ -1064,15 +965,6 @@ class EditController(QObject):
             icon_name = getattr(section, "_icon_name", "")
             if icon_label is not None and icon_name:
                 icon_label.setPixmap(load_icon(icon_name).pixmap(20, 20))
-
-        # Return the zoom affordances and shared toolbar buttons to their light theme assets.
-        self._ui.zoom_out_button.setIcon(load_icon("minus.svg"))
-        self._ui.zoom_in_button.setIcon(load_icon("plus.svg"))
-        if self._detail_ui_controller is not None:
-            self._detail_ui_controller.set_toolbar_icon_tint(None)
-        else:
-            self._ui.info_button.setIcon(load_icon("info.circle.svg"))
-            self._ui.favorite_button.setIcon(load_icon("suit.heart.svg"))
 
         widgets_to_restore = [
             (
@@ -1201,6 +1093,239 @@ class EditController(QObject):
             )
 
         self._edit_theme_applied = False
+
+    def _apply_chrome_foreground_colour(self, colour: QColor) -> None:
+        """Update the chrome style sheets to use *colour* for text during edit mode.
+
+        The dark edit theme injects explicit ``color`` rules for the navigation sidebar,
+        toolbars, and frameless window chrome.  When leaving edit mode we interpolate these
+        colours back to the light theme tone so the transition feels smooth instead of
+        snapping in the final frame.  The helper rebuilds the relevant style sheets and
+        nudges the child widget palettes so nested labels inherit the same shade.
+        """
+
+        if not self._edit_theme_applied or not colour.isValid():
+            return
+
+        colour_name = colour.name(QColor.NameFormat.HexArgb)
+        if self._current_chrome_foreground_name == colour_name:
+            return
+
+        accent_colour = self._dark_theme_accent_color or QColor("#0A84FF")
+        outline_colour = self._dark_theme_outline_color or QColor("#323236")
+        accent_name = accent_colour.name(QColor.NameFormat.HexArgb)
+        outline_name = outline_colour.name(QColor.NameFormat.HexArgb)
+
+        self._current_chrome_foreground_name = colour_name
+
+        sidebar_styles = "\n".join(
+            [
+                "QWidget#albumSidebar {",
+                "  background-color: transparent;",
+                f"  color: {colour_name};",
+                "}",
+                "QWidget#albumSidebar QLabel {",
+                f"  color: {colour_name};",
+                "}",
+            ]
+        )
+        self._ui.sidebar.setStyleSheet(sidebar_styles)
+
+        status_styles = "\n".join(
+            [
+                "QWidget#chromeStatusBar {",
+                "  background-color: transparent;",
+                f"  color: {colour_name};",
+                "}",
+                "QWidget#chromeStatusBar QLabel {",
+                f"  color: {colour_name};",
+                "}",
+            ]
+        )
+        self._ui.status_bar.setStyleSheet(status_styles)
+
+        title_bar_styles = "\n".join(
+            [
+                "QWidget#windowTitleBar {",
+                "  background-color: transparent;",
+                f"  color: {colour_name};",
+                "}",
+                "QWidget#windowTitleBar QLabel {",
+                f"  color: {colour_name};",
+                "}",
+                "QWidget#windowTitleBar QToolButton {",
+                f"  color: {colour_name};",
+                "}",
+            ]
+        )
+        self._ui.title_bar.setStyleSheet(title_bar_styles)
+
+        title_separator_styles = "QFrame#windowTitleSeparator {\n  background-color: %s;\n  border: none;\n}" % (
+            outline_name,
+        )
+        self._ui.title_separator.setStyleSheet(title_separator_styles)
+
+        menu_styles = "\n".join(
+            [
+                "QMenuBar#chromeMenuBar {",
+                "  background-color: transparent;",
+                f"  color: {colour_name};",
+                "}",
+                "QMenuBar#chromeMenuBar::item {",
+                f"  color: {colour_name};",
+                "}",
+                "QMenuBar#chromeMenuBar::item:selected {",
+                f"  background-color: {outline_name};",
+                "  border-radius: 6px;",
+                "}",
+                "QMenuBar#chromeMenuBar::item:pressed {",
+                f"  background-color: {accent_name};",
+                "}",
+            ]
+        )
+        self._ui.menu_bar.setStyleSheet(menu_styles)
+
+        toolbar_styles = "\n".join(
+            [
+                "QToolBar#mainToolbar {",
+                "  background-color: transparent;",
+                f"  color: {colour_name};",
+                "}",
+                "QToolBar#mainToolbar QToolButton {",
+                f"  color: {colour_name};",
+                "}",
+            ]
+        )
+        self._ui.main_toolbar.setStyleSheet(toolbar_styles)
+
+        chrome_styles = "\n".join(
+            [
+                "background-color: transparent;",
+                f"color: {colour_name};",
+            ]
+        )
+        self._ui.window_chrome.setStyleSheet(chrome_styles)
+        self._ui.album_header.setStyleSheet(chrome_styles)
+
+        # Update key child widgets so their palettes match the interpolated tone.  Using fresh
+        # ``QPalette`` instances avoids mutating the cached light-theme palettes saved during
+        # initialisation.
+        def _tint_widget(widget: QWidget, roles: tuple[QPalette.ColorRole, ...]) -> None:
+            palette = QPalette(widget.palette())
+            for role in roles:
+                palette.setColor(role, colour)
+            widget.setPalette(palette)
+
+        _tint_widget(
+            self._ui.sidebar._tree,
+            (
+                QPalette.ColorRole.Text,
+                QPalette.ColorRole.WindowText,
+                QPalette.ColorRole.ButtonText,
+            ),
+        )
+        _tint_widget(
+            self._ui.status_bar._message_label,
+            (QPalette.ColorRole.Text, QPalette.ColorRole.WindowText),
+        )
+        _tint_widget(
+            self._ui.album_label,
+            (QPalette.ColorRole.Text, QPalette.ColorRole.WindowText),
+        )
+        _tint_widget(
+            self._ui.selection_button,
+            (QPalette.ColorRole.ButtonText, QPalette.ColorRole.Text),
+        )
+        _tint_widget(
+            self._ui.window_title_label,
+            (QPalette.ColorRole.Text, QPalette.ColorRole.WindowText),
+        )
+
+    def _apply_chrome_transition_progress(self, progress: float) -> None:
+        """Blend the chrome foreground colour according to *progress*.
+
+        *progress* is clamped to ``0.0`` – ``1.0`` and represents the fraction of the exit
+        animation that has completed.  The helper interpolates between the cached dark theme
+        colour and the light theme baseline so captions and toolbar buttons fade naturally while
+        the window shell lightens.
+        """
+
+        if (
+            self._chrome_transition_start_color is None
+            or self._chrome_transition_end_color is None
+        ):
+            return
+
+        clamped = max(0.0, min(1.0, float(progress)))
+        blended = self._interpolate_color(
+            self._chrome_transition_start_color,
+            self._chrome_transition_end_color,
+            clamped,
+        )
+        self._apply_chrome_foreground_colour(blended)
+        self._tint_toolbar_icons(blended)
+
+    @staticmethod
+    def _interpolate_color(start: QColor, end: QColor, progress: float) -> QColor:
+        """Return a colour linearly interpolated between *start* and *end*."""
+
+        start = QColor(start)
+        end = QColor(end)
+        progress = max(0.0, min(1.0, float(progress)))
+        red = int(round(start.red() + (end.red() - start.red()) * progress))
+        green = int(round(start.green() + (end.green() - start.green()) * progress))
+        blue = int(round(start.blue() + (end.blue() - start.blue()) * progress))
+        alpha = int(round(start.alpha() + (end.alpha() - start.alpha()) * progress))
+        return QColor(red, green, blue, alpha)
+
+    def _tint_toolbar_icons(self, colour: QColor | None) -> None:
+        """Apply *colour* to the shared toolbar icons, caching the last tint."""
+
+        tint_name: str | None
+        colour_object: QColor | None
+        if colour is None or not colour.isValid():
+            tint_name = None
+            colour_object = None
+        else:
+            colour_object = QColor(colour)
+            tint_name = colour_object.name(QColor.NameFormat.HexArgb)
+
+        if tint_name == self._current_toolbar_icon_tint:
+            return
+
+        self._current_toolbar_icon_tint = tint_name
+
+        if tint_name is None:
+            self._ui.edit_compare_button.setIcon(
+                load_icon("square.fill.and.line.vertical.and.square.svg")
+            )
+            self._ui.zoom_out_button.setIcon(load_icon("minus.svg"))
+            self._ui.zoom_in_button.setIcon(load_icon("plus.svg"))
+            if self._detail_ui_controller is not None:
+                self._detail_ui_controller.set_toolbar_icon_tint(None)
+            else:
+                self._ui.info_button.setIcon(load_icon("info.circle.svg"))
+                self._ui.favorite_button.setIcon(load_icon("suit.heart.svg"))
+            return
+
+        self._ui.edit_compare_button.setIcon(
+            load_icon(
+                "square.fill.and.line.vertical.and.square.svg",
+                color=tint_name,
+            )
+        )
+        self._ui.zoom_out_button.setIcon(load_icon("minus.svg", color=tint_name))
+        self._ui.zoom_in_button.setIcon(load_icon("plus.svg", color=tint_name))
+        if self._detail_ui_controller is not None:
+            # ``DetailUIController`` caches the tint internally and skips redundant reloads.
+            self._detail_ui_controller.set_toolbar_icon_tint(colour_object)
+        else:
+            self._ui.info_button.setIcon(
+                load_icon("info.circle.svg", color=tint_name)
+            )
+            self._ui.favorite_button.setIcon(
+                load_icon("suit.heart.svg", color=tint_name)
+            )
 
     def _apply_color_reset_stylesheet(
         self,
@@ -1331,6 +1456,10 @@ class EditController(QObject):
         # the usual ``finished`` signal, which keeps the controller's cleanup logic identical.
         duration = 250 if animate else 0
 
+        # Reset any pending chrome colour interpolation before computing the new transition.
+        self._chrome_transition_start_color = None
+        self._chrome_transition_end_color = None
+
         if entering:
             splitter_end_sizes = self._sanitise_splitter_sizes([0, total], total=total)
             sidebar_start = 0
@@ -1344,6 +1473,9 @@ class EditController(QObject):
                 splitter_end_sizes = self._sanitise_splitter_sizes([fallback_left, total - fallback_left], total=total)
             sidebar_start = self._ui.edit_sidebar.width()
             sidebar_end = 0
+            if self._light_chrome_foreground.isValid():
+                self._chrome_transition_start_color = QColor(self._dark_chrome_foreground)
+                self._chrome_transition_end_color = QColor(self._light_chrome_foreground)
 
         sidebar_start = int(sidebar_start)
         sidebar_end = int(sidebar_end)
@@ -1423,6 +1555,7 @@ class EditController(QObject):
                     accumulated += rounded
                 interpolated.append(rounded)
             splitter.setSizes(interpolated)
+            self._apply_chrome_transition_progress(progress)
 
         splitter_animation.valueChanged.connect(_apply_splitter_progress)
 
@@ -1502,6 +1635,7 @@ class EditController(QObject):
             else:
                 self._edit_header_opacity.setOpacity(0.0)
                 self._detail_header_opacity.setOpacity(1.0)
+                self._apply_chrome_transition_progress(1.0)
             if shell is not None and shell_end_color is not None:
                 shell.set_override_color(shell_end_color)
             self._on_transition_finished()
