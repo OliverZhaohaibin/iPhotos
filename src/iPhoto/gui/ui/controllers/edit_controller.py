@@ -254,7 +254,6 @@ class EditController(QObject):
         self._default_window_shell_stylesheet = ui.window_shell.styleSheet()
         self._default_title_bar_stylesheet = ui.title_bar.styleSheet()
         self._default_title_separator_stylesheet = ui.title_separator.styleSheet()
-        self._default_main_toolbar_stylesheet = ui.main_toolbar.styleSheet()
         self._default_menu_bar_stylesheet = ui.menu_bar.styleSheet()
         self._default_album_header_stylesheet = ui.album_header.styleSheet()
 
@@ -275,7 +274,6 @@ class EditController(QObject):
         self._default_window_shell_palette = QPalette(ui.window_shell.palette())
         self._default_title_bar_palette = QPalette(ui.title_bar.palette())
         self._default_title_separator_palette = QPalette(ui.title_separator.palette())
-        self._default_main_toolbar_palette = QPalette(ui.main_toolbar.palette())
         self._default_menu_bar_palette = QPalette(ui.menu_bar.palette())
         self._default_album_header_palette = QPalette(ui.album_header.palette())
         self._default_album_label_palette = QPalette(ui.album_label.palette())
@@ -294,7 +292,6 @@ class EditController(QObject):
         self._default_window_shell_autofill = ui.window_shell.autoFillBackground()
         self._default_title_bar_autofill = ui.title_bar.autoFillBackground()
         self._default_title_separator_autofill = ui.title_separator.autoFillBackground()
-        self._default_main_toolbar_autofill = ui.main_toolbar.autoFillBackground()
         self._default_menu_bar_autofill = ui.menu_bar.autoFillBackground()
         self._default_album_header_autofill = ui.album_header.autoFillBackground()
         self._default_sidebar_tree_autofill = ui.sidebar._tree.autoFillBackground()
@@ -894,7 +891,6 @@ class EditController(QObject):
             self._ui.sidebar,
             self._ui.status_bar,
             self._ui.window_chrome,
-            self._ui.main_toolbar,
             self._ui.menu_bar,
             self._ui.album_header,
             self._ui.title_bar,
@@ -1007,19 +1003,6 @@ class EditController(QObject):
                 ]
             )
         )
-        self._ui.main_toolbar.setStyleSheet(
-            "\n".join(
-                [
-                    "QToolBar#mainToolbar {",
-                    "  background-color: transparent;",
-                    f"  color: {foreground_color};",
-                    "}",
-                    "QToolBar#mainToolbar QToolButton {",
-                    f"  color: {foreground_color};",
-                    "}",
-                ]
-            )
-        )
         # ``window_chrome`` and ``album_header`` do not expose object names, so we rely on their
         # top-level selectors to enforce the background tint and text colour.
         self._ui.window_chrome.setStyleSheet(
@@ -1094,11 +1077,6 @@ class EditController(QObject):
                 self._ui.window_shell,
                 self._default_window_shell_palette,
                 self._default_window_shell_autofill,
-            ),
-            (
-                self._ui.main_toolbar,
-                self._default_main_toolbar_palette,
-                self._default_main_toolbar_autofill,
             ),
             (
                 self._ui.menu_bar,
@@ -1176,18 +1154,6 @@ class EditController(QObject):
         # high-specificity selector that forces white text; clearing the stylesheet alone leaves the
         # colour override in place.  By emitting ``color: unset`` the rule instructs Qt to drop the
         # explicit value so the restored palette determines the final text colour.
-        default_toolbar_stylesheet = self._default_main_toolbar_stylesheet or ""
-        reset_toolbar_stylesheet = "\n".join(
-            [
-                "QToolBar#mainToolbar QToolButton {",
-                "    color: unset;",
-                "}",
-            ]
-        )
-        combined_toolbar_stylesheet = (
-            f"{default_toolbar_stylesheet}\n{reset_toolbar_stylesheet}".strip()
-        )
-        self._ui.main_toolbar.setStyleSheet(combined_toolbar_stylesheet)
         self._ui.menu_bar.setStyleSheet(self._default_menu_bar_stylesheet)
         self._ui.album_header.setStyleSheet(self._default_album_header_stylesheet)
 

@@ -19,7 +19,6 @@ from PySide6.QtWidgets import (
     QSpacerItem,
     QSplitter,
     QStackedWidget,
-    QToolBar,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -329,7 +328,46 @@ class Ui_MainWindow(object):
         window_chrome_layout.addWidget(self.title_separator)
 
         self.window_shell_layout.addWidget(self.window_chrome)
-        self.window_shell_layout.addWidget(self.menu_bar)
+
+        # --- Menu Bar Container (Menu Bar + Rescan Button) ---
+        # Hosting the menu bar and rescan button in a shared container keeps the
+        # layout compact while eliminating the visual separation that existed
+        # between the menu bar and the now-removed toolbar.  The container also
+        # offers a convenient styling hook should the chrome require additional
+        # polish in the future.
+        self.menu_bar_container = QWidget(self.window_shell)
+        self.menu_bar_container.setObjectName("menuBarContainer")
+        menu_bar_layout = QHBoxLayout(self.menu_bar_container)
+        menu_bar_layout.setContentsMargins(0, 0, 12, 0)
+        menu_bar_layout.setSpacing(8)
+
+        # Insert the menu bar first so its left alignment mirrors the
+        # macOS-inspired layout applied throughout the custom chrome.
+        menu_bar_layout.addWidget(self.menu_bar)
+
+        # A stretchable spacer pushes the rescan button to the far right.  This
+        # leaves headroom for future controls without forcing another dedicated
+        # toolbar.
+        menu_bar_layout.addSpacerItem(
+            QSpacerItem(
+                40,
+                20,
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Minimum,
+            )
+        )
+
+        # The rescan button reuses the existing QAction to inherit its text,
+        # shortcut, enabled state, and triggered signal wiring.  Sharing the
+        # action keeps the UI responsive to controller updates without
+        # duplicating logic.
+        self.rescan_button = QToolButton(self.menu_bar_container)
+        self.rescan_button.setObjectName("rescanButton")
+        self.rescan_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.rescan_button.setAutoRaise(True)
+        menu_bar_layout.addWidget(self.rescan_button)
+
+        self.window_shell_layout.addWidget(self.menu_bar_container)
 
         self.open_album_action = QAction("Open Album Folder…", MainWindow)
         self.rescan_action = QAction("Rescan", MainWindow)
@@ -337,6 +375,12 @@ class Ui_MainWindow(object):
         self.bind_library_action = QAction("Set Basic Library…", MainWindow)
         # Provide a persistent toggle so users can hide the filmstrip when they want to focus
         # solely on the large preview while still being able to restore it later.
+
+        # Assign the rescan action to the dedicated button so it inherits every
+        # state change applied by controllers (enabled/disabled) and reflects
+        # translated strings automatically.
+        self.rescan_button.setDefaultAction(self.rescan_action)
+
         self.toggle_filmstrip_action = QAction("Show Filmstrip", MainWindow, checkable=True)
         self.toggle_filmstrip_action.setChecked(True)
 
@@ -376,33 +420,6 @@ class Ui_MainWindow(object):
                 file_menu.addSeparator()
             else:
                 file_menu.addAction(action)
-
-        self.main_toolbar = QToolBar("Main", self.window_shell)
-        # Hosting the toolbar inside the rounded shell keeps the controls opaque while avoiding
-        # the transparent gap that appeared when Qt painted it outside the custom chrome.
-        self.main_toolbar.setObjectName("mainToolbar")
-        self.main_toolbar.setMovable(False)
-        self.main_toolbar.setFloatable(False)
-        self.main_toolbar.setOrientation(Qt.Orientation.Horizontal)
-        self.main_toolbar.setSizePolicy(
-            QSizePolicy.Policy.Preferred,
-            QSizePolicy.Policy.Fixed,
-        )
-        self.main_toolbar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.main_toolbar.setAutoFillBackground(True)
-        toolbar_palette = self.main_toolbar.palette()
-        toolbar_palette.setColor(
-            QPalette.ColorRole.Window,
-            toolbar_palette.color(QPalette.ColorRole.Base),
-        )
-        self.main_toolbar.setPalette(toolbar_palette)
-        self.window_shell_layout.addWidget(self.main_toolbar)
-        for action in (
-            self.open_album_action,
-            self.rescan_action,
-            self.rebuild_links_action,
-        ):
-            self.main_toolbar.addAction(action)
 
         settings_menu = self.menu_bar.addMenu("&Settings")
         # Reuse the same action instance in both menus so the user can discover the
@@ -906,6 +923,16 @@ class Ui_MainWindow(object):
             QCoreApplication.translate(
                 "MainWindow",
                 "Toggle multi-selection mode",
+                None,
+            )
+        )
+        self.rescan_button.setText(
+            QCoreApplication.translate("MainWindow", "Rescan", None)
+        )
+        self.rescan_button.setToolTip(
+            QCoreApplication.translate(
+                "MainWindow",
+                "Rescan the current library to refresh its contents",
                 None,
             )
         )
