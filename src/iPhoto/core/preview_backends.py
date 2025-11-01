@@ -15,7 +15,7 @@ from PySide6.QtGui import QImage
 from .image_filters import apply_adjustments
 
 if TYPE_CHECKING:  # pragma: no cover - import for typing only
-    from PySide6.QtCore import QOffscreenSurface
+    from PySide6.QtGui import QOffscreenSurface
     from PySide6.QtGui import QOpenGLContext
     from PySide6.QtOpenGL import (
         QOpenGLBuffer,
@@ -144,7 +144,7 @@ class _OpenGlPreviewBackend(PreviewBackend):
         # probing before the backend is constructed, so any ImportError raised
         # here indicates a configuration drift between the probe and the
         # initialiser.  Surfacing the error keeps the log output actionable.
-        from PySide6.QtCore import QOffscreenSurface
+        from PySide6.QtGui import QOffscreenSurface
         from PySide6.QtGui import QOpenGLContext, QSurfaceFormat
         from PySide6.QtOpenGL import QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram
 
@@ -303,7 +303,7 @@ class _OpenGlPreviewBackend(PreviewBackend):
         """Return ``True`` if an OpenGL rendering context is available."""
 
         try:
-            from PySide6.QtCore import QOffscreenSurface
+            from PySide6.QtGui import QOffscreenSurface
             from PySide6.QtGui import QOpenGLContext, QSurfaceFormat
         except Exception:
             return False
