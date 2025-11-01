@@ -15,7 +15,8 @@ from PySide6.QtCore import (
     Signal,
 )
 from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
+from PySide6.QtCore import QSize
+from PySide6.QtWidgets import QApplication, QSizePolicy, QVBoxLayout, QWidget
 
 
 def _snap05(value: float) -> float:
@@ -67,6 +68,7 @@ class SegmentedTopBar(QWidget):
         self.setMinimumHeight(self.height_hint)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
     # ------------------------------------------------------------------
     # Public API
@@ -83,6 +85,7 @@ class SegmentedTopBar(QWidget):
         self._index = max(0, min(self._index, len(self._items) - 1))
         self._anim_pos = float(self._index)
         self.update()
+        self.updateGeometry()
 
     def currentIndex(self) -> int:
         """Return the index of the highlighted segment."""
@@ -256,6 +259,34 @@ class SegmentedTopBar(QWidget):
         x = self._lerp(first.left(), second.left(), fraction)
         width = self._lerp(first.width(), second.width(), fraction)
         return QRectF(x, first.top(), width, first.height())
+
+    # ------------------------------------------------------------------
+    # Sizing helpers
+    def sizeHint(self) -> QSize:  # type: ignore[override]
+        """Return the preferred control size based on the label lengths."""
+
+        segment_width = self._segment_width_hint()
+        count = max(1, len(self._items))
+        total_width = int(round(2 * self.h_pad + segment_width * count))
+        return QSize(total_width, self.height_hint)
+
+    def minimumSizeHint(self) -> QSize:  # type: ignore[override]
+        """Mirror :meth:`sizeHint` so layouts never collapse the control."""
+
+        return self.sizeHint()
+
+    def _segment_width_hint(self) -> float:
+        """Estimate a comfortable width for an individual segment."""
+
+        metrics = self.fontMetrics()
+        if not self._items:
+            text_width = metrics.horizontalAdvance("Item")
+        else:
+            text_width = max(metrics.horizontalAdvance(text) for text in self._items)
+        # Provide additional breathing room around the text to mimic the native Photos toolbar.
+        # The constant accounts for the inner padding used during painting so the highlight band
+        # never clips the glyphs even when translated to high-DPI surfaces.
+        return float(text_width + (self.sep_inset + self.h_pad))
 
 
 # ----------------------------------------------------------------------
