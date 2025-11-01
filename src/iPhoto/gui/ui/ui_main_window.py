@@ -353,17 +353,11 @@ class Ui_MainWindow(object):
         )
         menu_bar_layout.addWidget(self.menu_bar)
 
-        # A stretchable spacer pushes the rescan button to the far right.  This
-        # leaves headroom for future controls without forcing another dedicated
-        # toolbar.
-        menu_bar_layout.addSpacerItem(
-            QSpacerItem(
-                40,
-                20,
-                QSizePolicy.Policy.Expanding,
-                QSizePolicy.Policy.Minimum,
-            )
-        )
+        # Insert a stretchable slot instead of a fixed spacer so Qt allocates
+        # each widget's preferred width before occupying the remaining space.
+        # This prevents the menu bar from collapsing to its minimum size while
+        # still pushing the rescan button to the far edge of the chrome row.
+        menu_bar_layout.addStretch(1)
 
         # The rescan button reuses the existing QAction to inherit its text,
         # shortcut, enabled state, and triggered signal wiring.  Sharing the
