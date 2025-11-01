@@ -503,8 +503,14 @@ class EditController(QObject):
     # ------------------------------------------------------------------
     def _handle_session_changed(self, values: dict) -> None:
         del values  # Unused – the session already stores the authoritative mapping.
-        # Debounce preview updates to avoid recalculating the entire image for
-        # every incremental slider movement event.
+        # Hardware accelerated backends can keep up with continuous slider
+        # interaction, so render immediately to achieve true real-time feedback.
+        if self._preview_backend.supports_realtime:
+            self._start_preview_job()
+            return
+
+        # CPU rendering remains comparatively expensive, therefore a debounce
+        # timer prevents excessive work while the user drags a slider.
         self._preview_update_timer.start()
 
     def _cancel_pending_previews(self) -> None:
@@ -559,9 +565,6 @@ class EditController(QObject):
         self._preview_job_id += 1
         job_id = self._preview_job_id
 
-        signals = _PreviewSignals()
-        signals.finished.connect(self._on_preview_ready)
-
         if self._preview_backend.supports_realtime:
             # Hardware accelerated backends are fast enough to run synchronously
             # on the UI thread, so we render immediately and forward the result.
@@ -574,6 +577,9 @@ class EditController(QObject):
                 image = QImage()
             self._on_preview_ready(image, job_id)
             return
+
+        signals = _PreviewSignals()
+        signals.finished.connect(self._on_preview_ready)
 
         worker = _PreviewWorker(
             self._preview_backend,
