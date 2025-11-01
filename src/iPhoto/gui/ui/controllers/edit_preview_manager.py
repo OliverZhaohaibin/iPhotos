@@ -1,0 +1,343 @@
+"""Preview rendering coordinator extracted from :mod:`edit_controller`."""
+
+from __future__ import annotations
+
+import logging
+from typing import Mapping, Optional
+
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Qt, Signal
+from PySide6.QtGui import QImage, QPixmap
+
+from ....core.preview_backends import PreviewBackend, PreviewSession, select_preview_backend
+from ..widgets.image_viewer import ImageViewer
+
+_LOGGER = logging.getLogger(__name__)
+
+
+class _PreviewSignals(QObject):
+    """Signals emitted by :class:`_PreviewWorker` once processing completes."""
+
+    finished = Signal(QImage, int)
+    """Emitted with the adjusted image and the job identifier."""
+
+
+class _PreviewWorker(QRunnable):
+    """Execute preview rendering in a background thread."""
+
+    def __init__(
+        self,
+        backend: PreviewBackend,
+        session: PreviewSession,
+        adjustments: Mapping[str, float],
+        job_id: int,
+        signals: _PreviewSignals,
+    ) -> None:
+        super().__init__()
+        self._backend = backend
+        self._session = session
+        # Store a dedicated copy of the adjustment mapping so that a live
+        # :class:`EditSession` mutating values mid-render does not affect the
+        # in-flight job.
+        self._adjustments = dict(adjustments)
+        self._job_id = job_id
+        self._signals = signals
+
+    def run(self) -> None:  # type: ignore[override]
+        """Perform the tone-mapping work and notify listeners when done."""
+
+        try:
+            adjusted = self._backend.render(self._session, self._adjustments)
+        except Exception:
+            # Propagate failures by emitting a null image.  The controller will
+            # discard outdated or invalid results, so surfacing ``None`` keeps
+            # the UI responsive even if processing fails unexpectedly.
+            adjusted = QImage()
+        self._signals.finished.emit(adjusted, self._job_id)
+
+    @property
+    def session(self) -> PreviewSession:
+        """Expose the backend session used by this worker."""
+
+        return self._session
+
+
+class EditPreviewManager(QObject):
+    """Own preview rendering resources for the edit workflow."""
+
+    preview_updated = Signal(QPixmap)
+    """Emitted when a recalculated preview pixmap is ready for display."""
+
+    image_cleared = Signal()
+    """Emitted when no preview image is available and the viewer should clear."""
+
+    def __init__(self, viewer: ImageViewer, parent: Optional[QObject] = None) -> None:
+        super().__init__(parent)
+        self._viewer = viewer
+        self._preview_backend: PreviewBackend = select_preview_backend()
+        _LOGGER.info("Initialised edit preview backend: %s", self._preview_backend.tier_name)
+
+        self._preview_session: Optional[PreviewSession] = None
+        self._base_image: Optional[QImage] = None
+        self._base_pixmap: Optional[QPixmap] = None
+        self._current_preview_pixmap: Optional[QPixmap] = None
+        self._current_adjustments: dict[str, float] = {}
+
+        self._thread_pool = QThreadPool.globalInstance()
+        self._preview_job_id = 0
+        self._active_preview_workers: set[_PreviewWorker] = set()
+        self._pending_session_disposals: list[PreviewSession] = []
+
+        self._preview_update_timer = QTimer(self)
+        self._preview_update_timer.setSingleShot(True)
+        self._preview_update_timer.setInterval(50)
+        self._preview_update_timer.timeout.connect(self._start_preview_job)
+
+    # ------------------------------------------------------------------
+    # Public API used by :class:`EditController`
+    # ------------------------------------------------------------------
+    def start_session(
+        self,
+        image: QImage,
+        adjustments: Mapping[str, float],
+        *,
+        scale_for_viewport: bool = True,
+    ) -> QPixmap:
+        """Initialise a rendering session for *image* using *adjustments*."""
+
+        self._cancel_pending_previews()
+        prepared = self._prepare_preview_image(image, scale_for_viewport=scale_for_viewport)
+
+        previous_session = self._preview_session
+        if prepared.isNull():
+            # The controller already guards against null images, however leaving
+            # the safety net here prevents crashes should future call sites
+            # forget to perform validation.
+            self._preview_session = None
+            self._base_image = None
+            self._base_pixmap = None
+            self._current_preview_pixmap = None
+            if previous_session is not None:
+                self._queue_session_for_disposal(previous_session)
+                self._dispose_retired_sessions()
+            self.image_cleared.emit()
+            return QPixmap()
+
+        self._preview_session = self._preview_backend.create_session(prepared)
+        self._base_image = QImage(prepared)
+        base_pixmap = QPixmap.fromImage(prepared)
+        self._base_pixmap = base_pixmap if not base_pixmap.isNull() else None
+        self._current_preview_pixmap = self._base_pixmap
+        self._current_adjustments = dict(adjustments)
+
+        if previous_session is not None:
+            self._queue_session_for_disposal(previous_session)
+            self._dispose_retired_sessions()
+
+        # Emit the unadjusted frame immediately so the caller can display an
+        # instant response while the heavy lifting runs in the background.
+        if self._base_pixmap is not None:
+            self.preview_updated.emit(self._base_pixmap)
+        else:
+            self.image_cleared.emit()
+
+        self._start_preview_job()
+        return base_pixmap
+
+    def stop_session(self) -> None:
+        """Cancel outstanding work and release the active preview session."""
+
+        self._cancel_pending_previews()
+        if self._preview_session is not None:
+            self._queue_session_for_disposal(self._preview_session)
+            self._preview_session = None
+            self._dispose_retired_sessions()
+        self._base_image = None
+        self._base_pixmap = None
+        self._current_preview_pixmap = None
+        self._current_adjustments.clear()
+
+    def cancel_pending_updates(self) -> None:
+        """Stop timers and invalidate in-flight previews without tearing down the session."""
+
+        self._cancel_pending_previews()
+
+    def update_adjustments(self, adjustments: Mapping[str, float]) -> None:
+        """Schedule a new preview render using *adjustments*."""
+
+        self._current_adjustments = dict(adjustments)
+        if self._preview_session is None:
+            self.image_cleared.emit()
+            return
+
+        if self._preview_backend.supports_realtime:
+            self._start_preview_job()
+            return
+
+        self._preview_update_timer.stop()
+        self._preview_update_timer.start()
+
+    def get_base_image_pixmap(self) -> Optional[QPixmap]:
+        """Return the unadjusted pixmap currently backing the preview surface."""
+
+        return self._base_pixmap
+
+    def get_current_preview_pixmap(self) -> Optional[QPixmap]:
+        """Return the latest adjusted preview pixmap."""
+
+        return self._current_preview_pixmap
+
+    def get_base_image(self) -> Optional[QImage]:
+        """Expose the QImage currently used as the base render target."""
+
+        return self._base_image
+
+    # ------------------------------------------------------------------
+    # Internal helpers mirrored from the legacy controller implementation
+    # ------------------------------------------------------------------
+    def _prepare_preview_image(
+        self,
+        image: QImage,
+        *,
+        scale_for_viewport: bool,
+    ) -> QImage:
+        """Return an image optimised for preview rendering throughput."""
+
+        if not scale_for_viewport:
+            return QImage(image)
+
+        viewport_size = None
+
+        # ``ImageViewer`` exposes its scroll area viewport for external event
+        # filters.  Reusing that helper yields the exact drawable surface size
+        # when the widget has already been laid out.
+        if hasattr(self._viewer, "viewport_widget"):
+            try:
+                viewport = self._viewer.viewport_widget()
+            except Exception:
+                viewport = None
+            if viewport is not None:
+                size = viewport.size()
+                if size.isValid() and not size.isEmpty():
+                    viewport_size = size
+
+        if viewport_size is None:
+            size = self._viewer.size()
+            if size.isValid() and not size.isEmpty():
+                viewport_size = size
+
+        max_width = 1600
+        max_height = 1600
+        if viewport_size is not None:
+            max_width = max(1, viewport_size.width())
+            max_height = max(1, viewport_size.height())
+
+        if image.width() <= max_width and image.height() <= max_height:
+            # The source already fits within the requested bounds.  Return a
+            # detached copy so subsequent pixel operations never touch the
+            # caller's instance.
+            return QImage(image)
+
+        return image.scaled(
+            max_width,
+            max_height,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+
+    def _start_preview_job(self) -> None:
+        """Queue a background task that recalculates the preview image."""
+
+        if self._preview_session is None:
+            self.image_cleared.emit()
+            return
+
+        self._preview_job_id += 1
+        job_id = self._preview_job_id
+
+        if self._preview_backend.supports_realtime:
+            try:
+                image = self._preview_backend.render(
+                    self._preview_session,
+                    self._current_adjustments,
+                )
+            except Exception:
+                image = QImage()
+            self._on_preview_ready(image, job_id)
+            return
+
+        signals = _PreviewSignals()
+        signals.finished.connect(self._on_preview_ready)
+
+        worker = _PreviewWorker(
+            self._preview_backend,
+            self._preview_session,
+            self._current_adjustments,
+            job_id,
+            signals,
+        )
+        self._active_preview_workers.add(worker)
+
+        def _handle_worker_finished(_image: QImage, _finished_job: int, *, worker_ref=worker) -> None:
+            self._active_preview_workers.discard(worker_ref)
+            self._dispose_retired_sessions()
+
+        signals.finished.connect(_handle_worker_finished)
+        self._thread_pool.start(worker)
+
+    def _on_preview_ready(self, image: QImage, job_id: int) -> None:
+        """Update the preview if the emitted job matches the latest request."""
+
+        if job_id != self._preview_job_id:
+            return
+
+        if image.isNull():
+            self._current_preview_pixmap = None
+            self.image_cleared.emit()
+            return
+
+        pixmap = QPixmap.fromImage(image)
+        if pixmap.isNull():
+            self._current_preview_pixmap = None
+            self.image_cleared.emit()
+            return
+
+        self._current_preview_pixmap = pixmap
+        self.preview_updated.emit(pixmap)
+
+    def _cancel_pending_previews(self) -> None:
+        """Stop timers and invalidate outstanding preview work."""
+
+        self._preview_update_timer.stop()
+        self._preview_job_id += 1
+
+    def _dispose_retired_sessions(self) -> None:
+        """Dispose backend sessions queued for cleanup when safe."""
+
+        if not self._pending_session_disposals:
+            return
+
+        active_sessions = [
+            worker.session
+            for worker in self._active_preview_workers
+            if worker.session is not None
+        ]
+        for session in list(self._pending_session_disposals):
+            if any(active is session for active in active_sessions):
+                continue
+            try:
+                self._preview_backend.dispose_session(session)
+            except Exception:
+                pass
+            try:
+                self._pending_session_disposals.remove(session)
+            except ValueError:
+                continue
+
+    def _queue_session_for_disposal(self, session: PreviewSession) -> None:
+        """Record a session for deferred disposal if it is not already queued."""
+
+        if session is None:
+            return
+        if any(queued is session for queued in self._pending_session_disposals):
+            return
+        self._pending_session_disposals.append(session)
