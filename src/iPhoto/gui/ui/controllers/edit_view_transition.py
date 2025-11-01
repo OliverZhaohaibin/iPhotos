@@ -25,94 +25,55 @@ if TYPE_CHECKING:  # pragma: no cover - import for typing only
     from .detail_ui_controller import DetailUIController
 
 
-_EDIT_DARK_STYLESHEET = "\n".join(
-    [
-        "QWidget#editPage {",
-        "  background-color: #1C1C1E;",
-        "}",
-        "QWidget#editPage QLabel,",
-        "QWidget#editPage QToolButton,",
-        "QWidget#editHeaderContainer QPushButton {",
-        "  color: #F5F5F7;",
-        "}",
-        "QWidget#editHeaderContainer {",
-        "  background-color: #2C2C2E;",
-        "  border-radius: 12px;",
-        "}",
-        "QWidget#editPage EditSidebar,",
-        "QWidget#editPage EditSidebar QWidget,",
-        "QWidget#editPage QScrollArea,",
-        "QWidget#editPage QScrollArea > QWidget {",
-        "  background-color: #2C2C2E;",
-        "  color: #F5F5F7;",
-        "}",
-        "QWidget#editPage QGroupBox {",
-        "  background-color: #1F1F1F;",
-        "  border: 1px solid #323236;",
-        "  border-radius: 10px;",
-        "  margin-top: 24px;",
-        "  padding-top: 12px;",
-        "}",
-        "QWidget#editPage QGroupBox::title {",
-        "  color: #F5F5F7;",
-        "  subcontrol-origin: margin;",
-        "  left: 12px;",
-        "  padding: 0 4px;",
-        "}",
-        "QWidget#editPage #collapsibleSection QLabel {",
-        "  color: #F5F5F7;",
-        "}",
-    ]
-)
+class EditThemeManager:
+    """Handle theme caching and application for the edit interface."""
 
+    EDIT_DARK_STYLESHEET = "\n".join(
+        [
+            "QWidget#editPage {",
+            "  background-color: #1C1C1E;",
+            "}",
+            "QWidget#editPage QLabel,",
+            "QWidget#editPage QToolButton,",
+            "QWidget#editHeaderContainer QPushButton {",
+            "  color: #F5F5F7;",
+            "}",
+            "QWidget#editHeaderContainer {",
+            "  background-color: #2C2C2E;",
+            "  border-radius: 12px;",
+            "}",
+            "QWidget#editPage EditSidebar,",
+            "QWidget#editPage EditSidebar QWidget,",
+            "QWidget#editPage QScrollArea,",
+            "QWidget#editPage QScrollArea > QWidget {",
+            "  background-color: #2C2C2E;",
+            "  color: #F5F5F7;",
+            "}",
+            "QWidget#editPage QGroupBox {",
+            "  background-color: #1F1F1F;",
+            "  border: 1px solid #323236;",
+            "  border-radius: 10px;",
+            "  margin-top: 24px;",
+            "  padding-top: 12px;",
+            "}",
+            "QWidget#editPage QGroupBox::title {",
+            "  color: #F5F5F7;",
+            "  subcontrol-origin: margin;",
+            "  left: 12px;",
+            "  padding: 0 4px;",
+            "}",
+            "QWidget#editPage #collapsibleSection QLabel {",
+            "  color: #F5F5F7;",
+            "}",
+        ]
+    )
 
-class EditViewTransitionManager(QObject):
-    """Encapsulate edit view theme toggling and animated transitions."""
+    def __init__(self, ui: Ui_MainWindow, window: QObject | None) -> None:
+        """Cache all light-theme defaults that must be restored later."""
 
-    transition_finished = Signal(str)
-    """Emitted with ``"enter"`` or ``"exit"`` once an animation completes."""
-
-    def __init__(
-        self,
-        ui: Ui_MainWindow,
-        window: QObject | None,
-        parent: Optional[QObject] = None,
-    ) -> None:
-        super().__init__(parent)
         self._ui = ui
         self._window = window
         self._detail_ui_controller: "DetailUIController" | None = None
-
-        preferred_width = ui.edit_sidebar.property("defaultPreferredWidth")
-        minimum_width = ui.edit_sidebar.property("defaultMinimumWidth")
-        maximum_width = ui.edit_sidebar.property("defaultMaximumWidth")
-        self._edit_sidebar_preferred_width = max(
-            1,
-            int(preferred_width) if preferred_width else ui.edit_sidebar.sizeHint().width(),
-        )
-        self._edit_sidebar_minimum_width = max(
-            1,
-            int(minimum_width) if minimum_width else ui.edit_sidebar.minimumWidth(),
-        )
-        self._edit_sidebar_maximum_width = max(
-            self._edit_sidebar_preferred_width,
-            int(maximum_width) if maximum_width else ui.edit_sidebar.maximumWidth(),
-        )
-        self._edit_sidebar_preferred_width = min(
-            self._edit_sidebar_preferred_width,
-            self._edit_sidebar_maximum_width,
-        )
-        self._splitter_sizes_before_edit: list[int] | None = None
-        self._transition_group: QParallelAnimationGroup | None = None
-        self._transition_direction: str | None = None
-
-        self._edit_header_opacity = QGraphicsOpacityEffect(ui.edit_header_container)
-        self._edit_header_opacity.setOpacity(1.0)
-        ui.edit_header_container.setGraphicsEffect(self._edit_header_opacity)
-
-        self._detail_header_opacity = QGraphicsOpacityEffect(ui.detail_chrome_container)
-        self._detail_header_opacity.setOpacity(1.0)
-        ui.detail_chrome_container.setGraphicsEffect(self._detail_header_opacity)
 
         self._default_edit_page_stylesheet = ui.edit_page.styleSheet()
         self._default_sidebar_stylesheet = ui.sidebar.styleSheet()
@@ -177,7 +138,7 @@ class EditViewTransitionManager(QObject):
     def set_detail_ui_controller(
         self, controller: "DetailUIController" | None
     ) -> None:
-        """Record *controller* so icon tinting tracks the active theme."""
+        """Store *controller* so toolbar icon tinting follows theme changes."""
 
         self._detail_ui_controller = controller
         if controller is None:
@@ -187,62 +148,12 @@ class EditViewTransitionManager(QObject):
         else:
             controller.set_toolbar_icon_tint(None)
 
-    def is_transition_active(self) -> bool:
-        """Return ``True`` if an enter/exit animation is running."""
-
-        return self._transition_group is not None or self._transition_direction is not None
-
-    def enter_edit_mode(self, animate: bool = True) -> None:
-        """Apply the edit chrome and animate the sidebar into view."""
-
-        if self._transition_direction == "enter":
-            return
-
-        self._detail_header_opacity.setOpacity(1.0)
-        self._ui.detail_chrome_container.hide()
-        self._ui.edit_header_container.show()
-        self._edit_header_opacity.setOpacity(1.0)
-
-        splitter_sizes = self._sanitise_splitter_sizes(self._ui.splitter.sizes())
-        self._splitter_sizes_before_edit = list(splitter_sizes)
-        self._prepare_navigation_sidebar_for_entry()
-        self._prepare_edit_sidebar_for_entry()
-        self._start_transition_animation(
-            entering=True,
-            splitter_start_sizes=splitter_sizes,
-            animate=animate,
-        )
-
-    def leave_edit_mode(self, animate: bool = True) -> None:
-        """Restore the standard chrome and animate the sidebar out of view."""
-
-        if self._transition_direction == "exit":
-            return
-
-        self._prepare_navigation_sidebar_for_exit()
-        self._prepare_edit_sidebar_for_exit()
-        self._restore_edit_theme()
-
-        self._ui.detail_chrome_container.show()
-        self._ui.edit_header_container.show()
-        if animate:
-            self._detail_header_opacity.setOpacity(0.0)
-            self._edit_header_opacity.setOpacity(1.0)
-        else:
-            self._detail_header_opacity.setOpacity(1.0)
-            self._edit_header_opacity.setOpacity(0.0)
-
-        self._start_transition_animation(entering=False, animate=animate)
-
-    # ------------------------------------------------------------------
-    # Theme helpers
-    # ------------------------------------------------------------------
-    def _apply_edit_dark_theme(self) -> None:
+    def apply_dark_theme(self) -> None:
         """Activate the dark edit palette across the entire window chrome."""
 
         if self._edit_theme_applied:
             return
-        self._ui.edit_page.setStyleSheet(_EDIT_DARK_STYLESHEET)
+        self._ui.edit_page.setStyleSheet(self.EDIT_DARK_STYLESHEET)
         self._ui.edit_image_viewer.set_surface_color_override("#111111")
 
         dark_icon_color = QColor("#FFFFFF")
@@ -364,9 +275,8 @@ class EditViewTransitionManager(QObject):
         outline_color_name = outline_color.name()
         disabled_text_name = disabled_text.name()
 
-        # ``window_title_label`` retains a ``color: unset`` rule that the restoration step appends
-        # to its stylesheet.  Apply an explicit white tint while the dark palette is active so the
-        # caption matches the surrounding chrome instead of inheriting a stale light variant.
+        # ``window_title_label`` retains a ``color: unset`` rule appended during restoration.
+        # Explicitly forcing the colour keeps the caption readable while dark chrome is active.
         self._ui.window_title_label.setStyleSheet(
             "\n".join(
                 [
@@ -377,8 +287,8 @@ class EditViewTransitionManager(QObject):
             )
         )
 
-        # Keep the album sidebar transparent so the rounded shell continues to paint the curved
-        # outline, but force the foreground colour so labels remain readable against the dark chrome.
+        # Keep the album sidebar transparent so the rounded shell paints the curved outline while
+        # ensuring all labels inherit the dark foreground tint for readability.
         self._ui.sidebar.setStyleSheet(
             "\n".join(
                 [
@@ -494,10 +404,10 @@ class EditViewTransitionManager(QObject):
             )
         )
 
-        self._ui.edit_page.setStyleSheet(_EDIT_DARK_STYLESHEET)
+        self._ui.edit_page.setStyleSheet(self.EDIT_DARK_STYLESHEET)
         self._edit_theme_applied = True
 
-    def _restore_edit_theme(self) -> None:
+    def restore_light_theme(self) -> None:
         """Restore the light application chrome after leaving edit mode."""
 
         if not self._edit_theme_applied:
@@ -601,8 +511,10 @@ class EditViewTransitionManager(QObject):
         self._ui.sidebar.setStyleSheet(
             self._default_sidebar_stylesheet
             or (
-                "QWidget#albumSidebar {\n"
-                f"    background-color: {SIDEBAR_BACKGROUND_COLOR.name()};\n"
+                "QWidget#albumSidebar {
+"
+                f"    background-color: {SIDEBAR_BACKGROUND_COLOR.name()};
+"
                 "}"
             )
         )
@@ -638,15 +550,7 @@ class EditViewTransitionManager(QObject):
         cached_stylesheet: str | None,
         selector: str,
     ) -> None:
-        """Recombine *widget*'s cached stylesheet with a neutral text colour.
-
-        Dark mode injects high-specificity rules that force white foregrounds
-        onto chrome controls.  Simply restoring the original stylesheet is
-        insufficient because the ``color`` attribute remains latched to the
-        dark override.  Appending a ``color: unset`` rule targeted at the
-        widget's object name clears that override explicitly so Qt falls back to
-        the palette we restored moments earlier.
-        """
+        """Recombine *widget*'s cached stylesheet with a neutral text colour."""
 
         base_stylesheet = (cached_stylesheet or "").strip()
         reset_stylesheet = "\n".join(
@@ -673,6 +577,130 @@ class EditViewTransitionManager(QObject):
         if not callable(apply_styles):
             return
         apply_styles()
+
+    def get_shell_animation_colors(
+        self, entering: bool
+    ) -> tuple[RoundedWindowShell | None, QColor | None, QColor | None]:
+        """Return the shell widget plus start/end colours for transition animations."""
+
+        shell = self._rounded_window_shell
+        if shell is None:
+            return None, None, None
+        if self._default_rounded_shell_palette is None:
+            self._default_rounded_shell_palette = QPalette(shell.palette())
+        base_palette = self._default_rounded_shell_palette or QPalette(shell.palette())
+        light_shell_color = base_palette.color(QPalette.ColorRole.Window)
+        dark_shell_color = QColor("#1C1C1E")
+        if entering:
+            return shell, light_shell_color, dark_shell_color
+        return shell, dark_shell_color, light_shell_color
+
+class EditViewTransitionManager(QObject):
+    """Encapsulate edit view theme toggling and animated transitions."""
+
+    transition_finished = Signal(str)
+    """Emitted with ``"enter"`` or ``"exit"`` once an animation completes."""
+
+    def __init__(
+        self,
+        ui: Ui_MainWindow,
+        window: QObject | None,
+        parent: Optional[QObject] = None,
+        *,
+        theme_manager: EditThemeManager | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._ui = ui
+        self._theme_manager = theme_manager or EditThemeManager(ui, window)
+
+        preferred_width = ui.edit_sidebar.property("defaultPreferredWidth")
+        minimum_width = ui.edit_sidebar.property("defaultMinimumWidth")
+        maximum_width = ui.edit_sidebar.property("defaultMaximumWidth")
+        self._edit_sidebar_preferred_width = max(
+            1,
+            int(preferred_width) if preferred_width else ui.edit_sidebar.sizeHint().width(),
+        )
+        self._edit_sidebar_minimum_width = max(
+            1,
+            int(minimum_width) if minimum_width else ui.edit_sidebar.minimumWidth(),
+        )
+        self._edit_sidebar_maximum_width = max(
+            self._edit_sidebar_preferred_width,
+            int(maximum_width) if maximum_width else ui.edit_sidebar.maximumWidth(),
+        )
+        self._edit_sidebar_preferred_width = min(
+            self._edit_sidebar_preferred_width,
+            self._edit_sidebar_maximum_width,
+        )
+        self._splitter_sizes_before_edit: list[int] | None = None
+        self._transition_group: QParallelAnimationGroup | None = None
+        self._transition_direction: str | None = None
+
+        self._edit_header_opacity = QGraphicsOpacityEffect(ui.edit_header_container)
+        self._edit_header_opacity.setOpacity(1.0)
+        ui.edit_header_container.setGraphicsEffect(self._edit_header_opacity)
+
+        self._detail_header_opacity = QGraphicsOpacityEffect(ui.detail_chrome_container)
+        self._detail_header_opacity.setOpacity(1.0)
+        ui.detail_chrome_container.setGraphicsEffect(self._detail_header_opacity)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+    def set_detail_ui_controller(
+        self, controller: "DetailUIController" | None
+    ) -> None:
+        """Record *controller* so icon tinting tracks the active theme."""
+
+        self._theme_manager.set_detail_ui_controller(controller)
+
+    def is_transition_active(self) -> bool:
+        """Return ``True`` if an enter/exit animation is running."""
+
+        return self._transition_group is not None or self._transition_direction is not None
+
+    def enter_edit_mode(self, animate: bool = True) -> None:
+        """Apply the edit chrome and animate the sidebar into view."""
+
+        if self._transition_direction == "enter":
+            return
+
+        self._detail_header_opacity.setOpacity(1.0)
+        self._ui.detail_chrome_container.hide()
+        self._ui.edit_header_container.show()
+        self._edit_header_opacity.setOpacity(1.0)
+
+        splitter_sizes = self._sanitise_splitter_sizes(self._ui.splitter.sizes())
+        self._splitter_sizes_before_edit = list(splitter_sizes)
+        self._prepare_navigation_sidebar_for_entry()
+        self._prepare_edit_sidebar_for_entry()
+        self._theme_manager.apply_dark_theme()
+        self._start_transition_animation(
+            entering=True,
+            splitter_start_sizes=splitter_sizes,
+            animate=animate,
+        )
+
+    def leave_edit_mode(self, animate: bool = True) -> None:
+        """Restore the standard chrome and animate the sidebar out of view."""
+
+        if self._transition_direction == "exit":
+            return
+
+        self._prepare_navigation_sidebar_for_exit()
+        self._prepare_edit_sidebar_for_exit()
+        self._theme_manager.restore_light_theme()
+
+        self._ui.detail_chrome_container.show()
+        self._ui.edit_header_container.show()
+        if animate:
+            self._detail_header_opacity.setOpacity(0.0)
+            self._edit_header_opacity.setOpacity(1.0)
+        else:
+            self._detail_header_opacity.setOpacity(1.0)
+            self._edit_header_opacity.setOpacity(0.0)
+
+        self._start_transition_animation(entering=False, animate=animate)
 
     # ------------------------------------------------------------------
     # Transition helpers
@@ -743,24 +771,9 @@ class EditViewTransitionManager(QObject):
         sidebar_start = int(sidebar_start)
         sidebar_end = int(sidebar_end)
 
-        shell = self._rounded_window_shell
-        shell_start_color: QColor | None = None
-        shell_end_color: QColor | None = None
-        if shell is not None:
-            if self._default_rounded_shell_palette is None:
-                self._default_rounded_shell_palette = QPalette(shell.palette())
-            base_palette = self._default_rounded_shell_palette or QPalette(shell.palette())
-            light_shell_color = base_palette.color(QPalette.ColorRole.Window)
-            dark_shell_color = QColor("#1C1C1E")
-            if entering:
-                shell_start_color = light_shell_color
-                shell_end_color = dark_shell_color
-            else:
-                shell_start_color = dark_shell_color
-                shell_end_color = light_shell_color
-
-        if entering:
-            self._apply_edit_dark_theme()
+        shell, shell_start_color, shell_end_color = self._theme_manager.get_shell_animation_colors(
+            entering
+        )
 
         if shell is not None and shell_start_color is not None:
             shell.set_override_color(shell_start_color)
