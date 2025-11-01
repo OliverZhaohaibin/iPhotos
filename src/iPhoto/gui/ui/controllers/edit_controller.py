@@ -1130,9 +1130,34 @@ class EditController(QObject):
         self._ui.sidebar._tree.setAutoFillBackground(self._default_sidebar_tree_autofill)
         self._ui.status_bar._message_label.setPalette(QPalette(self._default_statusbar_message_palette))
         self._ui.album_label.setPalette(QPalette(self._default_album_label_palette))
-        self._ui.album_label.setStyleSheet(self._default_album_label_stylesheet)
+        album_label_stylesheet = self._default_album_label_stylesheet or ""
+        album_label_reset_stylesheet = "\n".join(
+            [
+                "QLabel#albumLabel {",
+                "    color: unset;",
+                "}",
+            ]
+        )
+        # ``color: unset`` removes the high-specificity white text override that dark mode applies
+        # through the album header's stylesheet.  Qt then falls back to the restored palette so the
+        # label returns to the light theme's dark foreground colour.
+        self._ui.album_label.setStyleSheet(
+            f"{album_label_stylesheet}\n{album_label_reset_stylesheet}".strip()
+        )
         self._ui.selection_button.setPalette(QPalette(self._default_selection_button_palette))
-        self._ui.selection_button.setStyleSheet(self._default_selection_button_stylesheet)
+        selection_button_stylesheet = self._default_selection_button_stylesheet or ""
+        selection_button_reset_stylesheet = "\n".join(
+            [
+                "QToolButton#selectionButton {",
+                "    color: unset;",
+                "}",
+            ]
+        )
+        # The selection button shares the same header stylesheet override.  Clearing the explicit
+        # colour ensures its caption once again follows the palette supplied by the light theme.
+        self._ui.selection_button.setStyleSheet(
+            f"{selection_button_stylesheet}\n{selection_button_reset_stylesheet}".strip()
+        )
         self._ui.window_title_label.setPalette(QPalette(self._default_window_title_palette))
         self._ui.window_title_label.setStyleSheet(self._default_window_title_stylesheet)
 
