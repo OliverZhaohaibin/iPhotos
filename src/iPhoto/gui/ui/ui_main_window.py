@@ -309,6 +309,15 @@ class Ui_MainWindow(object):
         self.rescan_button.setAutoRaise(True)
         menu_bar_layout.addWidget(self.rescan_button)
 
+        # Surface the selection toggle beside ``rescan_button`` so both header actions stay in
+        # a single, predictable location.  Keeping the tool button flat mirrors the previous
+        # chrome row presentation while letting controllers swap the label text dynamically.
+        self.selection_button = QToolButton(self.menu_bar_container)
+        self.selection_button.setObjectName("selectionButton")
+        self.selection_button.setAutoRaise(True)
+        self.selection_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        menu_bar_layout.addWidget(self.selection_button)
+
         # Collect the custom title bar and its separator inside a dedicated container so the
         # main window can hide or show the entire chrome strip with a single widget toggle when
         # entering or exiting immersive full screen mode.
@@ -450,7 +459,6 @@ class Ui_MainWindow(object):
         share_menu.addAction(self.share_action_reveal_file)
 
         self.sidebar = AlbumSidebar(library, MainWindow)
-        self.album_label = QLabel("Open a folder to browse your photos.")
         self.grid_view = GalleryGridView()
         self.map_view = PhotoMapView()
         self.filmstrip_view = FilmstripView()
@@ -507,19 +515,6 @@ class Ui_MainWindow(object):
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(8, 8, 8, 8)
 
-        self.album_label.setObjectName("albumLabel")
-        album_header = QWidget()
-        album_header_layout = QHBoxLayout(album_header)
-        album_header_layout.setContentsMargins(0, 0, 0, 0)
-        album_header_layout.setSpacing(8)
-        album_header_layout.addWidget(self.album_label, 1)
-        self.selection_button = QToolButton()
-        self.selection_button.setObjectName("selectionButton")
-        self.selection_button.setAutoRaise(True)
-        self.selection_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        album_header_layout.addWidget(self.selection_button)
-        right_layout.addWidget(album_header)
-        self.album_header = album_header
 
         gallery_page = QWidget()
         gallery_layout = QVBoxLayout(gallery_page)

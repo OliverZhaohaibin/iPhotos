@@ -539,7 +539,6 @@ class FramelessWindowManager(QObject):
             self._ui.status_bar,
             self._ui.sidebar,
             self._ui.window_chrome,
-            self._ui.album_header,
             self._ui.detail_chrome_container,
             self._ui.filmstrip_view,
         )

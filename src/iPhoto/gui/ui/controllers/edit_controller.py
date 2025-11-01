@@ -257,7 +257,6 @@ class EditController(QObject):
         self._default_menu_bar_container_stylesheet = ui.menu_bar_container.styleSheet()
         self._default_menu_bar_stylesheet = ui.menu_bar.styleSheet()
         self._default_rescan_button_stylesheet = ui.rescan_button.styleSheet()
-        self._default_album_header_stylesheet = ui.album_header.styleSheet()
 
         # ``RoundedWindowShell`` owns the antialiased frame that produces the
         # macOS-style rounded corners.  Record a reference so the dark edit
@@ -279,9 +278,6 @@ class EditController(QObject):
         self._default_menu_bar_container_palette = QPalette(ui.menu_bar_container.palette())
         self._default_menu_bar_palette = QPalette(ui.menu_bar.palette())
         self._default_rescan_button_palette = QPalette(ui.rescan_button.palette())
-        self._default_album_header_palette = QPalette(ui.album_header.palette())
-        self._default_album_label_palette = QPalette(ui.album_label.palette())
-        self._default_album_label_stylesheet = ui.album_label.styleSheet()
         self._default_selection_button_palette = QPalette(ui.selection_button.palette())
         self._default_selection_button_stylesheet = ui.selection_button.styleSheet()
         self._default_window_title_palette = QPalette(ui.window_title_label.palette())
@@ -299,7 +295,6 @@ class EditController(QObject):
         self._default_menu_bar_container_autofill = ui.menu_bar_container.autoFillBackground()
         self._default_menu_bar_autofill = ui.menu_bar.autoFillBackground()
         self._default_rescan_button_autofill = ui.rescan_button.autoFillBackground()
-        self._default_album_header_autofill = ui.album_header.autoFillBackground()
         self._default_sidebar_tree_autofill = ui.sidebar._tree.autoFillBackground()
 
         # Preserve the rounded shell's palette and colour override so the
@@ -899,7 +894,6 @@ class EditController(QObject):
             self._ui.window_chrome,
             self._ui.menu_bar_container,
             self._ui.menu_bar,
-            self._ui.album_header,
             self._ui.title_bar,
             self._ui.title_separator,
         ]
@@ -932,7 +926,6 @@ class EditController(QObject):
         self._ui.sidebar._tree.setPalette(dark_palette)
         self._ui.sidebar._tree.setAutoFillBackground(False)
         self._ui.status_bar._message_label.setPalette(dark_palette)
-        self._ui.album_label.setPalette(dark_palette)
         self._ui.selection_button.setPalette(dark_palette)
         self._ui.window_title_label.setPalette(dark_palette)
 
@@ -1036,17 +1029,9 @@ class EditController(QObject):
                 ]
             )
         )
-        # ``window_chrome`` and ``album_header`` do not expose object names, so we rely on their
-        # top-level selectors to enforce the background tint and text colour.
+        # ``window_chrome`` does not expose an object name, so rely on its top-level selector to
+        # enforce the transparent background and shared foreground tint.
         self._ui.window_chrome.setStyleSheet(
-            "\n".join(
-                [
-                    "background-color: transparent;",
-                    f"color: {foreground_color};",
-                ]
-            )
-        )
-        self._ui.album_header.setStyleSheet(
             "\n".join(
                 [
                     "background-color: transparent;",
@@ -1127,11 +1112,6 @@ class EditController(QObject):
                 self._default_rescan_button_autofill,
             ),
             (
-                self._ui.album_header,
-                self._default_album_header_palette,
-                self._default_album_header_autofill,
-            ),
-            (
                 self._ui.title_bar,
                 self._default_title_bar_palette,
                 self._default_title_bar_autofill,
@@ -1149,15 +1129,9 @@ class EditController(QObject):
         self._ui.sidebar._tree.setPalette(QPalette(self._default_sidebar_tree_palette))
         self._ui.sidebar._tree.setAutoFillBackground(self._default_sidebar_tree_autofill)
         self._ui.status_bar._message_label.setPalette(QPalette(self._default_statusbar_message_palette))
-        self._ui.album_label.setPalette(QPalette(self._default_album_label_palette))
-        # Reapply the cached stylesheet while removing the dark theme's explicit white text.
-        self._apply_color_reset_stylesheet(
-            self._ui.album_label,
-            self._default_album_label_stylesheet,
-            "QLabel#albumLabel",
-        )
         self._ui.selection_button.setPalette(QPalette(self._default_selection_button_palette))
-        # The selection toggle shares the same album header chrome, so it needs the same reset.
+        # The selection toggle sits beside ``rescan_button`` in the chrome row, so it needs the
+        # same stylesheet reset to drop the temporary dark-mode foreground override.
         self._apply_color_reset_stylesheet(
             self._ui.selection_button,
             self._default_selection_button_stylesheet,
@@ -1200,7 +1174,6 @@ class EditController(QObject):
         )
         self._ui.menu_bar.setStyleSheet(self._default_menu_bar_stylesheet)
         self._ui.rescan_button.setStyleSheet(self._default_rescan_button_stylesheet)
-        self._ui.album_header.setStyleSheet(self._default_album_header_stylesheet)
 
         if self._rounded_window_shell is not None:
             if self._default_rounded_shell_palette is not None:
@@ -1222,7 +1195,7 @@ class EditController(QObject):
         """Recombine *widget*'s cached stylesheet with a neutral text colour.
 
         Dark mode injects high-specificity rules that force white foregrounds
-        onto labels and buttons hosted in the album header and window chrome.
+        onto controls embedded in the chrome row.
         Simply restoring the original stylesheet is insufficient because the
         ``color`` attribute remains latched to the dark override.  Appending a
         ``color: unset`` rule targeted at the widget's object name explicitly
