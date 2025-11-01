@@ -8,7 +8,12 @@ from typing import Mapping, Optional
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Qt, Signal
 from PySide6.QtGui import QImage, QPixmap
 
-from ....core.preview_backends import PreviewBackend, PreviewSession, select_preview_backend
+from ....core.preview_backends import (
+    PreviewBackend,
+    PreviewSession,
+    fallback_preview_backend,
+    select_preview_backend,
+)
 from ..widgets.image_viewer import ImageViewer
 
 _LOGGER = logging.getLogger(__name__)
@@ -122,7 +127,27 @@ class EditPreviewManager(QObject):
             self.image_cleared.emit()
             return QPixmap()
 
-        self._preview_session = self._preview_backend.create_session(prepared)
+        try:
+            self._preview_session = self._preview_backend.create_session(prepared)
+        except RuntimeError as exc:
+            # Hardware accelerated backends can occasionally fail on systems
+            # with flaky OpenGL drivers.  Logging and retrying with a downgraded
+            # backend keeps the edit experience functional instead of surfacing
+            # a crash to the user.
+            _LOGGER.warning(
+                "Preview backend %s failed to create a session: %s",
+                self._preview_backend.tier_name,
+                exc,
+            )
+            replacement = fallback_preview_backend(self._preview_backend)
+            if replacement is self._preview_backend:
+                raise
+            self._preview_backend = replacement
+            _LOGGER.info(
+                "Retrying preview session creation with %s backend",
+                self._preview_backend.tier_name,
+            )
+            self._preview_session = self._preview_backend.create_session(prepared)
         self._base_image = QImage(prepared)
         base_pixmap = QPixmap.fromImage(prepared)
         self._base_pixmap = base_pixmap if not base_pixmap.isNull() else None
