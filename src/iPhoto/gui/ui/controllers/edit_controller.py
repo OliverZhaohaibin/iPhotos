@@ -29,6 +29,7 @@ from ..models.asset_model import AssetModel
 from ..models.edit_session import EditSession
 from ..tasks.thumbnail_loader import ThumbnailLoader
 from ..ui_main_window import Ui_MainWindow
+from ..window_manager import RoundedWindowShell
 from .player_view_controller import PlayerViewController
 from .view_controller import ViewController
 
@@ -251,6 +252,16 @@ class EditController(QObject):
         self._default_menu_bar_stylesheet = ui.menu_bar.styleSheet()
         self._default_album_header_stylesheet = ui.album_header.styleSheet()
 
+        # ``RoundedWindowShell`` owns the antialiased frame that produces the
+        # macOS-style rounded corners.  Record a reference so the dark edit
+        # theme can tint the shell directly without forcing the interior
+        # ``window_shell`` widget to draw an opaque rectangle that would square
+        # off the corners.
+        shell_parent = ui.window_shell.parentWidget()
+        self._rounded_window_shell: RoundedWindowShell | None = (
+            shell_parent if isinstance(shell_parent, RoundedWindowShell) else None
+        )
+
         # Remember the light-theme palettes so we can reinstate them after leaving edit mode.
         self._default_sidebar_palette = QPalette(ui.sidebar.palette())
         self._default_statusbar_palette = QPalette(ui.status_bar.palette())
@@ -278,6 +289,21 @@ class EditController(QObject):
         self._default_menu_bar_autofill = ui.menu_bar.autoFillBackground()
         self._default_album_header_autofill = ui.album_header.autoFillBackground()
         self._default_sidebar_tree_autofill = ui.sidebar._tree.autoFillBackground()
+
+        # Preserve the rounded shell's palette and colour override so the
+        # custom frame returns to whatever appearance the frameless window
+        # manager configured (for example immersive mode) after leaving edit
+        # mode.
+        if self._rounded_window_shell is not None:
+            self._default_rounded_shell_palette = QPalette(
+                self._rounded_window_shell.palette()
+            )
+            self._default_rounded_shell_override: QColor | None = getattr(
+                self._rounded_window_shell, "_override_color", None
+            )
+        else:
+            self._default_rounded_shell_palette = None
+            self._default_rounded_shell_override = None
         self._edit_theme_applied = False
 
         ui.edit_reset_button.clicked.connect(self._handle_reset_clicked)
@@ -817,7 +843,6 @@ class EditController(QObject):
             self._ui.sidebar,
             self._ui.status_bar,
             self._ui.window_chrome,
-            self._ui.window_shell,
             self._ui.main_toolbar,
             self._ui.menu_bar,
             self._ui.album_header,
@@ -827,6 +852,17 @@ class EditController(QObject):
         for widget in widgets_to_update:
             widget.setPalette(dark_palette)
             widget.setAutoFillBackground(True)
+
+        # ``window_shell`` must remain transparent so the rounded host widget
+        # can paint the curved edge.  Update its palette but leave auto-fill
+        # disabled so the shell does not overwrite the frame with an opaque
+        # rectangle.
+        self._ui.window_shell.setPalette(dark_palette)
+        self._ui.window_shell.setAutoFillBackground(False)
+
+        if self._rounded_window_shell is not None:
+            self._rounded_window_shell.setPalette(dark_palette)
+            self._rounded_window_shell.set_override_color(window_color)
 
         # Forward the palette to nested labels and the album tree so text,
         # disclosure indicators, and menu captions adopt the same foreground colour.
@@ -843,32 +879,108 @@ class EditController(QObject):
         # ``window_shell`` acts as the rounded container for the entire window, so tinting it
         # alongside the toolbar and sidebar prevents the pale frame visible in the bug report.
         dark_background = "#1C1C1E"
+        foreground_color = text_color.name()
+        accent_color_name = accent_color.name()
+        outline_color_name = outline_color.name()
         self._ui.sidebar.setStyleSheet(
-            f"QWidget#albumSidebar {{ background-color: {dark_background}; }}"
+            "\n".join(
+                [
+                    "QWidget#albumSidebar {",
+                    f"  background-color: {dark_background};",
+                    f"  color: {foreground_color};",
+                    "}",
+                    "QWidget#albumSidebar QLabel {",
+                    f"  color: {foreground_color};",
+                    "}",
+                ]
+            )
         )
-        self._ui.window_shell.setStyleSheet(f"background-color: {dark_background};")
         self._ui.status_bar.setStyleSheet(
-            f"QWidget#chromeStatusBar {{ background-color: {dark_background}; }}"
+            "\n".join(
+                [
+                    "QWidget#chromeStatusBar {",
+                    f"  background-color: {dark_background};",
+                    f"  color: {foreground_color};",
+                    "}",
+                    "QWidget#chromeStatusBar QLabel {",
+                    f"  color: {foreground_color};",
+                    "}",
+                ]
+            )
         )
         self._ui.title_bar.setStyleSheet(
-            f"QWidget#windowTitleBar {{ background-color: {dark_background}; }}"
+            "\n".join(
+                [
+                    "QWidget#windowTitleBar {",
+                    f"  background-color: {dark_background};",
+                    f"  color: {foreground_color};",
+                    "}",
+                    "QWidget#windowTitleBar QLabel {",
+                    f"  color: {foreground_color};",
+                    "}",
+                    "QWidget#windowTitleBar QToolButton {",
+                    f"  color: {foreground_color};",
+                    "}",
+                ]
+            )
         )
         self._ui.title_separator.setStyleSheet(
             "QFrame#windowTitleSeparator {"
-            f"  background-color: {outline_color.name()};"
+            f"  background-color: {outline_color_name};"
             "  border: none;"
             "}"
         )
         self._ui.menu_bar.setStyleSheet(
-            f"QMenuBar#chromeMenuBar {{ background-color: {dark_background}; }}"
+            "\n".join(
+                [
+                    "QMenuBar#chromeMenuBar {",
+                    f"  background-color: {dark_background};",
+                    f"  color: {foreground_color};",
+                    "}",
+                    "QMenuBar#chromeMenuBar::item {",
+                    f"  color: {foreground_color};",
+                    "}",
+                    "QMenuBar#chromeMenuBar::item:selected {",
+                    f"  background-color: {outline_color_name};",
+                    "  border-radius: 6px;",
+                    "}",
+                    "QMenuBar#chromeMenuBar::item:pressed {",
+                    f"  background-color: {accent_color_name};",
+                    "}",
+                ]
+            )
         )
         self._ui.main_toolbar.setStyleSheet(
-            f"QToolBar#mainToolbar {{ background-color: {dark_background}; }}"
+            "\n".join(
+                [
+                    "QToolBar#mainToolbar {",
+                    f"  background-color: {dark_background};",
+                    f"  color: {foreground_color};",
+                    "}",
+                    "QToolBar#mainToolbar QToolButton {",
+                    f"  color: {foreground_color};",
+                    "}",
+                ]
+            )
         )
         # ``window_chrome`` and ``album_header`` do not expose object names, so we rely on their
-        # top-level selectors to enforce the background tint.
-        self._ui.window_chrome.setStyleSheet(f"background-color: {dark_background};")
-        self._ui.album_header.setStyleSheet(f"background-color: {dark_background};")
+        # top-level selectors to enforce the background tint and text colour.
+        self._ui.window_chrome.setStyleSheet(
+            "\n".join(
+                [
+                    f"background-color: {dark_background};",
+                    f"color: {foreground_color};",
+                ]
+            )
+        )
+        self._ui.album_header.setStyleSheet(
+            "\n".join(
+                [
+                    f"background-color: {dark_background};",
+                    f"color: {foreground_color};",
+                ]
+            )
+        )
 
         self._edit_theme_applied = True
 
@@ -921,6 +1033,15 @@ class EditController(QObject):
         self._ui.main_toolbar.setStyleSheet(self._default_main_toolbar_stylesheet)
         self._ui.menu_bar.setStyleSheet(self._default_menu_bar_stylesheet)
         self._ui.album_header.setStyleSheet(self._default_album_header_stylesheet)
+
+        if self._rounded_window_shell is not None:
+            if self._default_rounded_shell_palette is not None:
+                self._rounded_window_shell.setPalette(
+                    QPalette(self._default_rounded_shell_palette)
+                )
+            self._rounded_window_shell.set_override_color(
+                self._default_rounded_shell_override
+            )
 
         self._edit_theme_applied = False
 
