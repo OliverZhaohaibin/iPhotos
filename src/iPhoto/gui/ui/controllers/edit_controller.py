@@ -471,17 +471,32 @@ class EditController(QObject):
         # on-screen width that the user observed during editing.
         self._prepare_edit_sidebar_for_exit()
 
-        # Keep the edit page visible while the transition plays so the splitter can push the
-        # preview surface smoothly.  Cross-fade the headers instead of swapping the stacked
-        # widget immediately to avoid the visual "jump" reported by the user.
+        # Reapply the light chrome **before** the animation starts so the expensive palette and
+        # stylesheet recalculations finish while the UI is static.  Allowing the repaint storm to
+        # overlap with the fade-out previously blocked the main thread and produced a noticeable
+        # hitch once the sidebar finished sliding away.
+        self._restore_edit_theme()
+
+        # Swap the stacked widget back to the detail view ahead of the transition.  Performing the
+        # page change now avoids the late geometry churn that occurred when the stacked widget was
+        # flipped after the animation completed.
+        self._disconnect_edit_zoom_controls()
+        if self._detail_ui_controller is not None:
+            self._detail_ui_controller.connect_zoom_controls()
+        self._restore_header_widgets_after_edit()
+        self._view_controller.show_detail_view()
+
+        # Ensure both headers stay visible so we can cross-fade between them.  The opacity effects
+        # are primed here so the animation (or zero-duration jump) only has to interpolate the
+        # alpha values instead of kicking off additional repaints mid-transition.
         self._ui.detail_chrome_container.show()
+        self._ui.edit_header_container.show()
         if animate:
             self._detail_header_opacity.setOpacity(0.0)
             self._edit_header_opacity.setOpacity(1.0)
         else:
             self._detail_header_opacity.setOpacity(1.0)
             self._edit_header_opacity.setOpacity(0.0)
-        self._ui.edit_header_container.show()
 
         self._start_transition_animation(entering=False, animate=animate)
 
@@ -1608,19 +1623,9 @@ class EditController(QObject):
             ):
                 splitter.setSizes(target_sizes)
 
-        # With the splitter geometry locked to the target sizes we can safely swap the stacked
-        # widget back to the detail page.  Performing the page change earlier gives the newly
-        # visible detail view an opportunity to resize the splitter according to its own
-        # ``sizeHint`` values, which reintroduces the visual "jump" reported by the user.
-        self._disconnect_edit_zoom_controls()
-        if self._detail_ui_controller is not None:
-            self._detail_ui_controller.connect_zoom_controls()
-        self._restore_header_widgets_after_edit()
-        self._view_controller.show_detail_view()
-        # Restore the light chrome palette only after the detail page becomes visible so the
-        # theme change and the page swap occur in the same frame, eliminating the brief flash of
-        # dark widgets on the light layout that was noticeable in the previous ordering.
-        self._restore_edit_theme()
+        # The heavy-weight theme restoration and stacked widget swap already ran at the beginning
+        # of :meth:`leave_edit_mode`, so the exit handler only needs to enforce the final visual
+        # state once the geometry animation completes.
         self._ui.detail_chrome_container.show()
         self._detail_header_opacity.setOpacity(1.0)
 
