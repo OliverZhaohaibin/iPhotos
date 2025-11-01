@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import shutil
-import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
@@ -264,41 +262,20 @@ class LibraryManager(QObject):
             raise AlbumNameConflictError(f"An album named '{new_name}' already exists.") from exc
         except OSError as exc:  # pragma: no cover - defensive guard
             raise AlbumOperationError(str(exc)) from exc
-        album = Album.open(target)
-        album.manifest["title"] = new_name
-        album.save()
+        # ``Album.open`` now normalises and persists manifest updates so the
+        # metadata stays aligned with the renamed directory immediately.
+        Album.open(target)
         self._refresh_tree()
 
     def ensure_manifest(self, node: AlbumNode) -> Path:
-        manifest = self._find_manifest(node.path)
-        if manifest:
-            album = Album.open(node.path)
-            album_id = album.manifest.get("id")
-            if not isinstance(album_id, str) or not album_id:
-                # Existing manifests predating the UUID rollout do not expose a
-                # stable identifier.  Generate one on the fly so restore flows
-                # relying on album IDs work even after libraries upgrade.
-                album.manifest["id"] = str(uuid.uuid4())
-                album.save()
-                manifest = self._find_manifest(node.path) or manifest
-            return manifest
-        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        album = Album(node.path, {
-            "schema": "iPhoto/album@1",
-            "id": str(uuid.uuid4()),
-            "title": node.title,
-            "created": now,
-            "modified": now,
-            "cover": "",
-            "featured": [],
-            "filters": {},
-            "tags": [],
-        })
-        album.save()
+        Album.open(node.path)
         marker = node.path / ".iphoto.album"
         if not marker.exists():
             marker.touch()
-        return self._find_manifest(node.path) or (node.path / ALBUM_MANIFEST_NAMES[0])
+        manifest = self._find_manifest(node.path)
+        if manifest is None:
+            manifest = node.path / ALBUM_MANIFEST_NAMES[0]
+        return manifest
 
     def find_album_by_uuid(self, album_id: str) -> Optional[AlbumNode]:
         """Return the library node whose manifest declares *album_id*.
