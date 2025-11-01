@@ -24,11 +24,13 @@ from PySide6.QtWidgets import QGraphicsOpacityEffect
 from ....core.preview_backends import PreviewBackend, PreviewSession, select_preview_backend
 from ....io import sidecar
 from ...palette import SIDEBAR_BACKGROUND_COLOR
+from ..icon import load_icon
 from ...utils import image_loader
 from ..models.asset_model import AssetModel
 from ..models.edit_session import EditSession
 from ..tasks.thumbnail_loader import ThumbnailLoader
 from ..ui_main_window import Ui_MainWindow
+from ..widgets.collapsible_section import CollapsibleSection
 from ..window_manager import RoundedWindowShell
 from .player_view_controller import PlayerViewController
 from .view_controller import ViewController
@@ -277,8 +279,11 @@ class EditController(QObject):
         self._default_menu_bar_palette = QPalette(ui.menu_bar.palette())
         self._default_album_header_palette = QPalette(ui.album_header.palette())
         self._default_album_label_palette = QPalette(ui.album_label.palette())
+        self._default_album_label_stylesheet = ui.album_label.styleSheet()
         self._default_selection_button_palette = QPalette(ui.selection_button.palette())
+        self._default_selection_button_stylesheet = ui.selection_button.styleSheet()
         self._default_window_title_palette = QPalette(ui.window_title_label.palette())
+        self._default_window_title_stylesheet = ui.window_title_label.styleSheet()
         self._default_sidebar_tree_palette = QPalette(ui.sidebar._tree.palette())
         self._default_statusbar_message_palette = QPalette(ui.status_bar._message_label.palette())
 
@@ -788,6 +793,32 @@ class EditController(QObject):
         self._ui.edit_page.setStyleSheet(_EDIT_DARK_STYLESHEET)
         self._ui.edit_image_viewer.set_surface_color_override("#111111")
 
+        # Recolour key edit controls so their icons match the bright foreground text used in dark
+        # mode.  The icons are reloaded because QIcon caches do not automatically respond to
+        # palette changes.
+        dark_icon_color = QColor("#F5F5F7")
+        self._ui.edit_compare_button.setIcon(
+            load_icon(
+                "square.fill.and.line.vertical.and.square.svg",
+                color=dark_icon_color.name(),
+            )
+        )
+        for section in self._ui.edit_sidebar.findChildren(CollapsibleSection):
+            toggle_button = getattr(section, "_toggle_button", None)
+            if toggle_button is not None:
+                toggle_icon = (
+                    "chevron.down.svg" if section.is_expanded() else "chevron.right.svg"
+                )
+                toggle_button.setIcon(
+                    load_icon(toggle_icon, color=dark_icon_color.name())
+                )
+            icon_label = getattr(section, "_icon_label", None)
+            icon_name = getattr(section, "_icon_name", "")
+            if icon_label is not None and icon_name:
+                icon_label.setPixmap(
+                    load_icon(icon_name, color=dark_icon_color.name()).pixmap(20, 20)
+                )
+
         # Construct a palette that mirrors macOS Photos' edit chrome so each widget picks up the
         # same deep greys and bright foreground colours.
         # Centralising the palette avoids a maze of bespoke style sheets and keeps the visuals
@@ -1002,16 +1033,68 @@ class EditController(QObject):
         self._ui.edit_page.setStyleSheet(self._default_edit_page_stylesheet)
         self._ui.edit_image_viewer.set_surface_color_override(None)
 
+        # Restore the untinted icons now that the interface has returned to the light theme.
+        self._ui.edit_compare_button.setIcon(
+            load_icon("square.fill.and.line.vertical.and.square.svg")
+        )
+        for section in self._ui.edit_sidebar.findChildren(CollapsibleSection):
+            toggle_button = getattr(section, "_toggle_button", None)
+            if toggle_button is not None:
+                toggle_icon = (
+                    "chevron.down.svg" if section.is_expanded() else "chevron.right.svg"
+                )
+                toggle_button.setIcon(load_icon(toggle_icon))
+            icon_label = getattr(section, "_icon_label", None)
+            icon_name = getattr(section, "_icon_name", "")
+            if icon_label is not None and icon_name:
+                icon_label.setPixmap(load_icon(icon_name).pixmap(20, 20))
+
         widgets_to_restore = [
-            (self._ui.sidebar, self._default_sidebar_palette, self._default_sidebar_autofill),
-            (self._ui.status_bar, self._default_statusbar_palette, self._default_statusbar_autofill),
-            (self._ui.window_chrome, self._default_window_chrome_palette, self._default_window_chrome_autofill),
-            (self._ui.window_shell, self._default_window_shell_palette, self._default_window_shell_autofill),
-            (self._ui.main_toolbar, self._default_main_toolbar_palette, self._default_main_toolbar_autofill),
-            (self._ui.menu_bar, self._default_menu_bar_palette, self._default_menu_bar_autofill),
-            (self._ui.album_header, self._default_album_header_palette, self._default_album_header_autofill),
-            (self._ui.title_bar, self._default_title_bar_palette, self._default_title_bar_autofill),
-            (self._ui.title_separator, self._default_title_separator_palette, self._default_title_separator_autofill),
+            (
+                self._ui.sidebar,
+                self._default_sidebar_palette,
+                self._default_sidebar_autofill,
+            ),
+            (
+                self._ui.status_bar,
+                self._default_statusbar_palette,
+                self._default_statusbar_autofill,
+            ),
+            (
+                self._ui.window_chrome,
+                self._default_window_chrome_palette,
+                self._default_window_chrome_autofill,
+            ),
+            (
+                self._ui.window_shell,
+                self._default_window_shell_palette,
+                self._default_window_shell_autofill,
+            ),
+            (
+                self._ui.main_toolbar,
+                self._default_main_toolbar_palette,
+                self._default_main_toolbar_autofill,
+            ),
+            (
+                self._ui.menu_bar,
+                self._default_menu_bar_palette,
+                self._default_menu_bar_autofill,
+            ),
+            (
+                self._ui.album_header,
+                self._default_album_header_palette,
+                self._default_album_header_autofill,
+            ),
+            (
+                self._ui.title_bar,
+                self._default_title_bar_palette,
+                self._default_title_bar_autofill,
+            ),
+            (
+                self._ui.title_separator,
+                self._default_title_separator_palette,
+                self._default_title_separator_autofill,
+            ),
         ]
         for widget, palette, autofill in widgets_to_restore:
             widget.setPalette(QPalette(palette))
@@ -1021,8 +1104,11 @@ class EditController(QObject):
         self._ui.sidebar._tree.setAutoFillBackground(self._default_sidebar_tree_autofill)
         self._ui.status_bar._message_label.setPalette(QPalette(self._default_statusbar_message_palette))
         self._ui.album_label.setPalette(QPalette(self._default_album_label_palette))
+        self._ui.album_label.setStyleSheet(self._default_album_label_stylesheet)
         self._ui.selection_button.setPalette(QPalette(self._default_selection_button_palette))
+        self._ui.selection_button.setStyleSheet(self._default_selection_button_stylesheet)
         self._ui.window_title_label.setPalette(QPalette(self._default_window_title_palette))
+        self._ui.window_title_label.setStyleSheet(self._default_window_title_stylesheet)
 
         # Update the global menu stylesheet ahead of reinstating the cached chrome styles.  This
         # ensures popup menus follow the restored light palette while still allowing the widgets to

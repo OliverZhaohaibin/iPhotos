@@ -59,6 +59,10 @@ class CollapsibleSection(QFrame):
         icon_label.setPixmap(icon.pixmap(20, 20))
         icon_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         header_layout.addWidget(icon_label)
+        # ``_icon_label`` and ``_icon_name`` are retained so other components can recolour the
+        # header icon when the global theme changes (for example the edit controller's dark mode).
+        self._icon_label = icon_label
+        self._icon_name = icon_name
 
         self._title_label = QLabel(title, self._header)
         title_palette = self._title_label.palette()
