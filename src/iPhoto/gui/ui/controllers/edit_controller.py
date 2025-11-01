@@ -46,7 +46,7 @@ _LOGGER = logging.getLogger(__name__)
 _EDIT_DARK_STYLESHEET = "\n".join(
     [
         "QWidget#editPage {",
-        "  background-color: #1C1C1E;",
+        "  background-color: transparent;",
         "}",
         "QWidget#editPage QLabel,",
         "QWidget#editPage QToolButton,",
@@ -471,11 +471,8 @@ class EditController(QObject):
         # on-screen width that the user observed during editing.
         self._prepare_edit_sidebar_for_exit()
 
-        # Reapply the light chrome **before** the animation starts so the expensive palette and
-        # stylesheet recalculations finish while the UI is static.  Allowing the repaint storm to
-        # overlap with the fade-out previously blocked the main thread and produced a noticeable
-        # hitch once the sidebar finished sliding away.
-        self._restore_edit_theme()
+        # Defer the palette flip until :meth:`_finalise_exit_transition` so the shell colour
+        # animation remains visible while the edit chrome fades away.
 
         # Swap the stacked widget back to the detail view ahead of the transition.  Performing the
         # page change now avoids the late geometry churn that occurred when the stacked widget was
@@ -807,7 +804,9 @@ class EditController(QObject):
         if self._edit_theme_applied:
             return
         self._ui.edit_page.setStyleSheet(_EDIT_DARK_STYLESHEET)
-        self._ui.edit_image_viewer.set_surface_color_override("#111111")
+        # Use a transparent surface so the viewer inherits the host shell tint while the
+        # transition animation cross-fades between themes.
+        self._ui.edit_image_viewer.set_surface_color_override("transparent")
 
         # Recolour key edit controls so their icons match the bright foreground text used in dark
         # mode.  The icons are reloaded because QIcon caches do not automatically respond to
@@ -1623,9 +1622,13 @@ class EditController(QObject):
             ):
                 splitter.setSizes(target_sizes)
 
-        # The heavy-weight theme restoration and stacked widget swap already ran at the beginning
-        # of :meth:`leave_edit_mode`, so the exit handler only needs to enforce the final visual
-        # state once the geometry animation completes.
+        # Reapply the light chrome once the geometry settles so the fade-out can leverage the shell
+        # colour animation without being interrupted by an early palette flip.
+        self._restore_edit_theme()
+
+        # The stacked widget already returned to the detail view before the animation kicked off,
+        # so the exit handler only needs to enforce the final visual state once the geometry
+        # animation completes.
         self._ui.detail_chrome_container.show()
         self._detail_header_opacity.setOpacity(1.0)
 
