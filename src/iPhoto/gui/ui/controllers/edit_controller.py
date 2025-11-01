@@ -130,6 +130,12 @@ class _PreviewWorker(QRunnable):
             adjusted = QImage()
         self._signals.finished.emit(adjusted, self._job_id)
 
+    @property
+    def session(self) -> PreviewSession:
+        """Expose the backend session used by this worker."""
+
+        return self._session
+
 
 class EditController(QObject):
     """Own the edit session state and synchronise UI widgets."""
@@ -192,6 +198,30 @@ class EditController(QObject):
         self._preview_session: Optional[PreviewSession] = None
         self._current_preview_pixmap: Optional[QPixmap] = None
         self._compare_active = False
+        # ``_edit_viewer_fullscreen_connected`` ensures we only connect the
+        # image viewer's full screen exit signal once per controller lifetime.
+        self._edit_viewer_fullscreen_connected = False
+        # Track whether the dedicated edit full screen workflow is active so
+        # other components (for example the frameless window manager or the
+        # shortcut handler) can delegate exit requests appropriately.
+        self._fullscreen_active = False
+        # ``_fullscreen_hidden_widgets`` stores the visibility state of chrome
+        # elements that should disappear while the dedicated edit full screen is
+        # active.  Restoring the recorded state ensures we respect whichever
+        # widgets were already hidden before the transition.
+        self._fullscreen_hidden_widgets: list[tuple[QWidget, bool]] = []
+        # Persist the splitter geometry before collapsing the navigation and
+        # edit sidebars so we can restore the layout verbatim when the user
+        # exits full screen preview mode.
+        self._fullscreen_splitter_sizes: list[int] | None = None
+        # Record the edit sidebar's width constraints before they are relaxed
+        # for full screen mode.  The user may have resized the pane manually, so
+        # reinstating the saved bounds keeps their layout intact after exit.
+        self._fullscreen_edit_sidebar_constraints: tuple[int, int] | None = None
+        # Sessions scheduled for disposal once any background workers that were
+        # using them have finished.  This avoids tearing down GPU resources
+        # underneath long-running preview jobs while still guaranteeing cleanup.
+        self._pending_session_disposals: set[PreviewSession] = set()
 
         # Store geometric constraints for the animated sidebar transitions.  The UI layer
         # annotates the edit sidebar with its preferred dimensions before collapsing it to zero
@@ -418,6 +448,12 @@ class EditController(QObject):
 
         self._ui.edit_sidebar.set_session(session)
         self._ui.edit_sidebar.refresh()
+        if not self._edit_viewer_fullscreen_connected:
+            # Route double-click exit requests from the edit viewer through the
+            # controller so we can restore the chrome even when immersive mode
+            # is managed outside the frameless window manager.
+            self._ui.edit_image_viewer.fullscreenExitRequested.connect(self.exit_fullscreen_preview)
+            self._edit_viewer_fullscreen_connected = True
         # Display the unadjusted preview immediately so the user sees feedback
         # while the first recalculation runs in the background.
         initial_pixmap = QPixmap.fromImage(preview_image)
@@ -453,6 +489,8 @@ class EditController(QObject):
         """Return to the standard detail view, optionally animating the transition."""
 
         self._cancel_pending_previews()
+        if self._fullscreen_active:
+            self.exit_fullscreen_preview()
         if self._transition_direction == "exit":
             return
         if not self._view_controller.is_edit_view_active() and self._transition_direction != "enter":
@@ -484,6 +522,12 @@ class EditController(QObject):
         if self._detail_ui_controller is not None:
             self._detail_ui_controller.connect_zoom_controls()
         self._restore_header_widgets_after_edit()
+        if self._edit_viewer_fullscreen_connected:
+            try:
+                self._ui.edit_image_viewer.fullscreenExitRequested.disconnect(self.exit_fullscreen_preview)
+            except (TypeError, RuntimeError):
+                pass
+            self._edit_viewer_fullscreen_connected = False
         self._view_controller.show_detail_view()
 
         # Ensure both headers stay visible so we can cross-fade between them.  The opacity effects
@@ -521,39 +565,28 @@ class EditController(QObject):
         # be ignored once they finish.
         self._preview_job_id += 1
 
-        # ``_PreviewWorker`` instances keep a strong reference to the signals
-        # object that in turn owns the connections back to this controller.  The
-        # global thread pool does not offer a way to cancel queued runnables, so
-        # we proactively sever those connections and drop our strong references.
-        # Doing so ensures the worker can finish at its leisure without keeping
-        # the edit controller, the preview session, or large intermediate images
-        # alive indefinitely.
-        for worker in list(self._active_preview_workers):
-            signals = getattr(worker, "_signals", None)
-            if signals is not None:
-                try:
-                    # Disconnect the completion signal from the slot on this
-                    # controller.  Qt raises ``TypeError`` when the link was
-                    # never created and ``RuntimeError`` when it has already
-                    # been severed, so both cases are silently ignored.
-                    signals.finished.disconnect(self._on_preview_ready)
-                except (TypeError, RuntimeError):
-                    pass
-                # Mark the signal helper for deletion on the GUI thread once
-                # control returns to the event loop.  This avoids destroying
-                # QObject instances from worker threads.
-                signals.deleteLater()
-                # Drop the back-reference from the worker to the signal helper
-                # so Python's garbage collector can reclaim both objects once
-                # the worker finishes executing.
-                setattr(worker, "_signals", None)
-            # Allow the QRunnable to clean itself up after ``run`` completes so
-            # the thread pool does not retain it longer than necessary.
-            worker.setAutoDelete(True)
-        # Clearing the set removes our strong references which breaks the final
-        # reference cycle.  Any worker that is still running will complete and
-        # be destroyed automatically without holding on to the controller.
-        self._active_preview_workers.clear()
+    def _dispose_retired_sessions(self) -> None:
+        """Dispose backend sessions queued for cleanup when safe."""
+
+        if not self._pending_session_disposals:
+            return
+
+        # Snapshot the sessions referenced by active workers to avoid tearing
+        # down GPU resources that are still in use.  ``_active_preview_workers``
+        # stores strong references until the worker finishes, so we can safely
+        # inspect the session attribute here.
+        active_sessions = {worker.session for worker in self._active_preview_workers}
+        for session in list(self._pending_session_disposals):
+            if session in active_sessions:
+                continue
+            try:
+                self._preview_backend.dispose_session(session)
+            except Exception:
+                # Disposal failures should not prevent other sessions from being
+                # released.  The backend already logs detailed errors, so we
+                # swallow the exception here to keep the UI responsive.
+                pass
+            self._pending_session_disposals.discard(session)
 
     def _start_preview_job(self) -> None:
         """Queue a background task that recalculates the preview image."""
@@ -589,11 +622,195 @@ class EditController(QObject):
             signals,
         )
         self._active_preview_workers.add(worker)
-        signals.finished.connect(lambda *_: self._active_preview_workers.discard(worker))
+        # Track worker completion so we can dispose retired preview sessions as
+        # soon as no jobs are still referencing them.
+        def _handle_worker_finished(_image: QImage, _finished_job: int, *, worker_ref=worker) -> None:
+            self._active_preview_workers.discard(worker_ref)
+            self._dispose_retired_sessions()
+
+        signals.finished.connect(_handle_worker_finished)
 
         # Submitting the worker to the shared thread pool keeps resource usage
         # bounded even when the user adjusts multiple sliders rapidly.
         self._thread_pool.start(worker)
+
+    # ------------------------------------------------------------------
+    # Dedicated edit full screen workflow
+    # ------------------------------------------------------------------
+    def is_in_fullscreen(self) -> bool:
+        """Return ``True`` when the dedicated edit full screen mode is active."""
+
+        return self._fullscreen_active
+
+    def enter_fullscreen_preview(self) -> None:
+        """Expand the edit viewer into a chrome-free full screen mode."""
+
+        if self._fullscreen_active:
+            return
+        if not self._view_controller.is_edit_view_active():
+            return
+        if self._current_source is None or self._session is None:
+            return
+        if not isinstance(self._window, QWidget):
+            return
+
+        full_res_image = image_loader.load_qimage(self._current_source)
+        if full_res_image is None or full_res_image.isNull():
+            _LOGGER.warning(
+                "Failed to load full resolution image for %s", self._current_source
+            )
+            return
+
+        self._cancel_pending_previews()
+        previous_session = self._preview_session
+
+        try:
+            new_session = self._preview_backend.create_session(full_res_image)
+        except Exception:
+            _LOGGER.warning(
+                "Failed to initialise full screen preview session for %s",
+                self._current_source,
+            )
+            return
+
+        # Hide the standard chrome so the image occupies the entire window.
+        edit_sidebar = self._ui.edit_sidebar
+        self._fullscreen_edit_sidebar_constraints = (
+            edit_sidebar.minimumWidth(),
+            edit_sidebar.maximumWidth(),
+        )
+        widgets_to_hide = [
+            self._ui.window_chrome,
+            self._ui.sidebar,
+            self._ui.status_bar,
+            self._ui.edit_header_container,
+            edit_sidebar,
+        ]
+        self._fullscreen_hidden_widgets = []
+        for widget in widgets_to_hide:
+            self._fullscreen_hidden_widgets.append((widget, widget.isVisible()))
+            widget.hide()
+
+        # Collapse both sidebars so the edit viewer can stretch across the
+        # entire screen without splitter-imposed constraints.
+        edit_sidebar.setMinimumWidth(0)
+        edit_sidebar.setMaximumWidth(0)
+        edit_sidebar.updateGeometry()
+        navigation_sidebar = self._ui.sidebar
+        relax_navigation = getattr(navigation_sidebar, "relax_minimum_width_for_animation", None)
+        if callable(relax_navigation):
+            relax_navigation()
+        splitter = self._ui.splitter
+        self._fullscreen_splitter_sizes = self._sanitise_splitter_sizes(splitter.sizes())
+        total = sum(self._fullscreen_splitter_sizes or [])
+        if total <= 0:
+            total = max(1, splitter.width())
+        splitter.setSizes([0, total])
+
+        self._window.showFullScreen()
+
+        self._fullscreen_active = True
+        self._base_image = full_res_image
+        self._preview_session = new_session
+
+        preview_pixmap = QPixmap.fromImage(full_res_image)
+        self._current_preview_pixmap = preview_pixmap if not preview_pixmap.isNull() else None
+        self._compare_active = False
+        if preview_pixmap.isNull():
+            self._ui.edit_image_viewer.clear()
+        else:
+            self._ui.edit_image_viewer.set_pixmap(preview_pixmap)
+        self._ui.edit_image_viewer.reset_zoom()
+        self._start_preview_job()
+
+        if previous_session is not None:
+            self._pending_session_disposals.add(previous_session)
+            self._dispose_retired_sessions()
+
+    def exit_fullscreen_preview(self) -> None:
+        """Restore the standard edit chrome after leaving full screen."""
+
+        if not self._fullscreen_active:
+            return
+        if not isinstance(self._window, QWidget):
+            return
+
+        self._cancel_pending_previews()
+        self._window.showNormal()
+
+        # Reinstate chrome elements using the visibility state captured on
+        # entry so we respect any widgets the caller had already hidden.
+        for widget, was_visible in self._fullscreen_hidden_widgets:
+            widget.setVisible(was_visible)
+        self._fullscreen_hidden_widgets = []
+
+        navigation_sidebar = self._ui.sidebar
+        restore_navigation = getattr(
+            navigation_sidebar,
+            "restore_minimum_width_after_animation",
+            None,
+        )
+        if callable(restore_navigation):
+            restore_navigation()
+
+        if self._fullscreen_edit_sidebar_constraints is not None:
+            min_width, max_width = self._fullscreen_edit_sidebar_constraints
+            edit_sidebar = self._ui.edit_sidebar
+            edit_sidebar.setMinimumWidth(min_width)
+            edit_sidebar.setMaximumWidth(max_width)
+            edit_sidebar.updateGeometry()
+        self._fullscreen_edit_sidebar_constraints = None
+
+        if self._fullscreen_splitter_sizes:
+            self._ui.splitter.setSizes(self._fullscreen_splitter_sizes)
+        self._fullscreen_splitter_sizes = None
+
+        previous_session = self._preview_session
+        self._fullscreen_active = False
+
+        if self._current_source is None or self._session is None:
+            if previous_session is not None:
+                self._pending_session_disposals.add(previous_session)
+                self._dispose_retired_sessions()
+            return
+
+        # Scale the base image back down to the viewport-friendly preview size
+        # used by the standard edit chrome.  Re-using the already-loaded full
+        # resolution frame avoids an extra disk read when possible.
+        source_image = self._base_image
+        if source_image is None or source_image.isNull():
+            source_image = image_loader.load_qimage(self._current_source)
+        if source_image is None or source_image.isNull():
+            self._base_image = None
+            self._current_preview_pixmap = None
+            self._ui.edit_image_viewer.clear()
+            if previous_session is not None:
+                self._pending_session_disposals.add(previous_session)
+                self._dispose_retired_sessions()
+            return
+
+        preview_image = self._prepare_preview_image(source_image)
+        self._base_image = preview_image
+        preview_pixmap = QPixmap.fromImage(preview_image)
+        self._current_preview_pixmap = preview_pixmap if not preview_pixmap.isNull() else None
+        self._compare_active = False
+        if preview_pixmap.isNull():
+            self._ui.edit_image_viewer.clear()
+        else:
+            self._ui.edit_image_viewer.set_pixmap(preview_pixmap)
+        self._ui.edit_image_viewer.reset_zoom()
+
+        try:
+            self._preview_session = self._preview_backend.create_session(preview_image)
+        except Exception:
+            self._preview_session = None
+            return
+
+        self._start_preview_job()
+
+        if previous_session is not None:
+            self._pending_session_disposals.add(previous_session)
+            self._dispose_retired_sessions()
 
     def _prepare_preview_image(self, image: QImage) -> QImage:
         """Return an image optimised for preview rendering throughput.

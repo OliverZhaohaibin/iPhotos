@@ -31,6 +31,7 @@ if TYPE_CHECKING:  # pragma: no cover - used only for type checking
     from PySide6.QtGui import QResizeEvent
 
     from .controllers.main_controller import MainController
+    from .controllers.edit_controller import EditController
 
 
 # ``PLAYBACK_RESUME_DELAY_MS`` mirrors the behaviour found in the original
@@ -282,6 +283,18 @@ class FramelessWindowManager(QObject):
     def toggle_fullscreen(self) -> None:
         """Toggle the immersive full screen mode."""
 
+        edit_controller = self._edit_controller()
+        if (
+            edit_controller is not None
+            and self._controller is not None
+            and self._controller.is_edit_view_active()
+        ):
+            if edit_controller.is_in_fullscreen():
+                edit_controller.exit_fullscreen_preview()
+            else:
+                edit_controller.enter_fullscreen_preview()
+            return
+
         if self._immersive_active:
             self.exit_fullscreen()
         else:
@@ -289,6 +302,15 @@ class FramelessWindowManager(QObject):
 
     def enter_fullscreen(self) -> None:
         """Expand the window into an immersive, chrome-free full screen mode."""
+
+        edit_controller = self._edit_controller()
+        if (
+            edit_controller is not None
+            and self._controller is not None
+            and self._controller.is_edit_view_active()
+        ):
+            edit_controller.enter_fullscreen_preview()
+            return
 
         if self._immersive_active:
             return
@@ -325,6 +347,11 @@ class FramelessWindowManager(QObject):
 
     def exit_fullscreen(self) -> None:
         """Restore the normal window chrome and previously visible widgets."""
+
+        edit_controller = self._edit_controller()
+        if edit_controller is not None and edit_controller.is_in_fullscreen():
+            edit_controller.exit_fullscreen_preview()
+            return
 
         if not self._immersive_active:
             return
@@ -366,6 +393,16 @@ class FramelessWindowManager(QObject):
         """Return ``True`` when the window is in immersive full screen mode."""
 
         return self._immersive_active
+
+    def _edit_controller(self) -> "EditController | None":
+        """Return the edit controller if the main controller exposes one."""
+
+        if self._controller is None:
+            return None
+        accessor = getattr(self._controller, "edit_controller", None)
+        if callable(accessor):
+            return accessor()
+        return None
 
     # ------------------------------------------------------------------
     # QObject overrides

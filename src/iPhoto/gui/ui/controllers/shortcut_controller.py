@@ -86,6 +86,12 @@ class ShortcutController(QObject):
     def _handle_escape(self, event: QKeyEvent) -> bool:
         if event.key() != Qt.Key.Key_Escape:
             return False
+        edit_controller = self._view_manager.edit_controller()
+        if edit_controller.is_in_fullscreen():
+            edit_controller.exit_fullscreen_preview()
+            event.accept()
+            return True
+
         if not self._window_manager.is_immersive_active():
             return False
 

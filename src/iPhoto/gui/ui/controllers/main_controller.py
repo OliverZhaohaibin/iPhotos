@@ -19,6 +19,7 @@ from .view_controller_manager import ViewControllerManager
 if TYPE_CHECKING:  # pragma: no cover - import used for typing only
     from ....appctx import AppContext
     from ..main_window import MainWindow
+    from .edit_controller import EditController
 
 
 class MainController(QObject):
@@ -328,6 +329,16 @@ class MainController(QObject):
 
     def current_player_state(self):
         return self._state_manager.state
+
+    def edit_controller(self) -> "EditController":
+        """Expose the edit controller so other components can coordinate."""
+
+        return self._edit_controller
+
+    def is_edit_view_active(self) -> bool:
+        """Return ``True`` when the edit UI is currently visible."""
+
+        return self._view_controller.is_edit_view_active()
 
     def is_media_muted(self) -> bool:
         return self._data.media().is_muted()
