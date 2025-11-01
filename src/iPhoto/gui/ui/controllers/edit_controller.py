@@ -151,6 +151,10 @@ class EditController(QObject):
         detail_ui_controller: "DetailUIController" | None = None,
     ) -> None:
         super().__init__(parent)
+        # ``parent`` is the main window hosting the edit UI.  Retaining a weak reference to the
+        # window allows the controller to ask the frameless window manager to rebuild menu styles
+        # after the palette flips between light and dark variants.
+        self._window: QObject | None = parent
         self._ui = ui
         self._view_controller = view_controller
         self._player_view = player_view
@@ -851,7 +855,10 @@ class EditController(QObject):
         ]
         for widget in widgets_to_update:
             widget.setPalette(dark_palette)
-            widget.setAutoFillBackground(True)
+            # Chrome widgets need to stay transparent so the rounded host widget can continue
+            # painting the curved outline.  ``setAutoFillBackground(False)`` prevents Qt from
+            # rasterising an opaque rectangle that would obscure the shell.
+            widget.setAutoFillBackground(False)
 
         # ``window_shell`` must remain transparent so the rounded host widget
         # can paint the curved edge.  Update its palette but leave auto-fill
@@ -867,18 +874,21 @@ class EditController(QObject):
         # Forward the palette to nested labels and the album tree so text,
         # disclosure indicators, and menu captions adopt the same foreground colour.
         self._ui.sidebar._tree.setPalette(dark_palette)
-        self._ui.sidebar._tree.setAutoFillBackground(True)
+        self._ui.sidebar._tree.setAutoFillBackground(False)
         self._ui.status_bar._message_label.setPalette(dark_palette)
         self._ui.album_label.setPalette(dark_palette)
         self._ui.selection_button.setPalette(dark_palette)
         self._ui.window_title_label.setPalette(dark_palette)
 
-        # Replace the light-theme style sheets so the dark palette remains visible.  Qt gives
-        # style sheets precedence over palettes once ``WA_StyledBackground`` is set, therefore
-        # each chrome widget explicitly receives a dark background while edit mode is active.
-        # ``window_shell`` acts as the rounded container for the entire window, so tinting it
-        # alongside the toolbar and sidebar prevents the pale frame visible in the bug report.
-        dark_background = "#1C1C1E"
+        # Refresh the frameless window manager's menu palette before overriding chrome styles so the
+        # global ``QMenu`` stylesheet tracks the active theme while the menu bar remains transparent.
+        self._refresh_menu_styles()
+        self._ui.menu_bar.setAutoFillBackground(False)
+
+        # Replace the light-theme style sheets while keeping the chrome transparent.  The palette
+        # now supplies the foreground colours, so only the text metrics and highlight accents are
+        # overridden explicitly.  Leaving the background transparent allows the rounded shell to
+        # show through and maintain its corner treatment.
         foreground_color = text_color.name()
         accent_color_name = accent_color.name()
         outline_color_name = outline_color.name()
@@ -886,7 +896,7 @@ class EditController(QObject):
             "\n".join(
                 [
                     "QWidget#albumSidebar {",
-                    f"  background-color: {dark_background};",
+                    "  background-color: transparent;",
                     f"  color: {foreground_color};",
                     "}",
                     "QWidget#albumSidebar QLabel {",
@@ -899,7 +909,7 @@ class EditController(QObject):
             "\n".join(
                 [
                     "QWidget#chromeStatusBar {",
-                    f"  background-color: {dark_background};",
+                    "  background-color: transparent;",
                     f"  color: {foreground_color};",
                     "}",
                     "QWidget#chromeStatusBar QLabel {",
@@ -912,7 +922,7 @@ class EditController(QObject):
             "\n".join(
                 [
                     "QWidget#windowTitleBar {",
-                    f"  background-color: {dark_background};",
+                    "  background-color: transparent;",
                     f"  color: {foreground_color};",
                     "}",
                     "QWidget#windowTitleBar QLabel {",
@@ -934,7 +944,7 @@ class EditController(QObject):
             "\n".join(
                 [
                     "QMenuBar#chromeMenuBar {",
-                    f"  background-color: {dark_background};",
+                    "  background-color: transparent;",
                     f"  color: {foreground_color};",
                     "}",
                     "QMenuBar#chromeMenuBar::item {",
@@ -954,7 +964,7 @@ class EditController(QObject):
             "\n".join(
                 [
                     "QToolBar#mainToolbar {",
-                    f"  background-color: {dark_background};",
+                    "  background-color: transparent;",
                     f"  color: {foreground_color};",
                     "}",
                     "QToolBar#mainToolbar QToolButton {",
@@ -968,7 +978,7 @@ class EditController(QObject):
         self._ui.window_chrome.setStyleSheet(
             "\n".join(
                 [
-                    f"background-color: {dark_background};",
+                    "background-color: transparent;",
                     f"color: {foreground_color};",
                 ]
             )
@@ -976,7 +986,7 @@ class EditController(QObject):
         self._ui.album_header.setStyleSheet(
             "\n".join(
                 [
-                    f"background-color: {dark_background};",
+                    "background-color: transparent;",
                     f"color: {foreground_color};",
                 ]
             )
@@ -1014,6 +1024,12 @@ class EditController(QObject):
         self._ui.selection_button.setPalette(QPalette(self._default_selection_button_palette))
         self._ui.window_title_label.setPalette(QPalette(self._default_window_title_palette))
 
+        # Update the global menu stylesheet ahead of reinstating the cached chrome styles.  This
+        # ensures popup menus follow the restored light palette while still allowing the widgets to
+        # return to their original appearance.
+        self._refresh_menu_styles()
+        self._ui.menu_bar.setAutoFillBackground(self._default_menu_bar_autofill)
+
         # Restore the original style sheets alongside the palettes so light mode reappears exactly
         # as it was before entering edit mode.  ``or`` fallbacks guard against empty strings for the
         # sidebar, which historically relied on a constant background colour.
@@ -1044,6 +1060,22 @@ class EditController(QObject):
             )
 
         self._edit_theme_applied = False
+
+    def _refresh_menu_styles(self) -> None:
+        """Rebuild the frameless window manager's menu palette if available."""
+
+        if self._window is None:
+            return
+        window_manager = getattr(self._window, "window_manager", None)
+        if window_manager is None:
+            return
+        apply_styles = getattr(window_manager, "_apply_menu_styles", None)
+        if not callable(apply_styles):
+            return
+        # ``_apply_menu_styles`` adjusts the global ``QMenu`` stylesheet.  Calling it after the
+        # palette flips ensures popup menus inherit the correct foreground and background colours
+        # without duplicating the logic that already lives in the frameless window manager.
+        apply_styles()
 
     def _prepare_edit_sidebar_for_entry(self) -> None:
         """Collapse the edit sidebar before playing the entrance animation."""
