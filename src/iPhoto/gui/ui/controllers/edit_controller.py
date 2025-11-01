@@ -221,7 +221,11 @@ class EditController(QObject):
         # Sessions scheduled for disposal once any background workers that were
         # using them have finished.  This avoids tearing down GPU resources
         # underneath long-running preview jobs while still guaranteeing cleanup.
-        self._pending_session_disposals: set[PreviewSession] = set()
+        # ``PreviewSession`` implementations expose GPU resources that often
+        # lack Python-level hash support (for example classes from PySide6).
+        # A simple list keeps the queue ordered while still allowing identity
+        # based duplicate checks without requiring the objects to be hashable.
+        self._pending_session_disposals: list[PreviewSession] = []
 
         # Store geometric constraints for the animated sidebar transitions.  The UI layer
         # annotates the edit sidebar with its preferred dimensions before collapsing it to zero
@@ -575,9 +579,13 @@ class EditController(QObject):
         # down GPU resources that are still in use.  ``_active_preview_workers``
         # stores strong references until the worker finishes, so we can safely
         # inspect the session attribute here.
-        active_sessions = {worker.session for worker in self._active_preview_workers}
+        active_sessions = [
+            worker.session
+            for worker in self._active_preview_workers
+            if worker.session is not None
+        ]
         for session in list(self._pending_session_disposals):
-            if session in active_sessions:
+            if any(active is session for active in active_sessions):
                 continue
             try:
                 self._preview_backend.dispose_session(session)
@@ -586,7 +594,24 @@ class EditController(QObject):
                 # released.  The backend already logs detailed errors, so we
                 # swallow the exception here to keep the UI responsive.
                 pass
-            self._pending_session_disposals.discard(session)
+            try:
+                self._pending_session_disposals.remove(session)
+            except ValueError:
+                # The session may have been removed already if multiple code
+                # paths race to dispose it.  Swallow the error so the cleanup
+                # process remains robust.
+                continue
+
+    def _queue_session_for_disposal(self, session: PreviewSession) -> None:
+        """Record a session for deferred disposal if it is not already queued."""
+
+        if session is None:
+            return
+
+        if any(queued is session for queued in self._pending_session_disposals):
+            return
+
+        self._pending_session_disposals.append(session)
 
     def _start_preview_job(self) -> None:
         """Queue a background task that recalculates the preview image."""
@@ -724,7 +749,7 @@ class EditController(QObject):
         self._start_preview_job()
 
         if previous_session is not None:
-            self._pending_session_disposals.add(previous_session)
+            self._queue_session_for_disposal(previous_session)
             self._dispose_retired_sessions()
 
     def exit_fullscreen_preview(self) -> None:
@@ -770,7 +795,7 @@ class EditController(QObject):
 
         if self._current_source is None or self._session is None:
             if previous_session is not None:
-                self._pending_session_disposals.add(previous_session)
+                self._queue_session_for_disposal(previous_session)
                 self._dispose_retired_sessions()
             return
 
@@ -785,7 +810,7 @@ class EditController(QObject):
             self._current_preview_pixmap = None
             self._ui.edit_image_viewer.clear()
             if previous_session is not None:
-                self._pending_session_disposals.add(previous_session)
+                self._queue_session_for_disposal(previous_session)
                 self._dispose_retired_sessions()
             return
 
@@ -809,7 +834,7 @@ class EditController(QObject):
         self._start_preview_job()
 
         if previous_session is not None:
-            self._pending_session_disposals.add(previous_session)
+            self._queue_session_for_disposal(previous_session)
             self._dispose_retired_sessions()
 
     def _prepare_preview_image(self, image: QImage) -> QImage:
