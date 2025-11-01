@@ -1158,18 +1158,15 @@ class EditController(QObject):
         self._ui.window_shell.setStyleSheet(self._default_window_shell_stylesheet)
         self._ui.title_bar.setStyleSheet(self._default_title_bar_stylesheet)
         self._ui.title_separator.setStyleSheet(self._default_title_separator_stylesheet)
-        # Reapply the light toolbar colours using the restored palette.  Dark mode injects a
-        # high-specificity selector that forces white text; simply clearing the stylesheet leaves
-        # those QToolButtons in the overridden colour.  Recompose the default stylesheet with an
-        # explicit rule that mirrors the light palette's text colour so the labels return to black.
+        # Reapply the light toolbar colours using a palette-driven reset.  Dark mode injects a
+        # high-specificity selector that forces white text; clearing the stylesheet alone leaves the
+        # colour override in place.  By emitting ``color: unset`` the rule instructs Qt to drop the
+        # explicit value so the restored palette determines the final text colour.
         default_toolbar_stylesheet = self._default_main_toolbar_stylesheet or ""
-        default_text_color = (
-            self._ui.main_toolbar.palette().color(QPalette.ColorRole.Text).name()
-        )
         reset_toolbar_stylesheet = "\n".join(
             [
                 "QToolBar#mainToolbar QToolButton {",
-                f"    color: {default_text_color};",
+                "    color: unset;",
                 "}",
             ]
         )
