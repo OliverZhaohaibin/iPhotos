@@ -235,7 +235,14 @@ class StatusBarController(QObject):
             self._progress_context = None
             self._move_context_delete = False
             self._move_context_restore = False
-        self.show_message(message, 5000)
+        if message:
+            self.show_message(message, 5000)
+        else:
+            # When restores are skipped entirely we suppress the completion
+            # toast to avoid flashing an empty outcome banner. Clearing the
+            # message explicitly ensures the status text from the in-flight
+            # progress updates does not linger in the bar.
+            self._status_bar.clearMessage()
 
     def _paths_equal(self, first: Path, second: Path) -> bool:
         """Return ``True`` when *first* and *second* refer to the same location."""

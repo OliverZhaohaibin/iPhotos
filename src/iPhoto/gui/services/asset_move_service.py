@@ -311,7 +311,12 @@ class AssetMoveService(QObject):
             if delete_operation:
                 message = "No items were deleted."
             elif restore_operation:
-                message = "No items were restored."
+                # Returning an empty string prevents the status bar from
+                # showing the standard restore completion toast when the user
+                # declined the fallback or when no files could be restored.
+                # The controller clears the transient text in this scenario so
+                # the previous progress copy does not linger.
+                message = ""
             else:
                 message = "No files were moved."
         else:
