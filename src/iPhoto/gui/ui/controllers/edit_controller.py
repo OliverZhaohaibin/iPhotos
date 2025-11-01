@@ -288,6 +288,76 @@ class EditController(QObject):
             self._current_source = None
             self._compare_active = False
 
+    def _sanitise_splitter_sizes(
+        self,
+        sizes,
+        *,
+        total: int | None = None,
+    ) -> list[int]:
+        """Return a splitter size list that matches the child count and width budget.
+
+        Qt's :meth:`QSplitter.sizes` helper is permissive about the objects it
+        returns, which means the edit workflow has to defensively clamp the
+        values before using them to drive transitions.  The original
+        implementation lived on :class:`EditController` and the full screen
+        workflow still calls into it.  Recreating the helper here mirrors the
+        pre-refactor behaviour so immersive mode can persist and restore the
+        splitter geometry without raising ``AttributeError``.
+
+        Parameters
+        ----------
+        sizes:
+            Any iterable of numbers reported by :meth:`QSplitter.sizes`.
+        total:
+            Optional explicit total width.  When omitted, the method keeps the
+            current sum or falls back to the splitter's width to maintain a
+            stable layout.
+
+        Returns
+        -------
+        list[int]
+            A normalised list sized exactly to the number of splitter children
+            whose values add up to ``total``.
+        """
+
+        splitter = self._ui.splitter
+        count = splitter.count()
+        if count == 0:
+            return []
+        try:
+            raw = [int(value) for value in sizes] if sizes is not None else []
+        except TypeError:
+            raw = []
+        if len(raw) < count:
+            raw.extend(0 for _ in range(count - len(raw)))
+        elif len(raw) > count:
+            raw = raw[:count]
+        sanitised = [max(0, value) for value in raw]
+        current_total = sum(sanitised)
+        if total is None or total <= 0:
+            total = current_total if current_total > 0 else max(1, splitter.width())
+        if current_total <= 0:
+            base = total // count
+            sanitised = [base] * count
+            if sanitised:
+                sanitised[-1] += total - base * count
+            return sanitised
+        if current_total == total:
+            return sanitised
+        scaled: list[int] = []
+        accumulated = 0
+        for index, value in enumerate(sanitised):
+            if index == count - 1:
+                scaled_value = total - accumulated
+            else:
+                scaled_value = int(round(value * total / current_total))
+                accumulated += scaled_value
+            scaled.append(max(0, scaled_value))
+        difference = total - sum(scaled)
+        if scaled and difference != 0:
+            scaled[-1] += difference
+        return scaled
+
     # ------------------------------------------------------------------
     # Dedicated edit full screen workflow
     # ------------------------------------------------------------------
