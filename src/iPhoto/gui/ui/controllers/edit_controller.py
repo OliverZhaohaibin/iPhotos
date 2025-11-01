@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Mapping, Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING
 
 from PySide6.QtCore import (
     QObject,
-    QThreadPool,
-    QRunnable,
     QEasingCurve,
     QParallelAnimationGroup,
     QPropertyAnimation,
@@ -18,10 +16,9 @@ from PySide6.QtCore import (
     Signal,
     QVariantAnimation,
 )
-from PySide6.QtGui import QColor, QImage, QPalette, QPixmap
+from PySide6.QtGui import QColor, QPalette, QPixmap
 from PySide6.QtWidgets import QGraphicsOpacityEffect, QWidget
 
-from ....core.preview_backends import PreviewBackend, PreviewSession, select_preview_backend
 from ....io import sidecar
 from ..palette import SIDEBAR_BACKGROUND_COLOR
 from ..icon import load_icon
@@ -32,6 +29,7 @@ from ..tasks.thumbnail_loader import ThumbnailLoader
 from ..ui_main_window import Ui_MainWindow
 from ..widgets.collapsible_section import CollapsibleSection
 from ..window_manager import RoundedWindowShell
+from .edit_preview_manager import EditPreviewManager
 from .player_view_controller import PlayerViewController
 from .view_controller import ViewController
 
@@ -82,59 +80,6 @@ _EDIT_DARK_STYLESHEET = "\n".join(
         "}",
     ]
 )
-
-
-class _PreviewSignals(QObject):
-    """Signals emitted by :class:`_PreviewWorker` once processing completes."""
-
-    finished = Signal(QImage, int)
-    """Emitted with the adjusted image and the job identifier."""
-
-
-class _PreviewWorker(QRunnable):
-    """Execute preview rendering in a background thread.
-
-    The worker forwards tone-mapping requests to the selected
-    :class:`~iPhoto.core.preview_backends.PreviewBackend` to keep heavy lifting
-    off the UI thread.  Holding a strong reference to the backend session allows
-    hardware accelerated implementations to retain any allocated resources for
-    the duration of the job.
-    """
-
-    def __init__(
-        self,
-        backend: PreviewBackend,
-        session: PreviewSession,
-        adjustments: Mapping[str, float],
-        job_id: int,
-        signals: _PreviewSignals,
-    ) -> None:
-        super().__init__()
-        self._backend = backend
-        self._session = session
-        # Capture the adjustment mapping at the moment the job is created so the
-        # session can continue to evolve without affecting in-flight work.
-        self._adjustments = dict(adjustments)
-        self._job_id = job_id
-        self._signals = signals
-
-    def run(self) -> None:  # type: ignore[override]
-        """Perform the tone-mapping work and notify listeners when done."""
-
-        try:
-            adjusted = self._backend.render(self._session, self._adjustments)
-        except Exception:
-            # Propagate failures by emitting a null image.  The controller will
-            # discard outdated or invalid results, so surfacing ``None`` keeps
-            # the UI responsive even if processing fails unexpectedly.
-            adjusted = QImage()
-        self._signals.finished.emit(adjusted, self._job_id)
-
-    @property
-    def session(self) -> PreviewSession:
-        """Expose the backend session used by this worker."""
-
-        return self._session
 
 
 class EditController(QObject):
@@ -189,14 +134,12 @@ class EditController(QObject):
         # so it can reload its thumbnails.
         self._pending_thumbnail_refreshes: set[str] = set()
 
-        self._preview_backend: PreviewBackend = select_preview_backend()
-        _LOGGER.info("Initialised edit preview backend: %s", self._preview_backend.tier_name)
+        self._preview_manager = EditPreviewManager(self._ui.edit_image_viewer, self)
+        self._preview_manager.preview_updated.connect(self._on_preview_pixmap_updated)
+        self._preview_manager.image_cleared.connect(self._ui.edit_image_viewer.clear)
 
         self._session: Optional[EditSession] = None
-        self._base_image: Optional[QImage] = None
         self._current_source: Optional[Path] = None
-        self._preview_session: Optional[PreviewSession] = None
-        self._current_preview_pixmap: Optional[QPixmap] = None
         self._compare_active = False
         # ``_edit_viewer_fullscreen_connected`` ensures we only connect the
         # image viewer's full screen exit signal once per controller lifetime.
@@ -218,15 +161,6 @@ class EditController(QObject):
         # for full screen mode.  The user may have resized the pane manually, so
         # reinstating the saved bounds keeps their layout intact after exit.
         self._fullscreen_edit_sidebar_constraints: tuple[int, int] | None = None
-        # Sessions scheduled for disposal once any background workers that were
-        # using them have finished.  This avoids tearing down GPU resources
-        # underneath long-running preview jobs while still guaranteeing cleanup.
-        # ``PreviewSession`` implementations expose GPU resources that often
-        # lack Python-level hash support (for example classes from PySide6).
-        # A simple list keeps the queue ordered while still allowing identity
-        # based duplicate checks without requiring the objects to be hashable.
-        self._pending_session_disposals: list[PreviewSession] = []
-
         # Store geometric constraints for the animated sidebar transitions.  The UI layer
         # annotates the edit sidebar with its preferred dimensions before collapsing it to zero
         # width, so fall back gracefully if the hints are missing (for example in tests).
@@ -264,22 +198,6 @@ class EditController(QObject):
         self._detail_header_opacity.setOpacity(1.0)
         ui.detail_chrome_container.setGraphicsEffect(self._detail_header_opacity)
 
-        # Timer used to debounce expensive preview rendering so the UI thread
-        # stays responsive while the user drags a slider continuously.
-        self._preview_update_timer = QTimer(self)
-        self._preview_update_timer.setSingleShot(True)
-        self._preview_update_timer.setInterval(50)
-        self._preview_update_timer.timeout.connect(self._start_preview_job)
-
-        # ``QThreadPool`` dispatches background preview jobs, preventing the
-        # heavy pixel processing from blocking the event loop.
-        self._thread_pool = QThreadPool.globalInstance()
-        # Monotonic identifier used to discard stale results from superseded
-        # preview jobs.
-        self._preview_job_id = 0
-        # Keep strong references to workers until their completion callbacks run
-        # so they are not garbage collected prematurely.
-        self._active_preview_workers: set[_PreviewWorker] = set()
         self._default_edit_page_stylesheet = ui.edit_page.styleSheet()
         # Cache the original style sheets so the chrome returns to the light theme verbatim.
         self._default_sidebar_stylesheet = ui.sidebar.styleSheet()
@@ -432,16 +350,7 @@ class EditController(QObject):
         if image is None or image.isNull():
             return
 
-        preview_image = self._prepare_preview_image(image)
-        self._base_image = preview_image
         self._current_source = source
-
-        # Tear down any existing backend session before creating a new one.  This
-        # protects against edge-cases where ``begin_edit`` is called repeatedly
-        # without leaving the view first.
-        if self._preview_session is not None:
-            self._preview_backend.dispose_session(self._preview_session)
-        self._preview_session = self._preview_backend.create_session(preview_image)
 
         adjustments = sidecar.load_adjustments(source)
 
@@ -458,14 +367,14 @@ class EditController(QObject):
             # is managed outside the frameless window manager.
             self._ui.edit_image_viewer.fullscreenExitRequested.connect(self.exit_fullscreen_preview)
             self._edit_viewer_fullscreen_connected = True
-        # Display the unadjusted preview immediately so the user sees feedback
-        # while the first recalculation runs in the background.
-        initial_pixmap = QPixmap.fromImage(preview_image)
-        self._current_preview_pixmap = initial_pixmap
+
+        initial_pixmap = self._preview_manager.start_session(image, session.values())
         self._compare_active = False
-        self._ui.edit_image_viewer.set_pixmap(initial_pixmap)
+        if initial_pixmap.isNull():
+            self._ui.edit_image_viewer.clear()
+        else:
+            self._ui.edit_image_viewer.set_pixmap(initial_pixmap)
         self._set_mode("adjust")
-        self._start_preview_job()
 
         # Reset the header opacity so the detail chrome is fully visible the next time the
         # detail view appears.  The container is hidden immediately afterwards so the edit
@@ -492,7 +401,7 @@ class EditController(QObject):
     def leave_edit_mode(self, animate: bool = True) -> None:
         """Return to the standard detail view, optionally animating the transition."""
 
-        self._cancel_pending_previews()
+        self._preview_manager.cancel_pending_updates()
         if self._fullscreen_active:
             self.exit_fullscreen_preview()
         if self._transition_direction == "exit":
@@ -547,117 +456,24 @@ class EditController(QObject):
             self._edit_header_opacity.setOpacity(0.0)
 
         self._start_transition_animation(entering=False, animate=animate)
+        self._preview_manager.stop_session()
 
     # ------------------------------------------------------------------
     def _handle_session_changed(self, values: dict) -> None:
-        del values  # Unused – the session already stores the authoritative mapping.
-        # Hardware accelerated backends can keep up with continuous slider
-        # interaction, so render immediately to achieve true real-time feedback.
-        if self._preview_backend.supports_realtime:
-            self._start_preview_job()
+        del values  # The session retains the authoritative mapping internally.
+        if self._session is None:
             return
+        self._preview_manager.update_adjustments(self._session.values())
 
-        # CPU rendering remains comparatively expensive, therefore a debounce
-        # timer prevents excessive work while the user drags a slider.
-        self._preview_update_timer.start()
+    def _on_preview_pixmap_updated(self, pixmap: QPixmap) -> None:
+        """Display *pixmap* unless the compare gesture is active."""
 
-    def _cancel_pending_previews(self) -> None:
-        """Stop timers and invalidate outstanding preview work."""
-
-        self._preview_update_timer.stop()
-        # Incrementing the job identifier causes any in-flight worker results to
-        # be ignored once they finish.
-        self._preview_job_id += 1
-
-    def _dispose_retired_sessions(self) -> None:
-        """Dispose backend sessions queued for cleanup when safe."""
-
-        if not self._pending_session_disposals:
+        if self._compare_active:
             return
-
-        # Snapshot the sessions referenced by active workers to avoid tearing
-        # down GPU resources that are still in use.  ``_active_preview_workers``
-        # stores strong references until the worker finishes, so we can safely
-        # inspect the session attribute here.
-        active_sessions = [
-            worker.session
-            for worker in self._active_preview_workers
-            if worker.session is not None
-        ]
-        for session in list(self._pending_session_disposals):
-            if any(active is session for active in active_sessions):
-                continue
-            try:
-                self._preview_backend.dispose_session(session)
-            except Exception:
-                # Disposal failures should not prevent other sessions from being
-                # released.  The backend already logs detailed errors, so we
-                # swallow the exception here to keep the UI responsive.
-                pass
-            try:
-                self._pending_session_disposals.remove(session)
-            except ValueError:
-                # The session may have been removed already if multiple code
-                # paths race to dispose it.  Swallow the error so the cleanup
-                # process remains robust.
-                continue
-
-    def _queue_session_for_disposal(self, session: PreviewSession) -> None:
-        """Record a session for deferred disposal if it is not already queued."""
-
-        if session is None:
-            return
-
-        if any(queued is session for queued in self._pending_session_disposals):
-            return
-
-        self._pending_session_disposals.append(session)
-
-    def _start_preview_job(self) -> None:
-        """Queue a background task that recalculates the preview image."""
-
-        if self._preview_session is None or self._session is None:
+        if pixmap.isNull():
             self._ui.edit_image_viewer.clear()
             return
-
-        self._preview_job_id += 1
-        job_id = self._preview_job_id
-
-        if self._preview_backend.supports_realtime:
-            # Hardware accelerated backends are fast enough to run synchronously
-            # on the UI thread, so we render immediately and forward the result.
-            try:
-                image = self._preview_backend.render(
-                    self._preview_session,
-                    self._session.values(),
-                )
-            except Exception:
-                image = QImage()
-            self._on_preview_ready(image, job_id)
-            return
-
-        signals = _PreviewSignals()
-        signals.finished.connect(self._on_preview_ready)
-
-        worker = _PreviewWorker(
-            self._preview_backend,
-            self._preview_session,
-            self._session.values(),
-            job_id,
-            signals,
-        )
-        self._active_preview_workers.add(worker)
-        # Track worker completion so we can dispose retired preview sessions as
-        # soon as no jobs are still referencing them.
-        def _handle_worker_finished(_image: QImage, _finished_job: int, *, worker_ref=worker) -> None:
-            self._active_preview_workers.discard(worker_ref)
-            self._dispose_retired_sessions()
-
-        signals.finished.connect(_handle_worker_finished)
-
-        # Submitting the worker to the shared thread pool keeps resource usage
-        # bounded even when the user adjusts multiple sliders rapidly.
-        self._thread_pool.start(worker)
+        self._ui.edit_image_viewer.set_pixmap(pixmap)
 
     # ------------------------------------------------------------------
     # Dedicated edit full screen workflow
@@ -686,11 +502,12 @@ class EditController(QObject):
             )
             return
 
-        self._cancel_pending_previews()
-        previous_session = self._preview_session
-
         try:
-            new_session = self._preview_backend.create_session(full_res_image)
+            initial_pixmap = self._preview_manager.start_session(
+                full_res_image,
+                self._session.values(),
+                scale_for_viewport=False,
+            )
         except Exception:
             _LOGGER.warning(
                 "Failed to initialise full screen preview session for %s",
@@ -735,22 +552,13 @@ class EditController(QObject):
         self._window.showFullScreen()
 
         self._fullscreen_active = True
-        self._base_image = full_res_image
-        self._preview_session = new_session
-
-        preview_pixmap = QPixmap.fromImage(full_res_image)
-        self._current_preview_pixmap = preview_pixmap if not preview_pixmap.isNull() else None
         self._compare_active = False
-        if preview_pixmap.isNull():
+
+        if initial_pixmap.isNull():
             self._ui.edit_image_viewer.clear()
         else:
-            self._ui.edit_image_viewer.set_pixmap(preview_pixmap)
+            self._ui.edit_image_viewer.set_pixmap(initial_pixmap)
         self._ui.edit_image_viewer.reset_zoom()
-        self._start_preview_job()
-
-        if previous_session is not None:
-            self._queue_session_for_disposal(previous_session)
-            self._dispose_retired_sessions()
 
     def exit_fullscreen_preview(self) -> None:
         """Restore the standard edit chrome after leaving full screen."""
@@ -760,7 +568,7 @@ class EditController(QObject):
         if not isinstance(self._window, QWidget):
             return
 
-        self._cancel_pending_previews()
+        self._preview_manager.cancel_pending_updates()
         self._window.showNormal()
 
         # Reinstate chrome elements using the visibility state captured on
@@ -790,160 +598,73 @@ class EditController(QObject):
             self._ui.splitter.setSizes(self._fullscreen_splitter_sizes)
         self._fullscreen_splitter_sizes = None
 
-        previous_session = self._preview_session
         self._fullscreen_active = False
 
         if self._current_source is None or self._session is None:
-            if previous_session is not None:
-                self._queue_session_for_disposal(previous_session)
-                self._dispose_retired_sessions()
+            self._preview_manager.stop_session()
             return
 
-        # Scale the base image back down to the viewport-friendly preview size
-        # used by the standard edit chrome.  Re-using the already-loaded full
-        # resolution frame avoids an extra disk read when possible.
-        source_image = self._base_image
+        source_image = self._preview_manager.get_base_image()
         if source_image is None or source_image.isNull():
             source_image = image_loader.load_qimage(self._current_source)
         if source_image is None or source_image.isNull():
-            self._base_image = None
-            self._current_preview_pixmap = None
+            self._preview_manager.stop_session()
             self._ui.edit_image_viewer.clear()
-            if previous_session is not None:
-                self._queue_session_for_disposal(previous_session)
-                self._dispose_retired_sessions()
             return
-
-        preview_image = self._prepare_preview_image(source_image)
-        self._base_image = preview_image
-        preview_pixmap = QPixmap.fromImage(preview_image)
-        self._current_preview_pixmap = preview_pixmap if not preview_pixmap.isNull() else None
-        self._compare_active = False
-        if preview_pixmap.isNull():
-            self._ui.edit_image_viewer.clear()
-        else:
-            self._ui.edit_image_viewer.set_pixmap(preview_pixmap)
-        self._ui.edit_image_viewer.reset_zoom()
 
         try:
-            self._preview_session = self._preview_backend.create_session(preview_image)
+            initial_pixmap = self._preview_manager.start_session(
+                source_image,
+                self._session.values(),
+                scale_for_viewport=True,
+            )
         except Exception:
-            self._preview_session = None
+            _LOGGER.warning(
+                "Failed to restore standard preview session for %s",
+                self._current_source,
+            )
+            self._preview_manager.stop_session()
             return
 
-        self._start_preview_job()
-
-        if previous_session is not None:
-            self._queue_session_for_disposal(previous_session)
-            self._dispose_retired_sessions()
-
-    def _prepare_preview_image(self, image: QImage) -> QImage:
-        """Return an image optimised for preview rendering throughput.
-
-        Applying adjustments to a 1:1 copy of the source file quickly becomes
-        prohibitively expensive for high resolution assets.  The edit preview
-        only needs to match the on-screen size, so the helper scales the source
-        to the current viewer dimensions (or a conservative fallback) while
-        preserving the aspect ratio.  The reduced pixel count keeps CPU based
-        rendering responsive without sacrificing perceived quality.
-        """
-
-        viewport_size = None
-        viewer = self._ui.edit_image_viewer
-
-        # ``ImageViewer`` exposes its scroll area viewport for external event
-        # filters.  Reusing that helper yields the exact drawable surface size
-        # when the widget has already been laid out.
-        if hasattr(viewer, "viewport_widget"):
-            try:
-                viewport = viewer.viewport_widget()
-            except Exception:
-                viewport = None
-            if viewport is not None:
-                size = viewport.size()
-                if size.isValid() and not size.isEmpty():
-                    viewport_size = size
-
-        if viewport_size is None:
-            size = viewer.size()
-            if size.isValid() and not size.isEmpty():
-                viewport_size = size
-
-        # Fall back to a 1600px bounding box when layout information is not yet
-        # available (for example the first time the edit view is opened).  The
-        # limit is high enough to look crisp on typical displays while avoiding
-        # the worst case performance hit of processing multi-tens-of-megapixel
-        # originals on the CPU.
-        max_width = 1600
-        max_height = 1600
-        if viewport_size is not None:
-            max_width = max(1, viewport_size.width())
-            max_height = max(1, viewport_size.height())
-
-        if image.width() <= max_width and image.height() <= max_height:
-            # The source already fits within the requested bounds.  Return a
-            # detached copy so subsequent pixel operations never touch the
-            # caller's instance.
-            return QImage(image)
-
-        return image.scaled(
-            max_width,
-            max_height,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-
-    def _on_preview_ready(self, image: QImage, job_id: int) -> None:
-        """Update the preview if the emitted job matches the latest request."""
-
-        if job_id != self._preview_job_id:
-            # A newer preview superseded this result.  Drop it silently so the
-            # UI reflects the most recent slider state.
-            return
-
-        if image.isNull():
-            self._current_preview_pixmap = None
+        self._compare_active = False
+        if initial_pixmap.isNull():
             self._ui.edit_image_viewer.clear()
-            return
-
-        pixmap = QPixmap.fromImage(image)
-        if pixmap.isNull():
-            self._current_preview_pixmap = None
-            self._ui.edit_image_viewer.clear()
-            return
-
-        self._current_preview_pixmap = pixmap
-        if not self._compare_active:
-            self._ui.edit_image_viewer.set_pixmap(pixmap)
+        else:
+            self._ui.edit_image_viewer.set_pixmap(initial_pixmap)
+        self._ui.edit_image_viewer.reset_zoom()
 
     def _handle_compare_pressed(self) -> None:
         """Display the original photo while the compare button is held."""
 
-        if self._base_image is None:
+        base_pixmap = self._preview_manager.get_base_image_pixmap()
+        if base_pixmap is None or base_pixmap.isNull():
             return
         self._compare_active = True
-        self._ui.edit_image_viewer.set_pixmap(QPixmap.fromImage(self._base_image))
+        self._ui.edit_image_viewer.set_pixmap(base_pixmap)
 
     def _handle_compare_released(self) -> None:
         """Restore the adjusted preview after a comparison glance."""
 
         self._compare_active = False
-        if self._current_preview_pixmap is not None and not self._current_preview_pixmap.isNull():
-            self._ui.edit_image_viewer.set_pixmap(self._current_preview_pixmap)
-        elif self._base_image is not None:
+        preview_pixmap = self._preview_manager.get_current_preview_pixmap()
+        if preview_pixmap is not None and not preview_pixmap.isNull():
+            self._ui.edit_image_viewer.set_pixmap(preview_pixmap)
+            return
+        base_pixmap = self._preview_manager.get_base_image_pixmap()
+        if base_pixmap is not None and not base_pixmap.isNull():
             # Fall back to the unadjusted preview if a recalculated frame is not available.
-            self._ui.edit_image_viewer.set_pixmap(QPixmap.fromImage(self._base_image))
+            self._ui.edit_image_viewer.set_pixmap(base_pixmap)
 
     def _handle_reset_clicked(self) -> None:
         if self._session is None:
             return
         # Stop any pending preview updates so the reset renders immediately.
-        self._cancel_pending_previews()
+        self._preview_manager.cancel_pending_updates()
         self._session.reset()
 
     def _handle_done_clicked(self) -> None:
         # Ensure no delayed preview runs after committing the adjustments.
-        self._cancel_pending_previews()
+        self._preview_manager.stop_session()
         if self._session is None or self._current_source is None:
             self.leave_edit_mode(animate=True)
             return
@@ -1884,13 +1605,8 @@ class EditController(QObject):
         self._ui.edit_image_viewer.clear()
 
         self._session = None
-        self._base_image = None
         self._current_source = None
-        self._current_preview_pixmap = None
         self._compare_active = False
-        if self._preview_session is not None:
-            self._preview_backend.dispose_session(self._preview_session)
-            self._preview_session = None
         self._splitter_sizes_before_edit = None
 
     def _sanitise_splitter_sizes(
