@@ -86,7 +86,7 @@ class DetailUIController(QObject):
 
         self._initialize_static_state()
         self._wire_player_bar_events()
-        self._wire_zoom_controls()
+        self.connect_zoom_controls()
         self._info_button.clicked.connect(self._handle_info_button_clicked)
         self._view_controller.galleryViewShown.connect(self._handle_gallery_view_shown)
 
@@ -567,14 +567,29 @@ class DetailUIController(QObject):
 
         return payload
 
-    def _wire_zoom_controls(self) -> None:
-        """Connect the zoom toolbar to the image viewer."""
+    def connect_zoom_controls(self) -> None:
+        """Connect the zoom toolbar to the detail image viewer."""
 
         viewer = self._player_view.image_viewer
         self._zoom_in_button.clicked.connect(viewer.zoom_in)
         self._zoom_out_button.clicked.connect(viewer.zoom_out)
         self._zoom_slider.valueChanged.connect(self._handle_zoom_slider_changed)
         viewer.zoomChanged.connect(self._handle_viewer_zoom_changed)
+
+    def disconnect_zoom_controls(self) -> None:
+        """Disconnect the zoom toolbar from the detail image viewer safely."""
+
+        viewer = self._player_view.image_viewer
+        try:
+            self._zoom_in_button.clicked.disconnect(viewer.zoom_in)
+            self._zoom_out_button.clicked.disconnect(viewer.zoom_out)
+            self._zoom_slider.valueChanged.disconnect(self._handle_zoom_slider_changed)
+            viewer.zoomChanged.disconnect(self._handle_viewer_zoom_changed)
+        except (RuntimeError, TypeError):
+            # Qt raises ``RuntimeError``/``TypeError`` when a signal is already disconnected or was
+            # never linked.  The edit view frequently borrows the toolbar, so suppress these
+            # harmless consistency errors.
+            pass
 
     def _handle_zoom_slider_changed(self, value: int) -> None:
         """Translate slider values into viewer zoom factors."""

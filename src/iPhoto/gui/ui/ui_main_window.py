@@ -46,6 +46,27 @@ HEADER_ICON_GLYPH_SIZE = QSize(24, 24)
 HEADER_BUTTON_SIZE = QSize(36, 38)
 """Hit target size that guarantees a comfortable clickable header button."""
 
+EDIT_HEADER_BUTTON_HEIGHT = HEADER_BUTTON_SIZE.height()
+"""Uniform vertical extent for every interactive control in the edit toolbar."""
+
+EDIT_DONE_BUTTON_BACKGROUND = "#FFD60A"
+"""Primary accent colour that mirrors the Photos.app done button."""
+
+EDIT_DONE_BUTTON_BACKGROUND_HOVER = "#FFE066"
+"""Softer hover tint that preserves contrast against the yellow accent."""
+
+EDIT_DONE_BUTTON_BACKGROUND_PRESSED = "#FFC300"
+"""Darker pressed-state shade to communicate the button click."""
+
+EDIT_DONE_BUTTON_BACKGROUND_DISABLED = "#CFC2A0"
+"""Muted disabled colour that still reads as part of the yellow palette."""
+
+EDIT_DONE_BUTTON_TEXT_COLOR = "#1C1C1E"
+"""High-contrast foreground colour suitable for the yellow accent."""
+
+EDIT_DONE_BUTTON_TEXT_DISABLED = "#7F7F7F"
+"""Subdued text colour that keeps disabled labels legible."""
+
 WINDOW_CONTROL_GLYPH_SIZE = QSize(16, 16)
 """Icon size used for the custom window chrome buttons."""
 
@@ -709,10 +730,17 @@ class Ui_MainWindow(object):
         self.edit_compare_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         self.edit_compare_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.edit_compare_button.setAutoRaise(True)
+        # Matching the custom header button footprint keeps the compare control aligned with the
+        # textual buttons while maintaining the larger icon hit target demanded by the spec.
+        self.edit_compare_button.setFixedSize(HEADER_BUTTON_SIZE)
         left_controls_layout.addWidget(self.edit_compare_button)
 
         self.edit_reset_button.setAutoDefault(False)
         self.edit_reset_button.setDefault(False)
+        self.edit_reset_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        # Constraining the height to the shared toolbar dimension ensures the text baseline lines
+        # up with the adjacent segmented control and Done button.
+        self.edit_reset_button.setFixedHeight(EDIT_HEADER_BUTTON_HEIGHT)
         left_controls_layout.addWidget(self.edit_reset_button)
 
         self.edit_zoom_host = QWidget(left_controls_container)
@@ -736,6 +764,36 @@ class Ui_MainWindow(object):
         right_controls_container.setSizePolicy(
             QSizePolicy.Policy.Maximum,
             QSizePolicy.Policy.Preferred,
+        )
+        # A dedicated object name keeps the stylesheet scoped to this button while allowing
+        # the controller to continue referencing ``edit_done_button`` for signal wiring.
+        self.edit_done_button.setObjectName("editDoneButton")
+        self.edit_done_button.setAutoDefault(False)
+        self.edit_done_button.setDefault(False)
+        self.edit_done_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.edit_done_button.setFixedHeight(EDIT_HEADER_BUTTON_HEIGHT)
+        # The button colour replicates the warm yellow accent from the reference design while
+        # providing hover/pressed variations so the control still communicates interaction.
+        self.edit_done_button.setStyleSheet(
+            "QPushButton#editDoneButton {"
+            f"  background-color: {EDIT_DONE_BUTTON_BACKGROUND};"
+            "  border: none;"
+            "  border-radius: 8px;"
+            f"  color: {EDIT_DONE_BUTTON_TEXT_COLOR};"
+            "  font-weight: 600;"
+            "  padding-left: 20px;"
+            "  padding-right: 20px;"
+            "}"
+            "QPushButton#editDoneButton:hover {"
+            f"  background-color: {EDIT_DONE_BUTTON_BACKGROUND_HOVER};"
+            "}"
+            "QPushButton#editDoneButton:pressed {"
+            f"  background-color: {EDIT_DONE_BUTTON_BACKGROUND_PRESSED};"
+            "}"
+            "QPushButton#editDoneButton:disabled {"
+            f"  background-color: {EDIT_DONE_BUTTON_BACKGROUND_DISABLED};"
+            f"  color: {EDIT_DONE_BUTTON_TEXT_DISABLED};"
+            "}"
         )
         right_controls_layout.addWidget(self.edit_done_button)
         edit_header_layout.addWidget(right_controls_container)

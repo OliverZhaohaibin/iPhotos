@@ -32,6 +32,7 @@ from .player_view_controller import PlayerViewController
 from .view_controller import ViewController
 
 if TYPE_CHECKING:  # pragma: no cover - import for typing only
+    from .detail_ui_controller import DetailUIController
     from .navigation_controller import NavigationController
 
 
@@ -104,6 +105,7 @@ class EditController(QObject):
         parent: Optional[QObject] = None,
         *,
         navigation: "NavigationController" | None = None,
+        detail_ui_controller: "DetailUIController" | None = None,
     ) -> None:
         super().__init__(parent)
         self._ui = ui
@@ -116,6 +118,14 @@ class EditController(QObject):
         # during startup.  The reference stays optional because unit tests may
         # exercise the edit workflow without bootstrapping the full GUI stack.
         self._navigation: "NavigationController" | None = navigation
+        # ``_detail_ui_controller`` provides access to the detail view's zoom wiring helpers so the
+        # shared zoom toolbar can swap targets cleanly when the edit tools take over the header.
+        self._detail_ui_controller: "DetailUIController" | None = detail_ui_controller
+        # Track whether the shared zoom controls are currently routed to the edit viewer so we can
+        # disconnect them without relying on Qt to silently drop redundant requests.  Qt logs a
+        # warning when asked to disconnect a link that was never created, so this boolean keeps the
+        # console clean while still allowing repeated hand-overs between the detail and edit views.
+        self._edit_zoom_controls_connected = False
         self._thumbnail_loader: ThumbnailLoader = asset_model.thumbnail_loader()
         # ``_pending_thumbnail_refreshes`` tracks relative asset identifiers with
         # a refresh queued via :meth:`_schedule_thumbnail_refresh`.  Deferring
@@ -201,6 +211,61 @@ class EditController(QObject):
         ui.edit_header_container.hide()
 
     # ------------------------------------------------------------------
+    # Zoom toolbar management
+    # ------------------------------------------------------------------
+    def _connect_edit_zoom_controls(self) -> None:
+        """Connect the shared zoom toolbar to the edit image viewer."""
+
+        if self._edit_zoom_controls_connected:
+            return
+
+        viewer = self._ui.edit_image_viewer
+        self._ui.zoom_in_button.clicked.connect(viewer.zoom_in)
+        self._ui.zoom_out_button.clicked.connect(viewer.zoom_out)
+        self._ui.zoom_slider.valueChanged.connect(self._handle_edit_zoom_slider_changed)
+        viewer.zoomChanged.connect(self._handle_edit_viewer_zoom_changed)
+        self._edit_zoom_controls_connected = True
+
+    def _disconnect_edit_zoom_controls(self) -> None:
+        """Detach the shared zoom toolbar from the edit image viewer."""
+
+        if not self._edit_zoom_controls_connected:
+            return
+
+        viewer = self._ui.edit_image_viewer
+        try:
+            self._ui.zoom_in_button.clicked.disconnect(viewer.zoom_in)
+            self._ui.zoom_out_button.clicked.disconnect(viewer.zoom_out)
+            self._ui.zoom_slider.valueChanged.disconnect(self._handle_edit_zoom_slider_changed)
+            viewer.zoomChanged.disconnect(self._handle_edit_viewer_zoom_changed)
+        finally:
+            # Ensure the state flag is cleared even if Qt reports that some of the links had already
+            # been severed.  The warning-prone duplicate disconnect attempts should now be guarded by
+            # the boolean check above, but resetting the flag keeps the controller resilient in case
+            # future refactors bypass the helper inadvertently.
+            self._edit_zoom_controls_connected = False
+
+    def _handle_edit_zoom_slider_changed(self, value: int) -> None:
+        """Translate slider *value* percentages into edit viewer zoom factors."""
+
+        slider = self._ui.zoom_slider
+        clamped = max(slider.minimum(), min(slider.maximum(), value))
+        factor = float(clamped) / 100.0
+        viewer = self._ui.edit_image_viewer
+        viewer.set_zoom(factor, anchor=viewer.viewport_center())
+
+    def _handle_edit_viewer_zoom_changed(self, factor: float) -> None:
+        """Synchronise the slider position when the edit viewer reports a new zoom *factor*."""
+
+        slider = self._ui.zoom_slider
+        slider_value = max(slider.minimum(), min(slider.maximum(), int(round(factor * 100.0))))
+        if slider_value == slider.value():
+            return
+        slider.blockSignals(True)
+        slider.setValue(slider_value)
+        slider.blockSignals(False)
+
+    # ------------------------------------------------------------------
     def begin_edit(self) -> None:
         """Enter the edit view for the playlist's current asset."""
 
@@ -248,6 +313,10 @@ class EditController(QObject):
         self._detail_header_opacity.setOpacity(1.0)
         self._ui.detail_chrome_container.hide()
         self._move_header_widgets_for_edit()
+        if self._detail_ui_controller is not None:
+            self._detail_ui_controller.disconnect_zoom_controls()
+        self._connect_edit_zoom_controls()
+        self._ui.edit_image_viewer.reset_zoom()
         self._edit_header_opacity.setOpacity(1.0)
         self._ui.edit_header_container.show()
 
@@ -847,6 +916,9 @@ class EditController(QObject):
         # view.  Doing so earlier would compress the edit page mid-animation, producing the
         # "jump" the user reported.  Restoring the shared toolbar widgets at the same time keeps
         # the controls consistent with the now-visible header.
+        self._disconnect_edit_zoom_controls()
+        if self._detail_ui_controller is not None:
+            self._detail_ui_controller.connect_zoom_controls()
         self._restore_header_widgets_after_edit()
         self._view_controller.show_detail_view()
         self._ui.detail_chrome_container.show()
@@ -948,7 +1020,6 @@ class EditController(QObject):
         ui.detail_actions_layout.insertWidget(ui.detail_info_button_index, ui.info_button)
         ui.detail_actions_layout.insertWidget(ui.detail_favorite_button_index, ui.favorite_button)
         ui.detail_header_layout.insertWidget(ui.detail_zoom_widget_index, ui.zoom_widget)
-        ui.zoom_widget.hide()
 
     def _handle_playlist_change(self) -> None:
         if self._view_controller.is_edit_view_active():

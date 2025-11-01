@@ -80,6 +80,7 @@ class ViewControllerManager(QObject):
             data_manager.asset_model(),
             window,
             navigation=navigation,
+            detail_ui_controller=self._detail_ui,
         )
         self._map_controller = LocationMapController(
             context.library,
