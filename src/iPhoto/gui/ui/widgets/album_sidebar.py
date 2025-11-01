@@ -328,9 +328,15 @@ class AlbumSidebar(QWidget):
     def _update_title(self) -> None:
         root = self._library.root()
         if root is None:
+            # Keep the unbound state explicit so users know they still need to
+            # attach a library before navigating, but avoid appending verbose
+            # filesystem paths that clutter the chrome.
             self._title.setText("Basic Library — not bound")
         else:
-            self._title.setText(f"Basic Library — {root}")
+            # Always display a concise title without the backing path to keep
+            # the window chrome tidy while the sidebar continues to show the
+            # simple library name.
+            self._title.setText("Basic Library")
         # Recalculate the manual minimum so manual splitter drags continue to honour the
         # configured width even if the displayed path becomes longer or shorter.
         self._refresh_manual_minimum_width()

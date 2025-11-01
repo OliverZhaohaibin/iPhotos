@@ -19,7 +19,6 @@ from PySide6.QtWidgets import (
     QSpacerItem,
     QSplitter,
     QStackedWidget,
-    QToolBar,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -38,7 +37,7 @@ from .widgets import (
     PreviewWindow,
     VideoArea,
 )
-from .widgets.sliding_segmented_control import SlidingSegmentedControl
+from .widgets.edit_topbar import SegmentedTopBar
 
 HEADER_ICON_GLYPH_SIZE = QSize(24, 24)
 """Standard glyph size (in device-independent pixels) for header icons."""
@@ -257,6 +256,68 @@ class Ui_MainWindow(object):
         )
         self.menu_bar.setPalette(menu_palette)
 
+        # ``QMenuBar`` cannot natively host right-aligned widgets, so embed it inside a
+        # lightweight container with a horizontal layout.  The layout mirrors the visual row
+        # previously occupied by the toolbar: the menu bar stays pinned to the left while the
+        # dedicated Rescan button hugs the right edge.  A spacer item stretches between both
+        # widgets, ensuring the action button always remains flush with the shell boundary even
+        # when the window resizes.
+        self.menu_bar_container = QWidget(self.window_shell)
+        self.menu_bar_container.setObjectName("menuBarContainer")
+        self.menu_bar_container.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.menu_bar_container.setAutoFillBackground(True)
+        self.menu_bar_container.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Fixed,
+        )
+
+        # Copy the palette from the existing menu bar so the container inherits the same opaque
+        # background tint.  Matching the base colour keeps the chrome visually seamless after the
+        # toolbar removal.
+        menu_container_palette = self.menu_bar_container.palette()
+        menu_container_palette.setColor(
+            QPalette.ColorRole.Window,
+            menu_palette.color(QPalette.ColorRole.Base),
+        )
+        self.menu_bar_container.setPalette(menu_container_palette)
+
+        menu_bar_layout = QHBoxLayout(self.menu_bar_container)
+        menu_bar_layout.setContentsMargins(0, 0, 0, 0)
+        menu_bar_layout.setSpacing(6)
+
+        # Place the native menu bar at the leftmost edge just like before.  Because the action
+        # instances are shared, menu shortcuts and keyboard mnemonics continue to work without
+        # additional wiring.
+        menu_bar_layout.addWidget(self.menu_bar)
+
+        # Insert a stretchable spacer so any widgets appended afterwards drift toward the
+        # right-hand side of the chrome row.
+        menu_bar_layout.addSpacerItem(
+            QSpacerItem(
+                1,
+                1,
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Minimum,
+            )
+        )
+
+        # Re-home the Rescan action inside a dedicated tool button so the command remains
+        # one-click accessible after the toolbar removal.  The default action is wired up after
+        # the QAction objects are instantiated to avoid referencing them before creation.
+        self.rescan_button = QToolButton(self.menu_bar_container)
+        self.rescan_button.setObjectName("rescanButton")
+        self.rescan_button.setAutoRaise(True)
+        menu_bar_layout.addWidget(self.rescan_button)
+
+        # Surface the selection toggle beside ``rescan_button`` so both header actions stay in
+        # a single, predictable location.  Keeping the tool button flat mirrors the previous
+        # chrome row presentation while letting controllers swap the label text dynamically.
+        self.selection_button = QToolButton(self.menu_bar_container)
+        self.selection_button.setObjectName("selectionButton")
+        self.selection_button.setAutoRaise(True)
+        self.selection_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        menu_bar_layout.addWidget(self.selection_button)
+
         # Collect the custom title bar and its separator inside a dedicated container so the
         # main window can hide or show the entire chrome strip with a single widget toggle when
         # entering or exiting immersive full screen mode.
@@ -329,7 +390,7 @@ class Ui_MainWindow(object):
         window_chrome_layout.addWidget(self.title_separator)
 
         self.window_shell_layout.addWidget(self.window_chrome)
-        self.window_shell_layout.addWidget(self.menu_bar)
+        self.window_shell_layout.addWidget(self.menu_bar_container)
 
         self.open_album_action = QAction("Open Album Folder…", MainWindow)
         self.rescan_action = QAction("Rescan", MainWindow)
@@ -369,7 +430,6 @@ class Ui_MainWindow(object):
             None,
             self.bind_library_action,
             None,
-            self.rescan_action,
             self.rebuild_links_action,
         ):
             if action is None:
@@ -377,32 +437,10 @@ class Ui_MainWindow(object):
             else:
                 file_menu.addAction(action)
 
-        self.main_toolbar = QToolBar("Main", self.window_shell)
-        # Hosting the toolbar inside the rounded shell keeps the controls opaque while avoiding
-        # the transparent gap that appeared when Qt painted it outside the custom chrome.
-        self.main_toolbar.setObjectName("mainToolbar")
-        self.main_toolbar.setMovable(False)
-        self.main_toolbar.setFloatable(False)
-        self.main_toolbar.setOrientation(Qt.Orientation.Horizontal)
-        self.main_toolbar.setSizePolicy(
-            QSizePolicy.Policy.Preferred,
-            QSizePolicy.Policy.Fixed,
-        )
-        self.main_toolbar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.main_toolbar.setAutoFillBackground(True)
-        toolbar_palette = self.main_toolbar.palette()
-        toolbar_palette.setColor(
-            QPalette.ColorRole.Window,
-            toolbar_palette.color(QPalette.ColorRole.Base),
-        )
-        self.main_toolbar.setPalette(toolbar_palette)
-        self.window_shell_layout.addWidget(self.main_toolbar)
-        for action in (
-            self.open_album_action,
-            self.rescan_action,
-            self.rebuild_links_action,
-        ):
-            self.main_toolbar.addAction(action)
+        # Attach the shared ``rescan_action`` to the dedicated header button once the QAction
+        # instances exist.  Wiring the action at this stage preserves keyboard shortcuts and
+        # keeps external controllers free to toggle the action enabled state.
+        self.rescan_button.setDefaultAction(self.rescan_action)
 
         settings_menu = self.menu_bar.addMenu("&Settings")
         # Reuse the same action instance in both menus so the user can discover the
@@ -421,7 +459,6 @@ class Ui_MainWindow(object):
         share_menu.addAction(self.share_action_reveal_file)
 
         self.sidebar = AlbumSidebar(library, MainWindow)
-        self.album_label = QLabel("Open a folder to browse your photos.")
         self.grid_view = GalleryGridView()
         self.map_view = PhotoMapView()
         self.filmstrip_view = FilmstripView()
@@ -478,19 +515,6 @@ class Ui_MainWindow(object):
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(8, 8, 8, 8)
 
-        self.album_label.setObjectName("albumLabel")
-        album_header = QWidget()
-        album_header_layout = QHBoxLayout(album_header)
-        album_header_layout.setContentsMargins(0, 0, 0, 0)
-        album_header_layout.setSpacing(8)
-        album_header_layout.addWidget(self.album_label, 1)
-        self.selection_button = QToolButton()
-        self.selection_button.setObjectName("selectionButton")
-        self.selection_button.setAutoRaise(True)
-        self.selection_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        album_header_layout.addWidget(self.selection_button)
-        right_layout.addWidget(album_header)
-        self.album_header = album_header
 
         gallery_page = QWidget()
         gallery_layout = QVBoxLayout(gallery_page)
@@ -690,6 +714,7 @@ class Ui_MainWindow(object):
         self.edit_done_button = QPushButton(MainWindow)
         self.edit_image_viewer = ImageViewer()
         self.edit_sidebar = EditSidebar()
+        self.edit_sidebar.setObjectName("editSidebar")
         # Capture the sidebar's default geometry constraints before temporarily collapsing it for
         # the animated transition.  Stashing these values as dynamic properties keeps them
         # accessible to the edit controller once the minimum/maximum widths are reduced to zero.
@@ -707,11 +732,13 @@ class Ui_MainWindow(object):
         self.edit_sidebar.hide()
 
         edit_page = QWidget()
+        edit_page.setObjectName("editPage")
         edit_layout = QVBoxLayout(edit_page)
         edit_layout.setContentsMargins(0, 0, 0, 0)
         edit_layout.setSpacing(6)
 
         edit_header_container = QWidget()
+        edit_header_container.setObjectName("editHeaderContainer")
         edit_header_layout = QHBoxLayout(edit_header_container)
         edit_header_layout.setContentsMargins(12, 0, 12, 0)
         edit_header_layout.setSpacing(12)
@@ -751,8 +778,11 @@ class Ui_MainWindow(object):
 
         edit_header_layout.addWidget(left_controls_container)
 
-        self.edit_mode_control = SlidingSegmentedControl(
-            (self.edit_adjust_action, self.edit_crop_action),
+        self.edit_mode_control = SegmentedTopBar(
+            (
+                self.edit_adjust_action.text() or "Adjust",
+                self.edit_crop_action.text() or "Crop",
+            ),
             edit_header_container,
         )
         edit_header_layout.addWidget(self.edit_mode_control, 0, Qt.AlignmentFlag.AlignHCenter)
@@ -816,10 +846,7 @@ class Ui_MainWindow(object):
         self.edit_page = edit_page
         self.edit_header_container.hide()
 
-        # Ensure the segmented control positions its highlight over the checked
-        # mode before the first paint event so the edit bar looks finalised as
-        # soon as it appears.
-        self.edit_mode_control.sync_to_checked_action()
+        self.edit_mode_control.setCurrentIndex(0, animate=False)
 
         self.view_stack.addWidget(self.edit_page)
 
@@ -911,6 +938,12 @@ class Ui_MainWindow(object):
         )
         self.edit_crop_action.setText(
             QCoreApplication.translate("MainWindow", "Crop", None)
+        )
+        self.edit_mode_control.setItems(
+            (
+                self.edit_adjust_action.text(),
+                self.edit_crop_action.text(),
+            )
         )
         self.edit_compare_button.setToolTip(
             QCoreApplication.translate(

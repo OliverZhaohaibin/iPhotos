@@ -1,37 +1,59 @@
+"""Custom segmented control used by the edit header."""
+
 from __future__ import annotations
-from typing import List
+
 from math import floor
-from PySide6.QtCore import Qt, QRectF, QPointF, QEasingCurve, Property, QPropertyAnimation, Signal
-from PySide6.QtGui import QPainter, QColor, QPen, QFont, QLinearGradient, QPainterPath
-from PySide6.QtWidgets import QWidget, QApplication, QVBoxLayout
+from typing import Iterable, List, Sequence
+
+from PySide6.QtCore import (
+    QEasingCurve,
+    Property,
+    QPointF,
+    QRectF,
+    Qt,
+    QPropertyAnimation,
+    Signal,
+)
+from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen
+from PySide6.QtCore import QSize
+from PySide6.QtWidgets import QApplication, QSizePolicy, QVBoxLayout, QWidget
 
 
-def _snap05(x: float) -> float:
-    return floor(x) + 0.5
+def _snap05(value: float) -> float:
+    """Align *value* to the nearest half pixel to keep strokes crisp."""
+
+    return floor(value) + 0.5
 
 
-def _align_rect_05(r: QRectF) -> QRectF:
-    x = _snap05(r.x()); y = _snap05(r.y())
-    w = round(r.width()); h = round(r.height())
-    return QRectF(x, y, w, h)
+def _align_rect_05(rect: QRectF) -> QRectF:
+    """Return *rect* aligned to the half-pixel grid."""
+
+    x = _snap05(rect.x())
+    y = _snap05(rect.y())
+    width = round(rect.width())
+    height = round(rect.height())
+    return QRectF(x, y, width, height)
 
 
 class SegmentedTopBar(QWidget):
+    """Rounded segmented control styled to mirror the Photos.app toolbar."""
+
     currentIndexChanged = Signal(int)
 
-    def __init__(self, items: List[str] = None, parent=None):
+    def __init__(self, items: Sequence[str] | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._items = items or ["Adjust", "Filters", "Crop"]
+        provided_items: List[str] = list(items) if items is not None else ["Adjust", "Filters", "Crop"]
+        self._items: List[str] = provided_items
         self._index = 0
         self._anim_pos = float(self._index)
         self._anim = QPropertyAnimation(self, b"animPos", self)
         self._anim.setDuration(160)
-        self._anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
 
-        # 样式
+        # Visual parameters -------------------------------------------------
         self.h_pad = 10
         self.v_pad = 6
-        self.radius = 12                  # 外框圆角
+        self.radius = 12
         self.sep_inset = 6
         self.sep_width = 1.0
         self.height_hint = 36
@@ -40,175 +62,251 @@ class SegmentedTopBar(QWidget):
         self.border = QColor(70, 70, 70)
         self.text_active = QColor(250, 250, 250)
         self.text_inactive = QColor(180, 180, 180)
-        self.frosty_a = QColor(255, 255, 255, 42)    # 选中主体
-        self.frosty_b = QColor(255, 255, 255, 18)    # 顶部轻高光
+        self.frosty_a = QColor(255, 255, 255, 42)
+        self.frosty_b = QColor(255, 255, 255, 18)
 
         self.setMinimumHeight(self.height_hint)
         self.setMouseTracking(True)
-        self.setFocusPolicy(Qt.StrongFocus)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
-    # ---------- API ----------
-    def items(self) -> List[str]: return list(self._items)
+    # ------------------------------------------------------------------
+    # Public API
+    def items(self) -> List[str]:
+        """Return a copy of the current segment labels."""
 
-    def setItems(self, items: List[str]):
-        self._items = list(items) or ["Item"]
+        return list(self._items)
+
+    def setItems(self, items: Iterable[str]) -> None:
+        """Replace the displayed segments with *items*."""
+
+        new_items = list(items) or ["Item"]
+        self._items = new_items
         self._index = max(0, min(self._index, len(self._items) - 1))
         self._anim_pos = float(self._index)
         self.update()
+        self.updateGeometry()
 
-    def currentIndex(self) -> int: return self._index
+    def currentIndex(self) -> int:
+        """Return the index of the highlighted segment."""
 
-    def setCurrentIndex(self, i: int, animate: bool = True):
-        i = max(0, min(i, len(self._items) - 1))
-        if i == self._index: return
-        src, dst = float(self._index), float(i)
-        self._index = i
+        return self._index
+
+    def setCurrentIndex(self, index: int, animate: bool = True) -> None:
+        """Select *index*, optionally animating the highlight transition."""
+
+        clamped = max(0, min(index, len(self._items) - 1))
+        if clamped == self._index:
+            return
+        start = float(self._index)
+        self._index = clamped
+        end = float(self._index)
         if animate:
-            self._anim.stop(); self._anim.setStartValue(src); self._anim.setEndValue(dst); self._anim.start()
+            self._anim.stop()
+            self._anim.setStartValue(start)
+            self._anim.setEndValue(end)
+            self._anim.start()
         else:
-            self._anim_pos = dst; self.update()
+            self._anim_pos = end
+            self.update()
         self.currentIndexChanged.emit(self._index)
 
-    def getAnimPos(self) -> float: return self._anim_pos
-    def setAnimPos(self, v: float): self._anim_pos = v; self.update()
+    def getAnimPos(self) -> float:
+        """Return the current highlight animation progress."""
+
+        return self._anim_pos
+
+    def setAnimPos(self, value: float) -> None:
+        """Update the highlight animation progress and repaint the control."""
+
+        self._anim_pos = value
+        self.update()
+
     animPos = Property(float, getAnimPos, setAnimPos)
 
-    # ---------- 交互 ----------
-    def mousePressEvent(self, e):
-        if e.button() != Qt.LeftButton: return
-        idx = self._index_from_x(e.position().x())
-        if idx is not None: self.setCurrentIndex(idx, animate=True)
+    # ------------------------------------------------------------------
+    # Input handling helpers
+    def mousePressEvent(self, event):  # type: ignore[override]
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        index = self._index_from_x(event.position().x())
+        if index is not None:
+            self.setCurrentIndex(index, animate=True)
 
-    def keyPressEvent(self, e):
-        if e.key() in (Qt.Key_Left, Qt.Key_A): self.setCurrentIndex(self._index-1)
-        elif e.key() in (Qt.Key_Right, Qt.Key_D): self.setCurrentIndex(self._index+1)
-        else: super().keyPressEvent(e)
+    def keyPressEvent(self, event):  # type: ignore[override]
+        if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_A):
+            self.setCurrentIndex(self._index - 1)
+        elif event.key() in (Qt.Key.Key_Right, Qt.Key.Key_D):
+            self.setCurrentIndex(self._index + 1)
+        else:
+            super().keyPressEvent(event)
 
-    # ---------- 绘制 ----------
-    def paintEvent(self, _):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing, True)
-        p.setRenderHint(QPainter.TextAntialiasing, True)
-        p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+    # ------------------------------------------------------------------
+    # Painting helpers
+    def paintEvent(self, _):  # type: ignore[override]
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
-        w, h = self.width(), self.height()
-        OVERDRAW = max(1.0, self.devicePixelRatioF() * 0.8)
+        width = self.width()
+        height = self.height()
+        overdraw = max(1.0, self.devicePixelRatioF() * 0.8)
 
-        # 外框（0.5 像素对齐）
-        outer = _align_rect_05(QRectF(1.0, 1.0, w - 2.0, h - 2.0))
-        outer_path = QPainterPath(); outer_path.addRoundedRect(outer, self.radius, self.radius)
+        outer = _align_rect_05(QRectF(1.0, 1.0, width - 2.0, height - 2.0))
+        outer_path = QPainterPath()
+        outer_path.addRoundedRect(outer, self.radius, self.radius)
 
-        # 背景
-        bg_rect = outer.adjusted(-OVERDRAW, -OVERDRAW, OVERDRAW, OVERDRAW)
+        bg_rect = outer.adjusted(-overdraw, -overdraw, overdraw, overdraw)
         bg_path = QPainterPath()
-        bg_path.addRoundedRect(bg_rect, self.radius + OVERDRAW, self.radius + OVERDRAW)
-        p.setPen(Qt.NoPen); p.setBrush(self.bg); p.drawPath(bg_path)
+        bg_path.addRoundedRect(bg_rect, self.radius + overdraw, self.radius + overdraw)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(self.bg)
+        painter.drawPath(bg_path)
 
-        # 槽区域（仅用于计算段落）
         inner = _align_rect_05(outer.adjusted(self.h_pad, self.v_pad, -self.h_pad, -self.v_pad))
-        seg_rects, sep_x = self._segment_rects_and_boundaries(inner)
+        segment_rects, separators = self._segment_rects_and_boundaries(inner)
 
-        # ===== 选中背景：圆角矩形，覆盖 outer 边角 =====
-        if seg_rects:
-            band_rect = self._lerp_rects(seg_rects, self._anim_pos)
+        if segment_rects:
+            band_rect = self._lerp_rects(segment_rects, self._anim_pos)
 
-            # 若在最左/右，延伸到 outer 的边缘
-            leftmost = (self._anim_pos < 0.001)
-            rightmost = (self._anim_pos > len(seg_rects)-1.001)
-            # 水平覆盖更广一些，确保在动画过渡中圆角仍贴合外框
+            leftmost = self._anim_pos < 0.001
+            rightmost = self._anim_pos > len(segment_rects) - 1.001
             band_rect = QRectF(
-                band_rect.left()  - (self.h_pad if leftmost else OVERDRAW),
-                outer.top() - OVERDRAW,
-                band_rect.width() + (2 * OVERDRAW if not (leftmost or rightmost) else self.h_pad + OVERDRAW),
-                outer.height() + 2 * OVERDRAW
+                band_rect.left() - (self.h_pad if leftmost else overdraw),
+                outer.top() - overdraw,
+                band_rect.width()
+                + (2 * overdraw if not (leftmost or rightmost) else self.h_pad + overdraw),
+                outer.height() + 2 * overdraw,
             )
             band_rect = _align_rect_05(band_rect)
 
-            # 圆角矩形路径
             band_path = QPainterPath()
             band_path.addRoundedRect(band_rect, self.radius, self.radius)
+            selection_path = outer_path.intersected(band_path)
 
-            # 限制在 outer 内部 → 能覆盖两端但不会溢出边框
-            sel_path = outer_path.intersected(band_path)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(self.frosty_a)
+            painter.drawPath(selection_path)
 
-            # 主体
-            p.setPen(Qt.NoPen)
-            p.setBrush(self.frosty_a)
-            p.drawPath(sel_path)
+            gradient = QLinearGradient(band_rect.topLeft(), band_rect.bottomLeft())
+            gradient.setColorAt(0.0, self.frosty_b)
+            gradient.setColorAt(0.6, QColor(255, 255, 255, 0))
+            painter.setBrush(gradient)
+            painter.drawPath(selection_path)
 
-            # 顶部轻高光
-            grad = QLinearGradient(band_rect.topLeft(), band_rect.bottomLeft())
-            grad.setColorAt(0.0, self.frosty_b)
-            grad.setColorAt(0.6, QColor(255, 255, 255, 0))
-            p.setBrush(grad)
-            p.drawPath(sel_path)
-
-        # 分隔线
-        p.setPen(QPen(QColor(90, 90, 90), self.sep_width))
+        painter.setPen(QPen(QColor(90, 90, 90), self.sep_width))
         y1 = _snap05(inner.top() + self.sep_inset)
         y2 = _snap05(inner.bottom() - self.sep_inset)
-        for x in sep_x:
-            x05 = _snap05(x)
-            p.drawLine(QPointF(x05, y1), QPointF(x05, y2))
+        for x in separators:
+            x_aligned = _snap05(x)
+            painter.drawLine(QPointF(x_aligned, y1), QPointF(x_aligned, y2))
 
-        # 文本
-        for i, r in enumerate(seg_rects):
-            f = QFont(self.font()); f.setBold(i == round(self._anim_pos))
-            p.setFont(f)
-            p.setPen(self.text_active if i == round(self._anim_pos) else self.text_inactive)
-            p.drawText(r, Qt.AlignCenter, self._items[i])
+        for index, rect in enumerate(segment_rects):
+            font = QFont(self.font())
+            font.setBold(index == round(self._anim_pos))
+            painter.setFont(font)
+            painter.setPen(self.text_active if index == round(self._anim_pos) else self.text_inactive)
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, self._items[index])
 
-        # 最后描边外框
-        p.setPen(QPen(self.border, 1))
-        p.setBrush(Qt.NoBrush)
-        p.drawPath(outer_path)
+        painter.setPen(QPen(self.border, 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(outer_path)
 
-    # ---------- 几何 ----------
-    def _segment_rects_and_boundaries(self, inner: QRectF):
-        n = len(self._items)
-        if n <= 0: return [], []
-        w_each = inner.width() / n
-        rects, sep_x = [], []
-        for i in range(n):
-            x = inner.left() + i * w_each
-            rects.append(QRectF(x, inner.top(), w_each, inner.height()))
-            if i > 0: sep_x.append(x)
-        usable = []
-        for i, r in enumerate(rects):
-            left_bound  = inner.left()  if i == 0   else sep_x[i-1] + self.sep_width/2
-            right_bound = inner.right() if i == n-1 else sep_x[i]   - self.sep_width/2
+    # ------------------------------------------------------------------
+    # Geometry helpers
+    def _segment_rects_and_boundaries(self, inner: QRectF) -> tuple[list[QRectF], list[float]]:
+        count = len(self._items)
+        if count <= 0:
+            return [], []
+        width_each = inner.width() / count
+        rects: list[QRectF] = []
+        boundaries: list[float] = []
+        for index in range(count):
+            x = inner.left() + index * width_each
+            rects.append(QRectF(x, inner.top(), width_each, inner.height()))
+            if index > 0:
+                boundaries.append(x)
+        usable: list[QRectF] = []
+        for index, rect in enumerate(rects):
+            left_bound = inner.left() if index == 0 else boundaries[index - 1] + self.sep_width / 2
+            right_bound = inner.right() if index == count - 1 else boundaries[index] - self.sep_width / 2
             usable.append(QRectF(left_bound, inner.top(), right_bound - left_bound, inner.height()))
-        return usable, sep_x
+        return usable, boundaries
 
     def _index_from_x(self, x: float) -> int | None:
-        inner = QRectF(self.h_pad, self.v_pad, self.width()-2*self.h_pad, self.height()-2*self.v_pad)
-        n = len(self._items)
-        if n <= 0: return None
-        idx = int((x - inner.left()) // (inner.width() / n))
-        return idx if 0 <= idx < n else None
+        inner = QRectF(self.h_pad, self.v_pad, self.width() - 2 * self.h_pad, self.height() - 2 * self.v_pad)
+        count = len(self._items)
+        if count <= 0:
+            return None
+        index = int((x - inner.left()) // (inner.width() / count))
+        return index if 0 <= index < count else None
 
     @staticmethod
-    def _lerp(a: float, b: float, t: float) -> float: return a + (b - a) * t
+    def _lerp(a: float, b: float, t: float) -> float:
+        return a + (b - a) * t
 
-    def _lerp_rects(self, rects: List[QRectF], pos: float) -> QRectF:
-        n = len(rects)
-        if n == 1 or pos <= 0: return rects[0]
-        if pos >= n - 1: return rects[-1]
-        i = int(pos); t = pos - i
-        r1, r2 = rects[i], rects[i+1]
-        x = self._lerp(r1.left(),  r2.left(),  t)
-        w = self._lerp(r1.width(), r2.width(), t)
-        return QRectF(x, r1.top(), w, r1.height())
+    def _lerp_rects(self, rects: Sequence[QRectF], pos: float) -> QRectF:
+        count = len(rects)
+        if count == 1 or pos <= 0:
+            return rects[0]
+        if pos >= count - 1:
+            return rects[-1]
+        index = int(pos)
+        fraction = pos - index
+        first = rects[index]
+        second = rects[index + 1]
+        x = self._lerp(first.left(), second.left(), fraction)
+        width = self._lerp(first.width(), second.width(), fraction)
+        return QRectF(x, first.top(), width, first.height())
+
+    # ------------------------------------------------------------------
+    # Sizing helpers
+    def sizeHint(self) -> QSize:  # type: ignore[override]
+        """Return the preferred control size based on the label lengths."""
+
+        segment_width = self._segment_width_hint()
+        count = max(1, len(self._items))
+        total_width = int(round(2 * self.h_pad + segment_width * count))
+        return QSize(total_width, self.height_hint)
+
+    def minimumSizeHint(self) -> QSize:  # type: ignore[override]
+        """Mirror :meth:`sizeHint` so layouts never collapse the control."""
+
+        return self.sizeHint()
+
+    def _segment_width_hint(self) -> float:
+        """Estimate a comfortable width for an individual segment."""
+
+        metrics = self.fontMetrics()
+        if not self._items:
+            text_width = metrics.horizontalAdvance("Item")
+        else:
+            text_width = max(metrics.horizontalAdvance(text) for text in self._items)
+        # Provide additional breathing room around the text to mimic the native Photos toolbar.
+        # The constant accounts for the inner padding used during painting so the highlight band
+        # never clips the glyphs even when translated to high-DPI surfaces.
+        return float(text_width + (self.sep_inset + self.h_pad))
 
 
-# ---------------- Demo ----------------
+# ----------------------------------------------------------------------
+# Demo harness ---------------------------------------------------------
 if __name__ == "__main__":
     import sys
+
     app = QApplication(sys.argv)
-    root = QWidget(); lay = QVBoxLayout(root)
-    lay.setContentsMargins(20,20,20,20); lay.setSpacing(16)
-    bar = SegmentedTopBar(["Adjust", "Filters", "Crop"]); bar.setFixedHeight(44); lay.addWidget(bar)
-    bar2 = SegmentedTopBar(["Basic", "Color", "Details", "Optics"]); bar2.setFixedHeight(44); lay.addWidget(bar2)
+    root = QWidget()
+    layout = QVBoxLayout(root)
+    layout.setContentsMargins(20, 20, 20, 20)
+    layout.setSpacing(16)
+    bar = SegmentedTopBar(["Adjust", "Filters", "Crop"])
+    bar.setFixedHeight(44)
+    layout.addWidget(bar)
+    bar2 = SegmentedTopBar(["Basic", "Color", "Details", "Optics"])
+    bar2.setFixedHeight(44)
+    layout.addWidget(bar2)
     root.setStyleSheet("QWidget { background: #1f1f1f; }")
-    root.resize(560, 180); root.setWindowTitle("Segmented Top Bar – round highlight covers outer corners")
-    root.show(); sys.exit(app.exec())
+    root.resize(560, 180)
+    root.setWindowTitle("Segmented Top Bar – round highlight covers outer corners")
+    root.show()
+    sys.exit(app.exec())

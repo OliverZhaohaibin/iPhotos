@@ -18,16 +18,20 @@ from PySide6.QtCore import (
     Signal,
     QVariantAnimation,
 )
-from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import QGraphicsOpacityEffect
+from PySide6.QtGui import QColor, QImage, QPalette, QPixmap
+from PySide6.QtWidgets import QGraphicsOpacityEffect, QWidget
 
 from ....core.preview_backends import PreviewBackend, PreviewSession, select_preview_backend
 from ....io import sidecar
+from ..palette import SIDEBAR_BACKGROUND_COLOR
+from ..icon import load_icon
 from ...utils import image_loader
 from ..models.asset_model import AssetModel
 from ..models.edit_session import EditSession
 from ..tasks.thumbnail_loader import ThumbnailLoader
 from ..ui_main_window import Ui_MainWindow
+from ..widgets.collapsible_section import CollapsibleSection
+from ..window_manager import RoundedWindowShell
 from .player_view_controller import PlayerViewController
 from .view_controller import ViewController
 
@@ -37,6 +41,47 @@ if TYPE_CHECKING:  # pragma: no cover - import for typing only
 
 
 _LOGGER = logging.getLogger(__name__)
+
+
+_EDIT_DARK_STYLESHEET = "\n".join(
+    [
+        "QWidget#editPage {",
+        "  background-color: #1C1C1E;",
+        "}",
+        "QWidget#editPage QLabel,",
+        "QWidget#editPage QToolButton,",
+        "QWidget#editHeaderContainer QPushButton {",
+        "  color: #F5F5F7;",
+        "}",
+        "QWidget#editHeaderContainer {",
+        "  background-color: #2C2C2E;",
+        "  border-radius: 12px;",
+        "}",
+        "QWidget#editPage EditSidebar,",
+        "QWidget#editPage EditSidebar QWidget,",
+        "QWidget#editPage QScrollArea,",
+        "QWidget#editPage QScrollArea > QWidget {",
+        "  background-color: #2C2C2E;",
+        "  color: #F5F5F7;",
+        "}",
+        "QWidget#editPage QGroupBox {",
+        "  background-color: #1F1F1F;",
+        "  border: 1px solid #323236;",
+        "  border-radius: 10px;",
+        "  margin-top: 24px;",
+        "  padding-top: 12px;",
+        "}",
+        "QWidget#editPage QGroupBox::title {",
+        "  color: #F5F5F7;",
+        "  subcontrol-origin: margin;",
+        "  left: 12px;",
+        "  padding: 0 4px;",
+        "}",
+        "QWidget#editPage #collapsibleSection QLabel {",
+        "  color: #F5F5F7;",
+        "}",
+    ]
+)
 
 
 class _PreviewSignals(QObject):
@@ -108,6 +153,10 @@ class EditController(QObject):
         detail_ui_controller: "DetailUIController" | None = None,
     ) -> None:
         super().__init__(parent)
+        # ``parent`` is the main window hosting the edit UI.  Retaining a weak reference to the
+        # window allows the controller to ask the frameless window manager to rebuild menu styles
+        # after the palette flips between light and dark variants.
+        self._window: QObject | None = parent
         self._ui = ui
         self._view_controller = view_controller
         self._player_view = player_view
@@ -197,6 +246,76 @@ class EditController(QObject):
         # Keep strong references to workers until their completion callbacks run
         # so they are not garbage collected prematurely.
         self._active_preview_workers: set[_PreviewWorker] = set()
+        self._default_edit_page_stylesheet = ui.edit_page.styleSheet()
+        # Cache the original style sheets so the chrome returns to the light theme verbatim.
+        self._default_sidebar_stylesheet = ui.sidebar.styleSheet()
+        self._default_statusbar_stylesheet = ui.status_bar.styleSheet()
+        self._default_window_chrome_stylesheet = ui.window_chrome.styleSheet()
+        self._default_window_shell_stylesheet = ui.window_shell.styleSheet()
+        self._default_title_bar_stylesheet = ui.title_bar.styleSheet()
+        self._default_title_separator_stylesheet = ui.title_separator.styleSheet()
+        self._default_menu_bar_container_stylesheet = ui.menu_bar_container.styleSheet()
+        self._default_menu_bar_stylesheet = ui.menu_bar.styleSheet()
+        self._default_rescan_button_stylesheet = ui.rescan_button.styleSheet()
+
+        # ``RoundedWindowShell`` owns the antialiased frame that produces the
+        # macOS-style rounded corners.  Record a reference so the dark edit
+        # theme can tint the shell directly without forcing the interior
+        # ``window_shell`` widget to draw an opaque rectangle that would square
+        # off the corners.
+        shell_parent = ui.window_shell.parentWidget()
+        self._rounded_window_shell: RoundedWindowShell | None = (
+            shell_parent if isinstance(shell_parent, RoundedWindowShell) else None
+        )
+
+        # Remember the light-theme palettes so we can reinstate them after leaving edit mode.
+        self._default_sidebar_palette = QPalette(ui.sidebar.palette())
+        self._default_statusbar_palette = QPalette(ui.status_bar.palette())
+        self._default_window_chrome_palette = QPalette(ui.window_chrome.palette())
+        self._default_window_shell_palette = QPalette(ui.window_shell.palette())
+        self._default_title_bar_palette = QPalette(ui.title_bar.palette())
+        self._default_title_separator_palette = QPalette(ui.title_separator.palette())
+        self._default_menu_bar_container_palette = QPalette(ui.menu_bar_container.palette())
+        self._default_menu_bar_palette = QPalette(ui.menu_bar.palette())
+        self._default_rescan_button_palette = QPalette(ui.rescan_button.palette())
+        self._default_selection_button_palette = QPalette(ui.selection_button.palette())
+        self._default_selection_button_stylesheet = ui.selection_button.styleSheet()
+        # Cache whether the Select toggle was filling its background so we can reinstate the exact
+        # behaviour when leaving edit mode.  The button shares the chrome row with the menu bar and
+        # must remain transparent while the dark theme is active.
+        self._default_selection_button_autofill = ui.selection_button.autoFillBackground()
+        self._default_window_title_palette = QPalette(ui.window_title_label.palette())
+        self._default_window_title_stylesheet = ui.window_title_label.styleSheet()
+        self._default_sidebar_tree_palette = QPalette(ui.sidebar._tree.palette())
+        self._default_statusbar_message_palette = QPalette(ui.status_bar._message_label.palette())
+
+        # Persist the original auto-fill flags to avoid forcing opaque backgrounds in light mode.
+        self._default_sidebar_autofill = ui.sidebar.autoFillBackground()
+        self._default_statusbar_autofill = ui.status_bar.autoFillBackground()
+        self._default_window_chrome_autofill = ui.window_chrome.autoFillBackground()
+        self._default_window_shell_autofill = ui.window_shell.autoFillBackground()
+        self._default_title_bar_autofill = ui.title_bar.autoFillBackground()
+        self._default_title_separator_autofill = ui.title_separator.autoFillBackground()
+        self._default_menu_bar_container_autofill = ui.menu_bar_container.autoFillBackground()
+        self._default_menu_bar_autofill = ui.menu_bar.autoFillBackground()
+        self._default_rescan_button_autofill = ui.rescan_button.autoFillBackground()
+        self._default_sidebar_tree_autofill = ui.sidebar._tree.autoFillBackground()
+
+        # Preserve the rounded shell's palette and colour override so the
+        # custom frame returns to whatever appearance the frameless window
+        # manager configured (for example immersive mode) after leaving edit
+        # mode.
+        if self._rounded_window_shell is not None:
+            self._default_rounded_shell_palette = QPalette(
+                self._rounded_window_shell.palette()
+            )
+            self._default_rounded_shell_override: QColor | None = getattr(
+                self._rounded_window_shell, "_override_color", None
+            )
+        else:
+            self._default_rounded_shell_palette = None
+            self._default_rounded_shell_override = None
+        self._edit_theme_applied = False
 
         ui.edit_reset_button.clicked.connect(self._handle_reset_clicked)
         ui.edit_done_button.clicked.connect(self._handle_done_clicked)
@@ -204,6 +323,7 @@ class EditController(QObject):
         ui.edit_crop_action.triggered.connect(lambda checked: self._handle_mode_change("crop", checked))
         ui.edit_compare_button.pressed.connect(self._handle_compare_pressed)
         ui.edit_compare_button.released.connect(self._handle_compare_released)
+        ui.edit_mode_control.currentIndexChanged.connect(self._handle_top_bar_index_changed)
 
         playlist.currentChanged.connect(self._handle_playlist_change)
         playlist.sourceChanged.connect(lambda _path: self._handle_playlist_change())
@@ -351,17 +471,32 @@ class EditController(QObject):
         # on-screen width that the user observed during editing.
         self._prepare_edit_sidebar_for_exit()
 
-        # Keep the edit page visible while the transition plays so the splitter can push the
-        # preview surface smoothly.  Cross-fade the headers instead of swapping the stacked
-        # widget immediately to avoid the visual "jump" reported by the user.
+        # Reapply the light chrome **before** the animation starts so the expensive palette and
+        # stylesheet recalculations finish while the UI is static.  Allowing the repaint storm to
+        # overlap with the fade-out previously blocked the main thread and produced a noticeable
+        # hitch once the sidebar finished sliding away.
+        self._restore_edit_theme()
+
+        # Swap the stacked widget back to the detail view ahead of the transition.  Performing the
+        # page change now avoids the late geometry churn that occurred when the stacked widget was
+        # flipped after the animation completed.
+        self._disconnect_edit_zoom_controls()
+        if self._detail_ui_controller is not None:
+            self._detail_ui_controller.connect_zoom_controls()
+        self._restore_header_widgets_after_edit()
+        self._view_controller.show_detail_view()
+
+        # Ensure both headers stay visible so we can cross-fade between them.  The opacity effects
+        # are primed here so the animation (or zero-duration jump) only has to interpolate the
+        # alpha values instead of kicking off additional repaints mid-transition.
         self._ui.detail_chrome_container.show()
+        self._ui.edit_header_container.show()
         if animate:
             self._detail_header_opacity.setOpacity(0.0)
             self._edit_header_opacity.setOpacity(1.0)
         else:
             self._detail_header_opacity.setOpacity(1.0)
             self._edit_header_opacity.setOpacity(0.0)
-        self._ui.edit_header_container.show()
 
         self._start_transition_animation(entering=False, animate=animate)
 
@@ -645,7 +780,16 @@ class EditController(QObject):
             return
         self._set_mode(mode)
 
-    def _set_mode(self, mode: str) -> None:
+    def _handle_top_bar_index_changed(self, index: int) -> None:
+        """Synchronise action state when the segmented bar changes selection."""
+
+        mode = "adjust" if index == 0 else "crop"
+        target_action = self._ui.edit_adjust_action if mode == "adjust" else self._ui.edit_crop_action
+        if not target_action.isChecked():
+            target_action.setChecked(True)
+        self._set_mode(mode, from_top_bar=True)
+
+    def _set_mode(self, mode: str, *, from_top_bar: bool = False) -> None:
         if mode == "adjust":
             self._ui.edit_adjust_action.setChecked(True)
             self._ui.edit_crop_action.setChecked(False)
@@ -654,6 +798,515 @@ class EditController(QObject):
             self._ui.edit_adjust_action.setChecked(False)
             self._ui.edit_crop_action.setChecked(True)
             self._ui.edit_sidebar.set_mode("crop")
+        index = 0 if mode == "adjust" else 1
+        self._ui.edit_mode_control.setCurrentIndex(index, animate=not from_top_bar)
+
+    def _apply_edit_dark_theme(self) -> None:
+        """Activate the dark edit palette across the entire window chrome."""
+
+        if self._edit_theme_applied:
+            return
+        self._ui.edit_page.setStyleSheet(_EDIT_DARK_STYLESHEET)
+        self._ui.edit_image_viewer.set_surface_color_override("#111111")
+
+        # Recolour key edit controls so their icons match the bright foreground text used in dark
+        # mode.  The icons are reloaded because QIcon caches do not automatically respond to
+        # palette changes.
+        # Use a bright white tint so icons remain legible against the dark header chrome.
+        dark_icon_color = QColor("#FFFFFF")
+        dark_icon_hex = dark_icon_color.name(QColor.NameFormat.HexArgb)
+        self._ui.edit_compare_button.setIcon(
+            load_icon(
+                "square.fill.and.line.vertical.and.square.svg",
+                color=dark_icon_hex,
+            )
+        )
+        for section in self._ui.edit_sidebar.findChildren(CollapsibleSection):
+            # Persist the bright tint so the arrow glyph stays white even after
+            # the user collapses or expands the section.  The collapsible widget
+            # reloads the icon for every state change, so caching the colour
+            # avoids the fallback to the default dark variant.
+            section.set_toggle_icon_tint(dark_icon_color)
+            icon_label = getattr(section, "_icon_label", None)
+            icon_name = getattr(section, "_icon_name", "")
+            if icon_label is not None and icon_name:
+                icon_label.setPixmap(
+                    load_icon(icon_name, color=dark_icon_hex).pixmap(20, 20)
+                )
+
+        # Match the zoom controls to the dark chrome so the +/- affordances stay legible.
+        self._ui.zoom_out_button.setIcon(load_icon("minus.svg", color=dark_icon_hex))
+        self._ui.zoom_in_button.setIcon(load_icon("plus.svg", color=dark_icon_hex))
+
+        # Ask the detail controller to tint the info and favourite icons if it is available.
+        if self._detail_ui_controller is not None:
+            self._detail_ui_controller.set_toolbar_icon_tint(dark_icon_color)
+        else:
+            # Fallback for tests where the detail controller is not wired yet.  Tint both buttons
+            # directly so the edit toolbar still offers sufficient contrast in isolated harnesses.
+            self._ui.info_button.setIcon(
+                load_icon("info.circle.svg", color=dark_icon_hex)
+            )
+            self._ui.favorite_button.setIcon(
+                load_icon("suit.heart.svg", color=dark_icon_hex)
+            )
+
+        # Construct a palette that mirrors macOS Photos' edit chrome so each widget picks up the
+        # same deep greys and bright foreground colours.
+        # Centralising the palette avoids a maze of bespoke style sheets and keeps the visuals
+        # coherent.
+        dark_palette = QPalette()
+        window_color = QColor("#1C1C1E")
+        button_color = QColor("#2C2C2E")
+        text_color = QColor("#F5F5F7")
+        disabled_text = QColor("#7F7F7F")
+        accent_color = QColor("#0A84FF")
+        outline_color = QColor("#323236")
+        placeholder_text = QColor(245, 245, 247, 160)
+
+        dark_palette.setColor(QPalette.ColorRole.Window, window_color)
+        dark_palette.setColor(QPalette.ColorRole.Base, window_color)
+        dark_palette.setColor(QPalette.ColorRole.AlternateBase, QColor("#242426"))
+        dark_palette.setColor(QPalette.ColorRole.WindowText, text_color)
+        dark_palette.setColor(QPalette.ColorRole.Text, text_color)
+        dark_palette.setColor(QPalette.ColorRole.Button, button_color)
+        dark_palette.setColor(QPalette.ColorRole.ButtonText, text_color)
+        dark_palette.setColor(QPalette.ColorRole.BrightText, QColor("#FFFFFF"))
+        dark_palette.setColor(QPalette.ColorRole.Link, accent_color)
+        dark_palette.setColor(QPalette.ColorRole.Highlight, QColor("#3A3A3C"))
+        dark_palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#FFFFFF"))
+        dark_palette.setColor(QPalette.ColorRole.PlaceholderText, placeholder_text)
+        dark_palette.setColor(QPalette.ColorRole.Mid, outline_color)
+        dark_palette.setColor(QPalette.ColorRole.ToolTipBase, button_color)
+        dark_palette.setColor(QPalette.ColorRole.ToolTipText, text_color)
+        dark_palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text, disabled_text)
+        dark_palette.setColor(
+            QPalette.ColorGroup.Disabled,
+            QPalette.ColorRole.ButtonText,
+            disabled_text,
+        )
+        dark_palette.setColor(
+            QPalette.ColorGroup.Disabled,
+            QPalette.ColorRole.WindowText,
+            disabled_text,
+        )
+        dark_palette.setColor(
+            QPalette.ColorGroup.Disabled,
+            QPalette.ColorRole.Highlight,
+            QColor("#2C2C2E"),
+        )
+        dark_palette.setColor(
+            QPalette.ColorGroup.Disabled,
+            QPalette.ColorRole.HighlightedText,
+            disabled_text,
+        )
+        dark_palette.setColor(
+            QPalette.ColorGroup.Disabled,
+            QPalette.ColorRole.PlaceholderText,
+            QColor(160, 160, 160, 160),
+        )
+
+        widgets_to_update = [
+            self._ui.sidebar,
+            self._ui.status_bar,
+            self._ui.window_chrome,
+            self._ui.menu_bar_container,
+            self._ui.menu_bar,
+            self._ui.title_bar,
+            self._ui.title_separator,
+        ]
+        for widget in widgets_to_update:
+            widget.setPalette(dark_palette)
+            # Chrome widgets need to stay transparent so the rounded host widget can continue
+            # painting the curved outline.  ``setAutoFillBackground(False)`` prevents Qt from
+            # rasterising an opaque rectangle that would obscure the shell.
+            widget.setAutoFillBackground(False)
+
+        # Mirror the palette adjustment for the standalone Rescan button so the control inherits
+        # the same foreground colours as the surrounding chrome while keeping its background
+        # transparent for the rounded shell.
+        self._ui.rescan_button.setPalette(dark_palette)
+        self._ui.rescan_button.setAutoFillBackground(False)
+
+        # ``window_shell`` must remain transparent so the rounded host widget
+        # can paint the curved edge.  Update its palette but leave auto-fill
+        # disabled so the shell does not overwrite the frame with an opaque
+        # rectangle.
+        self._ui.window_shell.setPalette(dark_palette)
+        self._ui.window_shell.setAutoFillBackground(False)
+
+        if self._rounded_window_shell is not None:
+            self._rounded_window_shell.setPalette(dark_palette)
+            self._rounded_window_shell.set_override_color(window_color)
+
+        # Forward the palette to nested labels and the album tree so text,
+        # disclosure indicators, and menu captions adopt the same foreground colour.
+        self._ui.sidebar._tree.setPalette(dark_palette)
+        self._ui.sidebar._tree.setAutoFillBackground(False)
+        self._ui.status_bar._message_label.setPalette(dark_palette)
+        self._ui.selection_button.setPalette(dark_palette)
+        self._ui.selection_button.setAutoFillBackground(False)
+        self._ui.window_title_label.setPalette(dark_palette)
+
+        # Refresh the frameless window manager's menu palette before overriding chrome styles so the
+        # global ``QMenu`` stylesheet tracks the active theme while the menu bar remains transparent.
+        self._refresh_menu_styles()
+        self._ui.menu_bar.setAutoFillBackground(False)
+
+        # Replace the light-theme style sheets while keeping the chrome transparent.  The palette
+        # now supplies the foreground colours, so only the text metrics and highlight accents are
+        # overridden explicitly.  Leaving the background transparent allows the rounded shell to
+        # show through and maintain its corner treatment.
+        foreground_color = text_color.name()
+        accent_color_name = accent_color.name()
+        outline_color_name = outline_color.name()
+
+        # ``window_title_label`` retains the ``color: unset`` rule that dark-mode restoration appends
+        # to its stylesheet.  Apply an explicit white foreground while the edit palette is active so
+        # the application title matches the surrounding chrome instead of inheriting a stale light
+        # theme colour from earlier sessions.
+        self._ui.window_title_label.setStyleSheet(
+            "\n".join(
+                [
+                    "QLabel#windowTitleLabel {",
+                    f"  color: {foreground_color};",
+                    "}",
+                ]
+            )
+        )
+
+        self._ui.sidebar.setStyleSheet(
+            "\n".join(
+                [
+                    "QWidget#albumSidebar {",
+                    "  background-color: transparent;",
+                    f"  color: {foreground_color};",
+                    "}",
+                    "QWidget#albumSidebar QLabel {",
+                    f"  color: {foreground_color};",
+                    "}",
+                ]
+            )
+        )
+        self._ui.status_bar.setStyleSheet(
+            "\n".join(
+                [
+                    "QWidget#chromeStatusBar {",
+                    "  background-color: transparent;",
+                    f"  color: {foreground_color};",
+                    "}",
+                    "QWidget#chromeStatusBar QLabel {",
+                    f"  color: {foreground_color};",
+                    "}",
+                ]
+            )
+        )
+        self._ui.title_bar.setStyleSheet(
+            "\n".join(
+                [
+                    "QWidget#windowTitleBar {",
+                    "  background-color: transparent;",
+                    f"  color: {foreground_color};",
+                    "}",
+                    "QWidget#windowTitleBar QLabel {",
+                    f"  color: {foreground_color};",
+                    "}",
+                    "QWidget#windowTitleBar QToolButton {",
+                    f"  color: {foreground_color};",
+                    "}",
+                ]
+            )
+        )
+        self._ui.title_separator.setStyleSheet(
+            "QFrame#windowTitleSeparator {"
+            f"  background-color: {outline_color_name};"
+            "  border: none;"
+            "}"
+        )
+        self._ui.menu_bar.setStyleSheet(
+            "\n".join(
+                [
+                    "QMenuBar#chromeMenuBar {",
+                    "  background-color: transparent;",
+                    f"  color: {foreground_color};",
+                    "}",
+                    "QMenuBar#chromeMenuBar::item {",
+                    f"  color: {foreground_color};",
+                    "}",
+                    "QMenuBar#chromeMenuBar::item:selected {",
+                    f"  background-color: {outline_color_name};",
+                    "  border-radius: 6px;",
+                    "}",
+                    "QMenuBar#chromeMenuBar::item:pressed {",
+                    f"  background-color: {accent_color_name};",
+                    "}",
+                ]
+            )
+        )
+        self._ui.menu_bar_container.setStyleSheet(
+            "\n".join(
+                [
+                    "QWidget#menuBarContainer {",
+                    "  background-color: transparent;",
+                    f"  color: {foreground_color};",
+                    "}",
+                ]
+            )
+        )
+        disabled_text_name = disabled_text.name()
+        self._ui.rescan_button.setStyleSheet(
+            "\n".join(
+                [
+                    "QToolButton#rescanButton {",
+                    "  background-color: transparent;",
+                    f"  color: {foreground_color};",
+                    "}",
+                    # Mirror the disabled tint baked into ``dark_palette`` so the button keeps the
+                    # same contrast level regardless of whether the action is currently available.
+                    "QToolButton#rescanButton:disabled {",
+                    "  background-color: transparent;",
+                    f"  color: {disabled_text_name};",
+                    "}",
+                ]
+            )
+        )
+        self._ui.selection_button.setStyleSheet(
+            "\n".join(
+                [
+                    "QToolButton#selectionButton {",
+                    "  background-color: transparent;",
+                    f"  color: {foreground_color};",
+                    "}",
+                    # The selection toggle should mirror the disabled contrast of ``dark_palette``
+                    # so it remains legible when album selection is unavailable.
+                    "QToolButton#selectionButton:disabled {",
+                    "  background-color: transparent;",
+                    f"  color: {disabled_text_name};",
+                    "}",
+                ]
+            )
+        )
+        # ``window_chrome`` does not expose an object name, so rely on its top-level selector to
+        # enforce the transparent background and shared foreground tint.
+        self._ui.window_chrome.setStyleSheet(
+            "\n".join(
+                [
+                    "background-color: transparent;",
+                    f"color: {foreground_color};",
+                ]
+            )
+        )
+
+        self._edit_theme_applied = True
+
+    def _restore_edit_theme(self) -> None:
+        """Restore the default light theme after leaving edit mode."""
+
+        if not self._edit_theme_applied:
+            return
+        self._ui.edit_page.setStyleSheet(self._default_edit_page_stylesheet)
+        self._ui.edit_image_viewer.set_surface_color_override(None)
+
+        # Restore the untinted icons now that the interface has returned to the light theme.
+        self._ui.edit_compare_button.setIcon(
+            load_icon("square.fill.and.line.vertical.and.square.svg")
+        )
+        for section in self._ui.edit_sidebar.findChildren(CollapsibleSection):
+            # Drop the cached tint so future state changes restore the default
+            # dark glyph used by the light chrome.
+            section.set_toggle_icon_tint(None)
+            icon_label = getattr(section, "_icon_label", None)
+            icon_name = getattr(section, "_icon_name", "")
+            if icon_label is not None and icon_name:
+                icon_label.setPixmap(load_icon(icon_name).pixmap(20, 20))
+
+        # Return the zoom affordances and shared toolbar buttons to their light theme assets.
+        self._ui.zoom_out_button.setIcon(load_icon("minus.svg"))
+        self._ui.zoom_in_button.setIcon(load_icon("plus.svg"))
+        if self._detail_ui_controller is not None:
+            self._detail_ui_controller.set_toolbar_icon_tint(None)
+        else:
+            self._ui.info_button.setIcon(load_icon("info.circle.svg"))
+            self._ui.favorite_button.setIcon(load_icon("suit.heart.svg"))
+
+        widgets_to_restore = [
+            (
+                self._ui.sidebar,
+                self._default_sidebar_palette,
+                self._default_sidebar_autofill,
+            ),
+            (
+                self._ui.status_bar,
+                self._default_statusbar_palette,
+                self._default_statusbar_autofill,
+            ),
+            (
+                self._ui.window_chrome,
+                self._default_window_chrome_palette,
+                self._default_window_chrome_autofill,
+            ),
+            (
+                self._ui.window_shell,
+                self._default_window_shell_palette,
+                self._default_window_shell_autofill,
+            ),
+            (
+                self._ui.menu_bar_container,
+                self._default_menu_bar_container_palette,
+                self._default_menu_bar_container_autofill,
+            ),
+            (
+                self._ui.menu_bar,
+                self._default_menu_bar_palette,
+                self._default_menu_bar_autofill,
+            ),
+            (
+                self._ui.rescan_button,
+                self._default_rescan_button_palette,
+                self._default_rescan_button_autofill,
+            ),
+            (
+                self._ui.selection_button,
+                self._default_selection_button_palette,
+                self._default_selection_button_autofill,
+            ),
+            (
+                self._ui.title_bar,
+                self._default_title_bar_palette,
+                self._default_title_bar_autofill,
+            ),
+            (
+                self._ui.title_separator,
+                self._default_title_separator_palette,
+                self._default_title_separator_autofill,
+            ),
+        ]
+        for widget, palette, autofill in widgets_to_restore:
+            widget.setPalette(QPalette(palette))
+            widget.setAutoFillBackground(autofill)
+
+        self._ui.sidebar._tree.setPalette(QPalette(self._default_sidebar_tree_palette))
+        self._ui.sidebar._tree.setAutoFillBackground(self._default_sidebar_tree_autofill)
+        self._ui.status_bar._message_label.setPalette(QPalette(self._default_statusbar_message_palette))
+        # The selection toggle sits beside ``rescan_button`` in the chrome row, so it needs the
+        # same stylesheet reset to drop the temporary dark-mode foreground override captured above.
+        self._apply_color_reset_stylesheet(
+            self._ui.selection_button,
+            self._default_selection_button_stylesheet,
+            "QToolButton#selectionButton",
+        )
+        self._ui.window_title_label.setPalette(QPalette(self._default_window_title_palette))
+        # Restore the window title to its light theme colour without guessing the palette value.
+        self._apply_color_reset_stylesheet(
+            self._ui.window_title_label,
+            self._default_window_title_stylesheet,
+            "QLabel#windowTitleLabel",
+        )
+
+        # Update the global menu stylesheet ahead of reinstating the cached chrome styles.  This
+        # ensures popup menus follow the restored light palette while still allowing the widgets to
+        # return to their original appearance.
+        self._refresh_menu_styles()
+        self._ui.menu_bar.setAutoFillBackground(self._default_menu_bar_autofill)
+
+        # Restore the original style sheets alongside the palettes so light mode reappears exactly
+        # as it was before entering edit mode.  ``or`` fallbacks guard against empty strings for the
+        # sidebar, which historically relied on a constant background colour.
+        self._ui.sidebar.setStyleSheet(
+            self._default_sidebar_stylesheet
+            or (
+                "QWidget#albumSidebar {\n"
+                f"    background-color: {SIDEBAR_BACKGROUND_COLOR.name()};\n"
+                "}"
+            )
+        )
+        self._ui.status_bar.setStyleSheet(self._default_statusbar_stylesheet)
+        self._ui.window_chrome.setStyleSheet(self._default_window_chrome_stylesheet)
+        self._ui.window_shell.setStyleSheet(self._default_window_shell_stylesheet)
+        self._ui.title_bar.setStyleSheet(self._default_title_bar_stylesheet)
+        self._ui.title_separator.setStyleSheet(self._default_title_separator_stylesheet)
+        # Restore the chrome row hosting the menu bar and Rescan button so it returns to its light
+        # theme appearance precisely as captured before entering edit mode.
+        self._ui.menu_bar_container.setStyleSheet(
+            self._default_menu_bar_container_stylesheet
+        )
+        self._ui.menu_bar.setStyleSheet(self._default_menu_bar_stylesheet)
+        # ``color: unset`` clears the white foreground injected in edit mode so the button can
+        # pick up the restored light-theme palette (typically black text) the next time it is
+        # painted.
+        self._apply_color_reset_stylesheet(
+            self._ui.rescan_button,
+            self._default_rescan_button_stylesheet,
+            "QToolButton#rescanButton",
+        )
+
+        if self._rounded_window_shell is not None:
+            if self._default_rounded_shell_palette is not None:
+                self._rounded_window_shell.setPalette(
+                    QPalette(self._default_rounded_shell_palette)
+                )
+            self._rounded_window_shell.set_override_color(
+                self._default_rounded_shell_override
+            )
+
+        self._edit_theme_applied = False
+
+    def _apply_color_reset_stylesheet(
+        self,
+        widget: QWidget,
+        cached_stylesheet: str | None,
+        selector: str,
+    ) -> None:
+        """Recombine *widget*'s cached stylesheet with a neutral text colour.
+
+        Dark mode injects high-specificity rules that force white foregrounds
+        onto controls embedded in the chrome row.
+        Simply restoring the original stylesheet is insufficient because the
+        ``color`` attribute remains latched to the dark override.  Appending a
+        ``color: unset`` rule targeted at the widget's object name explicitly
+        clears that override so Qt falls back to the palette we just restored.
+
+        Parameters
+        ----------
+        widget:
+            The control that should resume using the palette-provided text
+            colour (for example the Select button or the window title label).
+        cached_stylesheet:
+            The stylesheet captured before entering edit mode.  ``None`` or an
+            empty string is treated as the absence of an explicit style.
+        selector:
+            A CSS selector that uniquely identifies *widget*.  Using the object
+            name keeps the rule scoped to the relevant control only.
+        """
+
+        base_stylesheet = (cached_stylesheet or "").strip()
+        reset_stylesheet = "\n".join(
+            [
+                f"{selector} {{",
+                "    color: unset;",
+                "}",
+            ]
+        )
+        combined_stylesheet = "\n".join(
+            part for part in (base_stylesheet, reset_stylesheet) if part
+        )
+        widget.setStyleSheet(combined_stylesheet)
+
+    def _refresh_menu_styles(self) -> None:
+        """Rebuild the frameless window manager's menu palette if available."""
+
+        if self._window is None:
+            return
+        window_manager = getattr(self._window, "window_manager", None)
+        if window_manager is None:
+            return
+        apply_styles = getattr(window_manager, "_apply_menu_styles", None)
+        if not callable(apply_styles):
+            return
+        # ``_apply_menu_styles`` adjusts the global ``QMenu`` stylesheet.  Calling it after the
+        # palette flips ensures popup menus inherit the correct foreground and background colours
+        # without duplicating the logic that already lives in the frameless window manager.
+        apply_styles()
 
     def _prepare_edit_sidebar_for_entry(self) -> None:
         """Collapse the edit sidebar before playing the entrance animation."""
@@ -744,6 +1397,40 @@ class EditController(QObject):
         sidebar_start = int(sidebar_start)
         sidebar_end = int(sidebar_end)
 
+        # Prepare the rounded shell colours ahead of time so the transition can drive a smooth
+        # cross-fade between the light and dark palettes.  The palette captured during
+        # initialisation represents the light theme baseline, while the dark tone mirrors the edit
+        # surface styling.  Computing the start/end values before mutating any palettes guarantees
+        # we retain the correct light colour even after the dark palette is applied below.
+        shell = self._rounded_window_shell
+        shell_start_color: QColor | None = None
+        shell_end_color: QColor | None = None
+        if shell is not None:
+            if self._default_rounded_shell_palette is None:
+                # Defensive copy in case the frameless shell was not available during controller
+                # construction (for example in tests that stub out the frameless window manager).
+                self._default_rounded_shell_palette = QPalette(shell.palette())
+            base_palette = self._default_rounded_shell_palette or QPalette(shell.palette())
+            light_shell_color = base_palette.color(QPalette.ColorRole.Window)
+            dark_shell_color = QColor("#1C1C1E")
+            if entering:
+                shell_start_color = light_shell_color
+                shell_end_color = dark_shell_color
+            else:
+                shell_start_color = dark_shell_color
+                shell_end_color = light_shell_color
+
+        if entering:
+            # Flip the chrome widgets to their dark palette before the animation begins so labels
+            # and icons stay legible while the window shell fades to black.
+            self._apply_edit_dark_theme()
+
+        if shell is not None and shell_start_color is not None:
+            # ``_apply_edit_dark_theme`` forces the shell to the dark override immediately.  For the
+            # fade effect we reapply the start colour so the animation can interpolate from the
+            # captured light tone to the dark tint.
+            shell.set_override_color(shell_start_color)
+
         animation_group = QParallelAnimationGroup(self)
 
         splitter_animation = QVariantAnimation(animation_group)
@@ -816,6 +1503,16 @@ class EditController(QObject):
         _add_sidebar_dimension_animation(b"minimumWidth")
         _add_sidebar_dimension_animation(b"maximumWidth")
 
+        if shell is not None and shell_start_color is not None and shell_end_color is not None:
+            # Drive the rounded host's tint via a property animation so the frameless chrome fades
+            # smoothly between the application themes instead of snapping abruptly.
+            shell_animation = QPropertyAnimation(shell, b"overrideColor", animation_group)
+            shell_animation.setDuration(duration)
+            shell_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
+            shell_animation.setStartValue(shell_start_color)
+            shell_animation.setEndValue(shell_end_color)
+            animation_group.addAnimation(shell_animation)
+
         if not entering:
             edit_header_fade = QPropertyAnimation(
                 self._edit_header_opacity,
@@ -854,6 +1551,8 @@ class EditController(QObject):
             else:
                 self._edit_header_opacity.setOpacity(0.0)
                 self._detail_header_opacity.setOpacity(1.0)
+            if shell is not None and shell_end_color is not None:
+                shell.set_override_color(shell_end_color)
             self._on_transition_finished()
             return
 
@@ -912,21 +1611,6 @@ class EditController(QObject):
         sidebar.setMaximumWidth(0)
         sidebar.updateGeometry()
 
-        # With the animation complete it is safe to switch the stacked widget back to the detail
-        # view.  Doing so earlier would compress the edit page mid-animation, producing the
-        # "jump" the user reported.  Restoring the shared toolbar widgets at the same time keeps
-        # the controls consistent with the now-visible header.
-        self._disconnect_edit_zoom_controls()
-        if self._detail_ui_controller is not None:
-            self._detail_ui_controller.connect_zoom_controls()
-        self._restore_header_widgets_after_edit()
-        self._view_controller.show_detail_view()
-        self._ui.detail_chrome_container.show()
-        self._detail_header_opacity.setOpacity(1.0)
-
-        self._ui.edit_header_container.hide()
-        self._edit_header_opacity.setOpacity(1.0)
-
         if target_sizes:
             current_sizes = [int(value) for value in splitter.sizes()]
             # Reapply the saved layout only when the animation failed to reach the expected end
@@ -938,6 +1622,15 @@ class EditController(QObject):
                 abs(current - expected) > 1 for current, expected in zip(current_sizes, target_sizes)
             ):
                 splitter.setSizes(target_sizes)
+
+        # The heavy-weight theme restoration and stacked widget swap already ran at the beginning
+        # of :meth:`leave_edit_mode`, so the exit handler only needs to enforce the final visual
+        # state once the geometry animation completes.
+        self._ui.detail_chrome_container.show()
+        self._detail_header_opacity.setOpacity(1.0)
+
+        self._ui.edit_header_container.hide()
+        self._edit_header_opacity.setOpacity(1.0)
 
         self._ui.edit_sidebar.set_session(None)
         self._ui.edit_image_viewer.clear()

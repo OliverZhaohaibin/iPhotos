@@ -13,6 +13,7 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
+from PySide6.QtGui import QColor, QIcon
 from PySide6.QtWidgets import QSlider, QToolButton, QWidget
 
 ZOOM_SLIDER_DEFAULT = 100
@@ -83,6 +84,7 @@ class DetailUIController(QObject):
         self._status_bar = status_bar
         self._current_row: int = -1
         self._cached_info: Optional[dict[str, object]] = None
+        self._toolbar_icon_tint: str | None = None
 
         self._initialize_static_state()
         self._wire_player_bar_events()
@@ -168,14 +170,14 @@ class DetailUIController(QObject):
 
         if row < 0:
             self._favorite_button.setEnabled(False)
-            self._favorite_button.setIcon(load_icon("suit.heart.svg"))
+            self._favorite_button.setIcon(self._load_toolbar_icon("suit.heart.svg"))
             self._favorite_button.setToolTip("Add to Favorites")
             return
 
         index = self._model.index(row, 0)
         if not index.isValid():
             self._favorite_button.setEnabled(False)
-            self._favorite_button.setIcon(load_icon("suit.heart.svg"))
+            self._favorite_button.setIcon(self._load_toolbar_icon("suit.heart.svg"))
             self._favorite_button.setToolTip("Add to Favorites")
             return
 
@@ -186,7 +188,7 @@ class DetailUIController(QObject):
         icon_name = "suit.heart.fill.svg" if featured_state else "suit.heart.svg"
         tooltip = "Remove from Favorites" if featured_state else "Add to Favorites"
         self._favorite_button.setEnabled(True)
-        self._favorite_button.setIcon(load_icon(icon_name))
+        self._favorite_button.setIcon(self._load_toolbar_icon(icon_name))
         self._favorite_button.setToolTip(tooltip)
 
     def update_edit_button(self, row: int) -> None:
@@ -203,6 +205,47 @@ class DetailUIController(QObject):
 
         is_image = bool(index.data(Roles.IS_IMAGE))
         self._edit_button.setEnabled(is_image)
+
+    def set_toolbar_icon_tint(self, color: QColor | str | None) -> None:
+        """Tint the info and favorite toolbar icons using *color* when provided.
+
+        The edit controller activates a dark theme for the shared toolbar buttons
+        while edit mode is active.  Accepting both :class:`~PySide6.QtGui.QColor`
+        and string inputs keeps the API flexible and lets the controller pass the
+        exact colour already computed for the rest of the chrome.  Passing
+        ``None`` clears the tint so the light theme icons are reinstated when the
+        user exits edit mode.
+        """
+
+        if color is None:
+            tint = None
+        elif isinstance(color, QColor):
+            tint = color.name(QColor.NameFormat.HexArgb)
+        else:
+            parsed = QColor(color)
+            tint = parsed.name(QColor.NameFormat.HexArgb) if parsed.isValid() else None
+
+        if tint == self._toolbar_icon_tint:
+            return
+
+        self._toolbar_icon_tint = tint
+        self._refresh_toolbar_icons()
+
+    def _refresh_toolbar_icons(self) -> None:
+        """Reapply toolbar icons so they honour the current tint selection."""
+
+        # The info button keeps a fixed glyph, so update it directly.
+        self._info_button.setIcon(self._load_toolbar_icon("info.circle.svg"))
+        # The favourite button icon depends on the active row; reusing the public
+        # helper ensures we respect both the tint and the featured state.
+        self.update_favorite_button(self._current_row)
+
+    def _load_toolbar_icon(self, name: str) -> QIcon:
+        """Return *name* tinted with the current toolbar colour, if any."""
+
+        if self._toolbar_icon_tint is None:
+            return load_icon(name)
+        return load_icon(name, color=self._toolbar_icon_tint)
 
     def update_header(self, row: Optional[int]) -> None:
         """Update the header metadata for *row*."""
@@ -377,12 +420,14 @@ class DetailUIController(QObject):
         self._player_view.hide_live_badge()
         self._player_view.set_live_replay_enabled(False)
         self._favorite_button.setEnabled(False)
-        self._favorite_button.setIcon(load_icon("suit.heart.svg"))
+        # Use the helper so the icon respects any active dark-mode tint.
+        self._favorite_button.setIcon(self._load_toolbar_icon("suit.heart.svg"))
         self._favorite_button.setToolTip("Add to Favorites")
         self._edit_button.setEnabled(False)
         self._edit_button.setIcon(load_icon("slider.horizontal.3.svg"))
         self._edit_button.setToolTip("Edit adjustments")
         self._info_button.setEnabled(False)
+        self._info_button.setIcon(self._load_toolbar_icon("info.circle.svg"))
         self.hide_zoom_controls()
 
     def _update_info_button_state(self, row: int) -> None:

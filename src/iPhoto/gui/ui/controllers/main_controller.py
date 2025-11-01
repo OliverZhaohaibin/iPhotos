@@ -48,7 +48,6 @@ class MainController(QObject):
             self._facade,
             self._data.asset_model(),
             window.ui.sidebar,
-            window.ui.album_label,
             window.ui.status_bar,
             self._dialog,
             self._view_manager.view_controller(),
