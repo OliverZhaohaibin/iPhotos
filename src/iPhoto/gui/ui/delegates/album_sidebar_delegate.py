@@ -15,18 +15,16 @@ from PySide6.QtCore import (
     QVariantAnimation,
     QPersistentModelIndex,
 )
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPalette, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QStyledItemDelegate, QStyleOptionViewItem, QTreeView, QStyle
 
 from ..icon import load_icon
 from ..models.album_tree_model import AlbumTreeItem, AlbumTreeModel, AlbumTreeRole, NodeType
 from ..palette import (
     SIDEBAR_BRANCH_CONTENT_GAP,
-    SIDEBAR_DISABLED_TEXT_COLOR,
     SIDEBAR_HIGHLIGHT_MARGIN_X,
     SIDEBAR_HIGHLIGHT_MARGIN_Y,
     SIDEBAR_HOVER_BACKGROUND,
-    SIDEBAR_ICON_COLOR,
     SIDEBAR_ICON_SIZE,
     SIDEBAR_ICON_TEXT_GAP,
     SIDEBAR_INDENT_PER_LEVEL,
@@ -35,10 +33,8 @@ from ..palette import (
     SIDEBAR_LEFT_PADDING,
     SIDEBAR_ROW_HEIGHT,
     SIDEBAR_ROW_RADIUS,
-    SIDEBAR_SECTION_TEXT_COLOR,
     SIDEBAR_SELECTED_BACKGROUND,
     SIDEBAR_SEPARATOR_COLOR,
-    SIDEBAR_TEXT_COLOR, SIDEBAR_ICON_COLOR_HEX,
 )
 
 
@@ -219,6 +215,10 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
         if isinstance(model, AlbumTreeModel) and isinstance(item, AlbumTreeItem):
             if state.node_type == NodeType.STATIC:
                 icon_base = model._STATIC_ICON_MAP.get(item.title.casefold())
+                palette = self._palette_for_state(state)
+                # Use the palette's link colour so the glyph tint tracks the active theme.
+                icon_color = palette.color(QPalette.ColorRole.Link)
+                colour_name = icon_color.name(QColor.NameFormat.HexArgb)
                 if icon_base in {"video", "suit.heart"}:
                     # The sidebar mirrors macOS behaviour where select states swap
                     # the regular outline icon for a filled version. We perform the
@@ -227,7 +227,13 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
                     suffix = ".fill" if state.is_selected else ""
                     return load_icon(
                         f"{icon_base}{suffix}.svg",
-                        color=SIDEBAR_ICON_COLOR_HEX,
+                        color=colour_name,
+                        stroke_width=SIDEBAR_ICON_STROKE_WIDTH,
+                    )
+                if icon_base:
+                    return load_icon(
+                        f"{icon_base}.svg",
+                        color=colour_name,
                         stroke_width=SIDEBAR_ICON_STROKE_WIDTH,
                     )
 
@@ -268,6 +274,18 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
             is_hover=is_hover,
             indentation=indentation,
         )
+
+    def _palette_for_state(self, state: _PaintState) -> QPalette:
+        """Return the palette driving colours for the current sidebar row."""
+
+        if state.tree_view is not None:
+            return state.tree_view.palette()
+        parent = self.parent()
+        if isinstance(parent, QTreeView):
+            return parent.palette()
+        # Fall back to the application palette so colours remain predictable even if the delegate
+        # paints outside its usual tree view.
+        return QPalette()
 
     def _resolve_tree_view(self, option: QStyleOptionViewItem) -> QTreeView | None:
         """Locate the owning :class:`QTreeView` if one is available."""
@@ -350,7 +368,10 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
 
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        indicator_colour = SIDEBAR_TEXT_COLOR if state.is_enabled else SIDEBAR_DISABLED_TEXT_COLOR
+        palette = self._palette_for_state(state)
+        active_colour = palette.color(QPalette.ColorRole.Text)
+        disabled_colour = palette.color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text)
+        indicator_colour = active_colour if state.is_enabled else disabled_colour
         pen = QPen(indicator_colour)
         pen.setWidth(2)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
@@ -412,13 +433,16 @@ class AlbumSidebarDelegate(QStyledItemDelegate):
     def _text_colour_for_state(self, state: _PaintState) -> QColor:
         """Return the correct foreground colour for the row."""
 
+        palette = self._palette_for_state(state)
         if state.node_type == NodeType.SECTION:
-            return SIDEBAR_SECTION_TEXT_COLOR
+            return palette.color(QPalette.ColorRole.PlaceholderText)
         if state.node_type == NodeType.ACTION:
-            return SIDEBAR_ICON_COLOR
+            return palette.color(QPalette.ColorRole.Link)
         if not state.is_enabled:
-            return SIDEBAR_DISABLED_TEXT_COLOR
-        return SIDEBAR_TEXT_COLOR
+            return palette.color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text)
+        if state.is_selected and state.node_type == NodeType.HEADER:
+            return palette.color(QPalette.ColorRole.HighlightedText)
+        return palette.color(QPalette.ColorRole.Text)
 
     def _draw_separator(self, painter: QPainter, rect: QRect) -> None:
         """Render a horizontal rule used to group tree sections."""

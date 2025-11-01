@@ -18,11 +18,12 @@ from PySide6.QtCore import (
     Signal,
     QVariantAnimation,
 )
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtGui import QColor, QImage, QPalette, QPixmap
 from PySide6.QtWidgets import QGraphicsOpacityEffect
 
 from ....core.preview_backends import PreviewBackend, PreviewSession, select_preview_backend
 from ....io import sidecar
+from ...palette import SIDEBAR_BACKGROUND_COLOR
 from ...utils import image_loader
 from ..models.asset_model import AssetModel
 from ..models.edit_session import EditSession
@@ -239,6 +240,28 @@ class EditController(QObject):
         # so they are not garbage collected prematurely.
         self._active_preview_workers: set[_PreviewWorker] = set()
         self._default_edit_page_stylesheet = ui.edit_page.styleSheet()
+        # Remember the light-theme palettes so we can reinstate them after leaving edit mode.
+        self._default_sidebar_palette = QPalette(ui.sidebar.palette())
+        self._default_sidebar_stylesheet = ui.sidebar.styleSheet()
+        self._default_sidebar_autofill = ui.sidebar.autoFillBackground()
+        self._default_sidebar_tree_palette = QPalette(ui.sidebar._tree.palette())
+        self._default_sidebar_tree_autofill = ui.sidebar._tree.autoFillBackground()
+        self._default_statusbar_palette = QPalette(ui.status_bar.palette())
+        self._default_statusbar_autofill = ui.status_bar.autoFillBackground()
+        self._default_statusbar_message_palette = QPalette(ui.status_bar._message_label.palette())
+        self._default_window_chrome_palette = QPalette(ui.window_chrome.palette())
+        self._default_window_chrome_autofill = ui.window_chrome.autoFillBackground()
+        self._default_title_bar_palette = QPalette(ui.title_bar.palette())
+        self._default_title_bar_autofill = ui.title_bar.autoFillBackground()
+        self._default_main_toolbar_palette = QPalette(ui.main_toolbar.palette())
+        self._default_main_toolbar_autofill = ui.main_toolbar.autoFillBackground()
+        self._default_menu_bar_palette = QPalette(ui.menu_bar.palette())
+        self._default_menu_bar_autofill = ui.menu_bar.autoFillBackground()
+        self._default_album_header_palette = QPalette(ui.album_header.palette())
+        self._default_album_header_autofill = ui.album_header.autoFillBackground()
+        self._default_album_label_palette = QPalette(ui.album_label.palette())
+        self._default_selection_button_palette = QPalette(ui.selection_button.palette())
+        self._default_window_title_palette = QPalette(ui.window_title_label.palette())
         self._edit_theme_applied = False
 
         ui.edit_reset_button.clicked.connect(self._handle_reset_clicked)
@@ -712,12 +735,97 @@ class EditController(QObject):
         self._ui.edit_mode_control.setCurrentIndex(index, animate=not from_top_bar)
 
     def _apply_edit_dark_theme(self) -> None:
-        """Activate the dark edit palette across the dedicated widgets."""
+        """Activate the dark edit palette across the entire window chrome."""
 
         if self._edit_theme_applied:
             return
         self._ui.edit_page.setStyleSheet(_EDIT_DARK_STYLESHEET)
         self._ui.edit_image_viewer.set_surface_color_override("#111111")
+
+        # Construct a palette that mirrors macOS Photos' edit chrome so each widget picks up the
+        # same deep greys and bright foreground colours.
+        # Centralising the palette avoids a maze of bespoke style sheets and keeps the visuals
+        # coherent.
+        dark_palette = QPalette()
+        window_color = QColor("#1C1C1E")
+        button_color = QColor("#2C2C2E")
+        text_color = QColor("#F5F5F7")
+        disabled_text = QColor("#7F7F7F")
+        accent_color = QColor("#0A84FF")
+        outline_color = QColor("#323236")
+        placeholder_text = QColor(245, 245, 247, 160)
+
+        dark_palette.setColor(QPalette.ColorRole.Window, window_color)
+        dark_palette.setColor(QPalette.ColorRole.Base, window_color)
+        dark_palette.setColor(QPalette.ColorRole.AlternateBase, QColor("#242426"))
+        dark_palette.setColor(QPalette.ColorRole.WindowText, text_color)
+        dark_palette.setColor(QPalette.ColorRole.Text, text_color)
+        dark_palette.setColor(QPalette.ColorRole.Button, button_color)
+        dark_palette.setColor(QPalette.ColorRole.ButtonText, text_color)
+        dark_palette.setColor(QPalette.ColorRole.BrightText, QColor("#FFFFFF"))
+        dark_palette.setColor(QPalette.ColorRole.Link, accent_color)
+        dark_palette.setColor(QPalette.ColorRole.Highlight, QColor("#3A3A3C"))
+        dark_palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#FFFFFF"))
+        dark_palette.setColor(QPalette.ColorRole.PlaceholderText, placeholder_text)
+        dark_palette.setColor(QPalette.ColorRole.Mid, outline_color)
+        dark_palette.setColor(QPalette.ColorRole.ToolTipBase, button_color)
+        dark_palette.setColor(QPalette.ColorRole.ToolTipText, text_color)
+        dark_palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text, disabled_text)
+        dark_palette.setColor(
+            QPalette.ColorGroup.Disabled,
+            QPalette.ColorRole.ButtonText,
+            disabled_text,
+        )
+        dark_palette.setColor(
+            QPalette.ColorGroup.Disabled,
+            QPalette.ColorRole.WindowText,
+            disabled_text,
+        )
+        dark_palette.setColor(
+            QPalette.ColorGroup.Disabled,
+            QPalette.ColorRole.Highlight,
+            QColor("#2C2C2E"),
+        )
+        dark_palette.setColor(
+            QPalette.ColorGroup.Disabled,
+            QPalette.ColorRole.HighlightedText,
+            disabled_text,
+        )
+        dark_palette.setColor(
+            QPalette.ColorGroup.Disabled,
+            QPalette.ColorRole.PlaceholderText,
+            QColor(160, 160, 160, 160),
+        )
+
+        widgets_to_update = [
+            self._ui.sidebar,
+            self._ui.status_bar,
+            self._ui.window_chrome,
+            self._ui.main_toolbar,
+            self._ui.menu_bar,
+            self._ui.album_header,
+            self._ui.title_bar,
+        ]
+        for widget in widgets_to_update:
+            widget.setPalette(dark_palette)
+            widget.setAutoFillBackground(True)
+
+        # Forward the palette to nested labels and the album tree so text,
+        # disclosure indicators, and menu captions adopt the same foreground colour.
+        self._ui.sidebar._tree.setPalette(dark_palette)
+        self._ui.sidebar._tree.setAutoFillBackground(True)
+        self._ui.status_bar._message_label.setPalette(dark_palette)
+        self._ui.album_label.setPalette(dark_palette)
+        self._ui.selection_button.setPalette(dark_palette)
+        self._ui.window_title_label.setPalette(dark_palette)
+
+        # Replace the light-theme sidebar background so the dark palette remains visible.
+        self._ui.sidebar.setStyleSheet(
+            "QWidget#albumSidebar {\n"
+            "    background-color: #1C1C1E;\n"
+            "}"
+        )
+
         self._edit_theme_applied = True
 
     def _restore_edit_theme(self) -> None:
@@ -727,6 +835,36 @@ class EditController(QObject):
             return
         self._ui.edit_page.setStyleSheet(self._default_edit_page_stylesheet)
         self._ui.edit_image_viewer.set_surface_color_override(None)
+
+        widgets_to_restore = [
+            (self._ui.sidebar, self._default_sidebar_palette, self._default_sidebar_autofill),
+            (self._ui.status_bar, self._default_statusbar_palette, self._default_statusbar_autofill),
+            (self._ui.window_chrome, self._default_window_chrome_palette, self._default_window_chrome_autofill),
+            (self._ui.main_toolbar, self._default_main_toolbar_palette, self._default_main_toolbar_autofill),
+            (self._ui.menu_bar, self._default_menu_bar_palette, self._default_menu_bar_autofill),
+            (self._ui.album_header, self._default_album_header_palette, self._default_album_header_autofill),
+            (self._ui.title_bar, self._default_title_bar_palette, self._default_title_bar_autofill),
+        ]
+        for widget, palette, autofill in widgets_to_restore:
+            widget.setPalette(QPalette(palette))
+            widget.setAutoFillBackground(autofill)
+
+        self._ui.sidebar._tree.setPalette(QPalette(self._default_sidebar_tree_palette))
+        self._ui.sidebar._tree.setAutoFillBackground(self._default_sidebar_tree_autofill)
+        self._ui.status_bar._message_label.setPalette(QPalette(self._default_statusbar_message_palette))
+        self._ui.album_label.setPalette(QPalette(self._default_album_label_palette))
+        self._ui.selection_button.setPalette(QPalette(self._default_selection_button_palette))
+        self._ui.window_title_label.setPalette(QPalette(self._default_window_title_palette))
+
+        self._ui.sidebar.setStyleSheet(
+            self._default_sidebar_stylesheet
+            or (
+                "QWidget#albumSidebar {\n"
+                f"    background-color: {SIDEBAR_BACKGROUND_COLOR.name()};\n"
+                "}"
+            )
+        )
+
         self._edit_theme_applied = False
 
     def _prepare_edit_sidebar_for_entry(self) -> None:
