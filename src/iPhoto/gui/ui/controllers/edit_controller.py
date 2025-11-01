@@ -240,28 +240,38 @@ class EditController(QObject):
         # so they are not garbage collected prematurely.
         self._active_preview_workers: set[_PreviewWorker] = set()
         self._default_edit_page_stylesheet = ui.edit_page.styleSheet()
+        # Cache the original style sheets so the chrome returns to the light theme verbatim.
+        self._default_sidebar_stylesheet = ui.sidebar.styleSheet()
+        self._default_statusbar_stylesheet = ui.status_bar.styleSheet()
+        self._default_window_chrome_stylesheet = ui.window_chrome.styleSheet()
+        self._default_title_bar_stylesheet = ui.title_bar.styleSheet()
+        self._default_main_toolbar_stylesheet = ui.main_toolbar.styleSheet()
+        self._default_menu_bar_stylesheet = ui.menu_bar.styleSheet()
+        self._default_album_header_stylesheet = ui.album_header.styleSheet()
+
         # Remember the light-theme palettes so we can reinstate them after leaving edit mode.
         self._default_sidebar_palette = QPalette(ui.sidebar.palette())
-        self._default_sidebar_stylesheet = ui.sidebar.styleSheet()
-        self._default_sidebar_autofill = ui.sidebar.autoFillBackground()
-        self._default_sidebar_tree_palette = QPalette(ui.sidebar._tree.palette())
-        self._default_sidebar_tree_autofill = ui.sidebar._tree.autoFillBackground()
         self._default_statusbar_palette = QPalette(ui.status_bar.palette())
-        self._default_statusbar_autofill = ui.status_bar.autoFillBackground()
-        self._default_statusbar_message_palette = QPalette(ui.status_bar._message_label.palette())
         self._default_window_chrome_palette = QPalette(ui.window_chrome.palette())
-        self._default_window_chrome_autofill = ui.window_chrome.autoFillBackground()
         self._default_title_bar_palette = QPalette(ui.title_bar.palette())
-        self._default_title_bar_autofill = ui.title_bar.autoFillBackground()
         self._default_main_toolbar_palette = QPalette(ui.main_toolbar.palette())
-        self._default_main_toolbar_autofill = ui.main_toolbar.autoFillBackground()
         self._default_menu_bar_palette = QPalette(ui.menu_bar.palette())
-        self._default_menu_bar_autofill = ui.menu_bar.autoFillBackground()
         self._default_album_header_palette = QPalette(ui.album_header.palette())
-        self._default_album_header_autofill = ui.album_header.autoFillBackground()
         self._default_album_label_palette = QPalette(ui.album_label.palette())
         self._default_selection_button_palette = QPalette(ui.selection_button.palette())
         self._default_window_title_palette = QPalette(ui.window_title_label.palette())
+        self._default_sidebar_tree_palette = QPalette(ui.sidebar._tree.palette())
+        self._default_statusbar_message_palette = QPalette(ui.status_bar._message_label.palette())
+
+        # Persist the original auto-fill flags to avoid forcing opaque backgrounds in light mode.
+        self._default_sidebar_autofill = ui.sidebar.autoFillBackground()
+        self._default_statusbar_autofill = ui.status_bar.autoFillBackground()
+        self._default_window_chrome_autofill = ui.window_chrome.autoFillBackground()
+        self._default_title_bar_autofill = ui.title_bar.autoFillBackground()
+        self._default_main_toolbar_autofill = ui.main_toolbar.autoFillBackground()
+        self._default_menu_bar_autofill = ui.menu_bar.autoFillBackground()
+        self._default_album_header_autofill = ui.album_header.autoFillBackground()
+        self._default_sidebar_tree_autofill = ui.sidebar._tree.autoFillBackground()
         self._edit_theme_applied = False
 
         ui.edit_reset_button.clicked.connect(self._handle_reset_clicked)
@@ -819,12 +829,29 @@ class EditController(QObject):
         self._ui.selection_button.setPalette(dark_palette)
         self._ui.window_title_label.setPalette(dark_palette)
 
-        # Replace the light-theme sidebar background so the dark palette remains visible.
+        # Replace the light-theme style sheets so the dark palette remains visible.  Qt gives
+        # style sheets precedence over palettes once ``WA_StyledBackground`` is set, therefore
+        # each chrome widget explicitly receives a dark background while edit mode is active.
+        dark_background = "#1C1C1E"
         self._ui.sidebar.setStyleSheet(
-            "QWidget#albumSidebar {\n"
-            "    background-color: #1C1C1E;\n"
-            "}"
+            f"QWidget#albumSidebar {{ background-color: {dark_background}; }}"
         )
+        self._ui.status_bar.setStyleSheet(
+            f"QWidget#chromeStatusBar {{ background-color: {dark_background}; }}"
+        )
+        self._ui.title_bar.setStyleSheet(
+            f"QWidget#windowTitleBar {{ background-color: {dark_background}; }}"
+        )
+        self._ui.menu_bar.setStyleSheet(
+            f"QMenuBar#chromeMenuBar {{ background-color: {dark_background}; }}"
+        )
+        self._ui.main_toolbar.setStyleSheet(
+            f"QToolBar#mainToolbar {{ background-color: {dark_background}; }}"
+        )
+        # ``window_chrome`` and ``album_header`` do not expose object names, so we rely on their
+        # top-level selectors to enforce the background tint.
+        self._ui.window_chrome.setStyleSheet(f"background-color: {dark_background};")
+        self._ui.album_header.setStyleSheet(f"background-color: {dark_background};")
 
         self._edit_theme_applied = True
 
@@ -856,6 +883,9 @@ class EditController(QObject):
         self._ui.selection_button.setPalette(QPalette(self._default_selection_button_palette))
         self._ui.window_title_label.setPalette(QPalette(self._default_window_title_palette))
 
+        # Restore the original style sheets alongside the palettes so light mode reappears exactly
+        # as it was before entering edit mode.  ``or`` fallbacks guard against empty strings for the
+        # sidebar, which historically relied on a constant background colour.
         self._ui.sidebar.setStyleSheet(
             self._default_sidebar_stylesheet
             or (
@@ -864,6 +894,12 @@ class EditController(QObject):
                 "}"
             )
         )
+        self._ui.status_bar.setStyleSheet(self._default_statusbar_stylesheet)
+        self._ui.window_chrome.setStyleSheet(self._default_window_chrome_stylesheet)
+        self._ui.title_bar.setStyleSheet(self._default_title_bar_stylesheet)
+        self._ui.main_toolbar.setStyleSheet(self._default_main_toolbar_stylesheet)
+        self._ui.menu_bar.setStyleSheet(self._default_menu_bar_stylesheet)
+        self._ui.album_header.setStyleSheet(self._default_album_header_stylesheet)
 
         self._edit_theme_applied = False
 
