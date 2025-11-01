@@ -1542,7 +1542,6 @@ class EditController(QObject):
         """Tear down the edit UI once the slide-out animation finishes."""
 
         splitter = self._ui.splitter
-        self._restore_edit_theme()
         target_sizes: list[int] | None = None
         if self._splitter_sizes_before_edit:
             # Normalise the cached geometry against the splitter's current width so the restored
@@ -1584,6 +1583,10 @@ class EditController(QObject):
             self._detail_ui_controller.connect_zoom_controls()
         self._restore_header_widgets_after_edit()
         self._view_controller.show_detail_view()
+        # Restore the light chrome palette only after the detail page becomes visible so the
+        # theme change and the page swap occur in the same frame, eliminating the brief flash of
+        # dark widgets on the light layout that was noticeable in the previous ordering.
+        self._restore_edit_theme()
         self._ui.detail_chrome_container.show()
         self._detail_header_opacity.setOpacity(1.0)
 
