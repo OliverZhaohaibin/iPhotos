@@ -132,9 +132,18 @@ class EditFullscreenManager(QObject):
             # the entire window.
             edit_sidebar,
         ]
+        # Capture visibility before hiding any widgets so that child
+        # visibility reflects the on-screen state rather than inheriting a
+        # ``False`` value from a parent we just hid in the same loop.  Without
+        # this two-step process the menu bar would record ``False`` whenever
+        # its container is processed first, preventing it from reappearing
+        # after leaving full screen.
+        widget_visibility: list[tuple[QWidget, bool]] = [
+            (widget, widget.isVisible()) for widget in widgets_to_hide
+        ]
         self._fullscreen_hidden_widgets = []
-        for widget in widgets_to_hide:
-            self._fullscreen_hidden_widgets.append((widget, widget.isVisible()))
+        for widget, was_visible in widget_visibility:
+            self._fullscreen_hidden_widgets.append((widget, was_visible))
             widget.hide()
 
         edit_sidebar.setMinimumWidth(0)
