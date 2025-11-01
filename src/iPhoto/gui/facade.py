@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Set, TYPE_CHECKING
+from typing import Callable, Dict, Iterable, List, Optional, Set, TYPE_CHECKING
 
 from PySide6.QtCore import QObject, Signal, Slot
 
@@ -42,6 +42,7 @@ class AppFacade(QObject):
         self._current_album: Optional[Album] = None
         self._pending_index_announcements: Set[Path] = set()
         self._library_manager: Optional["LibraryManager"] = None
+        self._restore_prompt_handler: Optional[Callable[[str], bool]] = None
 
         def _pause_watcher() -> None:
             """Suspend the library watcher while background tasks mutate files."""
@@ -221,6 +222,20 @@ class AppFacade(QObject):
         self._library_manager = library
         self._library_update_service.reset_cache()
 
+    def register_restore_prompt(
+        self, handler: Optional[Callable[[str], bool]]
+    ) -> None:
+        """Register *handler* to confirm restore-to-root fallbacks.
+
+        The GUI injects :meth:`DialogController.prompt_restore_to_root` here so
+        :meth:`restore_assets` can ask the user before placing an item directly
+        into the Basic Library root when its original album no longer exists.
+        Passing ``None`` disables the prompt and causes such restores to be
+        skipped.
+        """
+
+        self._restore_prompt_handler = handler
+
     def import_files(
         self,
         sources: Iterable[Path],
@@ -378,20 +393,18 @@ class AppFacade(QObject):
                 row = row_lookup.get(key)
                 if not row:
                     raise LookupError("metadata unavailable")
-                original_rel = row.get("original_rel_path")
-                if not isinstance(original_rel, str) or not original_rel:
-                    raise KeyError("original_rel_path")
-                destination_path = library_root / original_rel
-                destination_root = destination_path.parent
+                destination_root = self._determine_restore_destination(
+                    row=row,
+                    library=library,
+                    library_root=library_root,
+                    filename=path.name,
+                )
+                if destination_root is None:
+                    continue
                 destination_root.mkdir(parents=True, exist_ok=True)
             except LookupError:
                 self.errorRaised.emit(
                     f"Missing index metadata for {path.name}; skipping restore."
-                )
-                continue
-            except KeyError:
-                self.errorRaised.emit(
-                    f"Original location is unknown for {path.name}; skipping restore."
                 )
                 continue
             except OSError as exc:
@@ -410,6 +423,80 @@ class AppFacade(QObject):
                 destination_root,
                 operation="restore",
             )
+
+    def _determine_restore_destination(
+        self,
+        *,
+        row: dict,
+        library: "LibraryManager",
+        library_root: Path,
+        filename: str,
+    ) -> Optional[Path]:
+        """Return the directory that should receive a restored asset.
+
+        The helper first attempts to honour the original relative path when the
+        parent directory still exists.  Failing that, it consults the album
+        identifier metadata persisted at deletion time to locate the album even
+        after it has been renamed.  When the album is no longer present, the
+        optional restore prompt handler decides whether the asset should fall
+        back to the Basic Library root.
+        """
+
+        original_rel = row.get("original_rel_path")
+        if isinstance(original_rel, str) and original_rel:
+            candidate_path = library_root / original_rel
+            try:
+                candidate_path.relative_to(library_root)
+            except ValueError:
+                # A stale or malicious value could escape the library root; fall
+                # back to the album metadata in that scenario.
+                pass
+            else:
+                parent_dir = candidate_path.parent
+                if parent_dir.exists():
+                    return parent_dir
+
+        album_id = row.get("original_album_id")
+        subpath = row.get("original_album_subpath")
+        if isinstance(album_id, str) and album_id and isinstance(subpath, str) and subpath:
+            node = library.find_album_by_uuid(album_id)
+            if node is not None:
+                subpath_obj = Path(subpath)
+                if subpath_obj.is_absolute() or any(part == ".." for part in subpath_obj.parts):
+                    destination_root = node.path
+                else:
+                    destination_path = node.path / subpath_obj
+                    try:
+                        destination_path.relative_to(node.path)
+                    except ValueError:
+                        destination_root = node.path
+                    else:
+                        destination_root = destination_path.parent
+                return destination_root
+
+            prompt = self._restore_prompt_handler
+            if prompt is None:
+                self.errorRaised.emit(
+                    f"Original album for {filename} no longer exists; skipping restore."
+                )
+                return None
+            if prompt(filename):
+                return library_root
+            return None
+
+        if isinstance(original_rel, str) and original_rel:
+            # We only reach this point when the quick path failed because the
+            # parent folder disappeared *and* we lack album metadata.  Surface a
+            # clear error so the user understands why the restore could not
+            # proceed automatically.
+            self.errorRaised.emit(
+                f"Original album metadata is unavailable for {filename}; skipping restore."
+            )
+        else:
+            self.errorRaised.emit(
+                f"Original location is unknown for {filename}; skipping restore."
+            )
+        return None
 
     def toggle_featured(self, ref: str) -> bool:
         """Toggle *ref* in the active album and mirror the change in the library."""

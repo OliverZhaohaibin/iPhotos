@@ -291,16 +291,23 @@ class LibraryUpdateService(QObject):
 
         if root.name == RECENTLY_DELETED_DIR_NAME:
             # When the Recently Deleted album is rescanned we must not lose the
-            # ``original_rel_path`` metadata that was captured at deletion time.
-            # The field tells the restore workflow where an asset should be moved
-            # back to, so we merge the existing value from the previous index if
-            # the new scan produced a row for the same relative path.
+            # restore metadata that was captured at deletion time.  The
+            # ``original_rel_path`` value powers quick restores, while the
+            # album UUID and subpath pair allows the application to recover from
+            # album renames or deletions.  Merge any of those fields back into
+            # the freshly scanned rows so the trash index remains authoritative.
             preserved_rows: Dict[str, dict] = {}
+            preserved_fields = (
+                "original_rel_path",
+                "original_album_id",
+                "original_album_subpath",
+            )
             try:
                 for old_row in backend.IndexStore(root).read_all():
                     rel_value = old_row.get("rel")
-                    original_rel = old_row.get("original_rel_path")
-                    if rel_value is None or original_rel is None:
+                    if rel_value is None:
+                        continue
+                    if not any(field in old_row for field in preserved_fields):
                         continue
                     preserved_rows[str(rel_value)] = old_row
             except IPhotoError:
@@ -317,10 +324,9 @@ class LibraryUpdateService(QObject):
                     cached_row = preserved_rows.get(str(rel_value))
                     if cached_row is None:
                         continue
-                    original_rel = cached_row.get("original_rel_path")
-                    if original_rel is None:
-                        continue
-                    new_row["original_rel_path"] = original_rel
+                    for field in preserved_fields:
+                        if field in cached_row:
+                            new_row[field] = cached_row[field]
 
         try:
             # Persist the freshly computed index snapshot immediately so future

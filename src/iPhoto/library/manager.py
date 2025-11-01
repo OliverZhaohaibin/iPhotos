@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -271,10 +272,20 @@ class LibraryManager(QObject):
     def ensure_manifest(self, node: AlbumNode) -> Path:
         manifest = self._find_manifest(node.path)
         if manifest:
+            album = Album.open(node.path)
+            album_id = album.manifest.get("id")
+            if not isinstance(album_id, str) or not album_id:
+                # Existing manifests predating the UUID rollout do not expose a
+                # stable identifier.  Generate one on the fly so restore flows
+                # relying on album IDs work even after libraries upgrade.
+                album.manifest["id"] = str(uuid.uuid4())
+                album.save()
+                manifest = self._find_manifest(node.path) or manifest
             return manifest
         now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         album = Album(node.path, {
             "schema": "iPhoto/album@1",
+            "id": str(uuid.uuid4()),
             "title": node.title,
             "created": now,
             "modified": now,
@@ -288,6 +299,35 @@ class LibraryManager(QObject):
         if not marker.exists():
             marker.touch()
         return self._find_manifest(node.path) or (node.path / ALBUM_MANIFEST_NAMES[0])
+
+    def find_album_by_uuid(self, album_id: str) -> Optional[AlbumNode]:
+        """Return the library node whose manifest declares *album_id*.
+
+        The lookup tolerates missing or unreadable manifests and merely skips
+        those entries so the remaining albums keep their fast-path resolution.
+        ``album_id`` comparisons are performed case-insensitively to avoid
+        surprises when legacy manifests contain uppercase UUIDs.
+        """
+
+        if not album_id:
+            return None
+        normalized = album_id.strip()
+        if not normalized:
+            return None
+        needle = normalized.casefold()
+        for path, node in self._nodes.items():
+            manifest_path = self._find_manifest(path)
+            if manifest_path is None:
+                continue
+            try:
+                data = read_json(manifest_path)
+            except Exception as exc:  # pragma: no cover - defensive guard
+                self.errorRaised.emit(str(exc))
+                continue
+            candidate = data.get("id")
+            if isinstance(candidate, str) and candidate.strip().casefold() == needle:
+                return node
+        return None
 
     # ------------------------------------------------------------------
     # Internal helpers

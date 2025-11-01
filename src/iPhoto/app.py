@@ -81,16 +81,22 @@ def rescan(root: Path) -> List[dict]:
     # album.  Rescanning that directory must therefore preserve the existing
     # mapping so the restore feature still knows where each item originated.
     is_recently_deleted = root.name == RECENTLY_DELETED_DIR_NAME
-    preserved_restore_paths: Dict[str, str] = {}
+    preserved_fields = (
+        "original_rel_path",
+        "original_album_id",
+        "original_album_subpath",
+    )
+    preserved_restore_rows: Dict[str, dict] = {}
     if is_recently_deleted:
         try:
             for row in store.read_all():
                 rel_value = row.get("rel")
-                original_rel = row.get("original_rel_path")
-                if not isinstance(rel_value, str) or not isinstance(original_rel, str):
+                if not isinstance(rel_value, str):
+                    continue
+                if not any(field in row for field in preserved_fields):
                     continue
                 rel_key = Path(rel_value).as_posix()
-                preserved_restore_paths[rel_key] = original_rel
+                preserved_restore_rows[rel_key] = row
         except IndexCorruptedError:
             # A corrupted index means we cannot recover historical restore
             # targets.  Emit a warning and continue with a clean rescan so new
@@ -103,15 +109,18 @@ def rescan(root: Path) -> List[dict]:
     from .io.scanner import scan_album
 
     rows = list(scan_album(root, include, exclude))
-    if is_recently_deleted and preserved_restore_paths:
+    if is_recently_deleted and preserved_restore_rows:
         for new_row in rows:
             rel_value = new_row.get("rel")
             if not isinstance(rel_value, str):
                 continue
             rel_key = Path(rel_value).as_posix()
-            preserved = preserved_restore_paths.get(rel_key)
-            if preserved and not new_row.get("original_rel_path"):
-                new_row["original_rel_path"] = preserved
+            cached = preserved_restore_rows.get(rel_key)
+            if not cached:
+                continue
+            for field in preserved_fields:
+                if field in cached and field not in new_row:
+                    new_row[field] = cached[field]
 
     store.write_rows(rows)
     _ensure_links(root, rows)
