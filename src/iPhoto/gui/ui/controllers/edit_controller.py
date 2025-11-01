@@ -932,6 +932,20 @@ class EditController(QObject):
         self._ui.selection_button.setPalette(dark_palette)
         self._ui.selection_button.setAutoFillBackground(False)
         self._ui.window_title_label.setPalette(dark_palette)
+
+        # Refresh the frameless window manager's menu palette before overriding chrome styles so the
+        # global ``QMenu`` stylesheet tracks the active theme while the menu bar remains transparent.
+        self._refresh_menu_styles()
+        self._ui.menu_bar.setAutoFillBackground(False)
+
+        # Replace the light-theme style sheets while keeping the chrome transparent.  The palette
+        # now supplies the foreground colours, so only the text metrics and highlight accents are
+        # overridden explicitly.  Leaving the background transparent allows the rounded shell to
+        # show through and maintain its corner treatment.
+        foreground_color = text_color.name()
+        accent_color_name = accent_color.name()
+        outline_color_name = outline_color.name()
+
         # ``window_title_label`` retains the ``color: unset`` rule that dark-mode restoration appends
         # to its stylesheet.  Apply an explicit white foreground while the edit palette is active so
         # the application title matches the surrounding chrome instead of inheriting a stale light
@@ -946,18 +960,6 @@ class EditController(QObject):
             )
         )
 
-        # Refresh the frameless window manager's menu palette before overriding chrome styles so the
-        # global ``QMenu`` stylesheet tracks the active theme while the menu bar remains transparent.
-        self._refresh_menu_styles()
-        self._ui.menu_bar.setAutoFillBackground(False)
-
-        # Replace the light-theme style sheets while keeping the chrome transparent.  The palette
-        # now supplies the foreground colours, so only the text metrics and highlight accents are
-        # overridden explicitly.  Leaving the background transparent allows the rounded shell to
-        # show through and maintain its corner treatment.
-        foreground_color = text_color.name()
-        accent_color_name = accent_color.name()
-        outline_color_name = outline_color.name()
         self._ui.sidebar.setStyleSheet(
             "\n".join(
                 [
