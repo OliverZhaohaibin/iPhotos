@@ -267,6 +267,15 @@ class EditController(QObject):
         self._rounded_window_shell: RoundedWindowShell | None = (
             shell_parent if isinstance(shell_parent, RoundedWindowShell) else None
         )
+        self._theme_backdrop_overlay: QWidget | None = None
+        if self._rounded_window_shell is not None:
+            # ``RoundedWindowShell`` exposes a dedicated fade overlay that can be animated without
+            # touching the heavy paint routine that draws the rounded outline.  Cache a reference
+            # so the transition helper can drive its opacity directly.
+            try:
+                self._theme_backdrop_overlay = self._rounded_window_shell.theme_backdrop_overlay()
+            except AttributeError:  # pragma: no cover - defensive guard for legacy shells
+                self._theme_backdrop_overlay = None
 
         # Remember the light-theme palettes so we can reinstate them after leaving edit mode.
         self._default_sidebar_palette = QPalette(ui.sidebar.palette())
@@ -1397,39 +1406,26 @@ class EditController(QObject):
         sidebar_start = int(sidebar_start)
         sidebar_end = int(sidebar_end)
 
-        # Prepare the rounded shell colours ahead of time so the transition can drive a smooth
-        # cross-fade between the light and dark palettes.  The palette captured during
-        # initialisation represents the light theme baseline, while the dark tone mirrors the edit
-        # surface styling.  Computing the start/end values before mutating any palettes guarantees
-        # we retain the correct light colour even after the dark palette is applied below.
         shell = self._rounded_window_shell
-        shell_start_color: QColor | None = None
-        shell_end_color: QColor | None = None
-        if shell is not None:
-            if self._default_rounded_shell_palette is None:
-                # Defensive copy in case the frameless shell was not available during controller
-                # construction (for example in tests that stub out the frameless window manager).
-                self._default_rounded_shell_palette = QPalette(shell.palette())
-            base_palette = self._default_rounded_shell_palette or QPalette(shell.palette())
-            light_shell_color = base_palette.color(QPalette.ColorRole.Window)
-            dark_shell_color = QColor("#1C1C1E")
-            if entering:
-                shell_start_color = light_shell_color
-                shell_end_color = dark_shell_color
-            else:
-                shell_start_color = dark_shell_color
-                shell_end_color = light_shell_color
+        overlay = self._theme_backdrop_overlay
+        overlay_end_opacity: float | None = None
+        if shell is not None and self._default_rounded_shell_palette is None:
+            # Tests that stub out the frameless window manager instantiate the shell lazily.  Cache
+            # its palette on first use so the light theme can still be restored correctly when
+            # leaving edit mode.
+            self._default_rounded_shell_palette = QPalette(shell.palette())
+        if overlay is not None:
+            # ``windowOpacity`` is driven by the transition animation.  Capture the desired end
+            # value up front so the zero-duration fast path can still enforce the correct state
+            # without constructing any animations.
+            overlay_end_opacity = 1.0 if entering else 0.0
+            if not overlay.isVisible():
+                overlay.show()
 
         if entering:
             # Flip the chrome widgets to their dark palette before the animation begins so labels
             # and icons stay legible while the window shell fades to black.
             self._apply_edit_dark_theme()
-
-        if shell is not None and shell_start_color is not None:
-            # ``_apply_edit_dark_theme`` forces the shell to the dark override immediately.  For the
-            # fade effect we reapply the start colour so the animation can interpolate from the
-            # captured light tone to the dark tint.
-            shell.set_override_color(shell_start_color)
 
         animation_group = QParallelAnimationGroup(self)
 
@@ -1503,15 +1499,17 @@ class EditController(QObject):
         _add_sidebar_dimension_animation(b"minimumWidth")
         _add_sidebar_dimension_animation(b"maximumWidth")
 
-        if shell is not None and shell_start_color is not None and shell_end_color is not None:
-            # Drive the rounded host's tint via a property animation so the frameless chrome fades
-            # smoothly between the application themes instead of snapping abruptly.
-            shell_animation = QPropertyAnimation(shell, b"overrideColor", animation_group)
-            shell_animation.setDuration(duration)
-            shell_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
-            shell_animation.setStartValue(shell_start_color)
-            shell_animation.setEndValue(shell_end_color)
-            animation_group.addAnimation(shell_animation)
+        if overlay is not None and overlay_end_opacity is not None and duration > 0:
+            # The overlay relies on Qt's compositing to interpolate the opacity.  Animating the
+            # built-in ``windowOpacity`` property keeps the fade entirely on the GPU, which avoids
+            # hammering the CPU-bound paint path that previously redrew the rounded shell every
+            # frame.
+            overlay_animation = QPropertyAnimation(overlay, b"windowOpacity", animation_group)
+            overlay_animation.setDuration(duration)
+            overlay_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
+            overlay_animation.setStartValue(float(overlay.windowOpacity()))
+            overlay_animation.setEndValue(float(overlay_end_opacity))
+            animation_group.addAnimation(overlay_animation)
 
         if not entering:
             edit_header_fade = QPropertyAnimation(
@@ -1551,8 +1549,8 @@ class EditController(QObject):
             else:
                 self._edit_header_opacity.setOpacity(0.0)
                 self._detail_header_opacity.setOpacity(1.0)
-            if shell is not None and shell_end_color is not None:
-                shell.set_override_color(shell_end_color)
+            if overlay is not None and overlay_end_opacity is not None:
+                overlay.setWindowOpacity(float(overlay_end_opacity))
             self._on_transition_finished()
             return
 

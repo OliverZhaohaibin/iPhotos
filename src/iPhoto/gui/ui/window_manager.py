@@ -13,6 +13,7 @@ from PySide6.QtGui import (
     QPainter,
     QPainterPath,
     QPalette,
+    QResizeEvent,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -49,6 +50,7 @@ class RoundedWindowShell(QWidget):
         super().__init__(parent)
         self._corner_radius = max(0, radius)
         self._override_color: QColor | None = None
+        self._theme_backdrop_overlay = QWidget(self)
 
         # ``WA_TranslucentBackground`` prevents Qt from filling the widget with
         # an opaque rectangle before our custom paint routine executes.  The
@@ -58,6 +60,23 @@ class RoundedWindowShell(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.setAutoFillBackground(False)
+
+        # ``theme_backdrop_overlay`` is a lightweight black widget that fades in
+        # during edit mode transitions.  Animating its opacity avoids forcing
+        # ``RoundedWindowShell`` to repaint its anti-aliased background every
+        # frame, which significantly reduces the amount of work Qt has to do
+        # while the user enters and exits the editor.
+        overlay_palette = self._theme_backdrop_overlay.palette()
+        overlay_palette.setColor(QPalette.ColorRole.Window, QColor("#000000"))
+        self._theme_backdrop_overlay.setPalette(overlay_palette)
+        self._theme_backdrop_overlay.setAutoFillBackground(True)
+        self._theme_backdrop_overlay.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents, True
+        )
+        self._theme_backdrop_overlay.setWindowOpacity(0.0)
+        self._theme_backdrop_overlay.lower()
+        self._theme_backdrop_overlay.setGeometry(self.rect())
+        self._theme_backdrop_overlay.show()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -100,6 +119,11 @@ class RoundedWindowShell(QWidget):
     # repaint, so the animation simply drives the property and the shell reacts.
     overrideColor = Property(QColor, _get_override_color, set_override_color)
 
+    def theme_backdrop_overlay(self) -> QWidget:
+        """Return the fade overlay used when transitioning into edit mode."""
+
+        return self._theme_backdrop_overlay
+
     # ------------------------------------------------------------------
     # QWidget overrides
     def paintEvent(self, event: QPaintEvent) -> None:  # type: ignore[override]
@@ -129,6 +153,12 @@ class RoundedWindowShell(QWidget):
 
         painter.fillPath(path, effective_color)
         super().paintEvent(event)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # type: ignore[override]
+        """Keep the fade overlay stretched across the entire shell surface."""
+
+        super().resizeEvent(event)
+        self._theme_backdrop_overlay.setGeometry(self.rect())
 
 
 class FramelessWindowManager(QObject):
