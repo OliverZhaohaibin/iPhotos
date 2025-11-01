@@ -19,7 +19,7 @@ from PySide6.QtCore import (
     QVariantAnimation,
 )
 from PySide6.QtGui import QColor, QImage, QPalette, QPixmap
-from PySide6.QtWidgets import QGraphicsOpacityEffect
+from PySide6.QtWidgets import QGraphicsOpacityEffect, QWidget
 
 from ....core.preview_backends import PreviewBackend, PreviewSession, select_preview_backend
 from ....io import sidecar
@@ -1130,36 +1130,26 @@ class EditController(QObject):
         self._ui.sidebar._tree.setAutoFillBackground(self._default_sidebar_tree_autofill)
         self._ui.status_bar._message_label.setPalette(QPalette(self._default_statusbar_message_palette))
         self._ui.album_label.setPalette(QPalette(self._default_album_label_palette))
-        album_label_stylesheet = self._default_album_label_stylesheet or ""
-        album_label_reset_stylesheet = "\n".join(
-            [
-                "QLabel#albumLabel {",
-                "    color: unset;",
-                "}",
-            ]
-        )
-        # ``color: unset`` removes the high-specificity white text override that dark mode applies
-        # through the album header's stylesheet.  Qt then falls back to the restored palette so the
-        # label returns to the light theme's dark foreground colour.
-        self._ui.album_label.setStyleSheet(
-            f"{album_label_stylesheet}\n{album_label_reset_stylesheet}".strip()
+        # Reapply the cached stylesheet while removing the dark theme's explicit white text.
+        self._apply_color_reset_stylesheet(
+            self._ui.album_label,
+            self._default_album_label_stylesheet,
+            "QLabel#albumLabel",
         )
         self._ui.selection_button.setPalette(QPalette(self._default_selection_button_palette))
-        selection_button_stylesheet = self._default_selection_button_stylesheet or ""
-        selection_button_reset_stylesheet = "\n".join(
-            [
-                "QToolButton#selectionButton {",
-                "    color: unset;",
-                "}",
-            ]
-        )
-        # The selection button shares the same header stylesheet override.  Clearing the explicit
-        # colour ensures its caption once again follows the palette supplied by the light theme.
-        self._ui.selection_button.setStyleSheet(
-            f"{selection_button_stylesheet}\n{selection_button_reset_stylesheet}".strip()
+        # The selection toggle shares the same album header chrome, so it needs the same reset.
+        self._apply_color_reset_stylesheet(
+            self._ui.selection_button,
+            self._default_selection_button_stylesheet,
+            "QToolButton#selectionButton",
         )
         self._ui.window_title_label.setPalette(QPalette(self._default_window_title_palette))
-        self._ui.window_title_label.setStyleSheet(self._default_window_title_stylesheet)
+        # Restore the window title to its light theme colour without guessing the palette value.
+        self._apply_color_reset_stylesheet(
+            self._ui.window_title_label,
+            self._default_window_title_stylesheet,
+            "QLabel#windowTitleLabel",
+        )
 
         # Update the global menu stylesheet ahead of reinstating the cached chrome styles.  This
         # ensures popup menus follow the restored light palette while still allowing the widgets to
@@ -1212,6 +1202,47 @@ class EditController(QObject):
             )
 
         self._edit_theme_applied = False
+
+    def _apply_color_reset_stylesheet(
+        self,
+        widget: QWidget,
+        cached_stylesheet: str | None,
+        selector: str,
+    ) -> None:
+        """Recombine *widget*'s cached stylesheet with a neutral text colour.
+
+        Dark mode injects high-specificity rules that force white foregrounds
+        onto labels and buttons hosted in the album header and window chrome.
+        Simply restoring the original stylesheet is insufficient because the
+        ``color`` attribute remains latched to the dark override.  Appending a
+        ``color: unset`` rule targeted at the widget's object name explicitly
+        clears that override so Qt falls back to the palette we just restored.
+
+        Parameters
+        ----------
+        widget:
+            The control that should resume using the palette-provided text
+            colour (for example the Select button or the window title label).
+        cached_stylesheet:
+            The stylesheet captured before entering edit mode.  ``None`` or an
+            empty string is treated as the absence of an explicit style.
+        selector:
+            A CSS selector that uniquely identifies *widget*.  Using the object
+            name keeps the rule scoped to the relevant control only.
+        """
+
+        base_stylesheet = (cached_stylesheet or "").strip()
+        reset_stylesheet = "\n".join(
+            [
+                f"{selector} {{",
+                "    color: unset;",
+                "}",
+            ]
+        )
+        combined_stylesheet = "\n".join(
+            part for part in (base_stylesheet, reset_stylesheet) if part
+        )
+        widget.setStyleSheet(combined_stylesheet)
 
     def _refresh_menu_styles(self) -> None:
         """Rebuild the frameless window manager's menu palette if available."""
