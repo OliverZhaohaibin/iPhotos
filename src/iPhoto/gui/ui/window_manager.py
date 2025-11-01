@@ -73,11 +73,6 @@ class RoundedWindowShell(QWidget):
         # with whatever value :meth:`set_override_color` most recently applied.
         return self._override_color or self.palette().color(QPalette.ColorRole.Window)
 
-    # Expose a Qt property so controllers can animate the background colour
-    # without reaching into private attributes.  The setter already triggers a
-    # repaint, so the animation simply drives the property and the shell reacts.
-    overrideColor = Property(QColor, _get_override_color, set_override_color)  # type: ignore[assignment]
-
     def set_corner_radius(self, radius: int) -> None:
         """Update the corner radius and repaint if it changed."""
 
@@ -99,6 +94,11 @@ class RoundedWindowShell(QWidget):
             return
         self._override_color = color
         self.update()
+
+    # Expose a Qt property so controllers can animate the background colour
+    # without reaching into private attributes.  The setter already triggers a
+    # repaint, so the animation simply drives the property and the shell reacts.
+    overrideColor = Property(QColor, _get_override_color, set_override_color)
 
     # ------------------------------------------------------------------
     # QWidget overrides
