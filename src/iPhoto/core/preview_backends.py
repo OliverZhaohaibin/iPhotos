@@ -15,7 +15,7 @@ from PySide6.QtGui import QImage
 from .image_filters import apply_adjustments
 
 if TYPE_CHECKING:  # pragma: no cover - import for typing only
-    from PySide6.QtCore import QOffscreenSurface
+    from PySide6.QtGui import QOffscreenSurface
     from PySide6.QtGui import QOpenGLContext
     from PySide6.QtOpenGL import (
         QOpenGLBuffer,
@@ -144,7 +144,7 @@ class _OpenGlPreviewBackend(PreviewBackend):
         # probing before the backend is constructed, so any ImportError raised
         # here indicates a configuration drift between the probe and the
         # initialiser.  Surfacing the error keeps the log output actionable.
-        from PySide6.QtCore import QOffscreenSurface
+        from PySide6.QtGui import QOffscreenSurface
         from PySide6.QtGui import QOpenGLContext, QSurfaceFormat
         from PySide6.QtOpenGL import QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram
 
@@ -303,7 +303,7 @@ class _OpenGlPreviewBackend(PreviewBackend):
         """Return ``True`` if an OpenGL rendering context is available."""
 
         try:
-            from PySide6.QtCore import QOffscreenSurface
+            from PySide6.QtGui import QOffscreenSurface
             from PySide6.QtGui import QOpenGLContext, QSurfaceFormat
         except Exception:
             return False
@@ -324,6 +324,19 @@ class _OpenGlPreviewBackend(PreviewBackend):
 
             if not context.makeCurrent(surface):
                 return False
+
+            # Allocate a trivial texture to confirm that the driver issues a
+            # usable identifier.  Some Windows configurations report success
+            # when creating the context yet fail during the first real texture
+            # upload, so probing here avoids triggering runtime errors inside
+            # the edit preview pipeline.
+            functions = context.functions()
+            texture_ids = (ctypes.c_uint * 1)()
+            functions.glGenTextures(1, texture_ids)
+            texture_id = int(texture_ids[0])
+            if texture_id == 0:
+                return False
+            functions.glDeleteTextures(1, texture_ids)
         except Exception:
             return False
         finally:
@@ -556,8 +569,37 @@ def select_preview_backend() -> PreviewBackend:
     return backend
 
 
+def fallback_preview_backend(previous: PreviewBackend) -> PreviewBackend:
+    """Return a safer backend after *previous* reports a fatal failure."""
+
+    # ``_CudaPreviewBackend`` currently raises during construction but the
+    # ``isinstance`` guard keeps the helper forward-compatible for future
+    # implementations.  Prefer stepping down one tier at a time so the caller
+    # retains hardware acceleration whenever possible.
+    if isinstance(previous, _CudaPreviewBackend):  # pragma: no cover - defensive
+        if _OpenGlPreviewBackend.is_available():
+            try:
+                backend = _OpenGlPreviewBackend()
+            except Exception:
+                pass
+            else:
+                _LOGGER.info(
+                    "Falling back from CUDA preview backend to OpenGL implementation",
+                )
+                return backend
+
+    if isinstance(previous, _OpenGlPreviewBackend):
+        _LOGGER.info("Falling back from OpenGL preview backend to CPU implementation")
+        return _CpuPreviewBackend()
+
+    # Any other backend (including the CPU fallback) drops straight to the
+    # baseline CPU implementation so callers always receive a usable renderer.
+    return _CpuPreviewBackend()
+
+
 __all__ = [
     "PreviewBackend",
     "PreviewSession",
+    "fallback_preview_backend",
     "select_preview_backend",
 ]
