@@ -932,6 +932,19 @@ class EditController(QObject):
         self._ui.selection_button.setPalette(dark_palette)
         self._ui.selection_button.setAutoFillBackground(False)
         self._ui.window_title_label.setPalette(dark_palette)
+        # ``window_title_label`` retains the ``color: unset`` rule that dark-mode restoration appends
+        # to its stylesheet.  Apply an explicit white foreground while the edit palette is active so
+        # the application title matches the surrounding chrome instead of inheriting a stale light
+        # theme colour from earlier sessions.
+        self._ui.window_title_label.setStyleSheet(
+            "\n".join(
+                [
+                    "QLabel#windowTitleLabel {",
+                    f"  color: {foreground_color};",
+                    "}",
+                ]
+            )
+        )
 
         # Refresh the frameless window manager's menu palette before overriding chrome styles so the
         # global ``QMenu`` stylesheet tracks the active theme while the menu bar remains transparent.
