@@ -109,10 +109,27 @@ class EditFullscreenManager(QObject):
             edit_sidebar.maximumWidth(),
         )
         widgets_to_hide = [
+            # The frameless window chrome hosts the traffic light style window
+            # controls on macOS and the drag area on Windows/Linux.  The user
+            # expects the preview to float over the content without those
+            # affordances, so we hide the chrome entirely.
             self._ui.window_chrome,
+            # Both the menu bar container and the menu bar itself must be
+            # hidden; depending on the platform the menu bar may detach from
+            # its container and remain visible if we only hide the parent.
+            self._ui.menu_bar_container,
+            self._ui.menu_bar,
+            # The navigation sidebar occupies the left column in the standard
+            # layout.  Removing it gives the preview full horizontal space.
             self._ui.sidebar,
+            # The status bar shows contextual metadata such as zoom level, but
+            # the immersive view replaces those cues with overlay chrome.
             self._ui.status_bar,
+            # The edit header hosts tool buttons that conflict with the
+            # simplified controls the immersive view presents.
             self._ui.edit_header_container,
+            # Finally we hide the edit sidebar itself so the viewer can claim
+            # the entire window.
             edit_sidebar,
         ]
         self._fullscreen_hidden_widgets = []
