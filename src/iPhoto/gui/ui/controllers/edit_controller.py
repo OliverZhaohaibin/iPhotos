@@ -254,8 +254,9 @@ class EditController(QObject):
         self._default_window_shell_stylesheet = ui.window_shell.styleSheet()
         self._default_title_bar_stylesheet = ui.title_bar.styleSheet()
         self._default_title_separator_stylesheet = ui.title_separator.styleSheet()
-        self._default_main_toolbar_stylesheet = ui.main_toolbar.styleSheet()
+        self._default_menu_bar_container_stylesheet = ui.menu_bar_container.styleSheet()
         self._default_menu_bar_stylesheet = ui.menu_bar.styleSheet()
+        self._default_rescan_button_stylesheet = ui.rescan_button.styleSheet()
         self._default_album_header_stylesheet = ui.album_header.styleSheet()
 
         # ``RoundedWindowShell`` owns the antialiased frame that produces the
@@ -275,8 +276,9 @@ class EditController(QObject):
         self._default_window_shell_palette = QPalette(ui.window_shell.palette())
         self._default_title_bar_palette = QPalette(ui.title_bar.palette())
         self._default_title_separator_palette = QPalette(ui.title_separator.palette())
-        self._default_main_toolbar_palette = QPalette(ui.main_toolbar.palette())
+        self._default_menu_bar_container_palette = QPalette(ui.menu_bar_container.palette())
         self._default_menu_bar_palette = QPalette(ui.menu_bar.palette())
+        self._default_rescan_button_palette = QPalette(ui.rescan_button.palette())
         self._default_album_header_palette = QPalette(ui.album_header.palette())
         self._default_album_label_palette = QPalette(ui.album_label.palette())
         self._default_album_label_stylesheet = ui.album_label.styleSheet()
@@ -294,8 +296,9 @@ class EditController(QObject):
         self._default_window_shell_autofill = ui.window_shell.autoFillBackground()
         self._default_title_bar_autofill = ui.title_bar.autoFillBackground()
         self._default_title_separator_autofill = ui.title_separator.autoFillBackground()
-        self._default_main_toolbar_autofill = ui.main_toolbar.autoFillBackground()
+        self._default_menu_bar_container_autofill = ui.menu_bar_container.autoFillBackground()
         self._default_menu_bar_autofill = ui.menu_bar.autoFillBackground()
+        self._default_rescan_button_autofill = ui.rescan_button.autoFillBackground()
         self._default_album_header_autofill = ui.album_header.autoFillBackground()
         self._default_sidebar_tree_autofill = ui.sidebar._tree.autoFillBackground()
 
@@ -894,7 +897,7 @@ class EditController(QObject):
             self._ui.sidebar,
             self._ui.status_bar,
             self._ui.window_chrome,
-            self._ui.main_toolbar,
+            self._ui.menu_bar_container,
             self._ui.menu_bar,
             self._ui.album_header,
             self._ui.title_bar,
@@ -906,6 +909,12 @@ class EditController(QObject):
             # painting the curved outline.  ``setAutoFillBackground(False)`` prevents Qt from
             # rasterising an opaque rectangle that would obscure the shell.
             widget.setAutoFillBackground(False)
+
+        # Mirror the palette adjustment for the standalone Rescan button so the control inherits
+        # the same foreground colours as the surrounding chrome while keeping its background
+        # transparent for the rounded shell.
+        self._ui.rescan_button.setPalette(dark_palette)
+        self._ui.rescan_button.setAutoFillBackground(False)
 
         # ``window_shell`` must remain transparent so the rounded host widget
         # can paint the curved edge.  Update its palette but leave auto-fill
@@ -1007,14 +1016,21 @@ class EditController(QObject):
                 ]
             )
         )
-        self._ui.main_toolbar.setStyleSheet(
+        self._ui.menu_bar_container.setStyleSheet(
             "\n".join(
                 [
-                    "QToolBar#mainToolbar {",
+                    "QWidget#menuBarContainer {",
                     "  background-color: transparent;",
                     f"  color: {foreground_color};",
                     "}",
-                    "QToolBar#mainToolbar QToolButton {",
+                ]
+            )
+        )
+        self._ui.rescan_button.setStyleSheet(
+            "\n".join(
+                [
+                    "QToolButton#rescanButton {",
+                    "  background-color: transparent;",
                     f"  color: {foreground_color};",
                     "}",
                 ]
@@ -1096,14 +1112,19 @@ class EditController(QObject):
                 self._default_window_shell_autofill,
             ),
             (
-                self._ui.main_toolbar,
-                self._default_main_toolbar_palette,
-                self._default_main_toolbar_autofill,
+                self._ui.menu_bar_container,
+                self._default_menu_bar_container_palette,
+                self._default_menu_bar_container_autofill,
             ),
             (
                 self._ui.menu_bar,
                 self._default_menu_bar_palette,
                 self._default_menu_bar_autofill,
+            ),
+            (
+                self._ui.rescan_button,
+                self._default_rescan_button_palette,
+                self._default_rescan_button_autofill,
             ),
             (
                 self._ui.album_header,
@@ -1172,23 +1193,13 @@ class EditController(QObject):
         self._ui.window_shell.setStyleSheet(self._default_window_shell_stylesheet)
         self._ui.title_bar.setStyleSheet(self._default_title_bar_stylesheet)
         self._ui.title_separator.setStyleSheet(self._default_title_separator_stylesheet)
-        # Reapply the light toolbar colours using a palette-driven reset.  Dark mode injects a
-        # high-specificity selector that forces white text; clearing the stylesheet alone leaves the
-        # colour override in place.  By emitting ``color: unset`` the rule instructs Qt to drop the
-        # explicit value so the restored palette determines the final text colour.
-        default_toolbar_stylesheet = self._default_main_toolbar_stylesheet or ""
-        reset_toolbar_stylesheet = "\n".join(
-            [
-                "QToolBar#mainToolbar QToolButton {",
-                "    color: unset;",
-                "}",
-            ]
+        # Restore the chrome row hosting the menu bar and Rescan button so it returns to its light
+        # theme appearance precisely as captured before entering edit mode.
+        self._ui.menu_bar_container.setStyleSheet(
+            self._default_menu_bar_container_stylesheet
         )
-        combined_toolbar_stylesheet = (
-            f"{default_toolbar_stylesheet}\n{reset_toolbar_stylesheet}".strip()
-        )
-        self._ui.main_toolbar.setStyleSheet(combined_toolbar_stylesheet)
         self._ui.menu_bar.setStyleSheet(self._default_menu_bar_stylesheet)
+        self._ui.rescan_button.setStyleSheet(self._default_rescan_button_stylesheet)
         self._ui.album_header.setStyleSheet(self._default_album_header_stylesheet)
 
         if self._rounded_window_shell is not None:

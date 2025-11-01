@@ -535,8 +535,8 @@ class FramelessWindowManager(QObject):
     def _build_immersive_targets(self) -> tuple[QWidget, ...]:
         candidates: tuple[QWidget | None, ...] = (
             self.menuBar(),
+            self._ui.menu_bar_container,
             self._ui.status_bar,
-            self._ui.main_toolbar,
             self._ui.sidebar,
             self._ui.window_chrome,
             self._ui.album_header,
