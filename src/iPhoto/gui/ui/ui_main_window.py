@@ -337,12 +337,20 @@ class Ui_MainWindow(object):
         # polish in the future.
         self.menu_bar_container = QWidget(self.window_shell)
         self.menu_bar_container.setObjectName("menuBarContainer")
+        self.menu_bar_container.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
         menu_bar_layout = QHBoxLayout(self.menu_bar_container)
         menu_bar_layout.setContentsMargins(0, 0, 12, 0)
         menu_bar_layout.setSpacing(8)
 
         # Insert the menu bar first so its left alignment mirrors the
         # macOS-inspired layout applied throughout the custom chrome.
+        self.menu_bar.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
         menu_bar_layout.addWidget(self.menu_bar)
 
         # A stretchable spacer pushes the rescan button to the far right.  This
@@ -380,6 +388,7 @@ class Ui_MainWindow(object):
         # state change applied by controllers (enabled/disabled) and reflects
         # translated strings automatically.
         self.rescan_button.setDefaultAction(self.rescan_action)
+        self._sync_menu_bar_container_height()
 
         self.toggle_filmstrip_action = QAction("Show Filmstrip", MainWindow, checkable=True)
         self.toggle_filmstrip_action.setChecked(True)
@@ -900,6 +909,20 @@ class Ui_MainWindow(object):
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         button.setToolTip(tooltip)
 
+    def _sync_menu_bar_container_height(self) -> None:
+        """Match the chrome row height to the rescan button for visual balance."""
+
+        button_height = self.rescan_button.sizeHint().height()
+        if button_height <= 0:
+            # ``sizeHint`` may return zero until the widget is polished; in that case the
+            # native menu bar height already dominates and there is nothing to clamp yet.
+            return
+
+        # Pin both the container and the menu bar itself to the button height so the row keeps a
+        # consistent silhouette instead of inheriting the taller native menu bar metric.
+        self.menu_bar_container.setFixedHeight(button_height)
+        self.menu_bar.setFixedHeight(button_height)
+
     def retranslateUi(self, MainWindow: QMainWindow) -> None:  # noqa: N802 - Qt style
         """Apply translatable strings to the window."""
 
@@ -936,6 +959,7 @@ class Ui_MainWindow(object):
                 None,
             )
         )
+        self._sync_menu_bar_container_height()
         self.edit_adjust_action.setText(
             QCoreApplication.translate("MainWindow", "Adjust", None)
         )
