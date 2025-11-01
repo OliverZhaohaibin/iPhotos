@@ -1563,21 +1563,6 @@ class EditController(QObject):
         sidebar.setMaximumWidth(0)
         sidebar.updateGeometry()
 
-        # With the animation complete it is safe to switch the stacked widget back to the detail
-        # view.  Doing so earlier would compress the edit page mid-animation, producing the
-        # "jump" the user reported.  Restoring the shared toolbar widgets at the same time keeps
-        # the controls consistent with the now-visible header.
-        self._disconnect_edit_zoom_controls()
-        if self._detail_ui_controller is not None:
-            self._detail_ui_controller.connect_zoom_controls()
-        self._restore_header_widgets_after_edit()
-        self._view_controller.show_detail_view()
-        self._ui.detail_chrome_container.show()
-        self._detail_header_opacity.setOpacity(1.0)
-
-        self._ui.edit_header_container.hide()
-        self._edit_header_opacity.setOpacity(1.0)
-
         if target_sizes:
             current_sizes = [int(value) for value in splitter.sizes()]
             # Reapply the saved layout only when the animation failed to reach the expected end
@@ -1589,6 +1574,21 @@ class EditController(QObject):
                 abs(current - expected) > 1 for current, expected in zip(current_sizes, target_sizes)
             ):
                 splitter.setSizes(target_sizes)
+
+        # With the splitter geometry locked to the target sizes we can safely swap the stacked
+        # widget back to the detail page.  Performing the page change earlier gives the newly
+        # visible detail view an opportunity to resize the splitter according to its own
+        # ``sizeHint`` values, which reintroduces the visual "jump" reported by the user.
+        self._disconnect_edit_zoom_controls()
+        if self._detail_ui_controller is not None:
+            self._detail_ui_controller.connect_zoom_controls()
+        self._restore_header_widgets_after_edit()
+        self._view_controller.show_detail_view()
+        self._ui.detail_chrome_container.show()
+        self._detail_header_opacity.setOpacity(1.0)
+
+        self._ui.edit_header_container.hide()
+        self._edit_header_opacity.setOpacity(1.0)
 
         self._ui.edit_sidebar.set_session(None)
         self._ui.edit_image_viewer.clear()
