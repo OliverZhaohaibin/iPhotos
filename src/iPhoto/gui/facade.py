@@ -229,9 +229,10 @@ class AppFacade(QObject):
 
         The GUI injects :meth:`DialogController.prompt_restore_to_root` here so
         :meth:`restore_assets` can ask the user before placing an item directly
-        into the Basic Library root when its original album no longer exists.
-        Passing ``None`` disables the prompt and causes such restores to be
-        skipped.
+        into the Basic Library root when its original album no longer exists or
+        when metadata about the intended destination has been lost.  Passing
+        ``None`` disables the prompt and causes such restores to be skipped
+        automatically.
         """
 
         self._restore_prompt_handler = handler
@@ -442,6 +443,29 @@ class AppFacade(QObject):
         back to the Basic Library root.
         """
 
+        def _offer_restore_to_root(
+            skip_reason: str,
+            decline_reason: str,
+        ) -> Optional[Path]:
+            """Offer to restore *filename* directly into the Basic Library root.
+
+            Restore workflows can reach this helper in two situations: when the
+            original album has been removed from the library or when the metadata
+            that describes the intended destination is no longer available (for
+            instance because external tools manipulated the trash index).  The
+            helper centralises the prompt logic so every caller consistently
+            communicates why a fallback is required.
+            """
+
+            prompt = self._restore_prompt_handler
+            if prompt is None:
+                self.errorRaised.emit(skip_reason)
+                return None
+            if prompt(filename):
+                return library_root
+            self.errorRaised.emit(decline_reason)
+            return None
+
         original_rel = row.get("original_rel_path")
         if isinstance(original_rel, str) and original_rel:
             candidate_path = library_root / original_rel
@@ -474,29 +498,36 @@ class AppFacade(QObject):
                         destination_root = destination_path.parent
                 return destination_root
 
-            prompt = self._restore_prompt_handler
-            if prompt is None:
-                self.errorRaised.emit(
+            return _offer_restore_to_root(
+                skip_reason=(
                     f"Original album for {filename} no longer exists; skipping restore."
-                )
-                return None
-            if prompt(filename):
-                return library_root
-            return None
+                ),
+                decline_reason=(
+                    f"Restore cancelled for {filename} because its original album is unavailable."
+                ),
+            )
 
         if isinstance(original_rel, str) and original_rel:
             # We only reach this point when the quick path failed because the
             # parent folder disappeared *and* we lack album metadata.  Surface a
             # clear error so the user understands why the restore could not
             # proceed automatically.
-            self.errorRaised.emit(
-                f"Original album metadata is unavailable for {filename}; skipping restore."
+            return _offer_restore_to_root(
+                skip_reason=(
+                    f"Original album metadata is unavailable for {filename}; skipping restore."
+                ),
+                decline_reason=(
+                    f"Restore cancelled for {filename} because you opted against placing it in the Basic Library root."
+                ),
             )
-        else:
-            self.errorRaised.emit(
+        return _offer_restore_to_root(
+            skip_reason=(
                 f"Original location is unknown for {filename}; skipping restore."
-            )
-        return None
+            ),
+            decline_reason=(
+                f"Restore cancelled for {filename} because you opted against placing it in the Basic Library root."
+            ),
+        )
 
     def toggle_featured(self, ref: str) -> bool:
         """Toggle *ref* in the active album and mirror the change in the library."""

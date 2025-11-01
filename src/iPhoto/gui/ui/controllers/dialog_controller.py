@@ -61,8 +61,9 @@ class DialogController:
         """Ask whether *filename* should be restored to the library root."""
 
         message = (
-            "The original album for '{name}' could not be found. "
-            "Do you want to restore this file to the main 'Basic Library' folder instead?"
+            "The original album for '{name}' could not be found or its original "
+            "location could not be determined. Do you want to restore this file "
+            "to the main 'Basic Library' folder instead?"
         ).format(name=filename)
         choice = QMessageBox.question(
             self._parent,
