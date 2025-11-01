@@ -23,7 +23,7 @@ from PySide6.QtWidgets import QGraphicsOpacityEffect, QWidget
 
 from ....core.preview_backends import PreviewBackend, PreviewSession, select_preview_backend
 from ....io import sidecar
-from ...palette import SIDEBAR_BACKGROUND_COLOR
+from ..palette import SIDEBAR_BACKGROUND_COLOR
 from ..icon import load_icon
 from ...utils import image_loader
 from ..models.asset_model import AssetModel
