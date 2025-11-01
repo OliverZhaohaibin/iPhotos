@@ -1019,12 +1019,19 @@ class EditController(QObject):
                 ]
             )
         )
+        disabled_text_name = disabled_text.name()
         self._ui.rescan_button.setStyleSheet(
             "\n".join(
                 [
                     "QToolButton#rescanButton {",
                     "  background-color: transparent;",
                     f"  color: {foreground_color};",
+                    "}",
+                    # Mirror the disabled tint baked into ``dark_palette`` so the button keeps the
+                    # same contrast level regardless of whether the action is currently available.
+                    "QToolButton#rescanButton:disabled {",
+                    "  background-color: transparent;",
+                    f"  color: {disabled_text_name};",
                     "}",
                 ]
             )
@@ -1173,7 +1180,14 @@ class EditController(QObject):
             self._default_menu_bar_container_stylesheet
         )
         self._ui.menu_bar.setStyleSheet(self._default_menu_bar_stylesheet)
-        self._ui.rescan_button.setStyleSheet(self._default_rescan_button_stylesheet)
+        # ``color: unset`` clears the white foreground injected in edit mode so the button can
+        # pick up the restored light-theme palette (typically black text) the next time it is
+        # painted.
+        self._apply_color_reset_stylesheet(
+            self._ui.rescan_button,
+            self._default_rescan_button_stylesheet,
+            "QToolButton#rescanButton",
+        )
 
         if self._rounded_window_shell is not None:
             if self._default_rounded_shell_palette is not None:
