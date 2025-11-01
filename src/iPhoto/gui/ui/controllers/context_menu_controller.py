@@ -198,18 +198,22 @@ class ContextMenuController(QObject):
             return
 
         source_model = self._asset_model.source_model()
-        if selected_indexes:
-            source_model.remove_rows(selected_indexes)
 
         try:
-            self._facade.restore_assets(paths)
+            queued_restore = self._facade.restore_assets(paths)
         except Exception:
             self._facade.rescan_current()
             raise
         finally:
             self._selection_controller.set_selection_mode(False)
 
-        self._toast.show_toast("Restoring ...")
+        if queued_restore:
+            if selected_indexes:
+                # Removing the rows only after the restore task has been accepted
+                # avoids hiding assets when the backend declined to queue any
+                # work (for example because the user rejected every fallback).
+                source_model.remove_rows(selected_indexes)
+            self._toast.show_toast("Restoring ...")
 
     def _copy_selection_to_clipboard(self) -> None:
         """Copy the selected asset file paths into the system clipboard."""

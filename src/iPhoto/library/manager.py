@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import shutil
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
@@ -263,31 +262,81 @@ class LibraryManager(QObject):
             raise AlbumNameConflictError(f"An album named '{new_name}' already exists.") from exc
         except OSError as exc:  # pragma: no cover - defensive guard
             raise AlbumOperationError(str(exc)) from exc
-        album = Album.open(target)
-        album.manifest["title"] = new_name
-        album.save()
+        # ``Album.open`` now normalises and persists manifest updates so the
+        # metadata stays aligned with the renamed directory immediately.
+        Album.open(target)
         self._refresh_tree()
 
     def ensure_manifest(self, node: AlbumNode) -> Path:
-        manifest = self._find_manifest(node.path)
-        if manifest:
-            return manifest
-        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        album = Album(node.path, {
-            "schema": "iPhoto/album@1",
-            "title": node.title,
-            "created": now,
-            "modified": now,
-            "cover": "",
-            "featured": [],
-            "filters": {},
-            "tags": [],
-        })
-        album.save()
+        Album.open(node.path)
         marker = node.path / ".iphoto.album"
         if not marker.exists():
             marker.touch()
-        return self._find_manifest(node.path) or (node.path / ALBUM_MANIFEST_NAMES[0])
+        manifest = self._find_manifest(node.path)
+        if manifest is None:
+            manifest = node.path / ALBUM_MANIFEST_NAMES[0]
+        return manifest
+
+    def find_album_by_uuid(self, album_id: str) -> Optional[AlbumNode]:
+        """Return the library node whose manifest declares *album_id*.
+
+        The lookup tolerates missing or unreadable manifests and merely skips
+        those entries so the remaining albums keep their fast-path resolution.
+        ``album_id`` comparisons are performed case-insensitively to avoid
+        surprises when legacy manifests contain uppercase UUIDs.
+        """
+
+        if not album_id:
+            return None
+        normalized = album_id.strip()
+        if not normalized:
+            return None
+        needle = normalized.casefold()
+
+        # The library root is not included in ``self._nodes`` because the tree
+        # structure focuses on first- and second-level albums.  However,
+        # trashed assets can originate directly from the root (for example when
+        # deleted via the "All Photos" aggregate view).  Those entries store
+        # the root's UUID, so we need to compare against the root manifest
+        # explicitly before scanning child nodes.
+        root = self._root
+        if root is not None:
+            manifest_path = self._find_manifest(root)
+            if manifest_path is not None:
+                try:
+                    data = read_json(manifest_path)
+                except Exception as exc:  # pragma: no cover - defensive guard
+                    # Surfacing the failure keeps the UI informed without
+                    # breaking the fallback search that follows.
+                    self.errorRaised.emit(f"Failed to read root manifest: {exc}")
+                else:
+                    candidate = data.get("id")
+                    if isinstance(candidate, str) and candidate.strip().casefold() == needle:
+                        try:
+                            album = Album.open(root)
+                        except Exception as exc:  # pragma: no cover - defensive guard
+                            # If opening the album fails we cannot build a
+                            # representative node, so emit the error and allow
+                            # the regular search to continue.
+                            self.errorRaised.emit(f"Failed to open root album: {exc}")
+                        else:
+                            title = album.manifest.get("title")
+                            if not isinstance(title, str) or not title:
+                                title = root.name
+                            return AlbumNode(root, level=0, title=title, has_manifest=True)
+        for path, node in self._nodes.items():
+            manifest_path = self._find_manifest(path)
+            if manifest_path is None:
+                continue
+            try:
+                data = read_json(manifest_path)
+            except Exception as exc:  # pragma: no cover - defensive guard
+                self.errorRaised.emit(str(exc))
+                continue
+            candidate = data.get("id")
+            if isinstance(candidate, str) and candidate.strip().casefold() == needle:
+                return node
+        return None
 
     # ------------------------------------------------------------------
     # Internal helpers

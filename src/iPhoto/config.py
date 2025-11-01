@@ -5,8 +5,19 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Final
 
+# ``RECENTLY_DELETED_DIR_NAME`` stores the filesystem folder name that acts as
+# the shared trash for the Basic Library.  The directory lives directly under
+# the library root so assets removed from any album end up in a single
+# collection, mirroring the behaviour users expect from other photo managers.
+RECENTLY_DELETED_DIR_NAME: Final[str] = ".Trash"
+
 DEFAULT_INCLUDE: Final[list[str]] = ["**/*.{HEIC,JPG,JPEG,PNG,MOV,MP4}"]
-DEFAULT_EXCLUDE: Final[list[str]] = ["**/.iPhoto/**", "**/.DS_Store", "**/._*"]
+DEFAULT_EXCLUDE: Final[list[str]] = [
+    "**/.iPhoto/**",
+    "**/.DS_Store",
+    "**/._*",
+    f"**/{RECENTLY_DELETED_DIR_NAME}/**",
+]
 PAIR_TIME_DELTA_SEC: Final[float] = 3.0
 LIVE_DURATION_PREFERRED: Final[tuple[float, float]] = (1.0, 3.5)
 LOCK_EXPIRE_SEC: Final[int] = 30
@@ -17,11 +28,6 @@ THUMBNAIL_SEEK_GUARD_SEC: Final[float] = 0.35
 SCHEMA_DIR: Final[Path] = Path(__file__).resolve().parent / "schemas"
 ALBUM_MANIFEST_NAMES: Final[list[str]] = [".iphoto.album.json", ".iPhoto/manifest.json"]
 WORK_DIR_NAME: Final[str] = ".iPhoto"
-# ``RECENTLY_DELETED_DIR_NAME`` stores the filesystem folder name that acts as
-# the shared trash for the Basic Library.  The directory lives directly under
-# the library root so assets removed from any album end up in a single
-# collection, mirroring the behaviour users expect from other photo managers.
-RECENTLY_DELETED_DIR_NAME: Final[str] = ".Trash"
 
 # ---------------------------------------------------------------------------
 # UI interaction constants

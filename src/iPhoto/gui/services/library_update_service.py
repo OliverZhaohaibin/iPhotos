@@ -9,7 +9,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tupl
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
 from ... import app as backend
-from ...config import WORK_DIR_NAME
+from ...config import RECENTLY_DELETED_DIR_NAME, WORK_DIR_NAME
 from ...errors import IPhotoError
 from ..background_task_manager import BackgroundTaskManager
 from ..ui.tasks.rescan_worker import RescanSignals, RescanWorker
@@ -288,6 +288,45 @@ class LibraryUpdateService(QObject):
             return
 
         materialised_rows = list(rows)
+
+        if root.name == RECENTLY_DELETED_DIR_NAME:
+            # When the Recently Deleted album is rescanned we must not lose the
+            # restore metadata that was captured at deletion time.  The
+            # ``original_rel_path`` value powers quick restores, while the
+            # album UUID and subpath pair allows the application to recover from
+            # album renames or deletions.  Merge any of those fields back into
+            # the freshly scanned rows so the trash index remains authoritative.
+            preserved_rows: Dict[str, dict] = {}
+            preserved_fields = (
+                "original_rel_path",
+                "original_album_id",
+                "original_album_subpath",
+            )
+            try:
+                for old_row in backend.IndexStore(root).read_all():
+                    rel_value = old_row.get("rel")
+                    if rel_value is None:
+                        continue
+                    if not any(field in old_row for field in preserved_fields):
+                        continue
+                    preserved_rows[str(rel_value)] = old_row
+            except IPhotoError:
+                # If the old index is unavailable (missing or corrupted) we have
+                # nothing to merge, therefore the rescan falls back to fresh
+                # metadata produced by the worker.
+                preserved_rows = {}
+
+            if preserved_rows:
+                for new_row in materialised_rows:
+                    rel_value = new_row.get("rel")
+                    if rel_value is None:
+                        continue
+                    cached_row = preserved_rows.get(str(rel_value))
+                    if cached_row is None:
+                        continue
+                    for field in preserved_fields:
+                        if field in cached_row:
+                            new_row[field] = cached_row[field]
 
         try:
             # Persist the freshly computed index snapshot immediately so future
