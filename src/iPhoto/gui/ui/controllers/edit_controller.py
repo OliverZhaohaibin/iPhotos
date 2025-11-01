@@ -1294,7 +1294,17 @@ class EditController(QObject):
         finally:
             for widget in freeze_targets:
                 widget.setUpdatesEnabled(True)
-                widget.update()
+                try:
+                    # ``QWidget.update`` is overloaded in Qt.  Most controls expose the no-argument
+                    # variant that simply schedules a repaint, but some specialised widgets (such as
+                    # ``_DropAwareTree``) only surface the indexed overload in the Python bindings.
+                    # Calling that signature without a ``QModelIndex`` raises ``TypeError`` which, in
+                    # turn, aborts the exit transition.  Gracefully fall back to ``repaint`` so every
+                    # widget is refreshed exactly once after updates are re-enabled without triggering
+                    # additional repaints mid-animation.
+                    widget.update()
+                except TypeError:
+                    widget.repaint()
 
     def _apply_color_reset_stylesheet(
         self,
