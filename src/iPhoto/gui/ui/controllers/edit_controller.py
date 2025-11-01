@@ -39,6 +39,47 @@ if TYPE_CHECKING:  # pragma: no cover - import for typing only
 _LOGGER = logging.getLogger(__name__)
 
 
+_EDIT_DARK_STYLESHEET = "\n".join(
+    [
+        "QWidget#editPage {",
+        "  background-color: #1C1C1E;",
+        "}",
+        "QWidget#editPage QLabel,",
+        "QWidget#editPage QToolButton,",
+        "QWidget#editHeaderContainer QPushButton {",
+        "  color: #F5F5F7;",
+        "}",
+        "QWidget#editHeaderContainer {",
+        "  background-color: #2C2C2E;",
+        "  border-radius: 12px;",
+        "}",
+        "QWidget#editPage EditSidebar,",
+        "QWidget#editPage EditSidebar QWidget,",
+        "QWidget#editPage QScrollArea,",
+        "QWidget#editPage QScrollArea > QWidget {",
+        "  background-color: #2C2C2E;",
+        "  color: #F5F5F7;",
+        "}",
+        "QWidget#editPage QGroupBox {",
+        "  background-color: #1F1F1F;",
+        "  border: 1px solid #323236;",
+        "  border-radius: 10px;",
+        "  margin-top: 24px;",
+        "  padding-top: 12px;",
+        "}",
+        "QWidget#editPage QGroupBox::title {",
+        "  color: #F5F5F7;",
+        "  subcontrol-origin: margin;",
+        "  left: 12px;",
+        "  padding: 0 4px;",
+        "}",
+        "QWidget#editPage #collapsibleSection QLabel {",
+        "  color: #F5F5F7;",
+        "}",
+    ]
+)
+
+
 class _PreviewSignals(QObject):
     """Signals emitted by :class:`_PreviewWorker` once processing completes."""
 
@@ -197,6 +238,8 @@ class EditController(QObject):
         # Keep strong references to workers until their completion callbacks run
         # so they are not garbage collected prematurely.
         self._active_preview_workers: set[_PreviewWorker] = set()
+        self._default_edit_page_stylesheet = ui.edit_page.styleSheet()
+        self._edit_theme_applied = False
 
         ui.edit_reset_button.clicked.connect(self._handle_reset_clicked)
         ui.edit_done_button.clicked.connect(self._handle_done_clicked)
@@ -204,6 +247,7 @@ class EditController(QObject):
         ui.edit_crop_action.triggered.connect(lambda checked: self._handle_mode_change("crop", checked))
         ui.edit_compare_button.pressed.connect(self._handle_compare_pressed)
         ui.edit_compare_button.released.connect(self._handle_compare_released)
+        ui.edit_mode_control.currentIndexChanged.connect(self._handle_top_bar_index_changed)
 
         playlist.currentChanged.connect(self._handle_playlist_change)
         playlist.sourceChanged.connect(lambda _path: self._handle_playlist_change())
@@ -319,6 +363,7 @@ class EditController(QObject):
         self._ui.edit_image_viewer.reset_zoom()
         self._edit_header_opacity.setOpacity(1.0)
         self._ui.edit_header_container.show()
+        self._apply_edit_dark_theme()
 
         splitter_sizes = self._sanitise_splitter_sizes(self._ui.splitter.sizes())
         self._splitter_sizes_before_edit = list(splitter_sizes)
@@ -645,7 +690,16 @@ class EditController(QObject):
             return
         self._set_mode(mode)
 
-    def _set_mode(self, mode: str) -> None:
+    def _handle_top_bar_index_changed(self, index: int) -> None:
+        """Synchronise action state when the segmented bar changes selection."""
+
+        mode = "adjust" if index == 0 else "crop"
+        target_action = self._ui.edit_adjust_action if mode == "adjust" else self._ui.edit_crop_action
+        if not target_action.isChecked():
+            target_action.setChecked(True)
+        self._set_mode(mode, from_top_bar=True)
+
+    def _set_mode(self, mode: str, *, from_top_bar: bool = False) -> None:
         if mode == "adjust":
             self._ui.edit_adjust_action.setChecked(True)
             self._ui.edit_crop_action.setChecked(False)
@@ -654,6 +708,26 @@ class EditController(QObject):
             self._ui.edit_adjust_action.setChecked(False)
             self._ui.edit_crop_action.setChecked(True)
             self._ui.edit_sidebar.set_mode("crop")
+        index = 0 if mode == "adjust" else 1
+        self._ui.edit_mode_control.setCurrentIndex(index, animate=not from_top_bar)
+
+    def _apply_edit_dark_theme(self) -> None:
+        """Activate the dark edit palette across the dedicated widgets."""
+
+        if self._edit_theme_applied:
+            return
+        self._ui.edit_page.setStyleSheet(_EDIT_DARK_STYLESHEET)
+        self._ui.edit_image_viewer.set_surface_color_override("#111111")
+        self._edit_theme_applied = True
+
+    def _restore_edit_theme(self) -> None:
+        """Restore the default light theme after leaving edit mode."""
+
+        if not self._edit_theme_applied:
+            return
+        self._ui.edit_page.setStyleSheet(self._default_edit_page_stylesheet)
+        self._ui.edit_image_viewer.set_surface_color_override(None)
+        self._edit_theme_applied = False
 
     def _prepare_edit_sidebar_for_entry(self) -> None:
         """Collapse the edit sidebar before playing the entrance animation."""
@@ -892,6 +966,7 @@ class EditController(QObject):
         """Tear down the edit UI once the slide-out animation finishes."""
 
         splitter = self._ui.splitter
+        self._restore_edit_theme()
         target_sizes: list[int] | None = None
         if self._splitter_sizes_before_edit:
             # Normalise the cached geometry against the splitter's current width so the restored

@@ -4,19 +4,10 @@ from __future__ import annotations
 
 from typing import Dict, Optional
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (
-    QFrame,
-    QGridLayout,
-    QGroupBox,
-    QLabel,
-    QSizePolicy,
-    QSlider,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtWidgets import QFrame, QGroupBox, QVBoxLayout, QWidget
 
 from ..models.edit_session import EditSession
+from .edit_strip import BWSlider
 
 
 class EditLightSection(QWidget):
@@ -32,10 +23,9 @@ class EditLightSection(QWidget):
         layout.setSpacing(8)
 
         options_group = QGroupBox("Options", self)
-        options_layout = QGridLayout(options_group)
+        options_layout = QVBoxLayout(options_group)
         options_layout.setContentsMargins(12, 12, 12, 12)
-        options_layout.setHorizontalSpacing(12)
-        options_layout.setVerticalSpacing(10)
+        options_layout.setSpacing(10)
 
         labels = [
             ("Brilliance", "Brilliance"),
@@ -46,11 +36,9 @@ class EditLightSection(QWidget):
             ("Contrast", "Contrast"),
             ("Black Point", "BlackPoint"),
         ]
-        for row_index, (label_text, key) in enumerate(labels):
+        for label_text, key in labels:
             row = _SliderRow(key, label_text, parent=options_group)
-            options_layout.addWidget(row.name_label, row_index, 0)
-            options_layout.addWidget(row.slider, row_index, 1)
-            options_layout.addWidget(row.value_label, row_index, 2)
+            options_layout.addWidget(row)
             self._rows[key] = row
 
         layout.addWidget(options_group)
@@ -110,30 +98,13 @@ class _SliderRow(QFrame):
         self._session: Optional[EditSession] = None
 
         self.setFrameShape(QFrame.Shape.NoFrame)
-        layout = QGridLayout(self)
+        layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setHorizontalSpacing(12)
+        layout.setSpacing(0)
 
-        self.name_label = QLabel(label, self)
-        self.name_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-
-        self.slider = QSlider(Qt.Orientation.Horizontal, self)
-        self.slider.setRange(-100, 100)
-        self.slider.setSingleStep(1)
-        self.slider.setPageStep(5)
+        self.slider = BWSlider(label, self, minimum=-1.0, maximum=1.0, initial=0.0)
+        layout.addWidget(self.slider)
         self.slider.valueChanged.connect(self._handle_slider_changed)
-
-        self.value_label = QLabel("0.00", self)
-        self.value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        # The value read-out previously enforced a 48px minimum width, which prevented the
-        # surrounding layout from shrinking during the sidebar collapse animation.  Allow Qt to
-        # squeeze the label instead so the entire control stack can be animated smoothly while
-        # keeping enough horizontal stretch to display the formatted value when space permits.
-        self.value_label.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Preferred)
-
-        layout.addWidget(self.name_label, 0, 0)
-        layout.addWidget(self.slider, 0, 1)
-        layout.addWidget(self.value_label, 0, 2)
 
     # ------------------------------------------------------------------
     def set_session(self, session: Optional[EditSession]) -> None:
@@ -144,16 +115,14 @@ class _SliderRow(QFrame):
         self.slider.setEnabled(enabled)
 
     def update_from_value(self, value: float) -> None:
-        self.value_label.setText(f"{value:+.2f}")
         block = self.slider.blockSignals(True)
         try:
-            self.slider.setValue(int(round(value * 100)))
+            self.slider.setValue(value, emit=False)
         finally:
             self.slider.blockSignals(block)
 
     # ------------------------------------------------------------------
-    def _handle_slider_changed(self, raw_value: int) -> None:
+    def _handle_slider_changed(self, new_value: float) -> None:
         if self._session is None:
             return
-        self.value_label.setText(f"{raw_value / 100:+.2f}")
-        self._session.set_value(self._key, raw_value / 100.0)
+        self._session.set_value(self._key, float(new_value))

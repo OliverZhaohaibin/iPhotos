@@ -38,7 +38,7 @@ from .widgets import (
     PreviewWindow,
     VideoArea,
 )
-from .widgets.sliding_segmented_control import SlidingSegmentedControl
+from .widgets.edit_topbar import SegmentedTopBar
 
 HEADER_ICON_GLYPH_SIZE = QSize(24, 24)
 """Standard glyph size (in device-independent pixels) for header icons."""
@@ -690,6 +690,7 @@ class Ui_MainWindow(object):
         self.edit_done_button = QPushButton(MainWindow)
         self.edit_image_viewer = ImageViewer()
         self.edit_sidebar = EditSidebar()
+        self.edit_sidebar.setObjectName("editSidebar")
         # Capture the sidebar's default geometry constraints before temporarily collapsing it for
         # the animated transition.  Stashing these values as dynamic properties keeps them
         # accessible to the edit controller once the minimum/maximum widths are reduced to zero.
@@ -707,11 +708,13 @@ class Ui_MainWindow(object):
         self.edit_sidebar.hide()
 
         edit_page = QWidget()
+        edit_page.setObjectName("editPage")
         edit_layout = QVBoxLayout(edit_page)
         edit_layout.setContentsMargins(0, 0, 0, 0)
         edit_layout.setSpacing(6)
 
         edit_header_container = QWidget()
+        edit_header_container.setObjectName("editHeaderContainer")
         edit_header_layout = QHBoxLayout(edit_header_container)
         edit_header_layout.setContentsMargins(12, 0, 12, 0)
         edit_header_layout.setSpacing(12)
@@ -751,8 +754,11 @@ class Ui_MainWindow(object):
 
         edit_header_layout.addWidget(left_controls_container)
 
-        self.edit_mode_control = SlidingSegmentedControl(
-            (self.edit_adjust_action, self.edit_crop_action),
+        self.edit_mode_control = SegmentedTopBar(
+            (
+                self.edit_adjust_action.text() or "Adjust",
+                self.edit_crop_action.text() or "Crop",
+            ),
             edit_header_container,
         )
         edit_header_layout.addWidget(self.edit_mode_control, 0, Qt.AlignmentFlag.AlignHCenter)
@@ -816,10 +822,7 @@ class Ui_MainWindow(object):
         self.edit_page = edit_page
         self.edit_header_container.hide()
 
-        # Ensure the segmented control positions its highlight over the checked
-        # mode before the first paint event so the edit bar looks finalised as
-        # soon as it appears.
-        self.edit_mode_control.sync_to_checked_action()
+        self.edit_mode_control.setCurrentIndex(0, animate=False)
 
         self.view_stack.addWidget(self.edit_page)
 
@@ -911,6 +914,12 @@ class Ui_MainWindow(object):
         )
         self.edit_crop_action.setText(
             QCoreApplication.translate("MainWindow", "Crop", None)
+        )
+        self.edit_mode_control.setItems(
+            (
+                self.edit_adjust_action.text(),
+                self.edit_crop_action.text(),
+            )
         )
         self.edit_compare_button.setToolTip(
             QCoreApplication.translate(

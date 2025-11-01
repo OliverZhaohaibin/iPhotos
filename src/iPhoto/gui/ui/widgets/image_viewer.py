@@ -69,6 +69,7 @@ class ImageViewer(QWidget):
         # value that might drift from the active theme.
         surface_color = viewer_surface_color(self)
         self._default_surface_color = surface_color
+        self._surface_override: str | None = None
         self._scroll_area.setStyleSheet(
             f"background-color: {surface_color}; border: none;"
         )
@@ -102,14 +103,20 @@ class ImageViewer(QWidget):
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+    def set_surface_color_override(self, colour: str | None) -> None:
+        """Override the viewer backdrop with *colour* or restore the default."""
+
+        self._surface_override = colour
+        target = colour if colour is not None else self._default_surface_color
+        stylesheet = f"background-color: {target}; border: none;"
+        self._scroll_area.setStyleSheet(stylesheet)
+        self._scroll_area.viewport().setStyleSheet(stylesheet)
+        self.setStyleSheet(f"background-color: {target};")
+
     def set_immersive_background(self, immersive: bool) -> None:
         """Toggle a pure black backdrop used when immersive mode is active."""
 
-        colour = "#000000" if immersive else self._default_surface_color
-        stylesheet = f"background-color: {colour}; border: none;"
-        self._scroll_area.setStyleSheet(stylesheet)
-        self._scroll_area.viewport().setStyleSheet(stylesheet)
-        self.setStyleSheet(f"background-color: {colour};")
+        self.set_surface_color_override("#000000" if immersive else None)
 
     def set_pixmap(self, pixmap: Optional[QPixmap]) -> None:
         """Display *pixmap* and update the scaled rendering."""
