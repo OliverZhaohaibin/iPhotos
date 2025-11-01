@@ -308,23 +308,30 @@ class AppFacade(QObject):
 
         self._move_service.move_assets(normalized, deleted_root, operation="delete")
 
-    def restore_assets(self, sources: Iterable[Path]) -> None:
-        """Return trashed assets in *sources* to their original albums."""
+    def restore_assets(self, sources: Iterable[Path]) -> bool:
+        """Return ``True`` when at least one trashed asset restore is scheduled.
+
+        The caller uses the boolean result to decide whether restore-specific
+        UI affordances (such as the transient overlay toast) should be
+        displayed.  Returning ``False`` indicates that no work was queued—either
+        because the selection was empty, metadata was missing, or the user
+        declined all fallbacks.
+        """
 
         library = self._get_library_manager()
         if library is None:
             self.errorRaised.emit("Basic Library has not been configured.")
-            return
+            return False
 
         library_root = library.root()
         if library_root is None:
             self.errorRaised.emit("Basic Library has not been configured.")
-            return
+            return False
 
         trash_root = library.deleted_directory()
         if trash_root is None:
             self.errorRaised.emit("Recently Deleted folder is unavailable.")
-            return
+            return False
 
         def _normalize(path: Path) -> Path:
             """Resolve *path* for comparisons while tolerating resolution errors."""
@@ -355,7 +362,7 @@ class AppFacade(QObject):
             normalized.append(candidate)
 
         if not normalized:
-            return
+            return False
 
         model = self._asset_list_model
         for still_path in list(normalized):
@@ -416,14 +423,23 @@ class AppFacade(QObject):
             grouped[destination_root].append(path)
 
         if not grouped:
-            return
+            return False
 
+        scheduled_restore = False
         for destination_root, paths in grouped.items():
             self._move_service.move_assets(
                 paths,
                 destination_root,
                 operation="restore",
             )
+            scheduled_restore = True
+
+        # ``scheduled_restore`` is returned so higher-level controllers can
+        # determine whether to surface restore-specific UI feedback.  The flag
+        # only flips to ``True`` after at least one worker has been queued,
+        # meaning that ``False`` captures both validation failures and user
+        # cancellations.
+        return scheduled_restore
 
     def _determine_restore_destination(
         self,
