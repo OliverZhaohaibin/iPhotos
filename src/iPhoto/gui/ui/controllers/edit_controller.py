@@ -8,7 +8,6 @@ from typing import Optional, TYPE_CHECKING
 
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QWidget
 
 from ....io import sidecar
 from ...utils import image_loader
@@ -16,6 +15,7 @@ from ..models.asset_model import AssetModel
 from ..models.edit_session import EditSession
 from ..tasks.thumbnail_loader import ThumbnailLoader
 from ..ui_main_window import Ui_MainWindow
+from .edit_fullscreen_manager import EditFullscreenManager
 from .edit_preview_manager import EditPreviewManager
 from .edit_view_transition import EditViewTransitionManager
 from .player_view_controller import PlayerViewController
@@ -89,29 +89,19 @@ class EditController(QObject):
         self._transition_manager.transition_finished.connect(self._on_transition_finished)
         self._transition_manager.set_detail_ui_controller(self._detail_ui_controller)
 
+        self._fullscreen_manager = EditFullscreenManager(
+            self._ui,
+            self._window,
+            self._preview_manager,
+            self,
+        )
+
         self._session: Optional[EditSession] = None
         self._current_source: Optional[Path] = None
         self._compare_active = False
         # ``_edit_viewer_fullscreen_connected`` ensures we only connect the
         # image viewer's full screen exit signal once per controller lifetime.
         self._edit_viewer_fullscreen_connected = False
-        # Track whether the dedicated edit full screen workflow is active so
-        # other components (for example the frameless window manager or the
-        # shortcut handler) can delegate exit requests appropriately.
-        self._fullscreen_active = False
-        # ``_fullscreen_hidden_widgets`` stores the visibility state of chrome
-        # elements that should disappear while the dedicated edit full screen is
-        # active.  Restoring the recorded state ensures we respect whichever
-        # widgets were already hidden before the transition.
-        self._fullscreen_hidden_widgets: list[tuple[QWidget, bool]] = []
-        # Persist the splitter geometry before collapsing the navigation and
-        # edit sidebars so we can restore the layout verbatim when the user
-        # exits full screen preview mode.
-        self._fullscreen_splitter_sizes: list[int] | None = None
-        # Record the edit sidebar's width constraints before they are relaxed
-        # for full screen mode.  The user may have resized the pane manually, so
-        # reinstating the saved bounds keeps their layout intact after exit.
-        self._fullscreen_edit_sidebar_constraints: tuple[int, int] | None = None
         ui.edit_reset_button.clicked.connect(self._handle_reset_clicked)
         ui.edit_done_button.clicked.connect(self._handle_done_clicked)
         ui.edit_adjust_action.triggered.connect(lambda checked: self._handle_mode_change("adjust", checked))
@@ -206,9 +196,12 @@ class EditController(QObject):
         self._ui.edit_sidebar.refresh()
         if not self._edit_viewer_fullscreen_connected:
             # Route double-click exit requests from the edit viewer through the
-            # controller so we can restore the chrome even when immersive mode
-            # is managed outside the frameless window manager.
-            self._ui.edit_image_viewer.fullscreenExitRequested.connect(self.exit_fullscreen_preview)
+            # controller so the dedicated full screen manager can restore the
+            # chrome even when immersive mode is triggered outside the
+            # frameless window manager.
+            self._ui.edit_image_viewer.fullscreenExitRequested.connect(
+                self.exit_fullscreen_preview
+            )
             self._edit_viewer_fullscreen_connected = True
 
         initial_pixmap = self._preview_manager.start_session(image, session.values())
@@ -233,7 +226,7 @@ class EditController(QObject):
         """Return to the standard detail view, optionally animating the transition."""
 
         self._preview_manager.cancel_pending_updates()
-        if self._fullscreen_active:
+        if self._fullscreen_manager.is_in_fullscreen():
             self.exit_fullscreen_preview()
         if (
             not self._view_controller.is_edit_view_active()
@@ -251,7 +244,9 @@ class EditController(QObject):
         self._restore_header_widgets_after_edit()
         if self._edit_viewer_fullscreen_connected:
             try:
-                self._ui.edit_image_viewer.fullscreenExitRequested.disconnect(self.exit_fullscreen_preview)
+                self._ui.edit_image_viewer.fullscreenExitRequested.disconnect(
+                    self.exit_fullscreen_preview
+                )
             except (TypeError, RuntimeError):
                 pass
             self._edit_viewer_fullscreen_connected = False
@@ -288,233 +283,40 @@ class EditController(QObject):
             self._current_source = None
             self._compare_active = False
 
-    def _sanitise_splitter_sizes(
-        self,
-        sizes,
-        *,
-        total: int | None = None,
-    ) -> list[int]:
-        """Return a splitter size list that matches the child count and width budget.
-
-        Qt's :meth:`QSplitter.sizes` helper is permissive about the objects it
-        returns, which means the edit workflow has to defensively clamp the
-        values before using them to drive transitions.  The original
-        implementation lived on :class:`EditController` and the full screen
-        workflow still calls into it.  Recreating the helper here mirrors the
-        pre-refactor behaviour so immersive mode can persist and restore the
-        splitter geometry without raising ``AttributeError``.
-
-        Parameters
-        ----------
-        sizes:
-            Any iterable of numbers reported by :meth:`QSplitter.sizes`.
-        total:
-            Optional explicit total width.  When omitted, the method keeps the
-            current sum or falls back to the splitter's width to maintain a
-            stable layout.
-
-        Returns
-        -------
-        list[int]
-            A normalised list sized exactly to the number of splitter children
-            whose values add up to ``total``.
-        """
-
-        splitter = self._ui.splitter
-        count = splitter.count()
-        if count == 0:
-            return []
-        try:
-            raw = [int(value) for value in sizes] if sizes is not None else []
-        except TypeError:
-            raw = []
-        if len(raw) < count:
-            raw.extend(0 for _ in range(count - len(raw)))
-        elif len(raw) > count:
-            raw = raw[:count]
-        sanitised = [max(0, value) for value in raw]
-        current_total = sum(sanitised)
-        if total is None or total <= 0:
-            total = current_total if current_total > 0 else max(1, splitter.width())
-        if current_total <= 0:
-            base = total // count
-            sanitised = [base] * count
-            if sanitised:
-                sanitised[-1] += total - base * count
-            return sanitised
-        if current_total == total:
-            return sanitised
-        scaled: list[int] = []
-        accumulated = 0
-        for index, value in enumerate(sanitised):
-            if index == count - 1:
-                scaled_value = total - accumulated
-            else:
-                scaled_value = int(round(value * total / current_total))
-                accumulated += scaled_value
-            scaled.append(max(0, scaled_value))
-        difference = total - sum(scaled)
-        if scaled and difference != 0:
-            scaled[-1] += difference
-        return scaled
-
     # ------------------------------------------------------------------
     # Dedicated edit full screen workflow
     # ------------------------------------------------------------------
     def is_in_fullscreen(self) -> bool:
-        """Return ``True`` when the dedicated edit full screen mode is active."""
+        """Expose the immersive full screen state managed externally."""
 
-        return self._fullscreen_active
+        return self._fullscreen_manager.is_in_fullscreen()
 
     def enter_fullscreen_preview(self) -> None:
         """Expand the edit viewer into a chrome-free full screen mode."""
 
-        if self._fullscreen_active:
-            return
         if not self._view_controller.is_edit_view_active():
             return
         if self._current_source is None or self._session is None:
             return
-        if not isinstance(self._window, QWidget):
-            return
 
-        full_res_image = image_loader.load_qimage(self._current_source)
-        if full_res_image is None or full_res_image.isNull():
-            _LOGGER.warning(
-                "Failed to load full resolution image for %s", self._current_source
-            )
-            return
-
-        try:
-            initial_pixmap = self._preview_manager.start_session(
-                full_res_image,
-                self._session.values(),
-                scale_for_viewport=False,
-            )
-        except Exception:
-            _LOGGER.warning(
-                "Failed to initialise full screen preview session for %s",
-                self._current_source,
-            )
-            return
-
-        # Hide the standard chrome so the image occupies the entire window.
-        edit_sidebar = self._ui.edit_sidebar
-        self._fullscreen_edit_sidebar_constraints = (
-            edit_sidebar.minimumWidth(),
-            edit_sidebar.maximumWidth(),
-        )
-        widgets_to_hide = [
-            self._ui.window_chrome,
-            self._ui.sidebar,
-            self._ui.status_bar,
-            self._ui.edit_header_container,
-            edit_sidebar,
-        ]
-        self._fullscreen_hidden_widgets = []
-        for widget in widgets_to_hide:
-            self._fullscreen_hidden_widgets.append((widget, widget.isVisible()))
-            widget.hide()
-
-        # Collapse both sidebars so the edit viewer can stretch across the
-        # entire screen without splitter-imposed constraints.
-        edit_sidebar.setMinimumWidth(0)
-        edit_sidebar.setMaximumWidth(0)
-        edit_sidebar.updateGeometry()
-        navigation_sidebar = self._ui.sidebar
-        relax_navigation = getattr(navigation_sidebar, "relax_minimum_width_for_animation", None)
-        if callable(relax_navigation):
-            relax_navigation()
-        splitter = self._ui.splitter
-        self._fullscreen_splitter_sizes = self._sanitise_splitter_sizes(splitter.sizes())
-        total = sum(self._fullscreen_splitter_sizes or [])
-        if total <= 0:
-            total = max(1, splitter.width())
-        splitter.setSizes([0, total])
-
-        self._window.showFullScreen()
-
-        self._fullscreen_active = True
-        self._compare_active = False
-
-        if initial_pixmap.isNull():
-            self._ui.edit_image_viewer.clear()
-        else:
-            self._ui.edit_image_viewer.set_pixmap(initial_pixmap)
-        self._ui.edit_image_viewer.reset_zoom()
+        if self._fullscreen_manager.enter_fullscreen_preview(
+            self._current_source,
+            self._session.values(),
+        ):
+            self._compare_active = False
 
     def exit_fullscreen_preview(self) -> None:
         """Restore the standard edit chrome after leaving full screen."""
 
-        if not self._fullscreen_active:
-            return
-        if not isinstance(self._window, QWidget):
-            return
+        adjustments: Optional[dict[str, float]] = None
+        if self._session is not None:
+            adjustments = self._session.values()
 
-        self._preview_manager.cancel_pending_updates()
-        self._window.showNormal()
-
-        # Reinstate chrome elements using the visibility state captured on
-        # entry so we respect any widgets the caller had already hidden.
-        for widget, was_visible in self._fullscreen_hidden_widgets:
-            widget.setVisible(was_visible)
-        self._fullscreen_hidden_widgets = []
-
-        navigation_sidebar = self._ui.sidebar
-        restore_navigation = getattr(
-            navigation_sidebar,
-            "restore_minimum_width_after_animation",
-            None,
-        )
-        if callable(restore_navigation):
-            restore_navigation()
-
-        if self._fullscreen_edit_sidebar_constraints is not None:
-            min_width, max_width = self._fullscreen_edit_sidebar_constraints
-            edit_sidebar = self._ui.edit_sidebar
-            edit_sidebar.setMinimumWidth(min_width)
-            edit_sidebar.setMaximumWidth(max_width)
-            edit_sidebar.updateGeometry()
-        self._fullscreen_edit_sidebar_constraints = None
-
-        if self._fullscreen_splitter_sizes:
-            self._ui.splitter.setSizes(self._fullscreen_splitter_sizes)
-        self._fullscreen_splitter_sizes = None
-
-        self._fullscreen_active = False
-
-        if self._current_source is None or self._session is None:
-            self._preview_manager.stop_session()
-            return
-
-        source_image = self._preview_manager.get_base_image()
-        if source_image is None or source_image.isNull():
-            source_image = image_loader.load_qimage(self._current_source)
-        if source_image is None or source_image.isNull():
-            self._preview_manager.stop_session()
-            self._ui.edit_image_viewer.clear()
-            return
-
-        try:
-            initial_pixmap = self._preview_manager.start_session(
-                source_image,
-                self._session.values(),
-                scale_for_viewport=True,
-            )
-        except Exception:
-            _LOGGER.warning(
-                "Failed to restore standard preview session for %s",
-                self._current_source,
-            )
-            self._preview_manager.stop_session()
-            return
-
-        self._compare_active = False
-        if initial_pixmap.isNull():
-            self._ui.edit_image_viewer.clear()
-        else:
-            self._ui.edit_image_viewer.set_pixmap(initial_pixmap)
-        self._ui.edit_image_viewer.reset_zoom()
+        if self._fullscreen_manager.exit_fullscreen_preview(
+            self._current_source,
+            adjustments,
+        ):
+            self._compare_active = False
 
     def _handle_compare_pressed(self) -> None:
         """Display the original photo while the compare button is held."""
