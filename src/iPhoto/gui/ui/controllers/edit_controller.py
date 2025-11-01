@@ -280,6 +280,10 @@ class EditController(QObject):
         self._default_rescan_button_palette = QPalette(ui.rescan_button.palette())
         self._default_selection_button_palette = QPalette(ui.selection_button.palette())
         self._default_selection_button_stylesheet = ui.selection_button.styleSheet()
+        # Cache whether the Select toggle was filling its background so we can reinstate the exact
+        # behaviour when leaving edit mode.  The button shares the chrome row with the menu bar and
+        # must remain transparent while the dark theme is active.
+        self._default_selection_button_autofill = ui.selection_button.autoFillBackground()
         self._default_window_title_palette = QPalette(ui.window_title_label.palette())
         self._default_window_title_stylesheet = ui.window_title_label.styleSheet()
         self._default_sidebar_tree_palette = QPalette(ui.sidebar._tree.palette())
@@ -927,6 +931,7 @@ class EditController(QObject):
         self._ui.sidebar._tree.setAutoFillBackground(False)
         self._ui.status_bar._message_label.setPalette(dark_palette)
         self._ui.selection_button.setPalette(dark_palette)
+        self._ui.selection_button.setAutoFillBackground(False)
         self._ui.window_title_label.setPalette(dark_palette)
 
         # Refresh the frameless window manager's menu palette before overriding chrome styles so the
@@ -1036,6 +1041,22 @@ class EditController(QObject):
                 ]
             )
         )
+        self._ui.selection_button.setStyleSheet(
+            "\n".join(
+                [
+                    "QToolButton#selectionButton {",
+                    "  background-color: transparent;",
+                    f"  color: {foreground_color};",
+                    "}",
+                    # The selection toggle should mirror the disabled contrast of ``dark_palette``
+                    # so it remains legible when album selection is unavailable.
+                    "QToolButton#selectionButton:disabled {",
+                    "  background-color: transparent;",
+                    f"  color: {disabled_text_name};",
+                    "}",
+                ]
+            )
+        )
         # ``window_chrome`` does not expose an object name, so rely on its top-level selector to
         # enforce the transparent background and shared foreground tint.
         self._ui.window_chrome.setStyleSheet(
@@ -1119,6 +1140,11 @@ class EditController(QObject):
                 self._default_rescan_button_autofill,
             ),
             (
+                self._ui.selection_button,
+                self._default_selection_button_palette,
+                self._default_selection_button_autofill,
+            ),
+            (
                 self._ui.title_bar,
                 self._default_title_bar_palette,
                 self._default_title_bar_autofill,
@@ -1136,9 +1162,8 @@ class EditController(QObject):
         self._ui.sidebar._tree.setPalette(QPalette(self._default_sidebar_tree_palette))
         self._ui.sidebar._tree.setAutoFillBackground(self._default_sidebar_tree_autofill)
         self._ui.status_bar._message_label.setPalette(QPalette(self._default_statusbar_message_palette))
-        self._ui.selection_button.setPalette(QPalette(self._default_selection_button_palette))
         # The selection toggle sits beside ``rescan_button`` in the chrome row, so it needs the
-        # same stylesheet reset to drop the temporary dark-mode foreground override.
+        # same stylesheet reset to drop the temporary dark-mode foreground override captured above.
         self._apply_color_reset_stylesheet(
             self._ui.selection_button,
             self._default_selection_button_stylesheet,
