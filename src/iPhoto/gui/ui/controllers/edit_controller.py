@@ -796,7 +796,8 @@ class EditController(QObject):
         # Recolour key edit controls so their icons match the bright foreground text used in dark
         # mode.  The icons are reloaded because QIcon caches do not automatically respond to
         # palette changes.
-        dark_icon_color = QColor("#F5F5F7")
+        # Use a bright white tint so icons remain legible against the dark header chrome.
+        dark_icon_color = QColor("#FFFFFF")
         dark_icon_hex = dark_icon_color.name(QColor.NameFormat.HexArgb)
         self._ui.edit_compare_button.setIcon(
             load_icon(
@@ -826,9 +827,13 @@ class EditController(QObject):
         if self._detail_ui_controller is not None:
             self._detail_ui_controller.set_toolbar_icon_tint(dark_icon_color)
         else:
-            # Fallback for tests where the detail controller is not wired yet.
+            # Fallback for tests where the detail controller is not wired yet.  Tint both buttons
+            # directly so the edit toolbar still offers sufficient contrast in isolated harnesses.
             self._ui.info_button.setIcon(
                 load_icon("info.circle.svg", color=dark_icon_hex)
+            )
+            self._ui.favorite_button.setIcon(
+                load_icon("suit.heart.svg", color=dark_icon_hex)
             )
 
         # Construct a palette that mirrors macOS Photos' edit chrome so each widget picks up the
@@ -1153,7 +1158,25 @@ class EditController(QObject):
         self._ui.window_shell.setStyleSheet(self._default_window_shell_stylesheet)
         self._ui.title_bar.setStyleSheet(self._default_title_bar_stylesheet)
         self._ui.title_separator.setStyleSheet(self._default_title_separator_stylesheet)
-        self._ui.main_toolbar.setStyleSheet(self._default_main_toolbar_stylesheet)
+        # Reapply the light toolbar colours using the restored palette.  Dark mode injects a
+        # high-specificity selector that forces white text; simply clearing the stylesheet leaves
+        # those QToolButtons in the overridden colour.  Recompose the default stylesheet with an
+        # explicit rule that mirrors the light palette's text colour so the labels return to black.
+        default_toolbar_stylesheet = self._default_main_toolbar_stylesheet or ""
+        default_text_color = (
+            self._ui.main_toolbar.palette().color(QPalette.ColorRole.Text).name()
+        )
+        reset_toolbar_stylesheet = "\n".join(
+            [
+                "QToolBar#mainToolbar QToolButton {",
+                f"    color: {default_text_color};",
+                "}",
+            ]
+        )
+        combined_toolbar_stylesheet = (
+            f"{default_toolbar_stylesheet}\n{reset_toolbar_stylesheet}".strip()
+        )
+        self._ui.main_toolbar.setStyleSheet(combined_toolbar_stylesheet)
         self._ui.menu_bar.setStyleSheet(self._default_menu_bar_stylesheet)
         self._ui.album_header.setStyleSheet(self._default_album_header_stylesheet)
 
