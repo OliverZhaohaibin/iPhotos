@@ -20,7 +20,7 @@ pytest.importorskip(
     exc_type=ImportError,
 )
 
-from PySide6.QtWidgets import QApplication, QLabel, QStackedWidget, QStatusBar, QWidget
+from PySide6.QtWidgets import QApplication, QStackedWidget, QStatusBar, QWidget
 
 from iPhotos.src.iPhoto.gui.ui.controllers.navigation_controller import NavigationController
 from iPhotos.src.iPhoto.gui.ui.controllers.view_controller import ViewController
@@ -142,7 +142,6 @@ def test_open_album_skips_gallery_on_refresh(tmp_path: Path, qapp: QApplication)
     context.facade = facade
     asset_model = _StubAssetModel()
     sidebar = _StubSidebar()
-    album_label = QLabel()
     status_bar = QStatusBar()
     dialog = _StubDialog()
     view_controller = _SpyViewController()
@@ -152,7 +151,6 @@ def test_open_album_skips_gallery_on_refresh(tmp_path: Path, qapp: QApplication)
         facade,
         asset_model,
         sidebar,
-        album_label,
         status_bar,
         dialog,  # type: ignore[arg-type]
         view_controller,
@@ -193,7 +191,6 @@ def test_open_album_refresh_detected_without_sidebar_sync(
     context.facade = facade
     asset_model = _StubAssetModel()
     sidebar = _StubSidebar()
-    album_label = QLabel()
     status_bar = QStatusBar()
     dialog = _StubDialog()
     view_controller = _SpyViewController()
@@ -203,7 +200,6 @@ def test_open_album_refresh_detected_without_sidebar_sync(
         facade,
         asset_model,
         sidebar,
-        album_label,
         status_bar,
         dialog,  # type: ignore[arg-type]
         view_controller,
@@ -238,7 +234,6 @@ def test_open_all_photos_applies_chronological_sort(
     context.facade = facade
     asset_model = _StubAssetModel()
     sidebar = _StubSidebar()
-    album_label = QLabel()
     status_bar = QStatusBar()
     dialog = _StubDialog()
     view_controller = _SpyViewController()
@@ -248,7 +243,6 @@ def test_open_all_photos_applies_chronological_sort(
         facade,
         asset_model,
         sidebar,
-        album_label,
         status_bar,
         dialog,  # type: ignore[arg-type]
         view_controller,

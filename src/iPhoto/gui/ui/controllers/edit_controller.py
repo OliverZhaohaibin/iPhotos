@@ -254,9 +254,9 @@ class EditController(QObject):
         self._default_window_shell_stylesheet = ui.window_shell.styleSheet()
         self._default_title_bar_stylesheet = ui.title_bar.styleSheet()
         self._default_title_separator_stylesheet = ui.title_separator.styleSheet()
-        self._default_main_toolbar_stylesheet = ui.main_toolbar.styleSheet()
+        self._default_menu_bar_container_stylesheet = ui.menu_bar_container.styleSheet()
         self._default_menu_bar_stylesheet = ui.menu_bar.styleSheet()
-        self._default_album_header_stylesheet = ui.album_header.styleSheet()
+        self._default_rescan_button_stylesheet = ui.rescan_button.styleSheet()
 
         # ``RoundedWindowShell`` owns the antialiased frame that produces the
         # macOS-style rounded corners.  Record a reference so the dark edit
@@ -275,13 +275,15 @@ class EditController(QObject):
         self._default_window_shell_palette = QPalette(ui.window_shell.palette())
         self._default_title_bar_palette = QPalette(ui.title_bar.palette())
         self._default_title_separator_palette = QPalette(ui.title_separator.palette())
-        self._default_main_toolbar_palette = QPalette(ui.main_toolbar.palette())
+        self._default_menu_bar_container_palette = QPalette(ui.menu_bar_container.palette())
         self._default_menu_bar_palette = QPalette(ui.menu_bar.palette())
-        self._default_album_header_palette = QPalette(ui.album_header.palette())
-        self._default_album_label_palette = QPalette(ui.album_label.palette())
-        self._default_album_label_stylesheet = ui.album_label.styleSheet()
+        self._default_rescan_button_palette = QPalette(ui.rescan_button.palette())
         self._default_selection_button_palette = QPalette(ui.selection_button.palette())
         self._default_selection_button_stylesheet = ui.selection_button.styleSheet()
+        # Cache whether the Select toggle was filling its background so we can reinstate the exact
+        # behaviour when leaving edit mode.  The button shares the chrome row with the menu bar and
+        # must remain transparent while the dark theme is active.
+        self._default_selection_button_autofill = ui.selection_button.autoFillBackground()
         self._default_window_title_palette = QPalette(ui.window_title_label.palette())
         self._default_window_title_stylesheet = ui.window_title_label.styleSheet()
         self._default_sidebar_tree_palette = QPalette(ui.sidebar._tree.palette())
@@ -294,9 +296,9 @@ class EditController(QObject):
         self._default_window_shell_autofill = ui.window_shell.autoFillBackground()
         self._default_title_bar_autofill = ui.title_bar.autoFillBackground()
         self._default_title_separator_autofill = ui.title_separator.autoFillBackground()
-        self._default_main_toolbar_autofill = ui.main_toolbar.autoFillBackground()
+        self._default_menu_bar_container_autofill = ui.menu_bar_container.autoFillBackground()
         self._default_menu_bar_autofill = ui.menu_bar.autoFillBackground()
-        self._default_album_header_autofill = ui.album_header.autoFillBackground()
+        self._default_rescan_button_autofill = ui.rescan_button.autoFillBackground()
         self._default_sidebar_tree_autofill = ui.sidebar._tree.autoFillBackground()
 
         # Preserve the rounded shell's palette and colour override so the
@@ -805,12 +807,11 @@ class EditController(QObject):
             )
         )
         for section in self._ui.edit_sidebar.findChildren(CollapsibleSection):
-            toggle_button = getattr(section, "_toggle_button", None)
-            if toggle_button is not None:
-                toggle_icon = (
-                    "chevron.down.svg" if section.is_expanded() else "chevron.right.svg"
-                )
-                toggle_button.setIcon(load_icon(toggle_icon, color=dark_icon_hex))
+            # Persist the bright tint so the arrow glyph stays white even after
+            # the user collapses or expands the section.  The collapsible widget
+            # reloads the icon for every state change, so caching the colour
+            # avoids the fallback to the default dark variant.
+            section.set_toggle_icon_tint(dark_icon_color)
             icon_label = getattr(section, "_icon_label", None)
             icon_name = getattr(section, "_icon_name", "")
             if icon_label is not None and icon_name:
@@ -894,9 +895,8 @@ class EditController(QObject):
             self._ui.sidebar,
             self._ui.status_bar,
             self._ui.window_chrome,
-            self._ui.main_toolbar,
+            self._ui.menu_bar_container,
             self._ui.menu_bar,
-            self._ui.album_header,
             self._ui.title_bar,
             self._ui.title_separator,
         ]
@@ -906,6 +906,12 @@ class EditController(QObject):
             # painting the curved outline.  ``setAutoFillBackground(False)`` prevents Qt from
             # rasterising an opaque rectangle that would obscure the shell.
             widget.setAutoFillBackground(False)
+
+        # Mirror the palette adjustment for the standalone Rescan button so the control inherits
+        # the same foreground colours as the surrounding chrome while keeping its background
+        # transparent for the rounded shell.
+        self._ui.rescan_button.setPalette(dark_palette)
+        self._ui.rescan_button.setAutoFillBackground(False)
 
         # ``window_shell`` must remain transparent so the rounded host widget
         # can paint the curved edge.  Update its palette but leave auto-fill
@@ -923,8 +929,8 @@ class EditController(QObject):
         self._ui.sidebar._tree.setPalette(dark_palette)
         self._ui.sidebar._tree.setAutoFillBackground(False)
         self._ui.status_bar._message_label.setPalette(dark_palette)
-        self._ui.album_label.setPalette(dark_palette)
         self._ui.selection_button.setPalette(dark_palette)
+        self._ui.selection_button.setAutoFillBackground(False)
         self._ui.window_title_label.setPalette(dark_palette)
 
         # Refresh the frameless window manager's menu palette before overriding chrome styles so the
@@ -939,6 +945,21 @@ class EditController(QObject):
         foreground_color = text_color.name()
         accent_color_name = accent_color.name()
         outline_color_name = outline_color.name()
+
+        # ``window_title_label`` retains the ``color: unset`` rule that dark-mode restoration appends
+        # to its stylesheet.  Apply an explicit white foreground while the edit palette is active so
+        # the application title matches the surrounding chrome instead of inheriting a stale light
+        # theme colour from earlier sessions.
+        self._ui.window_title_label.setStyleSheet(
+            "\n".join(
+                [
+                    "QLabel#windowTitleLabel {",
+                    f"  color: {foreground_color};",
+                    "}",
+                ]
+            )
+        )
+
         self._ui.sidebar.setStyleSheet(
             "\n".join(
                 [
@@ -1007,30 +1028,52 @@ class EditController(QObject):
                 ]
             )
         )
-        self._ui.main_toolbar.setStyleSheet(
+        self._ui.menu_bar_container.setStyleSheet(
             "\n".join(
                 [
-                    "QToolBar#mainToolbar {",
+                    "QWidget#menuBarContainer {",
                     "  background-color: transparent;",
                     f"  color: {foreground_color};",
                     "}",
-                    "QToolBar#mainToolbar QToolButton {",
+                ]
+            )
+        )
+        disabled_text_name = disabled_text.name()
+        self._ui.rescan_button.setStyleSheet(
+            "\n".join(
+                [
+                    "QToolButton#rescanButton {",
+                    "  background-color: transparent;",
                     f"  color: {foreground_color};",
+                    "}",
+                    # Mirror the disabled tint baked into ``dark_palette`` so the button keeps the
+                    # same contrast level regardless of whether the action is currently available.
+                    "QToolButton#rescanButton:disabled {",
+                    "  background-color: transparent;",
+                    f"  color: {disabled_text_name};",
                     "}",
                 ]
             )
         )
-        # ``window_chrome`` and ``album_header`` do not expose object names, so we rely on their
-        # top-level selectors to enforce the background tint and text colour.
-        self._ui.window_chrome.setStyleSheet(
+        self._ui.selection_button.setStyleSheet(
             "\n".join(
                 [
-                    "background-color: transparent;",
-                    f"color: {foreground_color};",
+                    "QToolButton#selectionButton {",
+                    "  background-color: transparent;",
+                    f"  color: {foreground_color};",
+                    "}",
+                    # The selection toggle should mirror the disabled contrast of ``dark_palette``
+                    # so it remains legible when album selection is unavailable.
+                    "QToolButton#selectionButton:disabled {",
+                    "  background-color: transparent;",
+                    f"  color: {disabled_text_name};",
+                    "}",
                 ]
             )
         )
-        self._ui.album_header.setStyleSheet(
+        # ``window_chrome`` does not expose an object name, so rely on its top-level selector to
+        # enforce the transparent background and shared foreground tint.
+        self._ui.window_chrome.setStyleSheet(
             "\n".join(
                 [
                     "background-color: transparent;",
@@ -1054,12 +1097,9 @@ class EditController(QObject):
             load_icon("square.fill.and.line.vertical.and.square.svg")
         )
         for section in self._ui.edit_sidebar.findChildren(CollapsibleSection):
-            toggle_button = getattr(section, "_toggle_button", None)
-            if toggle_button is not None:
-                toggle_icon = (
-                    "chevron.down.svg" if section.is_expanded() else "chevron.right.svg"
-                )
-                toggle_button.setIcon(load_icon(toggle_icon))
+            # Drop the cached tint so future state changes restore the default
+            # dark glyph used by the light chrome.
+            section.set_toggle_icon_tint(None)
             icon_label = getattr(section, "_icon_label", None)
             icon_name = getattr(section, "_icon_name", "")
             if icon_label is not None and icon_name:
@@ -1096,9 +1136,9 @@ class EditController(QObject):
                 self._default_window_shell_autofill,
             ),
             (
-                self._ui.main_toolbar,
-                self._default_main_toolbar_palette,
-                self._default_main_toolbar_autofill,
+                self._ui.menu_bar_container,
+                self._default_menu_bar_container_palette,
+                self._default_menu_bar_container_autofill,
             ),
             (
                 self._ui.menu_bar,
@@ -1106,9 +1146,14 @@ class EditController(QObject):
                 self._default_menu_bar_autofill,
             ),
             (
-                self._ui.album_header,
-                self._default_album_header_palette,
-                self._default_album_header_autofill,
+                self._ui.rescan_button,
+                self._default_rescan_button_palette,
+                self._default_rescan_button_autofill,
+            ),
+            (
+                self._ui.selection_button,
+                self._default_selection_button_palette,
+                self._default_selection_button_autofill,
             ),
             (
                 self._ui.title_bar,
@@ -1128,15 +1173,8 @@ class EditController(QObject):
         self._ui.sidebar._tree.setPalette(QPalette(self._default_sidebar_tree_palette))
         self._ui.sidebar._tree.setAutoFillBackground(self._default_sidebar_tree_autofill)
         self._ui.status_bar._message_label.setPalette(QPalette(self._default_statusbar_message_palette))
-        self._ui.album_label.setPalette(QPalette(self._default_album_label_palette))
-        # Reapply the cached stylesheet while removing the dark theme's explicit white text.
-        self._apply_color_reset_stylesheet(
-            self._ui.album_label,
-            self._default_album_label_stylesheet,
-            "QLabel#albumLabel",
-        )
-        self._ui.selection_button.setPalette(QPalette(self._default_selection_button_palette))
-        # The selection toggle shares the same album header chrome, so it needs the same reset.
+        # The selection toggle sits beside ``rescan_button`` in the chrome row, so it needs the
+        # same stylesheet reset to drop the temporary dark-mode foreground override captured above.
         self._apply_color_reset_stylesheet(
             self._ui.selection_button,
             self._default_selection_button_stylesheet,
@@ -1172,24 +1210,20 @@ class EditController(QObject):
         self._ui.window_shell.setStyleSheet(self._default_window_shell_stylesheet)
         self._ui.title_bar.setStyleSheet(self._default_title_bar_stylesheet)
         self._ui.title_separator.setStyleSheet(self._default_title_separator_stylesheet)
-        # Reapply the light toolbar colours using a palette-driven reset.  Dark mode injects a
-        # high-specificity selector that forces white text; clearing the stylesheet alone leaves the
-        # colour override in place.  By emitting ``color: unset`` the rule instructs Qt to drop the
-        # explicit value so the restored palette determines the final text colour.
-        default_toolbar_stylesheet = self._default_main_toolbar_stylesheet or ""
-        reset_toolbar_stylesheet = "\n".join(
-            [
-                "QToolBar#mainToolbar QToolButton {",
-                "    color: unset;",
-                "}",
-            ]
+        # Restore the chrome row hosting the menu bar and Rescan button so it returns to its light
+        # theme appearance precisely as captured before entering edit mode.
+        self._ui.menu_bar_container.setStyleSheet(
+            self._default_menu_bar_container_stylesheet
         )
-        combined_toolbar_stylesheet = (
-            f"{default_toolbar_stylesheet}\n{reset_toolbar_stylesheet}".strip()
-        )
-        self._ui.main_toolbar.setStyleSheet(combined_toolbar_stylesheet)
         self._ui.menu_bar.setStyleSheet(self._default_menu_bar_stylesheet)
-        self._ui.album_header.setStyleSheet(self._default_album_header_stylesheet)
+        # ``color: unset`` clears the white foreground injected in edit mode so the button can
+        # pick up the restored light-theme palette (typically black text) the next time it is
+        # painted.
+        self._apply_color_reset_stylesheet(
+            self._ui.rescan_button,
+            self._default_rescan_button_stylesheet,
+            "QToolButton#rescanButton",
+        )
 
         if self._rounded_window_shell is not None:
             if self._default_rounded_shell_palette is not None:
@@ -1211,7 +1245,7 @@ class EditController(QObject):
         """Recombine *widget*'s cached stylesheet with a neutral text colour.
 
         Dark mode injects high-specificity rules that force white foregrounds
-        onto labels and buttons hosted in the album header and window chrome.
+        onto controls embedded in the chrome row.
         Simply restoring the original stylesheet is insufficient because the
         ``color`` attribute remains latched to the dark override.  Appending a
         ``color: unset`` rule targeted at the widget's object name explicitly

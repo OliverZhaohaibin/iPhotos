@@ -5,8 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal, Optional, TYPE_CHECKING
 
-from PySide6.QtWidgets import QLabel
-
 # Support both package-style and legacy ``iPhotos.src`` imports during GUI
 # bootstrap.
 try:  # pragma: no cover - path-sensitive import
@@ -34,7 +32,6 @@ class NavigationController:
         facade: AppFacade,
         asset_model: AssetModel,
         sidebar: AlbumSidebar,
-        album_label: QLabel,
         status_bar: ChromeStatusBar,
         dialog: DialogController,
         view_controller: ViewController,
@@ -44,7 +41,6 @@ class NavigationController:
         self._facade = facade
         self._asset_model = asset_model
         self._sidebar = sidebar
-        self._album_label = album_label
         self._status = status_bar
         self._dialog = dialog
         self._view_controller = view_controller
@@ -172,7 +168,6 @@ class NavigationController:
                 title = self._static_selection
                 self._sidebar.select_static_node(self._static_selection)
                 self._asset_model.set_filter_mode(None)
-                self._album_label.setText(f"{title} — {root}")
                 self.update_status()
                 return
             title = (
@@ -192,7 +187,6 @@ class NavigationController:
             self._sidebar.select_path(root)
             self._static_selection = None
             self._asset_model.set_filter_mode(None)
-        self._album_label.setText(f"{title} — {root}")
         self.update_status()
 
     # ------------------------------------------------------------------
