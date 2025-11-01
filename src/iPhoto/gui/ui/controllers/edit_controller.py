@@ -807,12 +807,11 @@ class EditController(QObject):
             )
         )
         for section in self._ui.edit_sidebar.findChildren(CollapsibleSection):
-            toggle_button = getattr(section, "_toggle_button", None)
-            if toggle_button is not None:
-                toggle_icon = (
-                    "chevron.down.svg" if section.is_expanded() else "chevron.right.svg"
-                )
-                toggle_button.setIcon(load_icon(toggle_icon, color=dark_icon_hex))
+            # Persist the bright tint so the arrow glyph stays white even after
+            # the user collapses or expands the section.  The collapsible widget
+            # reloads the icon for every state change, so caching the colour
+            # avoids the fallback to the default dark variant.
+            section.set_toggle_icon_tint(dark_icon_color)
             icon_label = getattr(section, "_icon_label", None)
             icon_name = getattr(section, "_icon_name", "")
             if icon_label is not None and icon_name:
@@ -1083,12 +1082,9 @@ class EditController(QObject):
             load_icon("square.fill.and.line.vertical.and.square.svg")
         )
         for section in self._ui.edit_sidebar.findChildren(CollapsibleSection):
-            toggle_button = getattr(section, "_toggle_button", None)
-            if toggle_button is not None:
-                toggle_icon = (
-                    "chevron.down.svg" if section.is_expanded() else "chevron.right.svg"
-                )
-                toggle_button.setIcon(load_icon(toggle_icon))
+            # Drop the cached tint so future state changes restore the default
+            # dark glyph used by the light chrome.
+            section.set_toggle_icon_tint(None)
             icon_label = getattr(section, "_icon_label", None)
             icon_name = getattr(section, "_icon_name", "")
             if icon_label is not None and icon_name:
