@@ -797,10 +797,11 @@ class EditController(QObject):
         # mode.  The icons are reloaded because QIcon caches do not automatically respond to
         # palette changes.
         dark_icon_color = QColor("#F5F5F7")
+        dark_icon_hex = dark_icon_color.name(QColor.NameFormat.HexArgb)
         self._ui.edit_compare_button.setIcon(
             load_icon(
                 "square.fill.and.line.vertical.and.square.svg",
-                color=dark_icon_color.name(),
+                color=dark_icon_hex,
             )
         )
         for section in self._ui.edit_sidebar.findChildren(CollapsibleSection):
@@ -809,15 +810,26 @@ class EditController(QObject):
                 toggle_icon = (
                     "chevron.down.svg" if section.is_expanded() else "chevron.right.svg"
                 )
-                toggle_button.setIcon(
-                    load_icon(toggle_icon, color=dark_icon_color.name())
-                )
+                toggle_button.setIcon(load_icon(toggle_icon, color=dark_icon_hex))
             icon_label = getattr(section, "_icon_label", None)
             icon_name = getattr(section, "_icon_name", "")
             if icon_label is not None and icon_name:
                 icon_label.setPixmap(
-                    load_icon(icon_name, color=dark_icon_color.name()).pixmap(20, 20)
+                    load_icon(icon_name, color=dark_icon_hex).pixmap(20, 20)
                 )
+
+        # Match the zoom controls to the dark chrome so the +/- affordances stay legible.
+        self._ui.zoom_out_button.setIcon(load_icon("minus.svg", color=dark_icon_hex))
+        self._ui.zoom_in_button.setIcon(load_icon("plus.svg", color=dark_icon_hex))
+
+        # Ask the detail controller to tint the info and favourite icons if it is available.
+        if self._detail_ui_controller is not None:
+            self._detail_ui_controller.set_toolbar_icon_tint(dark_icon_color)
+        else:
+            # Fallback for tests where the detail controller is not wired yet.
+            self._ui.info_button.setIcon(
+                load_icon("info.circle.svg", color=dark_icon_hex)
+            )
 
         # Construct a palette that mirrors macOS Photos' edit chrome so each widget picks up the
         # same deep greys and bright foreground colours.
@@ -1048,6 +1060,15 @@ class EditController(QObject):
             icon_name = getattr(section, "_icon_name", "")
             if icon_label is not None and icon_name:
                 icon_label.setPixmap(load_icon(icon_name).pixmap(20, 20))
+
+        # Return the zoom affordances and shared toolbar buttons to their light theme assets.
+        self._ui.zoom_out_button.setIcon(load_icon("minus.svg"))
+        self._ui.zoom_in_button.setIcon(load_icon("plus.svg"))
+        if self._detail_ui_controller is not None:
+            self._detail_ui_controller.set_toolbar_icon_tint(None)
+        else:
+            self._ui.info_button.setIcon(load_icon("info.circle.svg"))
+            self._ui.favorite_button.setIcon(load_icon("suit.heart.svg"))
 
         widgets_to_restore = [
             (
