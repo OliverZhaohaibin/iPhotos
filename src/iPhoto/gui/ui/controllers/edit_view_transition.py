@@ -508,16 +508,19 @@ class EditThemeManager:
         self._refresh_menu_styles()
         self._ui.menu_bar.setAutoFillBackground(self._default_menu_bar_autofill)
 
-        self._ui.sidebar.setStyleSheet(
-            self._default_sidebar_stylesheet
-            or (
-                "QWidget#albumSidebar {
-"
-                f"    background-color: {SIDEBAR_BACKGROUND_COLOR.name()};
-"
-                "}"
+        if self._default_sidebar_stylesheet:
+            self._ui.sidebar.setStyleSheet(self._default_sidebar_stylesheet)
+        else:
+            # When no cached stylesheet exists we restore a minimal default that preserves the
+            # expected light chrome colour scheme for the navigation sidebar.
+            fallback_sidebar_stylesheet = "\n".join(
+                [
+                    "QWidget#albumSidebar {",
+                    f"    background-color: {SIDEBAR_BACKGROUND_COLOR.name()};",
+                    "}",
+                ]
             )
-        )
+            self._ui.sidebar.setStyleSheet(fallback_sidebar_stylesheet)
         self._ui.status_bar.setStyleSheet(self._default_statusbar_stylesheet)
         self._ui.window_chrome.setStyleSheet(self._default_window_chrome_stylesheet)
         self._ui.window_shell.setStyleSheet(self._default_window_shell_stylesheet)
