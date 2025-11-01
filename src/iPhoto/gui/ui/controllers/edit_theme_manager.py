@@ -272,15 +272,11 @@ class EditThemeManager:
         outline_color_name = outline_color.name()
         disabled_text_name = disabled_text.name()
 
-        self._ui.window_title_label.setStyleSheet(
-            "\n".join(
-                [
-                    "QLabel#windowTitleLabel {",
-                    f"  color: {foreground_color};",
-                    "}",
-                ]
-            )
-        )
+        # The custom title bar label renders plain text without an icon, so explicitly override
+        # its foreground colour to keep the "iPhoto" caption legible in both light and dark
+        # chrome.  Using a direct ``color`` property avoids Qt inheriting an outdated palette
+        # from a parent widget when the application toggles modes repeatedly.
+        self._ui.window_title_label.setStyleSheet(f"color: {foreground_color};")
 
         self._ui.sidebar.setStyleSheet(
             "\n".join(
@@ -493,8 +489,10 @@ class EditThemeManager:
             self._default_selection_button_stylesheet,
             "QToolButton#selectionButton",
         )
-        self._ui.window_title_label.setStyleSheet(
-            self._default_window_title_stylesheet
+        self._apply_color_reset_stylesheet(
+            self._ui.window_title_label,
+            self._default_window_title_stylesheet,
+            "QLabel#windowTitleLabel",
         )
         self._ui.sidebar._tree.setPalette(
             QPalette(self._default_sidebar_tree_palette)
