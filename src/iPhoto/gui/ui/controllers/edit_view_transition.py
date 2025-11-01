@@ -357,78 +357,143 @@ class EditViewTransitionManager(QObject):
         self._ui.window_title_label.setPalette(dark_palette)
 
         self._refresh_menu_styles()
+        self._ui.menu_bar.setAutoFillBackground(False)
 
-        self._ui.menu_bar_container.setStyleSheet(_EDIT_DARK_STYLESHEET)
-        self._ui.menu_bar.setStyleSheet(
+        foreground_color = text_color.name()
+        accent_color_name = accent_color.name()
+        outline_color_name = outline_color.name()
+        disabled_text_name = disabled_text.name()
+
+        # ``window_title_label`` retains a ``color: unset`` rule that the restoration step appends
+        # to its stylesheet.  Apply an explicit white tint while the dark palette is active so the
+        # caption matches the surrounding chrome instead of inheriting a stale light variant.
+        self._ui.window_title_label.setStyleSheet(
             "\n".join(
                 [
-                    "QMenuBar {",
-                    "    background: transparent;",
-                    "    color: #F5F5F7;",
-                    "}",
-                    "QMenuBar::item {",
-                    "    background: transparent;",
-                    "}",
-                    "QMenuBar::item:selected {",
-                    "    background-color: rgba(255, 255, 255, 40);",
+                    "QLabel#windowTitleLabel {",
+                    f"  color: {foreground_color};",
                     "}",
                 ]
             )
         )
+
+        # Keep the album sidebar transparent so the rounded shell continues to paint the curved
+        # outline, but force the foreground colour so labels remain readable against the dark chrome.
         self._ui.sidebar.setStyleSheet(
-            "QWidget#albumSidebar {\n"
-            "    background-color: #1C1C1E;\n"
-            "    color: #F5F5F7;\n"
-            "}\n"
-            "QTreeWidget#albumSidebarTree::item {\n"
-            "    height: 28px;\n"
-            "}\n"
-            "QTreeWidget#albumSidebarTree::item:hover {\n"
-            "    background-color: rgba(58, 58, 60, 180);\n"
-            "}\n"
-            "QTreeWidget#albumSidebarTree::item:selected {\n"
-            "    background-color: rgba(10, 132, 255, 120);\n"
-            "    color: #FFFFFF;\n"
-            "}"
+            "\n".join(
+                [
+                    "QWidget#albumSidebar {",
+                    "  background-color: transparent;",
+                    f"  color: {foreground_color};",
+                    "}",
+                    "QWidget#albumSidebar QLabel {",
+                    f"  color: {foreground_color};",
+                    "}",
+                ]
+            )
         )
         self._ui.status_bar.setStyleSheet(
-            "QWidget#statusBar {\n"
-            "    background-color: #1C1C1E;\n"
-            "    color: #F5F5F7;\n"
-            "}"
+            "\n".join(
+                [
+                    "QWidget#chromeStatusBar {",
+                    "  background-color: transparent;",
+                    f"  color: {foreground_color};",
+                    "}",
+                    "QWidget#chromeStatusBar QLabel {",
+                    f"  color: {foreground_color};",
+                    "}",
+                ]
+            )
         )
-        self._ui.window_chrome.setStyleSheet("QWidget#windowChrome { background: transparent; }")
-        self._ui.window_shell.setStyleSheet("QWidget#windowShell { background: transparent; }")
         self._ui.title_bar.setStyleSheet(
-            "QWidget#titleBar {\n"
-            "    background: transparent;\n"
-            "    color: #F5F5F7;\n"
-            "}"
+            "\n".join(
+                [
+                    "QWidget#windowTitleBar {",
+                    "  background-color: transparent;",
+                    f"  color: {foreground_color};",
+                    "}",
+                    "QWidget#windowTitleBar QLabel {",
+                    f"  color: {foreground_color};",
+                    "}",
+                    "QWidget#windowTitleBar QToolButton {",
+                    f"  color: {foreground_color};",
+                    "}",
+                ]
+            )
         )
         self._ui.title_separator.setStyleSheet(
-            "QWidget#lineTitleSeparator {\n"
-            "    background-color: rgba(255, 255, 255, 30);\n"
+            "QFrame#windowTitleSeparator {"
+            f"  background-color: {outline_color_name};"
+            "  border: none;"
             "}"
+        )
+        self._ui.menu_bar.setStyleSheet(
+            "\n".join(
+                [
+                    "QMenuBar#chromeMenuBar {",
+                    "  background-color: transparent;",
+                    f"  color: {foreground_color};",
+                    "}",
+                    "QMenuBar#chromeMenuBar::item {",
+                    f"  color: {foreground_color};",
+                    "}",
+                    "QMenuBar#chromeMenuBar::item:selected {",
+                    f"  background-color: {outline_color_name};",
+                    "  border-radius: 6px;",
+                    "}",
+                    "QMenuBar#chromeMenuBar::item:pressed {",
+                    f"  background-color: {accent_color_name};",
+                    "}",
+                ]
+            )
+        )
+        self._ui.menu_bar_container.setStyleSheet(
+            "\n".join(
+                [
+                    "QWidget#menuBarContainer {",
+                    "  background-color: transparent;",
+                    f"  color: {foreground_color};",
+                    "}",
+                ]
+            )
         )
         self._ui.rescan_button.setStyleSheet(
-            "QToolButton#rescanButton {\n"
-            "    color: #F5F5F7;\n"
-            "    background: transparent;\n"
-            "}"
+            "\n".join(
+                [
+                    "QToolButton#rescanButton {",
+                    "  background-color: transparent;",
+                    f"  color: {foreground_color};",
+                    "}",
+                    "QToolButton#rescanButton:disabled {",
+                    "  background-color: transparent;",
+                    f"  color: {disabled_text_name};",
+                    "}",
+                ]
+            )
+        )
+        self._ui.selection_button.setStyleSheet(
+            "\n".join(
+                [
+                    "QToolButton#selectionButton {",
+                    "  background-color: transparent;",
+                    f"  color: {foreground_color};",
+                    "}",
+                    "QToolButton#selectionButton:disabled {",
+                    "  background-color: transparent;",
+                    f"  color: {disabled_text_name};",
+                    "}",
+                ]
+            )
+        )
+        self._ui.window_chrome.setStyleSheet(
+            "\n".join(
+                [
+                    "background-color: transparent;",
+                    f"color: {foreground_color};",
+                ]
+            )
         )
 
-        self._ui.edit_header_container.setStyleSheet(
-            "QWidget#editHeaderContainer {\n"
-            "    background-color: #2C2C2E;\n"
-            "    border-radius: 12px;\n"
-            "}"
-        )
-        self._ui.edit_sidebar.setStyleSheet(
-            "QWidget#editSidebar {\n"
-            "    background-color: #2C2C2E;\n"
-            "    color: #F5F5F7;\n"
-            "}"
-        )
         self._ui.edit_page.setStyleSheet(_EDIT_DARK_STYLESHEET)
         self._edit_theme_applied = True
 
@@ -573,7 +638,15 @@ class EditViewTransitionManager(QObject):
         cached_stylesheet: str | None,
         selector: str,
     ) -> None:
-        """Merge *cached_stylesheet* with an explicit ``color: unset`` rule."""
+        """Recombine *widget*'s cached stylesheet with a neutral text colour.
+
+        Dark mode injects high-specificity rules that force white foregrounds
+        onto chrome controls.  Simply restoring the original stylesheet is
+        insufficient because the ``color`` attribute remains latched to the
+        dark override.  Appending a ``color: unset`` rule targeted at the
+        widget's object name clears that override explicitly so Qt falls back to
+        the palette we restored moments earlier.
+        """
 
         base_stylesheet = (cached_stylesheet or "").strip()
         reset_stylesheet = "\n".join(
