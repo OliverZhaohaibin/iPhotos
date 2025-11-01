@@ -1103,152 +1103,198 @@ class EditController(QObject):
 
         if not self._edit_theme_applied:
             return
-        self._ui.edit_page.setStyleSheet(self._default_edit_page_stylesheet)
-        self._ui.edit_image_viewer.set_surface_color_override(None)
+        freeze_targets: list[QWidget] = []
+        seen_ids: set[int] = set()
 
-        # Restore the untinted icons now that the interface has returned to the light theme.
-        self._ui.edit_compare_button.setIcon(
-            load_icon("square.fill.and.line.vertical.and.square.svg")
-        )
-        for section in self._ui.edit_sidebar.findChildren(CollapsibleSection):
-            # Drop the cached tint so future state changes restore the default
-            # dark glyph used by the light chrome.
-            section.set_toggle_icon_tint(None)
-            icon_label = getattr(section, "_icon_label", None)
-            icon_name = getattr(section, "_icon_name", "")
-            if icon_label is not None and icon_name:
-                icon_label.setPixmap(load_icon(icon_name).pixmap(20, 20))
+        def _register_freeze_target(widget: QWidget | None) -> None:
+            """Collect *widget* so its paint updates can be paused during the reset."""
 
-        # Return the zoom affordances and shared toolbar buttons to their light theme assets.
-        self._ui.zoom_out_button.setIcon(load_icon("minus.svg"))
-        self._ui.zoom_in_button.setIcon(load_icon("plus.svg"))
-        if self._detail_ui_controller is not None:
-            self._detail_ui_controller.set_toolbar_icon_tint(None)
-        else:
-            self._ui.info_button.setIcon(load_icon("info.circle.svg"))
-            self._ui.favorite_button.setIcon(load_icon("suit.heart.svg"))
+            if widget is None:
+                return
+            widget_id = id(widget)
+            if widget_id in seen_ids:
+                return
+            seen_ids.add(widget_id)
+            freeze_targets.append(widget)
 
-        widgets_to_restore = [
-            (
-                self._ui.sidebar,
-                self._default_sidebar_palette,
-                self._default_sidebar_autofill,
-            ),
-            (
-                self._ui.status_bar,
-                self._default_statusbar_palette,
-                self._default_statusbar_autofill,
-            ),
-            (
-                self._ui.window_chrome,
-                self._default_window_chrome_palette,
-                self._default_window_chrome_autofill,
-            ),
-            (
-                self._ui.window_shell,
-                self._default_window_shell_palette,
-                self._default_window_shell_autofill,
-            ),
-            (
-                self._ui.menu_bar_container,
-                self._default_menu_bar_container_palette,
-                self._default_menu_bar_container_autofill,
-            ),
-            (
-                self._ui.menu_bar,
-                self._default_menu_bar_palette,
-                self._default_menu_bar_autofill,
-            ),
-            (
-                self._ui.rescan_button,
-                self._default_rescan_button_palette,
-                self._default_rescan_button_autofill,
-            ),
-            (
-                self._ui.selection_button,
-                self._default_selection_button_palette,
-                self._default_selection_button_autofill,
-            ),
-            (
-                self._ui.title_bar,
-                self._default_title_bar_palette,
-                self._default_title_bar_autofill,
-            ),
-            (
-                self._ui.title_separator,
-                self._default_title_separator_palette,
-                self._default_title_separator_autofill,
-            ),
-        ]
-        for widget, palette, autofill in widgets_to_restore:
-            widget.setPalette(QPalette(palette))
-            widget.setAutoFillBackground(autofill)
-
-        self._ui.sidebar._tree.setPalette(QPalette(self._default_sidebar_tree_palette))
-        self._ui.sidebar._tree.setAutoFillBackground(self._default_sidebar_tree_autofill)
-        self._ui.status_bar._message_label.setPalette(QPalette(self._default_statusbar_message_palette))
-        # The selection toggle sits beside ``rescan_button`` in the chrome row, so it needs the
-        # same stylesheet reset to drop the temporary dark-mode foreground override captured above.
-        self._apply_color_reset_stylesheet(
-            self._ui.selection_button,
-            self._default_selection_button_stylesheet,
-            "QToolButton#selectionButton",
-        )
-        self._ui.window_title_label.setPalette(QPalette(self._default_window_title_palette))
-        # Restore the window title to its light theme colour without guessing the palette value.
-        self._apply_color_reset_stylesheet(
-            self._ui.window_title_label,
-            self._default_window_title_stylesheet,
-            "QLabel#windowTitleLabel",
-        )
-
-        # Update the global menu stylesheet ahead of reinstating the cached chrome styles.  This
-        # ensures popup menus follow the restored light palette while still allowing the widgets to
-        # return to their original appearance.
-        self._refresh_menu_styles()
-        self._ui.menu_bar.setAutoFillBackground(self._default_menu_bar_autofill)
-
-        # Restore the original style sheets alongside the palettes so light mode reappears exactly
-        # as it was before entering edit mode.  ``or`` fallbacks guard against empty strings for the
-        # sidebar, which historically relied on a constant background colour.
-        self._ui.sidebar.setStyleSheet(
-            self._default_sidebar_stylesheet
-            or (
-                "QWidget#albumSidebar {\n"
-                f"    background-color: {SIDEBAR_BACKGROUND_COLOR.name()};\n"
-                "}"
-            )
-        )
-        self._ui.status_bar.setStyleSheet(self._default_statusbar_stylesheet)
-        self._ui.window_chrome.setStyleSheet(self._default_window_chrome_stylesheet)
-        self._ui.window_shell.setStyleSheet(self._default_window_shell_stylesheet)
-        self._ui.title_bar.setStyleSheet(self._default_title_bar_stylesheet)
-        self._ui.title_separator.setStyleSheet(self._default_title_separator_stylesheet)
-        # Restore the chrome row hosting the menu bar and Rescan button so it returns to its light
-        # theme appearance precisely as captured before entering edit mode.
-        self._ui.menu_bar_container.setStyleSheet(
-            self._default_menu_bar_container_stylesheet
-        )
-        self._ui.menu_bar.setStyleSheet(self._default_menu_bar_stylesheet)
-        # ``color: unset`` clears the white foreground injected in edit mode so the button can
-        # pick up the restored light-theme palette (typically black text) the next time it is
-        # painted.
-        self._apply_color_reset_stylesheet(
+        # Suspend repaints for the chrome widgets that receive palette and stylesheet resets.
+        # ``setUpdatesEnabled`` stops Qt from repainting on every intermediate change which
+        # noticeably reduced the exit animation hitch that occurred when the menu bar and title
+        # chrome redrew one by one.
+        widgets_expected_to_refresh = [
+            self._ui.window_chrome,
+            self._ui.menu_bar_container,
+            self._ui.menu_bar,
+            self._ui.title_bar,
+            self._ui.title_separator,
+            self._ui.sidebar,
+            self._ui.status_bar,
+            self._ui.window_shell,
             self._ui.rescan_button,
-            self._default_rescan_button_stylesheet,
-            "QToolButton#rescanButton",
-        )
+            self._ui.selection_button,
+            self._ui.window_title_label,
+            self._ui.sidebar._tree,
+            self._ui.status_bar._message_label,
+            self._ui.edit_page,
+            self._ui.edit_image_viewer,
+        ]
+        for widget in widgets_expected_to_refresh:
+            _register_freeze_target(widget)
 
-        if self._rounded_window_shell is not None:
-            if self._default_rounded_shell_palette is not None:
-                self._rounded_window_shell.setPalette(
-                    QPalette(self._default_rounded_shell_palette)
-                )
-            self._rounded_window_shell.set_override_color(
-                self._default_rounded_shell_override
+        for widget in freeze_targets:
+            widget.setUpdatesEnabled(False)
+
+        try:
+            self._ui.edit_page.setStyleSheet(self._default_edit_page_stylesheet)
+            self._ui.edit_image_viewer.set_surface_color_override(None)
+
+            # Restore the untinted icons now that the interface has returned to the light theme.
+            self._ui.edit_compare_button.setIcon(
+                load_icon("square.fill.and.line.vertical.and.square.svg")
+            )
+            for section in self._ui.edit_sidebar.findChildren(CollapsibleSection):
+                # Drop the cached tint so future state changes restore the default
+                # dark glyph used by the light chrome.
+                section.set_toggle_icon_tint(None)
+                icon_label = getattr(section, "_icon_label", None)
+                icon_name = getattr(section, "_icon_name", "")
+                if icon_label is not None and icon_name:
+                    icon_label.setPixmap(load_icon(icon_name).pixmap(20, 20))
+
+            # Return the zoom affordances and shared toolbar buttons to their light theme assets.
+            self._ui.zoom_out_button.setIcon(load_icon("minus.svg"))
+            self._ui.zoom_in_button.setIcon(load_icon("plus.svg"))
+            if self._detail_ui_controller is not None:
+                self._detail_ui_controller.set_toolbar_icon_tint(None)
+            else:
+                self._ui.info_button.setIcon(load_icon("info.circle.svg"))
+                self._ui.favorite_button.setIcon(load_icon("suit.heart.svg"))
+
+            widgets_to_restore = [
+                (
+                    self._ui.sidebar,
+                    self._default_sidebar_palette,
+                    self._default_sidebar_autofill,
+                ),
+                (
+                    self._ui.status_bar,
+                    self._default_statusbar_palette,
+                    self._default_statusbar_autofill,
+                ),
+                (
+                    self._ui.window_chrome,
+                    self._default_window_chrome_palette,
+                    self._default_window_chrome_autofill,
+                ),
+                (
+                    self._ui.window_shell,
+                    self._default_window_shell_palette,
+                    self._default_window_shell_autofill,
+                ),
+                (
+                    self._ui.menu_bar_container,
+                    self._default_menu_bar_container_palette,
+                    self._default_menu_bar_container_autofill,
+                ),
+                (
+                    self._ui.menu_bar,
+                    self._default_menu_bar_palette,
+                    self._default_menu_bar_autofill,
+                ),
+                (
+                    self._ui.rescan_button,
+                    self._default_rescan_button_palette,
+                    self._default_rescan_button_autofill,
+                ),
+                (
+                    self._ui.selection_button,
+                    self._default_selection_button_palette,
+                    self._default_selection_button_autofill,
+                ),
+                (
+                    self._ui.title_bar,
+                    self._default_title_bar_palette,
+                    self._default_title_bar_autofill,
+                ),
+                (
+                    self._ui.title_separator,
+                    self._default_title_separator_palette,
+                    self._default_title_separator_autofill,
+                ),
+            ]
+            for widget, palette, autofill in widgets_to_restore:
+                widget.setPalette(QPalette(palette))
+                widget.setAutoFillBackground(autofill)
+
+            self._ui.sidebar._tree.setPalette(QPalette(self._default_sidebar_tree_palette))
+            self._ui.sidebar._tree.setAutoFillBackground(self._default_sidebar_tree_autofill)
+            self._ui.status_bar._message_label.setPalette(QPalette(self._default_statusbar_message_palette))
+            # The selection toggle sits beside ``rescan_button`` in the chrome row, so it needs the
+            # same stylesheet reset to drop the temporary dark-mode foreground override captured above.
+            self._apply_color_reset_stylesheet(
+                self._ui.selection_button,
+                self._default_selection_button_stylesheet,
+                "QToolButton#selectionButton",
+            )
+            self._ui.window_title_label.setPalette(QPalette(self._default_window_title_palette))
+            # Restore the window title to its light theme colour without guessing the palette value.
+            self._apply_color_reset_stylesheet(
+                self._ui.window_title_label,
+                self._default_window_title_stylesheet,
+                "QLabel#windowTitleLabel",
             )
 
-        self._edit_theme_applied = False
+            # Update the global menu stylesheet ahead of reinstating the cached chrome styles.  This
+            # ensures popup menus follow the restored light palette while still allowing the widgets to
+            # return to their original appearance.
+            self._refresh_menu_styles()
+            self._ui.menu_bar.setAutoFillBackground(self._default_menu_bar_autofill)
+
+            # Restore the original style sheets alongside the palettes so light mode reappears exactly
+            # as it was before entering edit mode.  ``or`` fallbacks guard against empty strings for the
+            # sidebar, which historically relied on a constant background colour.
+            self._ui.sidebar.setStyleSheet(
+                self._default_sidebar_stylesheet
+                or (
+                    "QWidget#albumSidebar {\n"
+                    f"    background-color: {SIDEBAR_BACKGROUND_COLOR.name()};\n"
+                    "}"
+                )
+            )
+            self._ui.status_bar.setStyleSheet(self._default_statusbar_stylesheet)
+            self._ui.window_chrome.setStyleSheet(self._default_window_chrome_stylesheet)
+            self._ui.window_shell.setStyleSheet(self._default_window_shell_stylesheet)
+            self._ui.title_bar.setStyleSheet(self._default_title_bar_stylesheet)
+            self._ui.title_separator.setStyleSheet(self._default_title_separator_stylesheet)
+            # Restore the chrome row hosting the menu bar and Rescan button so it returns to its light
+            # theme appearance precisely as captured before entering edit mode.
+            self._ui.menu_bar_container.setStyleSheet(
+                self._default_menu_bar_container_stylesheet
+            )
+            self._ui.menu_bar.setStyleSheet(self._default_menu_bar_stylesheet)
+            # ``color: unset`` clears the white foreground injected in edit mode so the button can
+            # pick up the restored light-theme palette (typically black text) the next time it is
+            # painted.
+            self._apply_color_reset_stylesheet(
+                self._ui.rescan_button,
+                self._default_rescan_button_stylesheet,
+                "QToolButton#rescanButton",
+            )
+
+            if self._rounded_window_shell is not None:
+                if self._default_rounded_shell_palette is not None:
+                    self._rounded_window_shell.setPalette(
+                        QPalette(self._default_rounded_shell_palette)
+                    )
+                self._rounded_window_shell.set_override_color(
+                    self._default_rounded_shell_override
+                )
+
+            self._edit_theme_applied = False
+        finally:
+            for widget in freeze_targets:
+                widget.setUpdatesEnabled(True)
+                widget.update()
 
     def _apply_color_reset_stylesheet(
         self,
