@@ -184,6 +184,9 @@ def _build_entry(
         "content_id": row.get("content_id"),
         "frame_rate": row.get("frame_rate"),
         "codec": row.get("codec"),
+        # Include the original location for trashed assets so restore flows can
+        # display accurate targeting information and round-trip the metadata.
+        "original_rel_path": row.get("original_rel_path"),
     }
     return entry
 

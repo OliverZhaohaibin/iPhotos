@@ -8,11 +8,16 @@ from typing import Dict, List
 
 from .cache.index_store import IndexStore
 from .cache.lock import FileLock
-from .config import DEFAULT_EXCLUDE, DEFAULT_INCLUDE, WORK_DIR_NAME
+from .config import (
+    DEFAULT_EXCLUDE,
+    DEFAULT_INCLUDE,
+    WORK_DIR_NAME,
+    RECENTLY_DELETED_DIR_NAME,
+)
 from .core.pairing import pair_live
 from .models.album import Album
 from .models.types import LiveGroup
-from .errors import ManifestInvalidError
+from .errors import IndexCorruptedError, ManifestInvalidError
 from .utils.jsonio import read_json, write_json
 from .utils.logging import get_logger
 
@@ -70,13 +75,45 @@ def _write_links(root: Path, payload: Dict[str, object]) -> None:
 def rescan(root: Path) -> List[dict]:
     """Rescan the album and return the fresh index rows."""
 
+    store = IndexStore(root)
+
+    # ``original_rel_path`` is only populated for assets in the shared trash
+    # album.  Rescanning that directory must therefore preserve the existing
+    # mapping so the restore feature still knows where each item originated.
+    is_recently_deleted = root.name == RECENTLY_DELETED_DIR_NAME
+    preserved_restore_paths: Dict[str, str] = {}
+    if is_recently_deleted:
+        try:
+            for row in store.read_all():
+                rel_value = row.get("rel")
+                original_rel = row.get("original_rel_path")
+                if not isinstance(rel_value, str) or not isinstance(original_rel, str):
+                    continue
+                rel_key = Path(rel_value).as_posix()
+                preserved_restore_paths[rel_key] = original_rel
+        except IndexCorruptedError:
+            # A corrupted index means we cannot recover historical restore
+            # targets.  Emit a warning and continue with a clean rescan so new
+            # trash entries still receive restore metadata.
+            LOGGER.warning("Unable to read previous trash index for %s", root)
+
     album = Album.open(root)
     include = album.manifest.get("filters", {}).get("include", DEFAULT_INCLUDE)
     exclude = album.manifest.get("filters", {}).get("exclude", DEFAULT_EXCLUDE)
     from .io.scanner import scan_album
 
     rows = list(scan_album(root, include, exclude))
-    IndexStore(root).write_rows(rows)
+    if is_recently_deleted and preserved_restore_paths:
+        for new_row in rows:
+            rel_value = new_row.get("rel")
+            if not isinstance(rel_value, str):
+                continue
+            rel_key = Path(rel_value).as_posix()
+            preserved = preserved_restore_paths.get(rel_key)
+            if preserved and not new_row.get("original_rel_path"):
+                new_row["original_rel_path"] = preserved
+
+    store.write_rows(rows)
     _ensure_links(root, rows)
     return rows
 
