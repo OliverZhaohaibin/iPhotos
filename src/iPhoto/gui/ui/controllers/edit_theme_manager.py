@@ -488,6 +488,11 @@ class EditThemeManager:
         self._ui.window_title_label.setPalette(
             QPalette(self._default_window_title_palette)
         )
+        self._apply_color_reset_stylesheet(
+            self._ui.selection_button,
+            self._default_selection_button_stylesheet,
+            "QToolButton#selectionButton",
+        )
         self._ui.window_title_label.setStyleSheet(
             self._default_window_title_stylesheet
         )
