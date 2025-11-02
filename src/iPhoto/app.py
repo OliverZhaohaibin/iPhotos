@@ -105,6 +105,7 @@ def _update_index_snapshot(root: Path, materialised_rows: List[dict]) -> None:
     store = IndexStore(root)
 
     existing_rows: Dict[str, dict] = {}
+    corrupted_during_read = False
     try:
         for cached_row in store.read_all():
             rel_key = _normalise_rel_key(cached_row.get("rel"))
@@ -113,6 +114,7 @@ def _update_index_snapshot(root: Path, materialised_rows: List[dict]) -> None:
             existing_rows[rel_key] = cached_row
     except IndexCorruptedError:
         existing_rows = {}
+        corrupted_during_read = True
 
     fresh_rows: Dict[str, dict] = {}
     for row in materialised_rows:
@@ -121,12 +123,22 @@ def _update_index_snapshot(root: Path, materialised_rows: List[dict]) -> None:
             continue
         fresh_rows[rel_key] = row
 
+    materialised_snapshot = list(fresh_rows.values())
+
+    if corrupted_during_read:
+        store.write_rows(materialised_snapshot)
+        return
+
     if not fresh_rows and not existing_rows:
         return
 
     stale_rels = set(existing_rows.keys()) - set(fresh_rows.keys())
     if stale_rels:
-        store.remove_rows(stale_rels)
+        try:
+            store.remove_rows(stale_rels)
+        except IndexCorruptedError:
+            store.write_rows(materialised_snapshot)
+            return
 
     updated_payload: List[dict] = []
     for rel_key, row in fresh_rows.items():
@@ -135,7 +147,10 @@ def _update_index_snapshot(root: Path, materialised_rows: List[dict]) -> None:
             updated_payload.append(row)
 
     if updated_payload:
-        store.append_rows(updated_payload)
+        try:
+            store.append_rows(updated_payload)
+        except IndexCorruptedError:
+            store.write_rows(materialised_snapshot)
 
 
 def rescan(root: Path) -> List[dict]:

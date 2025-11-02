@@ -680,6 +680,7 @@ class AssetListModel(QAbstractListModel):
             self.beginRemoveRows(QModelIndex(), index, index)
             current_rows.pop(index)
             self.endRemoveRows()
+            self._state_manager.on_external_row_removed(index, rel_key)
             if rel_key:
                 self._cache_manager.remove_thumbnail(rel_key)
                 self._cache_manager.remove_placeholder(rel_key)
@@ -703,6 +704,7 @@ class AssetListModel(QAbstractListModel):
             self.beginInsertRows(QModelIndex(), position, position)
             current_rows.insert(position, row_data)
             self.endInsertRows()
+            self._state_manager.on_external_row_inserted(position)
             if rel_key:
                 self._cache_manager.remove_thumbnail(rel_key)
                 self._cache_manager.remove_placeholder(rel_key)
