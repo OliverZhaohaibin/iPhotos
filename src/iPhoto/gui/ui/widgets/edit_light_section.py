@@ -7,7 +7,7 @@ from typing import Dict, Optional
 from PySide6.QtCore import Signal, Slot
 from PySide6.QtWidgets import QFrame, QGroupBox, QVBoxLayout, QWidget
 
-from ...core.light_resolver import LIGHT_KEYS, _clamp, resolve_light_vector
+from ....core.light_resolver import LIGHT_KEYS, _clamp, resolve_light_vector
 from ..models.edit_session import EditSession
 from .collapsible_section import CollapsibleSection
 from .edit_strip import BWSlider
