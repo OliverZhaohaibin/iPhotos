@@ -192,6 +192,7 @@ class EditController(QObject):
         session.valuesChanged.connect(self._handle_session_changed)
         self._session = session
 
+        self._ui.edit_sidebar.set_light_preview_image(image)
         self._ui.edit_sidebar.set_session(session)
         self._ui.edit_sidebar.refresh()
         if not self._edit_viewer_fullscreen_connected:
@@ -278,6 +279,7 @@ class EditController(QObject):
         if direction == "exit":
             self._ui.edit_header_container.hide()
             self._ui.edit_sidebar.set_session(None)
+            self._ui.edit_sidebar.set_light_preview_image(None)
             self._ui.edit_image_viewer.clear()
             self._session = None
             self._current_source = None

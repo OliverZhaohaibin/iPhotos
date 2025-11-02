@@ -8,6 +8,7 @@ from typing import Mapping, Optional
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Qt, Signal
 from PySide6.QtGui import QImage, QPixmap
 
+from ....core.light_resolver import LIGHT_KEYS, resolve_light_vector
 from ....core.preview_backends import (
     PreviewBackend,
     PreviewSession,
@@ -33,7 +34,7 @@ class _PreviewWorker(QRunnable):
         self,
         backend: PreviewBackend,
         session: PreviewSession,
-        adjustments: Mapping[str, float],
+        adjustments: Mapping[str, float | bool],
         job_id: int,
         signals: _PreviewSignals,
     ) -> None:
@@ -85,7 +86,7 @@ class EditPreviewManager(QObject):
         self._base_image: Optional[QImage] = None
         self._base_pixmap: Optional[QPixmap] = None
         self._current_preview_pixmap: Optional[QPixmap] = None
-        self._current_adjustments: dict[str, float] = {}
+        self._current_adjustments: dict[str, float | bool] = {}
 
         self._thread_pool = QThreadPool.globalInstance()
         self._preview_job_id = 0
@@ -186,7 +187,7 @@ class EditPreviewManager(QObject):
 
         self._cancel_pending_previews()
 
-    def update_adjustments(self, adjustments: Mapping[str, float]) -> None:
+    def update_adjustments(self, adjustments: Mapping[str, float | bool]) -> None:
         """Schedule a new preview render using *adjustments*."""
 
         self._current_adjustments = dict(adjustments)
@@ -281,9 +282,10 @@ class EditPreviewManager(QObject):
 
         if self._preview_backend.supports_realtime:
             try:
+                final_adjustments = self._resolve_final_adjustments(self._current_adjustments)
                 image = self._preview_backend.render(
                     self._preview_session,
-                    self._current_adjustments,
+                    final_adjustments,
                 )
             except Exception:
                 image = QImage()
@@ -293,10 +295,12 @@ class EditPreviewManager(QObject):
         signals = _PreviewSignals()
         signals.finished.connect(self._on_preview_ready)
 
+        final_adjustments = self._resolve_final_adjustments(self._current_adjustments)
+
         worker = _PreviewWorker(
             self._preview_backend,
             self._preview_session,
-            self._current_adjustments,
+            final_adjustments,
             job_id,
             signals,
         )
@@ -308,6 +312,32 @@ class EditPreviewManager(QObject):
 
         signals.finished.connect(_handle_worker_finished)
         self._thread_pool.start(worker)
+
+    def _resolve_final_adjustments(
+        self,
+        session_values: Mapping[str, float | bool],
+    ) -> dict[str, float]:
+        """Blend the Light master slider, options and toggle into renderable values."""
+
+        resolved: dict[str, float] = {}
+        overrides: dict[str, float] = {}
+        master_value = float(session_values.get("Light_Master", 0.0))
+        light_enabled = bool(session_values.get("Light_Enabled", True))
+
+        for key, value in session_values.items():
+            if key in ("Light_Master", "Light_Enabled"):
+                continue
+            if key in LIGHT_KEYS:
+                overrides[key] = float(value)
+            else:
+                resolved[key] = float(value)
+
+        if light_enabled:
+            resolved.update(resolve_light_vector(master_value, overrides, mode="delta"))
+        else:
+            resolved.update({key: 0.0 for key in LIGHT_KEYS})
+
+        return resolved
 
     def _on_preview_ready(self, image: QImage, job_id: int) -> None:
         """Update the preview if the emitted job matches the latest request."""

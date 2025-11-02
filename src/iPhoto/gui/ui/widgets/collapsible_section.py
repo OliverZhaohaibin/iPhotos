@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt
+# [Gemini] 移除了 QPropertyAnimation 和 QEasingCurve，引入了 QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QFrame,
@@ -52,7 +53,6 @@ class CollapsibleSection(QFrame):
         self._toggle_button.setIcon(load_icon("chevron.down.svg"))
         self._toggle_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         self._toggle_button.clicked.connect(self.toggle)
-        header_layout.addWidget(self._toggle_button)
         # ``_toggle_icon_tint`` retains the optional colour override supplied by
         # the edit controller when the application switches to the dark theme.
         # The override ensures the arrow glyph stays legible after the user
@@ -79,24 +79,41 @@ class CollapsibleSection(QFrame):
         self._title_label.setPalette(title_palette)
         header_layout.addWidget(self._title_label, 1)
 
+        header_layout.addStretch(1)
+        self._custom_controls_layout = QHBoxLayout()
+        self._custom_controls_layout.setContentsMargins(0, 0, 0, 0)
+        self._custom_controls_layout.setSpacing(4)
+        header_layout.addLayout(self._custom_controls_layout)
+
+        header_layout.addWidget(self._toggle_button)
+
         self._header.mouseReleaseEvent = self._forward_click_to_button  # type: ignore[assignment]
         layout.addWidget(self._header)
 
         self._content_frame = QFrame(self)
         content_layout = QVBoxLayout(self._content_frame)
-        content_layout.setContentsMargins(8, 0, 8, 12)
-        content_layout.setSpacing(8)
+        # The content frame acts as a pure animation wrapper, therefore any padding must live on
+        # the embedded widget itself.  Keeping margins or spacing here would introduce an initial
+        # layout jump when the frame transitions from hidden to visible because Qt applies the
+        # extra space before the height animation has a chance to interpolate it smoothly.
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
         content_layout.addWidget(self._content)
         layout.addWidget(self._content_frame)
 
-        self._animation = QPropertyAnimation(self._content_frame, b"maximumHeight", self)
-        self._animation.setDuration(160)
-        self._animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
-        self._animation.finished.connect(self._on_animation_finished)
 
         self._expanded = True
         self._update_header_icon()
         self._update_content_geometry()
+
+    # ------------------------------------------------------------------
+    def add_header_control(self, widget: QWidget) -> None:
+        """Place *widget* on the right side of the header, before the arrow button."""
+
+        layout = self._header.layout()
+        if layout is None:
+            return
+        self._custom_controls_layout.addWidget(widget)
 
     # ------------------------------------------------------------------
     def set_expanded(self, expanded: bool) -> None:
@@ -105,8 +122,11 @@ class CollapsibleSection(QFrame):
         if self._expanded == expanded:
             return
         self._expanded = expanded
+
+
         self._update_header_icon()
-        self._animate_content(expanded)
+
+        QTimer.singleShot(0, self._update_content_geometry)
 
     def is_expanded(self) -> bool:
         """Return ``True`` when the section currently displays its content."""
@@ -118,20 +138,6 @@ class CollapsibleSection(QFrame):
 
         self.set_expanded(not self._expanded)
 
-    # ------------------------------------------------------------------
-    def _animate_content(self, expanded: bool) -> None:
-        """Animate the content frame between collapsed and expanded states."""
-
-        self._animation.stop()
-        start_height = self._content_frame.maximumHeight()
-        if start_height <= 0:
-            start_height = self._content.sizeHint().height()
-        end_height = self._content.sizeHint().height() if expanded else 0
-        if expanded:
-            self._content_frame.setVisible(True)
-        self._animation.setStartValue(start_height)
-        self._animation.setEndValue(end_height)
-        self._animation.start()
 
     def _update_header_icon(self) -> None:
         """Refresh the arrow glyph so it reflects the expansion state."""
@@ -145,12 +151,23 @@ class CollapsibleSection(QFrame):
             )
 
     def _update_content_geometry(self) -> None:
-        """Initialise the content frame height to match the widget state."""
+        """Initialise or UPDATE the content frame height to match the widget state."""
 
         if self._expanded:
-            self._content_frame.setMaximumHeight(self._content.sizeHint().height())
+            # When the section starts expanded we must immediately unlock the maximum height to
+            # Qt's documented ``QWIDGETSIZE_MAX`` value.  The initial size hint only captures the
+            # geometry of the currently visible children (for example the collapsed Light options),
+            # so freezing ``maximumHeight`` to that measurement would prevent nested collapsible
+            # sections from expanding until the parent section is collapsed and reopened.  By
+            # setting the limit to ``16777215`` up front we match the behaviour applied after the
+            # animation completes and guarantee that child widgets can freely grow during the first
+            # interaction.
+
+            # [Gemini] 解锁高度并设为可见
+            self._content_frame.setMaximumHeight(16777215)
             self._content_frame.setVisible(True)
         else:
+            # [Gemini] 设为高度0并隐藏
             self._content_frame.setMaximumHeight(0)
             self._content_frame.hide()
 
@@ -160,11 +177,6 @@ class CollapsibleSection(QFrame):
         del event  # The button click does not need the event object.
         self._toggle_button.click()
 
-    def _on_animation_finished(self) -> None:  # pragma: no cover - GUI glue
-        """Hide the content frame after collapsing to keep layouts tight."""
-
-        if not self._expanded:
-            self._content_frame.hide()
 
     # ------------------------------------------------------------------
     def set_toggle_icon_tint(self, tint: QColor | str | None) -> None:

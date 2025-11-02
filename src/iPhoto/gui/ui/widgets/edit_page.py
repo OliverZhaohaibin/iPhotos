@@ -149,7 +149,7 @@ class EditPageWidget(QWidget):
         self.edit_done_button.setAutoDefault(False)
         self.edit_done_button.setDefault(False)
         self.edit_done_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.edit_done_button.setFixedHeight(EDIT_HEADER_BUTTON_HEIGHT)
+        self.edit_done_button.setFixedHeight(30)
         self.edit_done_button.setStyleSheet(
             "QPushButton#editDoneButton {"
             f"  background-color: {EDIT_DONE_BUTTON_BACKGROUND};"
