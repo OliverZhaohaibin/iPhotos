@@ -140,11 +140,13 @@ class CollapsibleSection(QFrame):
 
         self._animation.stop()
         start_height = self._content_frame.maximumHeight()
-        if start_height <= 0:
-            start_height = self._content.sizeHint().height()
-        end_height = self._content.sizeHint().height() if expanded else 0
+
         if expanded:
+            # The content frame must be visible before querying ``sizeHint``; a hidden widget may
+            # report zero height which would collapse the animation target and prevent expansion.
             self._content_frame.setVisible(True)
+
+        end_height = self._content.sizeHint().height() if expanded else 0
         self._animation.setStartValue(start_height)
         self._animation.setEndValue(end_height)
         self._animation.start()
