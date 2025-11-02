@@ -155,6 +155,10 @@ class EditThemeManager:
 
         dark_icon_color = QColor("#FFFFFF")
         dark_icon_hex = dark_icon_color.name(QColor.NameFormat.HexArgb)
+        ICONS_WITH_NATIVE_COLOR = {
+            "color.circle.svg",
+            "circle.lefthalf.fill.svg",
+        }
         self._ui.edit_compare_button.setIcon(
             load_icon(
                 "square.fill.and.line.vertical.and.square.svg",
@@ -166,9 +170,16 @@ class EditThemeManager:
             icon_label = getattr(section, "_icon_label", None)
             icon_name = getattr(section, "_icon_name", "")
             if icon_label is not None and icon_name:
-                icon_label.setPixmap(
-                    load_icon(icon_name, color=dark_icon_hex).pixmap(20, 20)
-                )
+                if icon_name in ICONS_WITH_NATIVE_COLOR:
+                    # If the icon has its own colour, the “colour” parameter is not passed.
+                    icon_label.setPixmap(
+                        load_icon(icon_name).pixmap(20, 20)
+                    )
+                else:
+                    # Otherwise colour it in the dark theme's colour.
+                    icon_label.setPixmap(
+                        load_icon(icon_name, color=dark_icon_hex).pixmap(20, 20)
+                    )
 
         self._ui.zoom_out_button.setIcon(load_icon("minus.svg", color=dark_icon_hex))
         self._ui.zoom_in_button.setIcon(load_icon("plus.svg", color=dark_icon_hex))
