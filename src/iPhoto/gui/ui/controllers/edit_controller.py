@@ -13,6 +13,7 @@ from ....io import sidecar
 from ...utils import image_loader
 from ..models.asset_model import AssetModel
 from ..models.edit_session import EditSession
+from ..layout_utils import hide_collapsed_widget
 from ..tasks.thumbnail_loader import ThumbnailLoader
 from ..ui_main_window import Ui_MainWindow
 from .edit_fullscreen_manager import EditFullscreenManager
@@ -113,7 +114,9 @@ class EditController(QObject):
         playlist.currentChanged.connect(self._handle_playlist_change)
         playlist.sourceChanged.connect(lambda _path: self._handle_playlist_change())
 
-        ui.edit_header_container.hide()
+        # Mirror the sidebar bootstrapping logic by collapsing the header before hiding it so the
+        # surrounding layout does not reserve empty vertical space during start-up.
+        hide_collapsed_widget(ui.edit_header_container)
 
     # ------------------------------------------------------------------
     # Zoom toolbar management
@@ -277,7 +280,9 @@ class EditController(QObject):
         """Clean up controller state after the transition manager completes."""
 
         if direction == "exit":
-            self._ui.edit_header_container.hide()
+            # The exit animation fades the header out; collapsing it afterwards prevents a stray
+            # spacer from lingering once the edit chrome is gone.
+            hide_collapsed_widget(self._ui.edit_header_container)
             self._ui.edit_sidebar.set_session(None)
             self._ui.edit_sidebar.set_light_preview_image(None)
             self._ui.edit_image_viewer.clear()

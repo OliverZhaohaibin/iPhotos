@@ -14,6 +14,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtWidgets import QGraphicsOpacityEffect
 
+from ..layout_utils import hide_collapsed_widget, show_with_restored_height
 from ..ui_main_window import Ui_MainWindow
 from .edit_theme_manager import EditThemeManager
 
@@ -95,7 +96,9 @@ class EditViewTransitionManager(QObject):
 
         self._detail_header_opacity.setOpacity(1.0)
         self._ui.detail_chrome_container.hide()
-        self._ui.edit_header_container.show()
+        # Restore the cached height before showing the header so the animation starts from the
+        # correct baseline instead of stretching out from a collapsed frame.
+        show_with_restored_height(self._ui.edit_header_container)
         self._edit_header_opacity.setOpacity(1.0)
 
         splitter_sizes = self._sanitise_splitter_sizes(self._ui.splitter.sizes())
@@ -120,7 +123,9 @@ class EditViewTransitionManager(QObject):
         self._theme_manager.restore_light_theme()
 
         self._ui.detail_chrome_container.show()
-        self._ui.edit_header_container.show()
+        # Keep the header anchored while the exit animation fades it out; restoring the geometry
+        # first prevents the sudden drop that previously occurred when the frame was still collapsed.
+        show_with_restored_height(self._ui.edit_header_container)
         if animate:
             self._detail_header_opacity.setOpacity(0.0)
             self._edit_header_opacity.setOpacity(1.0)
@@ -363,7 +368,9 @@ class EditViewTransitionManager(QObject):
         self._ui.detail_chrome_container.show()
         self._detail_header_opacity.setOpacity(1.0)
 
-        self._ui.edit_header_container.hide()
+        # Collapse the header once the fade completes so the detail chrome can reclaim the top edge
+        # immediately, matching the layout we present before entering edit mode.
+        hide_collapsed_widget(self._ui.edit_header_container)
         self._edit_header_opacity.setOpacity(1.0)
 
         self._splitter_sizes_before_edit = None

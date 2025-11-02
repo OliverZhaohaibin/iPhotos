@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..icon import load_icon
+from ..layout_utils import hide_collapsed_widget
 from .edit_sidebar import EditSidebar
 from .edit_topbar import SegmentedTopBar
 from .image_viewer import ImageViewer
@@ -87,7 +88,10 @@ class EditPageWidget(QWidget):
         self.edit_sidebar.setMaximumWidth(0)
         self.edit_sidebar.hide()
 
-        self.edit_header_container.hide()
+        # Collapse the edit header so the title bar stays flush with the detail chrome while the
+        # adjustment controls remain hidden.  The helper caches the original constraints so future
+        # transitions can restore them without guessing.
+        hide_collapsed_widget(self.edit_header_container)
 
     def _build_header(self) -> QWidget:
         """Construct the edit toolbar containing compare/reset/done controls."""
