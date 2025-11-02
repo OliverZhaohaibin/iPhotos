@@ -24,7 +24,9 @@ class EditLightSection(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        # The spacing must remain zero so the animation container does not suddenly grow when the
+        # options panel becomes visible; padding is applied directly on the child widget instead.
+        layout.setSpacing(0)
 
         self.master_slider = ThumbnailStripSlider(
             "Light",
@@ -63,6 +65,9 @@ class EditLightSection(QWidget):
             self,
         )
         self.options_section.set_expanded(False)
+        # Apply a fixed top margin so the fine-tuning group keeps an 8px gap from the master slider
+        # without relying on layout spacing that would animate in abruptly.
+        self.options_section.setContentsMargins(0, 8, 0, 0)
         layout.addWidget(self.options_section)
         layout.addStretch(1)
 
