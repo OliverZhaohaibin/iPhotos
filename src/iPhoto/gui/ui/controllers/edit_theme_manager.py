@@ -181,6 +181,7 @@ class EditThemeManager:
                         load_icon(icon_name, color=dark_icon_hex).pixmap(20, 20)
                     )
 
+        self._ui.edit_sidebar.set_control_icon_tint(dark_icon_color)
         self._ui.zoom_out_button.setIcon(load_icon("minus.svg", color=dark_icon_hex))
         self._ui.zoom_in_button.setIcon(load_icon("plus.svg", color=dark_icon_hex))
 
@@ -415,7 +416,7 @@ class EditThemeManager:
 
         self._ui.edit_page.setStyleSheet(self._default_edit_page_stylesheet)
         self._ui.edit_image_viewer.set_surface_color_override(None)
-
+        self._ui.edit_sidebar.set_control_icon_tint(None)
         self._ui.edit_compare_button.setIcon(
             load_icon("square.fill.and.line.vertical.and.square.svg")
         )

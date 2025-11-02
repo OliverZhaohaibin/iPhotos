@@ -38,7 +38,7 @@ class BWSlider(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         # Geometry parameters ------------------------------------------------
-        self.setMinimumHeight(48)
+        self.setMinimumHeight(35)
         self.setMinimumWidth(260)
         self.track_height = 30
         self.radius = 10
