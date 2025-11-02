@@ -43,7 +43,7 @@ class EditLightSection(QWidget):
         options_container.setFrameShadow(QFrame.Shadow.Plain)
         options_layout = QVBoxLayout(options_container)
         options_layout.setContentsMargins(12, 12, 12, 12)
-        options_layout.setSpacing(10)
+        options_layout.setSpacing(1)
 
         labels = [
             ("Brilliance", "Brilliance"),
