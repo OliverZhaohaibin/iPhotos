@@ -29,7 +29,7 @@ class ThumbnailStripSlider(QFrame):
 
     def __init__(
         self,
-        label: str,
+        label: Optional[str] = None,
         parent: Optional[QWidget] = None,
         *,
         minimum: float = -1.0,
@@ -57,29 +57,35 @@ class ThumbnailStripSlider(QFrame):
         self._scaled_height = 0
         self._tick_previews: List[_TickPreview] = []
 
-        self._label_widget = QLabel(label, self)
-        self._label_widget.setAlignment(
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom
-        )
-        self._label_widget.setStyleSheet("QLabel { font-weight: 600; }")
-
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
-        layout.addWidget(self._label_widget)
+
+        label_height = 0
+        if label:
+            self._label_widget = QLabel(label, self)
+            self._label_widget.setAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom
+            )
+            self._label_widget.setStyleSheet("QLabel { font-weight: 600; }")
+            layout.addWidget(self._label_widget)
+            label_height = self._label_widget.sizeHint().height() + 6
+        else:
+            self._label_widget: Optional[QLabel] = None
 
         self._track_frame = _ThumbnailTrack(self)
         layout.addWidget(self._track_frame)
         layout.setStretchFactor(self._track_frame, 1)
 
         self._track_frame.install_slider(self)
-        self.setMinimumHeight(self._track_height + self._label_widget.sizeHint().height() + 12)
+        self.setMinimumHeight(self._track_height + label_height + 12)
 
     # ------------------------------------------------------------------
     def set_label(self, text: str) -> None:
         """Update the caption rendered above the track."""
 
-        self._label_widget.setText(text)
+        if self._label_widget is not None:
+            self._label_widget.setText(text)
 
     def setImage(self, image: QImage | QPixmap | None) -> None:
         """Assign *image* as the base preview used for thumbnail generation."""
@@ -124,7 +130,8 @@ class ThumbnailStripSlider(QFrame):
 
     def setEnabled(self, enabled: bool) -> None:  # type: ignore[override]
         super().setEnabled(enabled)
-        self._label_widget.setEnabled(enabled)
+        if self._label_widget is not None:
+            self._label_widget.setEnabled(enabled)
         self._track_frame.setEnabled(enabled)
         self._track_frame.update()
 
@@ -311,4 +318,3 @@ class _ThumbnailTrack(QWidget):
             self._slider._maximum - self._slider._minimum
         )
         self._slider.setValue(value)
-

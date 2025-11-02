@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt
+# [Gemini] 移除了 QPropertyAnimation 和 QEasingCurve，引入了 QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QFrame,
@@ -100,10 +101,6 @@ class CollapsibleSection(QFrame):
         content_layout.addWidget(self._content)
         layout.addWidget(self._content_frame)
 
-        self._animation = QPropertyAnimation(self._content_frame, b"maximumHeight", self)
-        self._animation.setDuration(160)
-        self._animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
-        self._animation.finished.connect(self._on_animation_finished)
 
         self._expanded = True
         self._update_header_icon()
@@ -125,8 +122,11 @@ class CollapsibleSection(QFrame):
         if self._expanded == expanded:
             return
         self._expanded = expanded
+
+
         self._update_header_icon()
-        self._animate_content(expanded)
+
+        QTimer.singleShot(0, self._update_content_geometry)
 
     def is_expanded(self) -> bool:
         """Return ``True`` when the section currently displays its content."""
@@ -138,30 +138,6 @@ class CollapsibleSection(QFrame):
 
         self.set_expanded(not self._expanded)
 
-    # ------------------------------------------------------------------
-    def _animate_content(self, expanded: bool) -> None:
-        """Animate the content frame between collapsed and expanded states."""
-
-        self._animation.stop()
-
-        if expanded:
-            # The content frame must be visible before querying ``sizeHint``; a hidden widget may
-            # report zero height which would collapse the animation target and prevent expansion.
-            self._content_frame.setVisible(True)
-            start_height = self._content_frame.maximumHeight()
-        else:
-            # When collapsing we first synchronise the animation property with the frame's current
-            # height.  The previous expand step may have unlocked the maximum height to
-            # ``QWIDGETSIZE_MAX`` so using ``maximumHeight`` directly would start the animation at an
-            # exaggerated value and cause a visual snap.
-            current_height = self._content_frame.height()
-            self._content_frame.setMaximumHeight(current_height)
-            start_height = current_height
-
-        end_height = self._content.sizeHint().height() if expanded else 0
-        self._animation.setStartValue(start_height)
-        self._animation.setEndValue(end_height)
-        self._animation.start()
 
     def _update_header_icon(self) -> None:
         """Refresh the arrow glyph so it reflects the expansion state."""
@@ -175,7 +151,7 @@ class CollapsibleSection(QFrame):
             )
 
     def _update_content_geometry(self) -> None:
-        """Initialise the content frame height to match the widget state."""
+        """Initialise or UPDATE the content frame height to match the widget state."""
 
         if self._expanded:
             # When the section starts expanded we must immediately unlock the maximum height to
@@ -186,9 +162,12 @@ class CollapsibleSection(QFrame):
             # setting the limit to ``16777215`` up front we match the behaviour applied after the
             # animation completes and guarantee that child widgets can freely grow during the first
             # interaction.
+
+            # [Gemini] 解锁高度并设为可见
             self._content_frame.setMaximumHeight(16777215)
             self._content_frame.setVisible(True)
         else:
+            # [Gemini] 设为高度0并隐藏
             self._content_frame.setMaximumHeight(0)
             self._content_frame.hide()
 
@@ -198,17 +177,6 @@ class CollapsibleSection(QFrame):
         del event  # The button click does not need the event object.
         self._toggle_button.click()
 
-    def _on_animation_finished(self) -> None:  # pragma: no cover - GUI glue
-        """Finalise the frame visibility once the expand/collapse animation ends."""
-
-        if not self._expanded:
-            self._content_frame.hide()
-        else:
-            # Unlock the content frame so nested collapsible sections can expand further than the
-            # size that was captured for the initial animation.  Using Qt's documented maximum
-            # widget height (16777215) mirrors ``QWIDGETSIZE_MAX`` without importing QtWidgets at
-            # module import time (which is difficult to satisfy in headless tests).
-            self._content_frame.setMaximumHeight(16777215)
 
     # ------------------------------------------------------------------
     def set_toggle_icon_tint(self, tint: QColor | str | None) -> None:
