@@ -80,7 +80,10 @@ class EditSidebar(QWidget):
         scroll_content.setAutoFillBackground(True)
         scroll_layout = QVBoxLayout(scroll_content)
         scroll_layout.setContentsMargins(12, 12, 12, 12)
-        scroll_layout.setSpacing(12)
+        # Keep the layout spacing at zero so the surrounding headers do not jump downward when the
+        # Light section begins expanding.  We inject the desired 12px separation as static margins
+        # on each subsequent widget instead of relying on the layout to add spacing dynamically.
+        scroll_layout.setSpacing(0)
 
         self._light_section = EditLightSection(scroll_content)
         self._light_section_container = CollapsibleSection(
@@ -106,15 +109,23 @@ class EditSidebar(QWidget):
 
         scroll_layout.addWidget(self._light_section_container)
 
-        scroll_layout.addWidget(self._build_separator(scroll_content))
+        separator1 = self._build_separator(scroll_content)
+        # Apply the same visual gap that ``setSpacing`` previously provided.  Using margins ensures
+        # the separator always reserves space in its size hint, preventing the layout from injecting
+        # the offset midway through the Light expansion animation.
+        separator1.setContentsMargins(0, 12, 0, 0)
+        scroll_layout.addWidget(separator1)
 
         color_placeholder = QLabel("Color adjustments are coming soon.", scroll_content)
         color_placeholder.setWordWrap(True)
         color_container = CollapsibleSection("Color", "color.circle.svg", color_placeholder, scroll_content)
         color_container.set_expanded(False)
+        color_container.setContentsMargins(0, 12, 0, 0)
         scroll_layout.addWidget(color_container)
 
-        scroll_layout.addWidget(self._build_separator(scroll_content))
+        separator2 = self._build_separator(scroll_content)
+        separator2.setContentsMargins(0, 12, 0, 0)
+        scroll_layout.addWidget(separator2)
 
         bw_placeholder = QLabel("Black & White adjustments are coming soon.", scroll_content)
         bw_placeholder.setWordWrap(True)
@@ -125,6 +136,7 @@ class EditSidebar(QWidget):
             scroll_content,
         )
         bw_container.set_expanded(False)
+        bw_container.setContentsMargins(0, 12, 0, 0)
         scroll_layout.addWidget(bw_container)
         scroll_layout.addStretch(1)
         scroll_content.setLayout(scroll_layout)
