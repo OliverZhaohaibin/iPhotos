@@ -77,6 +77,20 @@ class AssetListStateManager:
         self._pending_virtual_moves.clear()
         self._pending_row_removals.clear()
 
+    def rebuild_lookup(self) -> None:
+        """Recompute the ``rel`` → index mapping after in-place row changes."""
+
+        refreshed: Dict[str, int] = {}
+        for index, row in enumerate(self._rows):
+            rel_value = row.get("rel")
+            if isinstance(rel_value, str) and rel_value:
+                refreshed[Path(rel_value).as_posix()] = index
+            elif isinstance(rel_value, Path):
+                refreshed[rel_value.as_posix()] = index
+            elif rel_value:
+                refreshed[Path(str(rel_value)).as_posix()] = index
+        self._row_lookup = refreshed
+
     def append_chunk(self, chunk: List[Dict[str, object]]) -> Tuple[int, int]:
         """Extend the dataset with *chunk* and return the inserted row range."""
 

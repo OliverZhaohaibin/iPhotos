@@ -63,6 +63,7 @@ class AssetListModel(QAbstractListModel):
         # updates.
         self._pending_rows: List[Dict[str, object]] = []
         self._pending_loader_root: Optional[Path] = None
+        self._deferred_incremental_refresh: Optional[Path] = None
 
         self._facade.linksUpdated.connect(self.handle_links_updated)
 
@@ -329,6 +330,7 @@ class AssetListModel(QAbstractListModel):
         self._state_manager.clear_reload_pending()
         self._album_root = root
         self._cache_manager.reset_for_album(root)
+        self._set_deferred_incremental_refresh(None)
         self.beginResetModel()
         self._state_manager.clear_rows()
         self.endResetModel()
@@ -427,6 +429,21 @@ class AssetListModel(QAbstractListModel):
 
         self._pending_rows = []
         self._pending_loader_root = None
+
+        if (
+            success
+            and self._album_root
+            and self._deferred_incremental_refresh
+            and self._normalise_for_compare(self._album_root)
+            == self._deferred_incremental_refresh
+        ):
+            logger.debug(
+                "AssetListModel: applying deferred incremental refresh for %s after loader completion.",
+                self._album_root,
+            )
+            pending_root = self._album_root
+            self._set_deferred_incremental_refresh(None)
+            self._refresh_rows_from_index(pending_root)
 
         should_restart = self._state_manager.consume_pending_reload(self._album_root, root)
         if should_restart:
@@ -544,7 +561,7 @@ class AssetListModel(QAbstractListModel):
             return
 
         logger.debug(
-            "AssetListModel: linksUpdated for %s requires reloading view rooted at %s.",
+            "AssetListModel: linksUpdated for %s triggers incremental refresh of %s.",
             updated_root,
             album_root,
         )
@@ -552,14 +569,207 @@ class AssetListModel(QAbstractListModel):
         if self._state_manager.rows:
             self._reload_live_metadata()
 
-        if self._data_loader.is_running():
-            self._state_manager.mark_reload_pending()
-            self._data_loader.cancel()
+        if not self._state_manager.rows or self._pending_loader_root:
+            logger.debug(
+                "AssetListModel: deferring incremental refresh for %s until the loader completes.",
+                updated_root,
+            )
+            self._set_deferred_incremental_refresh(self._album_root)
             return
 
-        if not self._state_manager.has_pending_reload():
-            self._state_manager.mark_reload_pending()
-            QTimer.singleShot(0, self.start_load)
+        if self._data_loader.is_running():
+            logger.debug(
+                "AssetListModel: loader active, postponing incremental refresh for %s.",
+                updated_root,
+            )
+            self._set_deferred_incremental_refresh(self._album_root)
+            return
+
+        self._set_deferred_incremental_refresh(None)
+        self._refresh_rows_from_index(self._album_root)
+
+    def _refresh_rows_from_index(self, root: Path) -> None:
+        """Synchronise the model with the latest index snapshot for *root*.
+
+        The helper performs a synchronous load of ``index.jsonl`` so the model
+        can calculate a diff without forcing a full reset.  This is lightweight
+        compared to launching a new background worker and avoids the flicker
+        caused by ``beginResetModel``.
+        """
+
+        manifest = self._facade.current_album.manifest if self._facade.current_album else {}
+        featured = manifest.get("featured", []) or []
+
+        live_map = load_live_map(root)
+        self._cache_manager.set_live_map(live_map)
+
+        try:
+            fresh_rows, _ = self._data_loader.compute_rows(root, featured, live_map)
+        except Exception as exc:  # pragma: no cover - surfaced via GUI
+            logger.error(
+                "AssetListModel: incremental refresh for %s failed: %s", root, exc
+            )
+            self._facade.errorRaised.emit(str(exc))
+            return
+
+        if self._apply_incremental_rows(fresh_rows):
+            logger.debug(
+                "AssetListModel: applied incremental refresh for %s (%d rows).",
+                root,
+                len(fresh_rows),
+            )
+
+    def _apply_incremental_rows(self, new_rows: List[Dict[str, object]]) -> bool:
+        """Merge *new_rows* into the model without clearing the entire view.
+
+        The method follows three steps:
+
+        #. Identify rows that disappeared or appeared and emit the appropriate
+           Qt signals so the view can update without a full reset.
+        #. Update metadata for rows that persisted but changed, ensuring
+           thumbnails and cached role data stay in sync.
+        #. Rebuild the lookup table once the dust settles so subsequent
+           selections or hover states continue to resolve correctly.
+        """
+
+        current_rows = self._state_manager.rows
+        fresh_rows = [dict(row) for row in new_rows]
+
+        if not current_rows:
+            if not fresh_rows:
+                return False
+            self.beginResetModel()
+            self._state_manager.set_rows(fresh_rows)
+            self.endResetModel()
+            self._cache_manager.reset_caches_for_new_rows(fresh_rows)
+            self._state_manager.clear_visible_rows()
+            return True
+
+        # Map the existing dataset by ``rel`` so we can detect which rows need
+        # to be removed or updated.
+        old_lookup: Dict[str, int] = {}
+        for index, row in enumerate(current_rows):
+            rel_key = self._normalise_rel_value(row.get("rel"))
+            if rel_key is None:
+                continue
+            old_lookup[rel_key] = index
+
+        # Build the same mapping for the freshly loaded rows to locate
+        # insertions and replacements in the target snapshot.
+        new_lookup: Dict[str, int] = {}
+        for index, row in enumerate(fresh_rows):
+            rel_key = self._normalise_rel_value(row.get("rel"))
+            if rel_key is None:
+                continue
+            new_lookup[rel_key] = index
+
+        removed_keys = set(old_lookup.keys()) - set(new_lookup.keys())
+        inserted_keys = set(new_lookup.keys()) - set(old_lookup.keys())
+        common_keys = set(old_lookup.keys()) & set(new_lookup.keys())
+
+        # Removing rows first keeps indices stable for the insertion phase.
+        removed_indices = sorted((old_lookup[key] for key in removed_keys), reverse=True)
+        structure_changed = bool(removed_indices or inserted_keys)
+
+        for index in removed_indices:
+            if not (0 <= index < len(current_rows)):
+                continue
+            row_snapshot = current_rows[index]
+            rel_key = self._normalise_rel_value(row_snapshot.get("rel"))
+            abs_key = row_snapshot.get("abs")
+            self.beginRemoveRows(QModelIndex(), index, index)
+            current_rows.pop(index)
+            self.endRemoveRows()
+            if rel_key:
+                self._cache_manager.remove_thumbnail(rel_key)
+                self._cache_manager.remove_placeholder(rel_key)
+            if abs_key:
+                self._cache_manager.remove_recently_removed(str(abs_key))
+
+        # Insert new rows at the positions reported by the freshly scanned
+        # snapshot.  Sorting the payload ensures indices remain valid as the
+        # list grows.
+        insertion_payload = sorted(
+            (
+                (new_lookup[key], fresh_rows[new_lookup[key]], key)
+                for key in inserted_keys
+                if key in new_lookup
+            ),
+            key=lambda item: item[0],
+        )
+
+        for insert_index, row_data, rel_key in insertion_payload:
+            position = max(0, min(insert_index, len(current_rows)))
+            self.beginInsertRows(QModelIndex(), position, position)
+            current_rows.insert(position, row_data)
+            self.endInsertRows()
+            if rel_key:
+                self._cache_manager.remove_thumbnail(rel_key)
+                self._cache_manager.remove_placeholder(rel_key)
+            abs_value = row_data.get("abs")
+            if abs_value:
+                self._cache_manager.remove_recently_removed(str(abs_value))
+
+        # Rebuild a mapping that reflects the post-update order so updates can
+        # reuse the final positions without guessing offsets introduced by
+        # insertions or deletions.
+        final_lookup: Dict[str, int] = {}
+        for index, row in enumerate(current_rows):
+            rel_key = self._normalise_rel_value(row.get("rel"))
+            if rel_key is None:
+                continue
+            final_lookup[rel_key] = index
+
+        changed_rows: List[int] = []
+        for rel_key in common_keys:
+            new_index = new_lookup.get(rel_key)
+            current_index = final_lookup.get(rel_key)
+            if new_index is None or current_index is None:
+                continue
+            replacement = fresh_rows[new_index]
+            if current_rows[current_index] == replacement:
+                continue
+            current_rows[current_index] = replacement
+            changed_rows.append(current_index)
+            self._cache_manager.remove_thumbnail(rel_key)
+            self._cache_manager.remove_placeholder(rel_key)
+            abs_value = replacement.get("abs")
+            if abs_value:
+                self._cache_manager.remove_recently_removed(str(abs_value))
+
+        if structure_changed:
+            self._state_manager.clear_visible_rows()
+
+        if not current_rows:
+            self._cache_manager.reset_caches_for_new_rows([])
+
+        self._state_manager.rebuild_lookup()
+
+        for row_index in sorted(set(changed_rows)):
+            model_index = self.index(row_index, 0)
+            self.dataChanged.emit(model_index, model_index, [])
+
+        return structure_changed or bool(changed_rows)
+
+    @staticmethod
+    def _normalise_rel_value(value: object) -> Optional[str]:
+        """Return a POSIX-formatted relative path for *value* when possible."""
+
+        if isinstance(value, str) and value:
+            return Path(value).as_posix()
+        if isinstance(value, Path):
+            return value.as_posix()
+        if value:
+            return Path(str(value)).as_posix()
+        return None
+
+    def _set_deferred_incremental_refresh(self, root: Optional[Path]) -> None:
+        """Remember that an incremental refresh should run once loading settles."""
+
+        if root is None:
+            self._deferred_incremental_refresh = None
+            return
+        self._deferred_incremental_refresh = self._normalise_for_compare(root)
 
     def _links_update_targets_current_view(
         self, album_root: Path, updated_root: Path
