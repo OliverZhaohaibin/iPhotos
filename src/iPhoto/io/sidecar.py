@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Dict, Mapping
 import xml.etree.ElementTree as ET
 
-from ..core.image_filters import LIGHT_KEYS
+from ..core.light_resolver import LIGHT_KEYS
 
 _SIDE_CAR_ROOT = "iPhotoAdjustments"
 _LIGHT_NODE = "Light"
@@ -20,7 +20,7 @@ def sidecar_path_for_asset(asset_path: Path) -> Path:
     return asset_path.with_suffix(".ipo")
 
 
-def load_adjustments(asset_path: Path) -> Dict[str, float]:
+def load_adjustments(asset_path: Path) -> Dict[str, float | bool]:
     """Return light adjustments stored alongside *asset_path*.
 
     Missing files or parsing errors are treated as an empty adjustment set so the
@@ -45,7 +45,19 @@ def load_adjustments(asset_path: Path) -> Dict[str, float]:
     if light_node is None:
         return {}
 
-    result: Dict[str, float] = {}
+    result: Dict[str, float | bool] = {}
+    master_element = light_node.find("Light_Master")
+    if master_element is not None and master_element.text is not None:
+        try:
+            result["Light_Master"] = float(master_element.text.strip())
+        except ValueError:
+            result["Light_Master"] = 0.0
+    enabled_element = light_node.find("Light_Enabled")
+    if enabled_element is not None and enabled_element.text is not None:
+        text = enabled_element.text.strip().lower()
+        result["Light_Enabled"] = text in {"1", "true", "yes", "on"}
+    else:
+        result["Light_Enabled"] = True
     for key in LIGHT_KEYS:
         element = light_node.find(key)
         if element is None or element.text is None:
@@ -57,7 +69,7 @@ def load_adjustments(asset_path: Path) -> Dict[str, float]:
     return result
 
 
-def save_adjustments(asset_path: Path, adjustments: Mapping[str, float]) -> Path:
+def save_adjustments(asset_path: Path, adjustments: Mapping[str, float | bool]) -> Path:
     """Persist *adjustments* next to *asset_path* and return the sidecar path."""
 
     sidecar_path = sidecar_path_for_asset(asset_path)
@@ -66,6 +78,14 @@ def save_adjustments(asset_path: Path, adjustments: Mapping[str, float]) -> Path
     root = ET.Element(_SIDE_CAR_ROOT)
     root.set(_VERSION_ATTR, _CURRENT_VERSION)
     light = ET.SubElement(root, _LIGHT_NODE)
+    master_element = ET.SubElement(light, "Light_Master")
+    master_value = float(adjustments.get("Light_Master", 0.0))
+    master_element.text = f"{master_value:.2f}"
+
+    enabled_element = ET.SubElement(light, "Light_Enabled")
+    enabled = bool(adjustments.get("Light_Enabled", True))
+    enabled_element.text = "true" if enabled else "false"
+
     for key in LIGHT_KEYS:
         value = float(adjustments.get(key, 0.0))
         child = ET.SubElement(light, key)

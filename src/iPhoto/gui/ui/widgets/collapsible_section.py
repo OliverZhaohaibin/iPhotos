@@ -52,7 +52,6 @@ class CollapsibleSection(QFrame):
         self._toggle_button.setIcon(load_icon("chevron.down.svg"))
         self._toggle_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         self._toggle_button.clicked.connect(self.toggle)
-        header_layout.addWidget(self._toggle_button)
         # ``_toggle_icon_tint`` retains the optional colour override supplied by
         # the edit controller when the application switches to the dark theme.
         # The override ensures the arrow glyph stays legible after the user
@@ -79,6 +78,14 @@ class CollapsibleSection(QFrame):
         self._title_label.setPalette(title_palette)
         header_layout.addWidget(self._title_label, 1)
 
+        header_layout.addStretch(1)
+        self._custom_controls_layout = QHBoxLayout()
+        self._custom_controls_layout.setContentsMargins(0, 0, 0, 0)
+        self._custom_controls_layout.setSpacing(4)
+        header_layout.addLayout(self._custom_controls_layout)
+
+        header_layout.addWidget(self._toggle_button)
+
         self._header.mouseReleaseEvent = self._forward_click_to_button  # type: ignore[assignment]
         layout.addWidget(self._header)
 
@@ -97,6 +104,15 @@ class CollapsibleSection(QFrame):
         self._expanded = True
         self._update_header_icon()
         self._update_content_geometry()
+
+    # ------------------------------------------------------------------
+    def add_header_control(self, widget: QWidget) -> None:
+        """Place *widget* on the right side of the header, before the arrow button."""
+
+        layout = self._header.layout()
+        if layout is None:
+            return
+        self._custom_controls_layout.addWidget(widget)
 
     # ------------------------------------------------------------------
     def set_expanded(self, expanded: bool) -> None:

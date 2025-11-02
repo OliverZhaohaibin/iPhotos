@@ -7,7 +7,9 @@ from typing import Dict, Optional
 from PySide6.QtWidgets import QFrame, QGroupBox, QVBoxLayout, QWidget
 
 from ..models.edit_session import EditSession
+from .collapsible_section import CollapsibleSection
 from .edit_strip import BWSlider
+from .thumbnail_strip_slider import ThumbnailStripSlider
 
 
 class EditLightSection(QWidget):
@@ -21,6 +23,16 @@ class EditLightSection(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
+
+        self.master_slider = ThumbnailStripSlider(
+            "Light",
+            self,
+            minimum=-1.0,
+            maximum=1.0,
+            initial=0.0,
+        )
+        self.master_slider.valueChanged.connect(self._handle_master_slider_changed)
+        layout.addWidget(self.master_slider)
 
         options_group = QGroupBox("Options", self)
         options_layout = QVBoxLayout(options_group)
@@ -41,7 +53,14 @@ class EditLightSection(QWidget):
             options_layout.addWidget(row)
             self._rows[key] = row
 
-        layout.addWidget(options_group)
+        self.options_section = CollapsibleSection(
+            "Options",
+            "slider.horizontal.3.svg",
+            options_group,
+            self,
+        )
+        self.options_section.set_expanded(False)
+        layout.addWidget(self.options_section)
         layout.addStretch(1)
 
     # ------------------------------------------------------------------
@@ -62,16 +81,25 @@ class EditLightSection(QWidget):
             self.refresh_from_session()
         else:
             self._disable_rows()
+            self.master_slider.setEnabled(False)
+            self.master_slider.update_from_value(0.0)
 
     def refresh_from_session(self) -> None:
         """Synchronise slider positions with the attached session."""
 
         if self._session is None:
             self._disable_rows()
+            self.master_slider.setEnabled(False)
+            self.master_slider.update_from_value(0.0)
             return
+        master_value = float(self._session.value("Light_Master"))
+        self.master_slider.update_from_value(master_value)
+        enabled = bool(self._session.value("Light_Enabled"))
+        self.master_slider.setEnabled(enabled)
+        self._apply_enabled_state(enabled)
         for key, row in self._rows.items():
             row.update_from_value(self._session.value(key))
-            row.setEnabled(True)
+            row.setEnabled(enabled)
 
     def _disable_rows(self) -> None:
         for row in self._rows.values():
@@ -80,13 +108,34 @@ class EditLightSection(QWidget):
 
     # ------------------------------------------------------------------
     def _on_session_value_changed(self, key: str, value: float) -> None:
+        if key == "Light_Master":
+            self.master_slider.update_from_value(float(value))
+            return
+        if key == "Light_Enabled":
+            self._apply_enabled_state(bool(value))
+            return
         row = self._rows.get(key)
         if row is None:
             return
-        row.update_from_value(value)
+        row.update_from_value(float(value))
 
     def _on_session_reset(self) -> None:
         self.refresh_from_session()
+
+    def _handle_master_slider_changed(self, new_value: float) -> None:
+        if self._session is None:
+            return
+        self._session.set_value("Light_Master", float(new_value))
+
+    def _apply_enabled_state(self, enabled: bool) -> None:
+        self.master_slider.setEnabled(enabled)
+        for row in self._rows.values():
+            row.setEnabled(enabled)
+
+    def set_preview_image(self, image) -> None:
+        """Forward *image* to the master slider so it can refresh thumbnails."""
+
+        self.master_slider.setImage(image)
 
 
 class _SliderRow(QFrame):

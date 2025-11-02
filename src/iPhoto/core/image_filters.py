@@ -7,24 +7,16 @@ from typing import Mapping, Sequence
 from PySide6.QtGui import QImage, QColor
 
 from ..utils.deps import load_pillow
+from .light_resolver import LIGHT_KEYS
 
 
 _PILLOW_SUPPORT = load_pillow()
 
 
-# Mapping keys used throughout the editing pipeline.  The constants make it easy to
-# keep :mod:`iPhoto.io.sidecar`, :mod:`iPhoto.gui.models.edit_session`, and the
-# rendering code in sync without scattering literal strings across the code base.
-LIGHT_KEYS = (
-    "Brilliance",
-    "Exposure",
-    "Highlights",
-    "Shadows",
-    "Brightness",
-    "Contrast",
-    "BlackPoint",
-)
-"""Canonical order of the light adjustment keys."""
+# ``LIGHT_KEYS`` is re-exported from :mod:`iPhoto.core.light_resolver` so the constant lives in a
+# single module.  The editing session, preview resolver, and sidecar IO layer all depend on the
+# shared ordering when iterating over adjustment values, therefore duplicating the tuple here would
+# risk subtle drift across the code base.
 
 
 def apply_adjustments(image: QImage, adjustments: Mapping[str, float]) -> QImage:

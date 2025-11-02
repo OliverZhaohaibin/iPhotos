@@ -7,13 +7,13 @@ from typing import Dict, Iterable, Mapping
 
 from PySide6.QtCore import QObject, Signal
 
-from ....core.image_filters import LIGHT_KEYS
+from ....core.light_resolver import LIGHT_KEYS
 
 
 class EditSession(QObject):
     """Hold the adjustment values for the active editing session."""
 
-    valueChanged = Signal(str, float)
+    valueChanged = Signal(str, object)
     """Emitted when a single adjustment changes."""
 
     valuesChanged = Signal(dict)
@@ -24,50 +24,66 @@ class EditSession(QObject):
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
-        self._values: "OrderedDict[str, float]" = OrderedDict(
-            (key, 0.0) for key in LIGHT_KEYS
-        )
+        self._values: "OrderedDict[str, float | bool]" = OrderedDict()
+        # The master slider value feeds the resolver that generates the derived light adjustments.
+        self._values["Light_Master"] = 0.0
+        # ``Light_Enabled`` toggles whether the resolved adjustments should be applied.  Storing the
+        # state alongside the numeric adjustments keeps the session serialisable through
+        # :meth:`values` without coordinating multiple containers.
+        self._values["Light_Enabled"] = True
+        for key in LIGHT_KEYS:
+            self._values[key] = 0.0
 
     # ------------------------------------------------------------------
     # Accessors
-    def value(self, key: str) -> float:
-        """Return the stored value for *key*, defaulting to ``0.0``."""
+    def value(self, key: str) -> float | bool:
+        """Return the stored value for *key*, defaulting to ``0.0`` or ``False``."""
 
-        return float(self._values.get(key, 0.0))
+        return self._values.get(key, 0.0)
 
-    def values(self) -> Dict[str, float]:
+    def values(self) -> Dict[str, float | bool]:
         """Return a shallow copy of every stored adjustment."""
 
         return dict(self._values)
 
     # ------------------------------------------------------------------
     # Mutation helpers
-    def set_value(self, key: str, value: float) -> None:
-        """Update *key* with *value* clamped to ``[-1.0, 1.0]``."""
+    def set_value(self, key: str, value) -> None:
+        """Update *key* with *value* while honouring the stored type."""
 
         if key not in self._values:
             return
-        clamped = max(-1.0, min(1.0, float(value)))
         current = self._values[key]
-        if abs(clamped - current) < 1e-4:
-            return
-        self._values[key] = clamped
-        self.valueChanged.emit(key, clamped)
+        if isinstance(current, bool):
+            normalised = bool(value)
+            if normalised is current:
+                return
+        else:
+            normalised = max(-1.0, min(1.0, float(value)))
+            if abs(normalised - float(current)) < 1e-4:
+                return
+        self._values[key] = normalised
+        self.valueChanged.emit(key, normalised)
         self.valuesChanged.emit(self.values())
 
-    def set_values(self, updates: Mapping[str, float], *, emit_individual: bool = True) -> None:
+    def set_values(self, updates: Mapping[str, float | bool], *, emit_individual: bool = True) -> None:
         """Update multiple *updates* at once."""
 
-        changed: list[tuple[str, float]] = []
+        changed: list[tuple[str, float | bool]] = []
         for key, value in updates.items():
             if key not in self._values:
                 continue
-            clamped = max(-1.0, min(1.0, float(value)))
             current = self._values[key]
-            if abs(clamped - current) < 1e-4:
-                continue
-            self._values[key] = clamped
-            changed.append((key, clamped))
+            if isinstance(current, bool):
+                normalised = bool(value)
+                if normalised is current:
+                    continue
+            else:
+                normalised = max(-1.0, min(1.0, float(value)))
+                if abs(normalised - float(current)) < 1e-4:
+                    continue
+            self._values[key] = normalised
+            changed.append((key, normalised))
         if not changed:
             return
         if emit_individual:
@@ -76,9 +92,14 @@ class EditSession(QObject):
         self.valuesChanged.emit(self.values())
 
     def reset(self) -> None:
-        """Restore every adjustment to ``0.0``."""
+        """Restore the master and fine-tuning adjustments to their defaults."""
 
-        self.set_values({key: 0.0 for key in self._values}, emit_individual=True)
+        defaults: dict[str, float | bool] = {
+            "Light_Master": 0.0,
+            "Light_Enabled": True,
+        }
+        defaults.update({key: 0.0 for key in LIGHT_KEYS})
+        self.set_values(defaults, emit_individual=True)
         self.resetPerformed.emit()
 
     # ------------------------------------------------------------------

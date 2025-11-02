@@ -11,14 +11,17 @@ from PySide6.QtWidgets import (
     QLabel,
     QScrollArea,
     QStackedWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
+from ....core.light_resolver import LIGHT_KEYS
 from ..models.edit_session import EditSession
 from .edit_light_section import EditLightSection
 from .collapsible_section import CollapsibleSection
 from ..palette import SIDEBAR_BACKGROUND_COLOR
+from ..icon import load_icon
 
 
 class EditSidebar(QWidget):
@@ -27,6 +30,7 @@ class EditSidebar(QWidget):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._session: Optional[EditSession] = None
+        self._light_preview_image = None
 
         # Match the classic sidebar chrome so the edit tools retain the soft blue
         # background the rest of the application uses for navigation panes.
@@ -76,8 +80,28 @@ class EditSidebar(QWidget):
         scroll_layout.setSpacing(12)
 
         self._light_section = EditLightSection(scroll_content)
-        light_container = CollapsibleSection("Light", "sun.max.svg", self._light_section, scroll_content)
-        scroll_layout.addWidget(light_container)
+        self._light_section_container = CollapsibleSection(
+            "Light",
+            "sun.max.svg",
+            self._light_section,
+            scroll_content,
+        )
+
+        self.light_reset_button = QToolButton(self._light_section_container)
+        self.light_reset_button.setAutoRaise(True)
+        self.light_reset_button.setIcon(load_icon("arrow.uturn.left.svg"))
+        self.light_reset_button.setToolTip("Reset Light adjustments")
+
+        self.light_toggle_button = QToolButton(self._light_section_container)
+        self.light_toggle_button.setAutoRaise(True)
+        self.light_toggle_button.setCheckable(True)
+        self.light_toggle_button.setIcon(load_icon("circle.svg"))
+        self.light_toggle_button.setToolTip("Toggle Light adjustments")
+
+        self._light_section_container.add_header_control(self.light_reset_button)
+        self._light_section_container.add_header_control(self.light_toggle_button)
+
+        scroll_layout.addWidget(self._light_section_container)
 
         scroll_layout.addWidget(self._build_separator(scroll_content))
 
@@ -134,7 +158,26 @@ class EditSidebar(QWidget):
         """Attach *session* to every tool section."""
 
         self._session = session
+        if self._session is not None:
+            try:
+                self.light_reset_button.clicked.disconnect(self._on_light_reset)
+            except (TypeError, RuntimeError):
+                pass
+            try:
+                self.light_toggle_button.toggled.disconnect(self._on_light_toggled)
+            except (TypeError, RuntimeError):
+                pass
+        self._session = session
         self._light_section.bind_session(session)
+        if session is not None:
+            self.light_reset_button.clicked.connect(self._on_light_reset)
+            self.light_toggle_button.toggled.connect(self._on_light_toggled)
+            self._sync_light_toggle_state()
+            if self._light_preview_image is not None:
+                self._light_section.set_preview_image(self._light_preview_image)
+        else:
+            self.light_toggle_button.setChecked(False)
+            self._update_light_toggle_icon(False)
 
     def session(self) -> Optional[EditSession]:
         return self._session
@@ -150,6 +193,13 @@ class EditSidebar(QWidget):
         """Force the currently visible sections to sync with the session."""
 
         self._light_section.refresh_from_session()
+        self._sync_light_toggle_state()
+
+    def set_light_preview_image(self, image) -> None:
+        """Provide *image* to the Light section for generating slider thumbnails."""
+
+        self._light_preview_image = image
+        self._light_section.set_preview_image(image)
 
     def _build_separator(self, parent: QWidget) -> QFrame:
         """Return a subtle divider separating adjacent section headers."""
@@ -160,3 +210,36 @@ class EditSidebar(QWidget):
         separator.setStyleSheet("QFrame { background-color: palette(mid); }")
         separator.setFixedHeight(1)
         return separator
+
+    def _on_light_reset(self) -> None:
+        if self._session is None:
+            return
+        updates = {key: 0.0 for key in LIGHT_KEYS}
+        updates["Light_Master"] = 0.0
+        updates["Light_Enabled"] = True
+        self._session.set_values(updates)
+        self._light_section.refresh_from_session()
+        self._sync_light_toggle_state()
+
+    def _on_light_toggled(self, checked: bool) -> None:
+        self._update_light_toggle_icon(checked)
+        if self._session is None:
+            return
+        self._session.set_value("Light_Enabled", checked)
+
+    def _sync_light_toggle_state(self) -> None:
+        if self._session is None:
+            block = self.light_toggle_button.blockSignals(True)
+            self.light_toggle_button.setChecked(False)
+            self.light_toggle_button.blockSignals(block)
+            self._update_light_toggle_icon(False)
+            return
+        enabled = bool(self._session.value("Light_Enabled"))
+        block = self.light_toggle_button.blockSignals(True)
+        self.light_toggle_button.setChecked(enabled)
+        self.light_toggle_button.blockSignals(block)
+        self._update_light_toggle_icon(enabled)
+
+    def _update_light_toggle_icon(self, enabled: bool) -> None:
+        icon_name = "checkmark.svg" if enabled else "circle.svg"
+        self.light_toggle_button.setIcon(load_icon(icon_name))
