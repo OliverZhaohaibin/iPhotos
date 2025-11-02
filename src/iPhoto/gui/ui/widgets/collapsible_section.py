@@ -91,8 +91,12 @@ class CollapsibleSection(QFrame):
 
         self._content_frame = QFrame(self)
         content_layout = QVBoxLayout(self._content_frame)
-        content_layout.setContentsMargins(8, 0, 8, 12)
-        content_layout.setSpacing(8)
+        # The content frame acts as a pure animation wrapper, therefore any padding must live on
+        # the embedded widget itself.  Keeping margins or spacing here would introduce an initial
+        # layout jump when the frame transitions from hidden to visible because Qt applies the
+        # extra space before the height animation has a chance to interpolate it smoothly.
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
         content_layout.addWidget(self._content)
         layout.addWidget(self._content_frame)
 
