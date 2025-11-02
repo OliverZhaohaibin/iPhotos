@@ -40,12 +40,6 @@ class EditLightSection(QWidget):
         self.master_slider.valueChanged.connect(self._handle_master_slider_changed)
         layout.addWidget(self.master_slider)
 
-        # Insert a dedicated spacer widget so the options header always remains anchored during the
-        # collapse animation.  Using ``addSpacing`` keeps the gap in the layout at all times,
-        # avoiding the sudden jump that occurs when ``QVBoxLayout`` injects spacing only after both
-        # neighbouring widgets become visible.
-        layout.addSpacing(8)
-
         options_group = QGroupBox("Options", self)
         options_layout = QVBoxLayout(options_group)
         options_layout.setContentsMargins(12, 12, 12, 12)
@@ -73,6 +67,11 @@ class EditLightSection(QWidget):
             self,
         )
         self.options_section.set_expanded(False)
+        # Mirror the behaviour applied during the expansion animation by keeping the vertical gap
+        # as part of the section widget itself.  Assigning the padding here, rather than relying on
+        # layout spacing, guarantees the offset exists before and during the collapse animation so
+        # the header never drops when the container starts shrinking.
+        self.options_section.setContentsMargins(0, 8, 0, 0)
         layout.addWidget(self.options_section)
         layout.addStretch(1)
 

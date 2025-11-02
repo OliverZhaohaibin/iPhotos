@@ -111,26 +111,25 @@ class EditSidebar(QWidget):
 
         scroll_layout.addWidget(self._light_section_container)
 
-        # The following spacers replicate the 12px rhythm the legacy sidebar used while keeping the
-        # offsets static throughout the animation lifecycle.  Because the spacers themselves never
-        # toggle visibility, the layout does not suddenly expand or contract when sections appear or
-        # disappear.
-        scroll_layout.addSpacing(12)
         separator1 = self._build_separator(scroll_content)
+        # Apply a fixed top margin instead of layout spacing so the gap is present before any
+        # animation starts.  The separator never toggles visibility, therefore the padding remains
+        # stable as the Light section collapses and expands.
+        separator1.setContentsMargins(0, 12, 0, 0)
         scroll_layout.addWidget(separator1)
 
-        scroll_layout.addSpacing(12)
         color_placeholder = QLabel("Color adjustments are coming soon.", scroll_content)
         color_placeholder.setWordWrap(True)
         color_container = CollapsibleSection("Color", "color.circle.svg", color_placeholder, scroll_content)
         color_container.set_expanded(False)
+        # Mirror the 12px rhythm for subsequent sections by encoding the gap as part of each widget.
+        color_container.setContentsMargins(0, 12, 0, 0)
         scroll_layout.addWidget(color_container)
 
-        scroll_layout.addSpacing(12)
         separator2 = self._build_separator(scroll_content)
+        separator2.setContentsMargins(0, 12, 0, 0)
         scroll_layout.addWidget(separator2)
 
-        scroll_layout.addSpacing(12)
         bw_placeholder = QLabel("Black & White adjustments are coming soon.", scroll_content)
         bw_placeholder.setWordWrap(True)
         bw_container = CollapsibleSection(
@@ -140,6 +139,7 @@ class EditSidebar(QWidget):
             scroll_content,
         )
         bw_container.set_expanded(False)
+        bw_container.setContentsMargins(0, 12, 0, 0)
         scroll_layout.addWidget(bw_container)
         scroll_layout.addStretch(1)
         scroll_content.setLayout(scroll_layout)

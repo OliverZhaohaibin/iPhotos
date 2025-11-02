@@ -149,14 +149,21 @@ class CollapsibleSection(QFrame):
             # report zero height which would collapse the animation target and prevent expansion.
             self._content_frame.setVisible(True)
             start_height = self._content_frame.maximumHeight()
+            if start_height <= 0:
+                # Newly constructed sections report a zero maximum height even though their content
+                # already has a natural size.  Falling back to ``sizeHint`` aligns the start value
+                # with the geometry the animation will grow towards.
+                start_height = self._content.sizeHint().height()
         else:
-            # When collapsing we first synchronise the animation property with the frame's current
-            # height.  The previous expand step may have unlocked the maximum height to
-            # ``QWIDGETSIZE_MAX`` so using ``maximumHeight`` directly would start the animation at an
-            # exaggerated value and cause a visual snap.
-            current_height = self._content_frame.height()
-            self._content_frame.setMaximumHeight(current_height)
-            start_height = current_height
+            # Mirror the expansion path by basing the start height on the visible geometry.  The
+            # frame may have been unlocked to Qt's ``QWIDGETSIZE_MAX`` constant after the previous
+            # animation, so we clamp the property to the larger of the measured height and the
+            # layout-driven size hint.  Without this guard the animation momentarily increases the
+            # frame before contracting, which makes the surrounding headers appear to drop.
+            natural_height = self._content.sizeHint().height()
+            current_height = max(self._content_frame.height(), 0)
+            start_height = max(natural_height, current_height)
+            self._content_frame.setMaximumHeight(start_height)
 
         end_height = self._content.sizeHint().height() if expanded else 0
         self._animation.setStartValue(start_height)
