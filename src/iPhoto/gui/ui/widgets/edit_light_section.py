@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Dict, Optional
 
 from PySide6.QtCore import Signal, Slot
-from PySide6.QtWidgets import QFrame, QGroupBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QVBoxLayout, QWidget
 
 from ....core.light_resolver import LIGHT_KEYS, _clamp, resolve_light_vector
 from ..models.edit_session import EditSession
@@ -36,8 +36,12 @@ class EditLightSection(QWidget):
         self.master_slider.valueChanged.connect(self._handle_master_slider_changed)
         layout.addWidget(self.master_slider)
 
-        options_group = QGroupBox("Options", self)
-        options_layout = QVBoxLayout(options_group)
+        # Use a frameless ``QFrame`` so the collapsible section displays plain sliders
+        # without inheriting the decorative border and title provided by ``QGroupBox``.
+        options_container = QFrame(self)
+        options_container.setFrameShape(QFrame.Shape.NoFrame)
+        options_container.setFrameShadow(QFrame.Shadow.Plain)
+        options_layout = QVBoxLayout(options_container)
         options_layout.setContentsMargins(12, 12, 12, 12)
         options_layout.setSpacing(10)
 
@@ -51,7 +55,7 @@ class EditLightSection(QWidget):
             ("Black Point", "BlackPoint"),
         ]
         for label_text, key in labels:
-            row = _SliderRow(key, label_text, parent=options_group)
+            row = _SliderRow(key, label_text, parent=options_container)
             row.uiValueChanged.connect(self._handle_sub_slider_changed)
             options_layout.addWidget(row)
             self._rows[key] = row
@@ -59,7 +63,7 @@ class EditLightSection(QWidget):
         self.options_section = CollapsibleSection(
             "Options",
             "slider.horizontal.3.svg",
-            options_group,
+            options_container,
             self,
         )
         self.options_section.set_expanded(False)
