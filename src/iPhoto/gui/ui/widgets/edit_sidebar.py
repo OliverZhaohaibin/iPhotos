@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Optional
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPalette
+from PySide6.QtGui import QPalette, QColor
 from PySide6.QtWidgets import (
     QFrame,
     QLabel,
@@ -31,6 +31,7 @@ class EditSidebar(QWidget):
         super().__init__(parent)
         self._session: Optional[EditSession] = None
         self._light_preview_image = None
+        self._control_icon_tint: QColor | None = None
         # Track whether the Light header controls have active signal bindings so we can
         # disconnect them safely without triggering PySide warnings when no connection exists.
         self._light_controls_connected = False
@@ -251,5 +252,18 @@ class EditSidebar(QWidget):
         self._update_light_toggle_icon(enabled)
 
     def _update_light_toggle_icon(self, enabled: bool) -> None:
-        icon_name = "checkmark.svg" if enabled else "circle.svg"
-        self.light_toggle_button.setIcon(load_icon(icon_name))
+        if enabled:
+            self.light_toggle_button.setIcon(load_icon("checkmark.circle.svg"))
+        else:
+            tint_name = self._control_icon_tint.name(QColor.NameFormat.HexArgb) if self._control_icon_tint else None
+            self.light_toggle_button.setIcon(load_icon("circle.svg", color=tint_name))
+
+
+    def set_control_icon_tint(self, color: QColor | None) -> None:
+        """Apply a color tint to all header control icons."""
+        self._control_icon_tint = color
+        tint_name = color.name(QColor.NameFormat.HexArgb) if color else None
+        self.light_reset_button.setIcon(
+            load_icon("arrow.uturn.left.svg", color=tint_name)
+        )
+        self._sync_light_toggle_state()
