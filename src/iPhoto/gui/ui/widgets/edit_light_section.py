@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from typing import Dict, Optional
 
+from PySide6.QtCore import Signal, Slot
 from PySide6.QtWidgets import QFrame, QGroupBox, QVBoxLayout, QWidget
 
+from ...core.light_resolver import LIGHT_KEYS, _clamp, resolve_light_vector
 from ..models.edit_session import EditSession
 from .collapsible_section import CollapsibleSection
 from .edit_strip import BWSlider
@@ -50,6 +52,7 @@ class EditLightSection(QWidget):
         ]
         for label_text, key in labels:
             row = _SliderRow(key, label_text, parent=options_group)
+            row.uiValueChanged.connect(self._handle_sub_slider_changed)
             options_layout.addWidget(row)
             self._rows[key] = row
 
@@ -73,8 +76,6 @@ class EditLightSection(QWidget):
             self._session.valueChanged.disconnect(self._on_session_value_changed)
             self._session.resetPerformed.disconnect(self._on_session_reset)
         self._session = session
-        for row in self._rows.values():
-            row.set_session(session)
         if session is not None:
             session.valueChanged.connect(self._on_session_value_changed)
             session.resetPerformed.connect(self._on_session_reset)
@@ -97,8 +98,8 @@ class EditLightSection(QWidget):
         enabled = bool(self._session.value("Light_Enabled"))
         self.master_slider.setEnabled(enabled)
         self._apply_enabled_state(enabled)
-        for key, row in self._rows.items():
-            row.update_from_value(self._session.value(key))
+        self._update_all_sub_sliders_ui()
+        for row in self._rows.values():
             row.setEnabled(enabled)
 
     def _disable_rows(self) -> None:
@@ -107,17 +108,18 @@ class EditLightSection(QWidget):
             row.update_from_value(0.0)
 
     # ------------------------------------------------------------------
-    def _on_session_value_changed(self, key: str, value: float) -> None:
-        if key == "Light_Master":
-            self.master_slider.update_from_value(float(value))
-            return
+    def _on_session_value_changed(self, key: str, value: float | bool) -> None:
         if key == "Light_Enabled":
             self._apply_enabled_state(bool(value))
             return
-        row = self._rows.get(key)
-        if row is None:
+
+        if key == "Light_Master":
+            self.master_slider.update_from_value(float(value))
+            self._update_all_sub_sliders_ui()
             return
-        row.update_from_value(float(value))
+
+        if key in LIGHT_KEYS:
+            self._update_all_sub_sliders_ui()
 
     def _on_session_reset(self) -> None:
         self.refresh_from_session()
@@ -126,6 +128,42 @@ class EditLightSection(QWidget):
         if self._session is None:
             return
         self._session.set_value("Light_Master", float(new_value))
+
+    @Slot(str, float)
+    def _handle_sub_slider_changed(self, key: str, new_ui_value: float) -> None:
+        """Persist the delta for *key* after the user moves a fine-tuning slider."""
+
+        if self._session is None:
+            return
+
+        master_value = float(self._session.value("Light_Master"))
+        base_values = resolve_light_vector(master_value, None)
+        base_value = float(base_values.get(key, 0.0))
+
+        # The UI shows ``base + delta`` so we recover the delta component before persisting it.
+        delta_value = _clamp(new_ui_value - base_value)
+        self._session.set_value(key, delta_value)
+
+    def _update_all_sub_sliders_ui(self) -> None:
+        """Recompute and display the final Light values for every fine-tuning slider."""
+
+        if self._session is None:
+            return
+
+        master_value = float(self._session.value("Light_Master"))
+        base_values = resolve_light_vector(master_value, None)
+
+        for key in LIGHT_KEYS:
+            row = self._rows.get(key)
+            if row is None:
+                continue
+
+            base_value = float(base_values.get(key, 0.0))
+            delta_value = float(self._session.value(key))
+            # Combine the resolved base with the stored delta to display the true applied value.
+            final_value = _clamp(base_value + delta_value)
+
+            row.update_from_value(final_value)
 
     def _apply_enabled_state(self, enabled: bool) -> None:
         self.master_slider.setEnabled(enabled)
@@ -141,10 +179,12 @@ class EditLightSection(QWidget):
 class _SliderRow(QFrame):
     """Helper widget bundling a label, slider and numeric read-out."""
 
+    uiValueChanged = Signal(str, float)
+    """Emitted whenever the slider's visual value changes due to user interaction."""
+
     def __init__(self, key: str, label: str, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._key = key
-        self._session: Optional[EditSession] = None
 
         self.setFrameShape(QFrame.Shape.NoFrame)
         layout = QVBoxLayout(self)
@@ -154,10 +194,6 @@ class _SliderRow(QFrame):
         self.slider = BWSlider(label, self, minimum=-1.0, maximum=1.0, initial=0.0)
         layout.addWidget(self.slider)
         self.slider.valueChanged.connect(self._handle_slider_changed)
-
-    # ------------------------------------------------------------------
-    def set_session(self, session: Optional[EditSession]) -> None:
-        self._session = session
 
     def setEnabled(self, enabled: bool) -> None:  # type: ignore[override]
         super().setEnabled(enabled)
@@ -172,6 +208,6 @@ class _SliderRow(QFrame):
 
     # ------------------------------------------------------------------
     def _handle_slider_changed(self, new_value: float) -> None:
-        if self._session is None:
-            return
-        self._session.set_value(self._key, float(new_value))
+        """Relay the updated slider value while tagging it with the adjustment *key*."""
+
+        self.uiValueChanged.emit(self._key, float(new_value))
