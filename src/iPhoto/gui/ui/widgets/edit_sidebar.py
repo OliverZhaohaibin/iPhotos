@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Slot
 from PySide6.QtGui import QPalette, QColor
 from PySide6.QtWidgets import (
     QFrame,
@@ -175,6 +175,13 @@ class EditSidebar(QWidget):
                 self.light_toggle_button.toggled.disconnect(self._on_light_toggled)
             except (TypeError, RuntimeError):
                 pass
+
+            if self._session is not None:
+                try:
+                    self._session.valueChanged.disconnect(self._on_session_value_changed)
+                except (TypeError, RuntimeError):
+                    pass
+
             self._light_controls_connected = False
 
         self._session = session
@@ -182,6 +189,7 @@ class EditSidebar(QWidget):
         if session is not None:
             self.light_reset_button.clicked.connect(self._on_light_reset)
             self.light_toggle_button.toggled.connect(self._on_light_toggled)
+            session.valueChanged.connect(self._on_session_value_changed)
             self._light_controls_connected = True
             self._sync_light_toggle_state()
             if self._light_preview_image is not None:
@@ -237,6 +245,13 @@ class EditSidebar(QWidget):
         if self._session is None:
             return
         self._session.set_value("Light_Enabled", checked)
+
+    @Slot(str, object)  # 使用 object 以匹配 (float | bool)
+    def _on_session_value_changed(self, key: str, value: object) -> None:
+        """Listen for session changes (e.g., from sliders) to sync the toggle button."""
+        del value  # 我们只关心键，不关心具体的值
+        if key == "Light_Enabled":
+            self._sync_light_toggle_state()
 
     def _sync_light_toggle_state(self) -> None:
         if self._session is None:

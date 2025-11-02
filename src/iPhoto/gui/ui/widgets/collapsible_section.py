@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-# [Gemini] 移除了 QPropertyAnimation 和 QEasingCurve，引入了 QTimer
+
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
@@ -60,6 +60,8 @@ class CollapsibleSection(QFrame):
         # every state change.
         self._toggle_icon_tint: str | None = None
 
+        header_layout.addWidget(self._toggle_button)
+
         icon = load_icon(icon_name)
         icon_label = QLabel(self._header)
         icon_label.setPixmap(icon.pixmap(20, 20))
@@ -85,7 +87,6 @@ class CollapsibleSection(QFrame):
         self._custom_controls_layout.setSpacing(4)
         header_layout.addLayout(self._custom_controls_layout)
 
-        header_layout.addWidget(self._toggle_button)
 
         self._header.mouseReleaseEvent = self._forward_click_to_button  # type: ignore[assignment]
         layout.addWidget(self._header)
@@ -162,12 +163,9 @@ class CollapsibleSection(QFrame):
             # setting the limit to ``16777215`` up front we match the behaviour applied after the
             # animation completes and guarantee that child widgets can freely grow during the first
             # interaction.
-
-            # [Gemini] 解锁高度并设为可见
             self._content_frame.setMaximumHeight(16777215)
             self._content_frame.setVisible(True)
         else:
-            # [Gemini] 设为高度0并隐藏
             self._content_frame.setMaximumHeight(0)
             self._content_frame.hide()
 

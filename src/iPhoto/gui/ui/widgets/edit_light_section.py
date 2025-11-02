@@ -4,8 +4,16 @@ from __future__ import annotations
 
 from typing import Dict, Optional
 
-from PySide6.QtCore import Signal, Slot
-from PySide6.QtWidgets import QFrame, QVBoxLayout, QWidget
+
+from PySide6.QtCore import Signal, Slot, Qt
+from PySide6.QtGui import QMouseEvent
+from PySide6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QVBoxLayout,
+    QWidget,
+    QGraphicsOpacityEffect,
+)
 
 from ....core.light_resolver import LIGHT_KEYS, _clamp, resolve_light_vector
 from ..models.edit_session import EditSession
@@ -34,6 +42,7 @@ class EditLightSection(QWidget):
             initial=0.0,
         )
         self.master_slider.valueChanged.connect(self._handle_master_slider_changed)
+        self.master_slider.clickedWhenDisabled.connect(self._handle_disabled_slider_click)
         layout.addWidget(self.master_slider)
 
         # Use a frameless ``QFrame`` so the collapsible section displays plain sliders
@@ -57,6 +66,7 @@ class EditLightSection(QWidget):
         for label_text, key in labels:
             row = _SliderRow(key, label_text, parent=options_container)
             row.uiValueChanged.connect(self._handle_sub_slider_changed)
+            row.clickedWhenDisabled.connect(self._handle_disabled_slider_click)
             options_layout.addWidget(row)
             self._rows[key] = row
 
@@ -80,6 +90,10 @@ class EditLightSection(QWidget):
             self._session.valueChanged.disconnect(self._on_session_value_changed)
             self._session.resetPerformed.disconnect(self._on_session_reset)
         self._session = session
+
+        for row in self._rows.values():
+            row.setSession(session)
+
         if session is not None:
             session.valueChanged.connect(self._on_session_value_changed)
             session.resetPerformed.connect(self._on_session_reset)
@@ -179,6 +193,12 @@ class EditLightSection(QWidget):
 
         self.master_slider.setImage(image)
 
+    @Slot()
+    def _handle_disabled_slider_click(self) -> None:
+        """Re-enables the Light adjustments if a disabled slider is clicked."""
+        if self._session is not None and not self._session.value("Light_Enabled"):
+            self._session.set_value("Light_Enabled", True)
+
 
 class _SliderRow(QFrame):
     """Helper widget bundling a label, slider and numeric read-out."""
@@ -186,9 +206,12 @@ class _SliderRow(QFrame):
     uiValueChanged = Signal(str, float)
     """Emitted whenever the slider's visual value changes due to user interaction."""
 
+    clickedWhenDisabled = Signal()
+
     def __init__(self, key: str, label: str, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._key = key
+        self._session: Optional[EditSession] = None
 
         self.setFrameShape(QFrame.Shape.NoFrame)
         layout = QVBoxLayout(self)
@@ -199,9 +222,40 @@ class _SliderRow(QFrame):
         layout.addWidget(self.slider)
         self.slider.valueChanged.connect(self._handle_slider_changed)
 
+        self._opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self._opacity_effect)
+
+    def setSession(self, session: Optional[EditSession]) -> None:
+        self._session = session
+
     def setEnabled(self, enabled: bool) -> None:  # type: ignore[override]
-        super().setEnabled(enabled)
+        """Keep the row enabled to capture clicks, but disable the visual slider."""
+        super().setEnabled(True)
         self.slider.setEnabled(enabled)
+        self._opacity_effect.setOpacity(1.0 if enabled else 0.5)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
+        """Handle clicks when the slider is disabled to re-enable it."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            if (
+                not self.slider.isEnabled()
+                and self.slider.geometry().contains(event.position().toPoint())
+            ):
+                
+                self.clickedWhenDisabled.emit()
+
+                slider_event = QMouseEvent(
+                    event.type(),
+                    self.slider.mapFrom(self, event.position().toPoint()),
+                    event.globalPosition(),
+                    event.button(),
+                    event.buttons(),
+                    event.modifiers(),
+                )
+                QApplication.sendEvent(self.slider, slider_event)
+                event.accept()
+                return
+        super().mousePressEvent(event)
 
     def update_from_value(self, value: float) -> None:
         block = self.slider.blockSignals(True)

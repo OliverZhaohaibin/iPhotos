@@ -6,8 +6,23 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from PySide6.QtCore import Qt, QPointF, QRectF, QSize, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
-from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout, QWidget
+from PySide6.QtGui import (
+    QColor,
+    QImage,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+    QMouseEvent,
+)
+from PySide6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QLabel,
+    QVBoxLayout,
+    QWidget,
+    QGraphicsOpacityEffect,
+)
 
 from ....core.image_filters import apply_adjustments
 from ....core.light_resolver import resolve_light_vector
@@ -26,6 +41,8 @@ class ThumbnailStripSlider(QFrame):
 
     valueChanged = Signal(float)
     valueCommitted = Signal(float)
+
+    clickedWhenDisabled = Signal()
 
     def __init__(
         self,
@@ -78,7 +95,11 @@ class ThumbnailStripSlider(QFrame):
         layout.setStretchFactor(self._track_frame, 1)
 
         self._track_frame.install_slider(self)
+        self._track_frame.clickedWhenDisabled.connect(self.clickedWhenDisabled)
         self.setMinimumHeight(self._track_height + label_height + 12)
+
+        self._opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self._opacity_effect)
 
     # ------------------------------------------------------------------
     def set_label(self, text: str) -> None:
@@ -129,11 +150,36 @@ class ThumbnailStripSlider(QFrame):
             self.blockSignals(block)
 
     def setEnabled(self, enabled: bool) -> None:  # type: ignore[override]
-        super().setEnabled(enabled)
+        """Keep the frame enabled to capture clicks, but disable the visual track."""
+        super().setEnabled(True)  # 保持 QFrame 启用
         if self._label_widget is not None:
             self._label_widget.setEnabled(enabled)
         self._track_frame.setEnabled(enabled)
-        self._track_frame.update()
+        self._opacity_effect.setOpacity(1.0 if enabled else 0.5)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        """Handle clicks when the track is disabled to re-enable it."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            if (
+                not self._track_frame.isEnabled()
+                and self._track_frame.geometry().contains(event.position().toPoint())
+            ):
+                # 发出信号，通知父级 (EditLightSection)
+                self.clickedWhenDisabled.emit()
+
+                # 手动将点击事件转发给现在已启用的 track 控件
+                track_event = QMouseEvent(
+                    event.type(),
+                    self._track_frame.mapFrom(self, event.position().toPoint()),
+                    event.globalPosition(),
+                    event.button(),
+                    event.buttons(),
+                    event.modifiers(),
+                )
+                QApplication.sendEvent(self._track_frame, track_event)
+                event.accept()
+                return
+        super().mousePressEvent(event)
 
     # ------------------------------------------------------------------
     def _clamp(self, value: float) -> float:
@@ -182,6 +228,9 @@ class ThumbnailStripSlider(QFrame):
 
 class _ThumbnailTrack(QWidget):
     """Internal widget handling painting and mouse interaction for the slider."""
+
+    # [Gemini] 添加信号
+    clickedWhenDisabled = Signal()
 
     def __init__(self, parent: ThumbnailStripSlider) -> None:
         super().__init__(parent)
@@ -274,15 +323,25 @@ class _ThumbnailTrack(QWidget):
         painter.drawRoundedRect(handle_rect, 2.0, 2.0)
 
     # ------------------------------------------------------------------
+    # [Gemini] 修改 mousePressEvent
     def mousePressEvent(self, event) -> None:  # type: ignore[override]
         if event.button() != Qt.MouseButton.LeftButton or self._slider is None:
+            super().mousePressEvent(event)
             return
+
+        if not self.isEnabled():
+            # 控件被禁用了，发出信号
+            self.clickedWhenDisabled.emit()
+            event.accept()
+            return
+
         self._slider._pressed = True
         self._update_value_from_position(event.position().x())
         event.accept()
 
     def mouseMoveEvent(self, event) -> None:  # type: ignore[override]
         if self._slider is None or not self._slider._pressed:
+            super().mouseMoveEvent(event)
             return
         self._update_value_from_position(event.position().x())
         event.accept()
@@ -293,6 +352,7 @@ class _ThumbnailTrack(QWidget):
             or not self._slider._pressed
             or event.button() != Qt.MouseButton.LeftButton
         ):
+            super().mouseReleaseEvent(event)
             return
         self._slider._pressed = False
         self._update_value_from_position(event.position().x())
