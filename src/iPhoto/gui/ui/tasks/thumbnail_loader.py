@@ -84,7 +84,9 @@ class ThumbnailJob(QRunnable):
         image = image_loader.load_qimage(self._abs_path, self._size)
         if image is None:
             return None
-        adjustments = sidecar.load_adjustments(self._abs_path)
+        adjustments = sidecar.resolve_render_adjustments(
+            sidecar.load_adjustments(self._abs_path)
+        )
         if adjustments:
             image = apply_adjustments(image, adjustments)
         return self._composite_canvas(image)

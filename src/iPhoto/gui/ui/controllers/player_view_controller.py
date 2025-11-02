@@ -47,7 +47,8 @@ class _AdjustedImageWorker(QRunnable):
         """Perform the expensive image work outside the GUI thread."""
 
         try:
-            adjustments = sidecar.load_adjustments(self._source)
+            raw_adjustments = sidecar.load_adjustments(self._source)
+            adjustments = sidecar.resolve_render_adjustments(raw_adjustments)
         except Exception as exc:  # pragma: no cover - filesystem errors are rare
             self._signals.failed.emit(self._source, str(exc))
             return

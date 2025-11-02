@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Dict, Mapping
 import xml.etree.ElementTree as ET
 
-from ..core.light_resolver import LIGHT_KEYS
+from ..core.light_resolver import LIGHT_KEYS, resolve_light_vector
 
 _SIDE_CAR_ROOT = "iPhotoAdjustments"
 _LIGHT_NODE = "Light"
@@ -101,3 +101,48 @@ def save_adjustments(asset_path: Path, adjustments: Mapping[str, float | bool]) 
         tmp_path.unlink(missing_ok=True)
         raise
     return sidecar_path
+
+
+def resolve_render_adjustments(
+    adjustments: Mapping[str, float | bool] | None,
+) -> Dict[str, float]:
+    """Return Light adjustments suitable for rendering pipelines.
+
+    ``load_adjustments`` exposes the raw session values, which now contain the master slider
+    (`Light_Master`) and enable toggle (`Light_Enabled`) alongside the seven per-control deltas.
+    Rendering helpers expect the final per-slider values rather than the stored deltas, so the
+    helpers outside the edit session must resolve the vector before handing it to
+    :func:`apply_adjustments`.
+    """
+
+    if not adjustments:
+        return {}
+
+    try:
+        master_value = float(adjustments.get("Light_Master", 0.0))
+    except (TypeError, ValueError):
+        master_value = 0.0
+
+    light_enabled = bool(adjustments.get("Light_Enabled", True))
+
+    resolved: Dict[str, float] = {}
+    overrides: Dict[str, float] = {}
+    for key, value in adjustments.items():
+        if key in ("Light_Master", "Light_Enabled"):
+            continue
+        if value is None:
+            continue
+        try:
+            numeric_value = float(value)
+        except (TypeError, ValueError):
+            continue
+        if key in LIGHT_KEYS:
+            overrides[key] = numeric_value
+        else:
+            resolved[key] = numeric_value
+
+    if not light_enabled:
+        return resolved
+
+    resolved.update(resolve_light_vector(master_value, overrides, mode="delta"))
+    return resolved
