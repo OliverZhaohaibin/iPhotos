@@ -157,7 +157,7 @@ class EditThemeManager:
         dark_icon_hex = dark_icon_color.name(QColor.NameFormat.HexArgb)
         ICONS_WITH_NATIVE_COLOR = {
             "color.circle.svg",
-            "circle.lefthalf.fill.svg",
+            "checkmark.svg"
         }
         self._ui.edit_compare_button.setIcon(
             load_icon(
@@ -176,7 +176,7 @@ class EditThemeManager:
                         load_icon(icon_name).pixmap(20, 20)
                     )
                 else:
-                    # Otherwise colour it in the dark theme's colour.
+                    # Otherwise for section in self._ui.edit_sidebar.findChildren(CollapsibleSection):colour it in the dark theme's colour.
                     icon_label.setPixmap(
                         load_icon(icon_name, color=dark_icon_hex).pixmap(20, 20)
                     )
