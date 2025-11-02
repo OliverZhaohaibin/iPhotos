@@ -31,6 +31,9 @@ class EditSidebar(QWidget):
         super().__init__(parent)
         self._session: Optional[EditSession] = None
         self._light_preview_image = None
+        # Track whether the Light header controls have active signal bindings so we can
+        # disconnect them safely without triggering PySide warnings when no connection exists.
+        self._light_controls_connected = False
 
         # Match the classic sidebar chrome so the edit tools retain the soft blue
         # background the rest of the application uses for navigation panes.
@@ -157,21 +160,28 @@ class EditSidebar(QWidget):
     def set_session(self, session: Optional[EditSession]) -> None:
         """Attach *session* to every tool section."""
 
-        self._session = session
-        if self._session is not None:
+        if self._light_controls_connected:
+            # Only attempt to disconnect signal handlers when they are known to be bound.
+            # PySide prints RuntimeWarnings if disconnect() is invoked without a matching
+            # connection, so guarding the call keeps the debug console clean when the editor
+            # is repeatedly opened and closed.
             try:
                 self.light_reset_button.clicked.disconnect(self._on_light_reset)
             except (TypeError, RuntimeError):
+                # If Qt reports that the slot is already disconnected we simply clear the flag.
                 pass
             try:
                 self.light_toggle_button.toggled.disconnect(self._on_light_toggled)
             except (TypeError, RuntimeError):
                 pass
+            self._light_controls_connected = False
+
         self._session = session
         self._light_section.bind_session(session)
         if session is not None:
             self.light_reset_button.clicked.connect(self._on_light_reset)
             self.light_toggle_button.toggled.connect(self._on_light_toggled)
+            self._light_controls_connected = True
             self._sync_light_toggle_state()
             if self._light_preview_image is not None:
                 self._light_section.set_preview_image(self._light_preview_image)
