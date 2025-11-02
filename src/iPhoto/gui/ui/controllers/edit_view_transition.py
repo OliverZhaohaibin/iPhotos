@@ -14,7 +14,11 @@ from PySide6.QtCore import (
 )
 from PySide6.QtWidgets import QGraphicsOpacityEffect
 
-from ..layout_utils import hide_collapsed_widget, show_with_restored_height
+from ..layout_utils import (
+    get_cached_vertical_constraints,
+    hide_collapsed_widget,
+    show_with_restored_height,
+)
 from ..ui_main_window import Ui_MainWindow
 from .edit_theme_manager import EditThemeManager
 
@@ -73,6 +77,12 @@ class EditViewTransitionManager(QObject):
         self._detail_header_opacity.setOpacity(1.0)
         ui.detail_chrome_container.setGraphicsEffect(self._detail_header_opacity)
 
+        header_min, _header_max, header_pref = get_cached_vertical_constraints(
+            ui.edit_header_container
+        )
+        self._edit_header_expand_target = max(1, header_pref)
+        self._edit_header_collapse_start = max(self._edit_header_expand_target, header_min)
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -96,9 +106,7 @@ class EditViewTransitionManager(QObject):
 
         self._detail_header_opacity.setOpacity(1.0)
         self._ui.detail_chrome_container.hide()
-        # Restore the cached height before showing the header so the animation starts from the
-        # correct baseline instead of stretching out from a collapsed frame.
-        show_with_restored_height(self._ui.edit_header_container)
+        self._prepare_edit_header_for_entry()
         self._edit_header_opacity.setOpacity(1.0)
 
         splitter_sizes = self._sanitise_splitter_sizes(self._ui.splitter.sizes())
@@ -123,9 +131,7 @@ class EditViewTransitionManager(QObject):
         self._theme_manager.restore_light_theme()
 
         self._ui.detail_chrome_container.show()
-        # Keep the header anchored while the exit animation fades it out; restoring the geometry
-        # first prevents the sudden drop that previously occurred when the frame was still collapsed.
-        show_with_restored_height(self._ui.edit_header_container)
+        self._prepare_edit_header_for_exit()
         if animate:
             self._detail_header_opacity.setOpacity(0.0)
             self._edit_header_opacity.setOpacity(1.0)
@@ -145,6 +151,18 @@ class EditViewTransitionManager(QObject):
         sidebar.setMaximumWidth(0)
         sidebar.updateGeometry()
 
+    def _prepare_edit_header_for_entry(self) -> None:
+        header = self._ui.edit_header_container
+        _, _, preferred = get_cached_vertical_constraints(header)
+        self._edit_header_expand_target = max(1, preferred)
+        # Start the header animation from a fully-collapsed frame so the geometry grows in sync
+        # with the opacity fade and mirrors how the sidebar animates in from width zero.
+        header.setMinimumHeight(0)
+        header.setMaximumHeight(0)
+        header.show()
+        header.updateGeometry()
+        self._edit_header_collapse_start = self._edit_header_expand_target
+
     def _prepare_navigation_sidebar_for_entry(self) -> None:
         sidebar = self._ui.sidebar
         sidebar.relax_minimum_width_for_animation()
@@ -157,6 +175,21 @@ class EditViewTransitionManager(QObject):
         sidebar.setMinimumWidth(int(starting_width))
         sidebar.setMaximumWidth(int(starting_width))
         sidebar.updateGeometry()
+
+    def _prepare_edit_header_for_exit(self) -> None:
+        header = self._ui.edit_header_container
+        minimum, _maximum, preferred = get_cached_vertical_constraints(header)
+        self._edit_header_expand_target = max(self._edit_header_expand_target, preferred, 1)
+        # Freeze the current geometry so the collapse animation smoothly shrinks to zero without
+        # letting Qt recalculate the layout mid-way through the transition.
+        header.show()
+        current_height = header.height()
+        if current_height <= 0:
+            current_height = max(preferred, minimum, 1)
+        header.setMinimumHeight(int(current_height))
+        header.setMaximumHeight(int(current_height))
+        header.updateGeometry()
+        self._edit_header_collapse_start = int(current_height)
 
     def _prepare_navigation_sidebar_for_exit(self) -> None:
         sidebar = self._ui.sidebar
@@ -185,10 +218,16 @@ class EditViewTransitionManager(QObject):
 
         duration = 250 if animate else 0
 
+        header = self._ui.edit_header_container
+        # The edit header mirrors the sidebar animation: entering grows from zero height while
+        # exiting collapses from its current geometry.  Tracking both bounds avoids jumps when the
+        # size hint changes after the first edit session (for example due to translated labels).
         if entering:
             splitter_end_sizes = self._sanitise_splitter_sizes([0, total], total=total)
             sidebar_start = 0
             sidebar_end = min(self._edit_sidebar_preferred_width, self._edit_sidebar_maximum_width)
+            header_start = 0
+            header_end = self._edit_header_expand_target
         else:
             previous_sizes = self._splitter_sizes_before_edit or []
             splitter_end_sizes = self._sanitise_splitter_sizes(previous_sizes, total=total)
@@ -200,9 +239,13 @@ class EditViewTransitionManager(QObject):
                 )
             sidebar_start = self._ui.edit_sidebar.width()
             sidebar_end = 0
+            header_start = max(self._edit_header_collapse_start, 0)
+            header_end = 0
 
         sidebar_start = int(sidebar_start)
         sidebar_end = int(sidebar_end)
+        header_start = int(max(header_start, 0))
+        header_end = int(max(header_end, 0))
 
         shell, shell_start_color, shell_end_color = self._theme_manager.get_shell_animation_colors(
             entering
@@ -266,6 +309,17 @@ class EditViewTransitionManager(QObject):
         _add_sidebar_dimension_animation(b"minimumWidth")
         _add_sidebar_dimension_animation(b"maximumWidth")
 
+        def _add_header_height_animation(property_name: bytes) -> None:
+            animation = QPropertyAnimation(header, property_name, animation_group)
+            animation.setDuration(duration)
+            animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
+            animation.setStartValue(header_start)
+            animation.setEndValue(header_end)
+            animation_group.addAnimation(animation)
+
+        _add_header_height_animation(b"minimumHeight")
+        _add_header_height_animation(b"maximumHeight")
+
         if shell is not None and shell_start_color is not None and shell_end_color is not None:
             shell_animation = QPropertyAnimation(shell, b"overrideColor", animation_group)
             shell_animation.setDuration(duration)
@@ -307,9 +361,12 @@ class EditViewTransitionManager(QObject):
             self._ui.edit_sidebar.setMaximumWidth(sidebar_end)
             if entering:
                 self._ui.edit_sidebar.updateGeometry()
+                show_with_restored_height(header)
+                self._edit_header_opacity.setOpacity(1.0)
             else:
                 self._edit_header_opacity.setOpacity(0.0)
                 self._detail_header_opacity.setOpacity(1.0)
+                hide_collapsed_widget(header)
             if shell is not None and shell_end_color is not None:
                 shell.set_override_color(shell_end_color)
             self._on_transition_finished()
@@ -337,6 +394,8 @@ class EditViewTransitionManager(QObject):
         sidebar.setMinimumWidth(self._edit_sidebar_minimum_width)
         sidebar.setMaximumWidth(self._edit_sidebar_maximum_width)
         sidebar.updateGeometry()
+        show_with_restored_height(self._ui.edit_header_container)
+        self._edit_header_opacity.setOpacity(1.0)
 
     def _finalise_exit_transition(self) -> None:
         splitter = self._ui.splitter

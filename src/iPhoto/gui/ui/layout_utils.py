@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QWidget
 
 __all__ = [
     "ensure_default_vertical_constraints",
+    "get_cached_vertical_constraints",
     "hide_collapsed_widget",
     "show_with_restored_height",
 ]
@@ -35,6 +36,34 @@ def ensure_default_vertical_constraints(widget: QWidget) -> None:
     if widget.property(_DEFAULT_PREFERRED_HEIGHT_PROP) is None:
         hint = max(widget.sizeHint().height(), widget.minimumHeight())
         widget.setProperty(_DEFAULT_PREFERRED_HEIGHT_PROP, int(hint))
+
+
+def get_cached_vertical_constraints(widget: QWidget) -> tuple[int, int, int]:
+    """Return the cached minimum, maximum, and preferred heights for *widget*.
+
+    The helper normalises the values recorded by :func:`ensure_default_vertical_constraints`
+    into a tuple of non-negative integers.  Qt stores the properties as ``QVariant`` objects,
+    therefore the conversion logic defensively handles ``None`` and non-integer inputs so the
+    animation code that consumes these numbers never needs to special-case inconsistent data.
+    The preferred height component is guaranteed to be at least as large as the minimum height
+    so callers can treat it as a safe animation target.
+    """
+
+    ensure_default_vertical_constraints(widget)
+
+    def _coerce(property_name: str, fallback: int) -> int:
+        raw_value = widget.property(property_name)
+        try:
+            value = int(raw_value) if raw_value is not None else int(fallback)
+        except (TypeError, ValueError):
+            value = int(fallback)
+        return max(0, value)
+
+    minimum = _coerce(_DEFAULT_MINIMUM_HEIGHT_PROP, int(widget.minimumHeight()))
+    maximum = max(minimum, _coerce(_DEFAULT_MAXIMUM_HEIGHT_PROP, int(widget.maximumHeight())))
+    preferred_hint = max(int(widget.sizeHint().height()), minimum)
+    preferred = max(minimum, _coerce(_DEFAULT_PREFERRED_HEIGHT_PROP, preferred_hint))
+    return minimum, maximum, preferred
 
 
 def hide_collapsed_widget(widget: QWidget) -> None:
