@@ -81,8 +81,10 @@ class EditSidebar(QWidget):
         scroll_layout = QVBoxLayout(scroll_content)
         scroll_layout.setContentsMargins(12, 12, 12, 12)
         # Keep the layout spacing at zero so the surrounding headers do not jump downward when the
-        # Light section begins expanding.  We inject the desired 12px separation as static margins
-        # on each subsequent widget instead of relying on the layout to add spacing dynamically.
+        # Light section begins expanding.  Qt inserts ``setSpacing`` gaps the moment two widgets
+        # become visible, so a non-zero value would manifest as a sudden 12px offset right before
+        # the animation starts.  We inject the desired separation as static margins on each
+        # subsequent widget instead so the gap is already priced into their size hints.
         scroll_layout.setSpacing(0)
 
         self._light_section = EditLightSection(scroll_content)

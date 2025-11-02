@@ -26,6 +26,8 @@ class EditLightSection(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         # The spacing must remain zero so the animation container does not suddenly grow when the
         # options panel becomes visible; padding is applied directly on the child widget instead.
+        # Using layout spacing would add the gap only after Qt realises both children are showing,
+        # which manifests as a noticeable jerk halfway through the expand animation.
         layout.setSpacing(0)
 
         self.master_slider = ThumbnailStripSlider(
@@ -66,7 +68,8 @@ class EditLightSection(QWidget):
         )
         self.options_section.set_expanded(False)
         # Apply a fixed top margin so the fine-tuning group keeps an 8px gap from the master slider
-        # without relying on layout spacing that would animate in abruptly.
+        # without relying on layout spacing that would animate in abruptly.  This mirrors the
+        # sidebar fix, ensuring the options panel advertises the padding in its size hint.
         self.options_section.setContentsMargins(0, 8, 0, 0)
         layout.addWidget(self.options_section)
         layout.addStretch(1)
