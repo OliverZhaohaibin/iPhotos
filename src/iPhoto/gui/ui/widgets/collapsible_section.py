@@ -174,7 +174,15 @@ class CollapsibleSection(QFrame):
         """Initialise the content frame height to match the widget state."""
 
         if self._expanded:
-            self._content_frame.setMaximumHeight(self._content.sizeHint().height())
+            # When the section starts expanded we must immediately unlock the maximum height to
+            # Qt's documented ``QWIDGETSIZE_MAX`` value.  The initial size hint only captures the
+            # geometry of the currently visible children (for example the collapsed Light options),
+            # so freezing ``maximumHeight`` to that measurement would prevent nested collapsible
+            # sections from expanding until the parent section is collapsed and reopened.  By
+            # setting the limit to ``16777215`` up front we match the behaviour applied after the
+            # animation completes and guarantee that child widgets can freely grow during the first
+            # interaction.
+            self._content_frame.setMaximumHeight(16777215)
             self._content_frame.setVisible(True)
         else:
             self._content_frame.setMaximumHeight(0)
