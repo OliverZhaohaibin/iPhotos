@@ -77,6 +77,71 @@ class AssetListStateManager:
         self._pending_virtual_moves.clear()
         self._pending_row_removals.clear()
 
+    def rebuild_lookup(self) -> None:
+        """Recompute the ``rel`` → index mapping after in-place row changes."""
+
+        refreshed: Dict[str, int] = {}
+        for index, row in enumerate(self._rows):
+            rel_value = row.get("rel")
+            if isinstance(rel_value, str) and rel_value:
+                refreshed[Path(rel_value).as_posix()] = index
+            elif isinstance(rel_value, Path):
+                refreshed[rel_value.as_posix()] = index
+            elif rel_value:
+                refreshed[Path(str(rel_value)).as_posix()] = index
+        self._row_lookup = refreshed
+
+    @staticmethod
+    def _normalise_key(value: Optional[str]) -> Optional[str]:
+        """Return a POSIX-formatted representation of ``value`` when possible."""
+
+        if not value:
+            return None
+        return Path(value).as_posix()
+
+    def on_external_row_removed(self, position: int, rel_key: Optional[str]) -> None:
+        """Adjust pending move bookkeeping after a row was removed externally."""
+
+        if self._pending_virtual_moves:
+            normalised_rel = self._normalise_key(rel_key)
+            updated: Dict[str, Tuple[int, str, bool]] = {}
+            for original_rel, (row_index, guessed_rel, was_removed) in (
+                list(self._pending_virtual_moves.items())
+            ):
+                if row_index == position:
+                    continue
+                if normalised_rel is not None:
+                    original_key = self._normalise_key(original_rel)
+                    guessed_key = self._normalise_key(guessed_rel)
+                    if normalised_rel in {original_key, guessed_key}:
+                        continue
+                adjusted_index = row_index - 1 if row_index > position else row_index
+                if adjusted_index < 0:
+                    continue
+                updated[original_rel] = (adjusted_index, guessed_rel, was_removed)
+            self._pending_virtual_moves = updated
+
+        if self._pending_row_removals:
+            self._pending_row_removals.clear()
+
+    def on_external_row_inserted(self, position: int) -> None:
+        """Shift pending move bookkeeping after a row was inserted externally."""
+
+        if self._pending_virtual_moves:
+            adjusted: Dict[str, Tuple[int, str, bool]] = {}
+            for original_rel, (row_index, guessed_rel, was_removed) in (
+                list(self._pending_virtual_moves.items())
+            ):
+                if row_index >= position:
+                    adjusted_index = row_index + 1
+                else:
+                    adjusted_index = row_index
+                adjusted[original_rel] = (adjusted_index, guessed_rel, was_removed)
+            self._pending_virtual_moves = adjusted
+
+        if self._pending_row_removals:
+            self._pending_row_removals.clear()
+
     def append_chunk(self, chunk: List[Dict[str, object]]) -> Tuple[int, int]:
         """Extend the dataset with *chunk* and return the inserted row range."""
 
@@ -295,6 +360,12 @@ class AssetListStateManager:
                 continue
 
             row_index, guessed_rel, was_removed = pending
+            if not (0 <= row_index < len(self._rows)):
+                if guessed_rel:
+                    self._row_lookup.pop(guessed_rel, None)
+                    self._cache.remove_thumbnail(guessed_rel)
+                    self._cache.remove_placeholder(guessed_rel)
+                continue
             row_data = self._rows[row_index]
 
             try:

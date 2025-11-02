@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from .cache.index_store import IndexStore
 from .cache.lock import FileLock
@@ -72,6 +72,87 @@ def _write_links(root: Path, payload: Dict[str, object]) -> None:
         write_json(work_dir / "links.json", payload, backup_dir=work_dir / "manifest.bak")
 
 
+def _normalise_rel_key(rel_value: object) -> Optional[str]:
+    """Return a POSIX-formatted representation of *rel_value* when possible.
+
+    The index uses the relative path under the album root as its stable
+    identifier.  Callers occasionally pass :class:`pathlib.Path` instances while
+    other code paths hand over plain strings.  Normalising via
+    :meth:`Path.as_posix` collapses both representations into a single canonical
+    form so lookups remain stable regardless of the originating caller or the
+    underlying operating system.
+    """
+
+    if isinstance(rel_value, str) and rel_value:
+        return Path(rel_value).as_posix()
+    if isinstance(rel_value, Path):
+        return rel_value.as_posix()
+    if rel_value:
+        return Path(str(rel_value)).as_posix()
+    return None
+
+
+def _update_index_snapshot(root: Path, materialised_rows: List[dict]) -> None:
+    """Apply *materialised_rows* to ``index.jsonl`` using incremental updates.
+
+    Instead of rewriting the entire index after every scan, the helper removes
+    entries that are no longer present and upserts any rows that appeared or
+    changed.  The incremental approach keeps writes small, which in turn reduces
+    churn on networked or slow storage while still guaranteeing atomicity
+    through the :class:`~iPhoto.cache.index_store.IndexStore` primitives.
+    """
+
+    store = IndexStore(root)
+
+    existing_rows: Dict[str, dict] = {}
+    corrupted_during_read = False
+    try:
+        for cached_row in store.read_all():
+            rel_key = _normalise_rel_key(cached_row.get("rel"))
+            if rel_key is None:
+                continue
+            existing_rows[rel_key] = cached_row
+    except IndexCorruptedError:
+        existing_rows = {}
+        corrupted_during_read = True
+
+    fresh_rows: Dict[str, dict] = {}
+    for row in materialised_rows:
+        rel_key = _normalise_rel_key(row.get("rel"))
+        if rel_key is None:
+            continue
+        fresh_rows[rel_key] = row
+
+    materialised_snapshot = list(fresh_rows.values())
+
+    if corrupted_during_read:
+        store.write_rows(materialised_snapshot)
+        return
+
+    if not fresh_rows and not existing_rows:
+        return
+
+    stale_rels = set(existing_rows.keys()) - set(fresh_rows.keys())
+    if stale_rels:
+        try:
+            store.remove_rows(stale_rels)
+        except IndexCorruptedError:
+            store.write_rows(materialised_snapshot)
+            return
+
+    updated_payload: List[dict] = []
+    for rel_key, row in fresh_rows.items():
+        cached = existing_rows.get(rel_key)
+        if cached is None or cached != row:
+            updated_payload.append(row)
+
+    if updated_payload:
+        try:
+            store.append_rows(updated_payload)
+        except IndexCorruptedError:
+            store.write_rows(materialised_snapshot)
+
+
 def rescan(root: Path) -> List[dict]:
     """Rescan the album and return the fresh index rows."""
 
@@ -122,7 +203,7 @@ def rescan(root: Path) -> List[dict]:
                 if field in cached and field not in new_row:
                     new_row[field] = cached[field]
 
-    store.write_rows(rows)
+    _update_index_snapshot(root, rows)
     _ensure_links(root, rows)
     return rows
 

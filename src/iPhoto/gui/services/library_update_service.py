@@ -61,7 +61,6 @@ class LibraryUpdateService(QObject):
 
         self.indexUpdated.emit(album.root)
         self.linksUpdated.emit(album.root)
-        self.assetReloadRequested.emit(album.root, False, False)
         return rows
 
     def rescan_album_async(self, album: "Album") -> None:
@@ -334,7 +333,7 @@ class LibraryUpdateService(QObject):
             # existed before the rescan.  The worker keeps the result in memory,
             # therefore we flush both ``index.jsonl`` and ``links.json`` here to
             # mirror the historical facade behaviour before notifying listeners.
-            backend.IndexStore(root).write_rows(materialised_rows)
+            backend._update_index_snapshot(root, materialised_rows)
             backend._ensure_links(root, materialised_rows)
         except IPhotoError as exc:
             self.errorRaised.emit(str(exc))
@@ -342,7 +341,6 @@ class LibraryUpdateService(QObject):
         else:
             self.indexUpdated.emit(root)
             self.linksUpdated.emit(root)
-            self.assetReloadRequested.emit(root, False, False)
             self.scanFinished.emit(root, True)
 
         should_restart = self._scan_pending
