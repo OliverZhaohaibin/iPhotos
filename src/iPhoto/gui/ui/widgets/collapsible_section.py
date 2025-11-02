@@ -139,12 +139,20 @@ class CollapsibleSection(QFrame):
         """Animate the content frame between collapsed and expanded states."""
 
         self._animation.stop()
-        start_height = self._content_frame.maximumHeight()
 
         if expanded:
             # The content frame must be visible before querying ``sizeHint``; a hidden widget may
             # report zero height which would collapse the animation target and prevent expansion.
             self._content_frame.setVisible(True)
+            start_height = self._content_frame.maximumHeight()
+        else:
+            # When collapsing we first synchronise the animation property with the frame's current
+            # height.  The previous expand step may have unlocked the maximum height to
+            # ``QWIDGETSIZE_MAX`` so using ``maximumHeight`` directly would start the animation at an
+            # exaggerated value and cause a visual snap.
+            current_height = self._content_frame.height()
+            self._content_frame.setMaximumHeight(current_height)
+            start_height = current_height
 
         end_height = self._content.sizeHint().height() if expanded else 0
         self._animation.setStartValue(start_height)
@@ -179,10 +187,16 @@ class CollapsibleSection(QFrame):
         self._toggle_button.click()
 
     def _on_animation_finished(self) -> None:  # pragma: no cover - GUI glue
-        """Hide the content frame after collapsing to keep layouts tight."""
+        """Finalise the frame visibility once the expand/collapse animation ends."""
 
         if not self._expanded:
             self._content_frame.hide()
+        else:
+            # Unlock the content frame so nested collapsible sections can expand further than the
+            # size that was captured for the initial animation.  Using Qt's documented maximum
+            # widget height (16777215) mirrors ``QWIDGETSIZE_MAX`` without importing QtWidgets at
+            # module import time (which is difficult to satisfy in headless tests).
+            self._content_frame.setMaximumHeight(16777215)
 
     # ------------------------------------------------------------------
     def set_toggle_icon_tint(self, tint: QColor | str | None) -> None:
