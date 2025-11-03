@@ -17,8 +17,10 @@ from PySide6.QtWidgets import (
 )
 
 from ....core.light_resolver import LIGHT_KEYS
+from ....core.color_resolver import COLOR_KEYS
 from ..models.edit_session import EditSession
 from .edit_light_section import EditLightSection
+from .edit_color_section import EditColorSection
 from .collapsible_section import CollapsibleSection
 from ..palette import SIDEBAR_BACKGROUND_COLOR
 from ..icon import load_icon
@@ -35,6 +37,7 @@ class EditSidebar(QWidget):
         # Track whether the Light header controls have active signal bindings so we can
         # disconnect them safely without triggering PySide warnings when no connection exists.
         self._light_controls_connected = False
+        self._color_controls_connected = False
 
         # Match the classic sidebar chrome so the edit tools retain the soft blue
         # background the rest of the application uses for navigation panes.
@@ -109,11 +112,29 @@ class EditSidebar(QWidget):
 
         scroll_layout.addWidget(self._build_separator(scroll_content))
 
-        color_placeholder = QLabel("Color adjustments are coming soon.", scroll_content)
-        color_placeholder.setWordWrap(True)
-        color_container = CollapsibleSection("Color", "color.circle.svg", color_placeholder, scroll_content)
-        color_container.set_expanded(False)
-        scroll_layout.addWidget(color_container)
+        self._color_section = EditColorSection(scroll_content)
+        self._color_section_container = CollapsibleSection(
+            "Color",
+            "color.circle.svg",
+            self._color_section,
+            scroll_content,
+        )
+
+        self.color_reset_button = QToolButton(self._color_section_container)
+        self.color_reset_button.setAutoRaise(True)
+        self.color_reset_button.setIcon(load_icon("arrow.uturn.left.svg"))
+        self.color_reset_button.setToolTip("Reset Color adjustments")
+
+        self.color_toggle_button = QToolButton(self._color_section_container)
+        self.color_toggle_button.setAutoRaise(True)
+        self.color_toggle_button.setCheckable(True)
+        self.color_toggle_button.setIcon(load_icon("circle.svg"))
+        self.color_toggle_button.setToolTip("Toggle Color adjustments")
+
+        self._color_section_container.add_header_control(self.color_reset_button)
+        self._color_section_container.add_header_control(self.color_toggle_button)
+
+        scroll_layout.addWidget(self._color_section_container)
 
         scroll_layout.addWidget(self._build_separator(scroll_content))
 
@@ -184,19 +205,38 @@ class EditSidebar(QWidget):
 
             self._light_controls_connected = False
 
+        if self._color_controls_connected:
+            try:
+                self.color_reset_button.clicked.disconnect(self._on_color_reset)
+            except (TypeError, RuntimeError):
+                pass
+            try:
+                self.color_toggle_button.toggled.disconnect(self._on_color_toggled)
+            except (TypeError, RuntimeError):
+                pass
+            self._color_controls_connected = False
+
         self._session = session
         self._light_section.bind_session(session)
+        self._color_section.bind_session(session)
         if session is not None:
             self.light_reset_button.clicked.connect(self._on_light_reset)
             self.light_toggle_button.toggled.connect(self._on_light_toggled)
+            self.color_reset_button.clicked.connect(self._on_color_reset)
+            self.color_toggle_button.toggled.connect(self._on_color_toggled)
             session.valueChanged.connect(self._on_session_value_changed)
             self._light_controls_connected = True
+            self._color_controls_connected = True
             self._sync_light_toggle_state()
+            self._sync_color_toggle_state()
             if self._light_preview_image is not None:
                 self._light_section.set_preview_image(self._light_preview_image)
+                self._color_section.set_preview_image(self._light_preview_image)
         else:
             self.light_toggle_button.setChecked(False)
             self._update_light_toggle_icon(False)
+            self.color_toggle_button.setChecked(False)
+            self._update_color_toggle_icon(False)
 
     def session(self) -> Optional[EditSession]:
         return self._session
@@ -212,13 +252,16 @@ class EditSidebar(QWidget):
         """Force the currently visible sections to sync with the session."""
 
         self._light_section.refresh_from_session()
+        self._color_section.refresh_from_session()
         self._sync_light_toggle_state()
+        self._sync_color_toggle_state()
 
     def set_light_preview_image(self, image) -> None:
         """Provide *image* to the Light section for generating slider thumbnails."""
 
         self._light_preview_image = image
         self._light_section.set_preview_image(image)
+        self._color_section.set_preview_image(image)
 
     def _build_separator(self, parent: QWidget) -> QFrame:
         """Return a subtle divider separating adjacent section headers."""
@@ -246,12 +289,30 @@ class EditSidebar(QWidget):
             return
         self._session.set_value("Light_Enabled", checked)
 
+    def _on_color_reset(self) -> None:
+        if self._session is None:
+            return
+        updates = {key: 0.0 for key in COLOR_KEYS}
+        updates["Color_Master"] = 0.0
+        updates["Color_Enabled"] = True
+        self._session.set_values(updates)
+        self._color_section.refresh_from_session()
+        self._sync_color_toggle_state()
+
+    def _on_color_toggled(self, checked: bool) -> None:
+        self._update_color_toggle_icon(checked)
+        if self._session is None:
+            return
+        self._session.set_value("Color_Enabled", checked)
+
     @Slot(str, object)  # 使用 object 以匹配 (float | bool)
     def _on_session_value_changed(self, key: str, value: object) -> None:
         """Listen for session changes (e.g., from sliders) to sync the toggle button."""
         del value  # 我们只关心键，不关心具体的值
         if key == "Light_Enabled":
             self._sync_light_toggle_state()
+        if key == "Color_Enabled":
+            self._sync_color_toggle_state()
 
     def _sync_light_toggle_state(self) -> None:
         if self._session is None:
@@ -273,6 +334,30 @@ class EditSidebar(QWidget):
             tint_name = self._control_icon_tint.name(QColor.NameFormat.HexArgb) if self._control_icon_tint else None
             self.light_toggle_button.setIcon(load_icon("circle.svg", color=tint_name))
 
+    def _sync_color_toggle_state(self) -> None:
+        if self._session is None:
+            block = self.color_toggle_button.blockSignals(True)
+            self.color_toggle_button.setChecked(False)
+            self.color_toggle_button.blockSignals(block)
+            self._update_color_toggle_icon(False)
+            return
+        enabled = bool(self._session.value("Color_Enabled"))
+        block = self.color_toggle_button.blockSignals(True)
+        self.color_toggle_button.setChecked(enabled)
+        self.color_toggle_button.blockSignals(block)
+        self._update_color_toggle_icon(enabled)
+
+    def _update_color_toggle_icon(self, enabled: bool) -> None:
+        if enabled:
+            self.color_toggle_button.setIcon(load_icon("checkmark.circle.svg"))
+        else:
+            tint_name = (
+                self._control_icon_tint.name(QColor.NameFormat.HexArgb)
+                if self._control_icon_tint
+                else None
+            )
+            self.color_toggle_button.setIcon(load_icon("circle.svg", color=tint_name))
+
 
     def set_control_icon_tint(self, color: QColor | None) -> None:
         """Apply a color tint to all header control icons."""
@@ -281,4 +366,8 @@ class EditSidebar(QWidget):
         self.light_reset_button.setIcon(
             load_icon("arrow.uturn.left.svg", color=tint_name)
         )
+        self.color_reset_button.setIcon(
+            load_icon("arrow.uturn.left.svg", color=tint_name)
+        )
         self._sync_light_toggle_state()
+        self._sync_color_toggle_state()

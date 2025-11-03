@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from PySide6.QtCore import Qt, QPointF, QRectF, QSize, Signal
 from PySide6.QtGui import (
@@ -73,6 +73,7 @@ class ThumbnailStripSlider(QFrame):
         self._scaled: Optional[QImage] = None
         self._scaled_height = 0
         self._tick_previews: List[_TickPreview] = []
+        self._preview_generator: Callable[[QImage, float], QImage] = self._generate_light_preview
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -182,6 +183,13 @@ class ThumbnailStripSlider(QFrame):
         super().mousePressEvent(event)
 
     # ------------------------------------------------------------------
+    def set_preview_generator(self, generator: Callable[[QImage, float], QImage]) -> None:
+        """Set the callable used to generate preview thumbnails."""
+
+        self._preview_generator = generator
+        self._tick_previews.clear()
+        self._track_frame.update()
+
     def _clamp(self, value: float) -> float:
         return max(self._minimum, min(self._maximum, float(value)))
 
@@ -220,8 +228,12 @@ class ThumbnailStripSlider(QFrame):
             )
 
     def _generate_preview(self, image: QImage, value: float) -> QImage:
-        """Return an adjusted preview using *image* and the Light resolver."""
+        """Return an adjusted preview using the configured generator."""
 
+        return self._preview_generator(image, value)
+
+    @staticmethod
+    def _generate_light_preview(image: QImage, value: float) -> QImage:
         adjustments = resolve_light_vector(value, None)
         return apply_adjustments(image, adjustments)
 

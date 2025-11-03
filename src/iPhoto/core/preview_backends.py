@@ -9,14 +9,17 @@ from typing import Mapping, TYPE_CHECKING, cast
 
 from array import array
 import ctypes
+import struct
 
 from PySide6.QtGui import QImage
 
 from .image_filters import apply_adjustments
+from .color_resolver import ColorStats, compute_color_statistics
 
 if TYPE_CHECKING:  # pragma: no cover - import for typing only
     from PySide6.QtGui import QOffscreenSurface
     from PySide6.QtGui import QOpenGLContext
+    from PySide6.QtGui import QSurfaceFormat
     from PySide6.QtOpenGL import (
         QOpenGLBuffer,
         QOpenGLFramebufferObject,
@@ -77,9 +80,10 @@ class PreviewBackend(ABC):
 
 @dataclass
 class _CpuPreviewSession(PreviewSession):
-    """Store the original image for the CPU fallback backend."""
+    """Store the original image and precomputed statistics for the CPU backend."""
 
     image: QImage
+    color_stats: ColorStats
 
     def dispose(self) -> None:  # pragma: no cover - nothing to free
         """Release held resources (no-op for pure CPU sessions)."""
@@ -97,11 +101,12 @@ class _CpuPreviewBackend(PreviewBackend):
     supports_realtime = False
 
     def create_session(self, image: QImage) -> PreviewSession:
-        return _CpuPreviewSession(image)
+        stats = compute_color_statistics(image) if not image.isNull() else ColorStats()
+        return _CpuPreviewSession(image, stats)
 
     def render(self, session: PreviewSession, adjustments: Mapping[str, float]) -> QImage:
         assert isinstance(session, _CpuPreviewSession)
-        return apply_adjustments(session.image, adjustments)
+        return apply_adjustments(session.image, adjustments, color_stats=session.color_stats)
 
 
 class _CudaPreviewBackend(PreviewBackend):
@@ -137,6 +142,143 @@ class _OpenGlPreviewBackend(PreviewBackend):
     tier_name = "OpenGL"
     supports_realtime = True
 
+    @staticmethod
+    def _candidate_formats(
+        surface_format_cls: type["QSurfaceFormat"],
+    ) -> list["QSurfaceFormat"]:
+        """Return potential context formats ordered by desirability.
+
+        The helper favours the process-wide default format first so that the
+        preview backend mirrors whichever OpenGL version the rest of the
+        application already requested.  Falling back to explicit versions keeps
+        legacy drivers in play when no default is configured.
+        """
+
+        candidates: list["QSurfaceFormat"] = []
+        default_format = surface_format_cls.defaultFormat()
+        if (
+            default_format.renderableType()
+            == surface_format_cls.RenderableType.OpenGL
+            and default_format.majorVersion() > 0
+        ):
+            # Copy the default format so adjustments performed later on do not
+            # mutate the process-wide configuration.
+            try:
+                candidates.append(surface_format_cls(default_format))
+            except TypeError:
+                # Some bindings lack the convenience copy constructor.  In that
+                # case manually mirror the relevant properties to preserve the
+                # process-wide defaults.
+                format_copy = surface_format_cls()
+                format_copy.setRenderableType(default_format.renderableType())
+                format_copy.setProfile(default_format.profile())
+                format_copy.setVersion(
+                    default_format.majorVersion(),
+                    default_format.minorVersion(),
+                )
+                format_copy.setSwapBehavior(default_format.swapBehavior())
+                format_copy.setSwapInterval(default_format.swapInterval())
+                format_copy.setDepthBufferSize(default_format.depthBufferSize())
+                format_copy.setStencilBufferSize(default_format.stencilBufferSize())
+                format_copy.setSamples(default_format.samples())
+                format_copy.setRedBufferSize(default_format.redBufferSize())
+                format_copy.setGreenBufferSize(default_format.greenBufferSize())
+                format_copy.setBlueBufferSize(default_format.blueBufferSize())
+                format_copy.setAlphaBufferSize(default_format.alphaBufferSize())
+                format_copy.setOption(
+                    surface_format_cls.FormatOption.DebugContext,
+                    default_format.testOption(
+                        surface_format_cls.FormatOption.DebugContext
+                    ),
+                )
+                candidates.append(format_copy)
+
+        for major, minor in ((4, 3), (3, 3)):
+            format_hint = surface_format_cls()
+            format_hint.setRenderableType(surface_format_cls.RenderableType.OpenGL)
+            format_hint.setProfile(surface_format_cls.OpenGLContextProfile.CoreProfile)
+            format_hint.setVersion(major, minor)
+            candidates.append(format_hint)
+
+        return candidates
+
+    @classmethod
+    def _initialise_context(
+        cls,
+        context_cls: type["QOpenGLContext"],
+        surface_format_cls: type["QSurfaceFormat"],
+    ) -> tuple["QOpenGLContext", "QSurfaceFormat"]:
+        """Create an OpenGL context matching the map view configuration.
+
+        Passing the Qt classes explicitly keeps the helper import-agnostic and
+        ensures that :meth:`is_available` can reuse the logic without eagerly
+        importing OpenGL modules at the top level.
+        """
+
+        share_context = context_cls.globalShareContext()
+        last_error: Exception | None = None
+        candidate_formats: list["QSurfaceFormat"] = []
+        if share_context is not None:
+            share_format = share_context.format()
+            if (
+                share_format.renderableType()
+                == surface_format_cls.RenderableType.OpenGL
+            ):
+                try:
+                    candidate_formats.append(surface_format_cls(share_format))
+                except TypeError:
+                    cloned = surface_format_cls()
+                    cloned.setRenderableType(share_format.renderableType())
+                    cloned.setProfile(share_format.profile())
+                    cloned.setVersion(
+                        share_format.majorVersion(),
+                        share_format.minorVersion(),
+                    )
+                    cloned.setSwapBehavior(share_format.swapBehavior())
+                    cloned.setSwapInterval(share_format.swapInterval())
+                    cloned.setDepthBufferSize(share_format.depthBufferSize())
+                    cloned.setStencilBufferSize(share_format.stencilBufferSize())
+                    cloned.setSamples(share_format.samples())
+                    cloned.setRedBufferSize(share_format.redBufferSize())
+                    cloned.setGreenBufferSize(share_format.greenBufferSize())
+                    cloned.setBlueBufferSize(share_format.blueBufferSize())
+                    cloned.setAlphaBufferSize(share_format.alphaBufferSize())
+                    cloned.setOption(
+                        surface_format_cls.FormatOption.DebugContext,
+                        share_format.testOption(
+                            surface_format_cls.FormatOption.DebugContext
+                        ),
+                    )
+                    candidate_formats.append(cloned)
+
+        candidate_formats.extend(cls._candidate_formats(surface_format_cls))
+
+        for format_hint in candidate_formats:
+            context = context_cls()
+            if share_context is not None:
+                context.setShareContext(share_context)
+            context.setFormat(format_hint)
+            try:
+                if not context.create():
+                    continue
+            except Exception as exc:  # pragma: no cover - platform specific
+                last_error = exc
+                continue
+
+            actual_format = context.format()
+            if (
+                actual_format.renderableType()
+                != surface_format_cls.RenderableType.OpenGL
+            ):
+                continue
+
+            return context, actual_format
+
+        message = "Failed to create OpenGL context"
+        if last_error is not None:
+            raise RuntimeError(message) from last_error
+        raise RuntimeError(message)
+
     def __init__(self) -> None:
         # Import OpenGL heavy modules lazily so environments without an OpenGL
         # stack (for example headless CI) can still import this module without
@@ -144,21 +286,26 @@ class _OpenGlPreviewBackend(PreviewBackend):
         # probing before the backend is constructed, so any ImportError raised
         # here indicates a configuration drift between the probe and the
         # initialiser.  Surfacing the error keeps the log output actionable.
-        from PySide6.QtGui import QOffscreenSurface
-        from PySide6.QtGui import QOpenGLContext, QSurfaceFormat
+        from PySide6.QtGui import (
+            QOffscreenSurface,
+            QOpenGLContext,
+            QOpenGLFunctions_4_3_Core,
+            QOpenGLVersionFunctionsFactory,
+            QSurfaceFormat,
+        )
         from PySide6.QtOpenGL import QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram
 
         super().__init__()
 
-        self._context: QOpenGLContext = QOpenGLContext()
-        format_hint = QSurfaceFormat()
-        format_hint.setRenderableType(QSurfaceFormat.RenderableType.OpenGL)
-        self._context.setFormat(format_hint)
-        if not self._context.create():
-            raise RuntimeError("Failed to create OpenGL context")
+        context, format_used = self._initialise_context(QOpenGLContext, QSurfaceFormat)
+        self._context = context
+        self._context_version = (
+            format_used.majorVersion(),
+            format_used.minorVersion(),
+        )
 
         self._surface: QOffscreenSurface = QOffscreenSurface()
-        self._surface.setFormat(self._context.format())
+        self._surface.setFormat(format_used)
         self._surface.create()
         if not self._surface.isValid():
             raise RuntimeError("OpenGL offscreen surface is invalid")
@@ -169,6 +316,13 @@ class _OpenGlPreviewBackend(PreviewBackend):
         functions = self._context.functions()
         functions.initializeOpenGLFunctions()
         self._gl = functions
+        self._gl43: QOpenGLFunctions_4_3_Core | None = None
+        if self._context_version >= (4, 3):
+            self._gl43 = QOpenGLVersionFunctionsFactory.get(
+                self._context, QOpenGLFunctions_4_3_Core
+            )
+            if self._gl43 is not None:
+                self._gl43.initializeOpenGLFunctions()
 
         # Compile and link the shader program once.  The uniforms mirror the
         # tone-mapping helper in :mod:`iPhoto.core.image_filters` so both
@@ -202,6 +356,10 @@ class _OpenGlPreviewBackend(PreviewBackend):
         self._uniform_shadows = self._program.uniformLocation("uShadows")
         self._uniform_contrast = self._program.uniformLocation("uContrastFactor")
         self._uniform_black_point = self._program.uniformLocation("uBlackPoint")
+        self._uniform_saturation = self._program.uniformLocation("uSaturation")
+        self._uniform_vibrance = self._program.uniformLocation("uVibrance")
+        self._uniform_cast = self._program.uniformLocation("uCast")
+        self._uniform_gain = self._program.uniformLocation("uGain")
 
         # Prepare the vertex buffer containing a full screen triangle strip.
         vertices = array(
@@ -234,6 +392,19 @@ class _OpenGlPreviewBackend(PreviewBackend):
         self._vertex_buffer.allocate(raw_vertices, len(raw_vertices))
         self._vertex_buffer.release()
 
+        self._compute_program: QOpenGLShaderProgram | None = None
+        self._stats_buffer: QOpenGLBuffer | None = None
+        try:
+            self._compute_program = self._compile_compute_shader()
+            self._stats_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.ShaderStorageBuffer)
+            if not self._stats_buffer.create():
+                self._stats_buffer = None
+        except Exception:
+            # Compute shader support is optional; gracefully fall back to CPU
+            # statistics on hardware that lacks OpenGL 4.3 features.
+            self._compute_program = None
+            self._stats_buffer = None
+
         self._context.doneCurrent()
 
     @staticmethod
@@ -241,10 +412,10 @@ class _OpenGlPreviewBackend(PreviewBackend):
         """Return the GLSL source code for the fullscreen quad vertex shader."""
 
         return (
-            "#version 120\n"
-            "attribute vec2 a_position;\n"
-            "attribute vec2 a_texcoord;\n"
-            "varying vec2 v_texcoord;\n"
+            "#version 330\n"
+            "in vec2 a_position;\n"
+            "in vec2 a_texcoord;\n"
+            "out vec2 v_texcoord;\n"
             "void main() {\n"
             "    gl_Position = vec4(a_position, 0.0, 1.0);\n"
             "    v_texcoord = a_texcoord;\n"
@@ -256,7 +427,7 @@ class _OpenGlPreviewBackend(PreviewBackend):
         """Return the GLSL source code mirroring ``_apply_channel_adjustments``."""
 
         return (
-            "#version 120\n"
+            "#version 330\n"
             "uniform sampler2D uSourceTexture;\n"
             "uniform float uExposureTerm;\n"
             "uniform float uBrightnessTerm;\n"
@@ -265,7 +436,12 @@ class _OpenGlPreviewBackend(PreviewBackend):
             "uniform float uShadows;\n"
             "uniform float uContrastFactor;\n"
             "uniform float uBlackPoint;\n"
-            "varying vec2 v_texcoord;\n"
+            "uniform float uSaturation;\n"
+            "uniform float uVibrance;\n"
+            "uniform float uCast;\n"
+            "uniform vec3 uGain;\n"
+            "in vec2 v_texcoord;\n"
+            "out vec4 FragColor;\n"
             "float clamp01(float value) {\n"
             "    return clamp(value, 0.0, 1.0);\n"
             "}\n"
@@ -290,11 +466,146 @@ class _OpenGlPreviewBackend(PreviewBackend):
             "    return clamp01(adjusted);\n"
             "}\n"
             "void main() {\n"
-            "    vec4 tex_color = texture2D(uSourceTexture, v_texcoord);\n"
+            "    vec4 tex_color = texture(uSourceTexture, v_texcoord);\n"
             "    tex_color.r = apply_channel(tex_color.r);\n"
             "    tex_color.g = apply_channel(tex_color.g);\n"
             "    tex_color.b = apply_channel(tex_color.b);\n"
-            "    gl_FragColor = tex_color;\n"
+            "    vec3 color = tex_color.rgb * mix(vec3(1.0), uGain, clamp(uCast, 0.0, 1.0));\n"
+            "    float luma = dot(color, vec3(0.299, 0.587, 0.114));\n"
+            "    vec3 chroma = color - vec3(luma);\n"
+            "    float satAmt = 1.0 + uSaturation;\n"
+            "    float vibAmt = 1.0 + uVibrance;\n"
+            "    float w = 1.0 - clamp(abs(luma - 0.5) * 2.0, 0.0, 1.0);\n"
+            "    chroma *= satAmt * mix(1.0, vibAmt, w);\n"
+            "    vec3 output_color = clamp(vec3(luma) + chroma, 0.0, 1.0);\n"
+            "    FragColor = vec4(output_color, tex_color.a);\n"
+            "}\n"
+        )
+
+    def _compile_compute_shader(self) -> "QOpenGLShaderProgram | None":
+        """Compile the compute shader used to gather Color statistics."""
+
+        if self._gl43 is None:
+            return None
+
+        from PySide6.QtOpenGL import QOpenGLShader, QOpenGLShaderProgram
+
+        program = QOpenGLShaderProgram()
+        shader = QOpenGLShader(QOpenGLShader.ShaderTypeBit.Compute)
+        if not shader.compileSourceCode(self._compute_shader_source()):
+            message = shader.log() or "unknown compute shader error"
+            raise RuntimeError(f"Failed to compile OpenGL compute shader: {message}")
+        program.addShader(shader)
+        if not program.link():
+            message = program.log() or "unknown compute shader link error"
+            raise RuntimeError(f"Failed to link OpenGL compute shader program: {message}")
+        return program
+
+    @staticmethod
+    def _compute_shader_source() -> str:
+        """Return the GLSL source mirroring the GPU statistics helper."""
+
+        return (
+            "#version 430\n"
+            "layout(local_size_x=16, local_size_y=16, local_size_z=1) in;\n"
+            "layout(binding=0) uniform sampler2D uTex;\n"
+            "struct GroupStats {\n"
+            "  float sumS;\n"
+            "  float sumLinR;\n"
+            "  float sumLinG;\n"
+            "  float sumLinB;\n"
+            "  uint countN;\n"
+            "  uint countVHi;\n"
+            "  uint countVLo;\n"
+            "  uint countSkin;\n"
+            "  uint hist[64];\n"
+            "};\n"
+            "layout(std430, binding=1) buffer StatsBuf { GroupStats gs[]; };\n"
+            "shared float s_sumS;\n"
+            "shared float s_sumLinR;\n"
+            "shared float s_sumLinG;\n"
+            "shared float s_sumLinB;\n"
+            "shared uint s_countN;\n"
+            "shared uint s_countVHi;\n"
+            "shared uint s_countVLo;\n"
+            "shared uint s_countSkin;\n"
+            "shared uint s_hist[64];\n"
+            "vec3 to_linear(vec3 x){\n"
+            "  const float a = 0.055;\n"
+            "  vec3 y;\n"
+            "  for(int i=0;i<3;i++){\n"
+            "    if(x[i] <= 0.04045){\n"
+            "      y[i] = x[i] / 12.92;\n"
+            "    } else {\n"
+            "      y[i] = pow((x[i] + a) / (1.0 + a), 2.4);\n"
+            "    }\n"
+            "  }\n"
+            "  return y;\n"
+            "}\n"
+            "vec3 rgb2hsv(vec3 c){\n"
+            "  float r=c.r,g=c.g,b=c.b;\n"
+            "  float mx = max(r, max(g,b));\n"
+            "  float mn = min(r, min(g,b));\n"
+            "  float d  = mx - mn + 1e-8;\n"
+            "  float h = 0.0;\n"
+            "  if(mx==r){ h = mod((g-b)/d, 6.0); }\n"
+            "  else if(mx==g){ h = ((b-r)/d) + 2.0; }\n"
+            "  else{ h = ((r-g)/d) + 4.0; }\n"
+            "  h /= 6.0;\n"
+            "  float s = d/(mx+1e-8);\n"
+            "  float v = mx;\n"
+            "  return vec3(h,s,v);\n"
+            "}\n"
+            "void main(){\n"
+            "  uvec2 gid = gl_WorkGroupID.xy;\n"
+            "  uvec2 lid = gl_LocalInvocationID.xy;\n"
+            "  uvec2 gsz = gl_NumWorkGroups.xy;\n"
+            "  uint groupIndex = gid.y*gsz.x + gid.x;\n"
+            "  if(lid.x==0 && lid.y==0){\n"
+            "    s_sumS = 0.0;\n"
+            "    s_sumLinR = 0.0;\n"
+            "    s_sumLinG = 0.0;\n"
+            "    s_sumLinB = 0.0;\n"
+            "    s_countN = 0u;\n"
+            "    s_countVHi = 0u;\n"
+            "    s_countVLo = 0u;\n"
+            "    s_countSkin = 0u;\n"
+            "    for(int i=0;i<64;i++){ s_hist[i] = 0u; }\n"
+            "  }\n"
+            "  barrier();\n"
+            "  ivec2 size = textureSize(uTex, 0);\n"
+            "  ivec2 base = ivec2(gid * uvec2(16,16));\n"
+            "  ivec2 p = base + ivec2(lid);\n"
+            "  if(p.x < size.x && p.y < size.y){\n"
+            "    vec3 srgb = texelFetch(uTex, p, 0).rgb;\n"
+            "    vec3 hsv = rgb2hsv(srgb);\n"
+            "    float S = hsv.g;\n"
+            "    float V = hsv.b;\n"
+            "    vec3 lin = to_linear(srgb);\n"
+            "    atomicAdd(s_countN, 1u);\n"
+            "    if(V > 0.90){ atomicAdd(s_countVHi, 1u); }\n"
+            "    if(V < 0.05){ atomicAdd(s_countVLo, 1u); }\n"
+            "    float Hdeg = hsv.r * 360.0;\n"
+            "    if(Hdeg>10.0 && Hdeg<50.0 && S>0.1 && S<0.6){ atomicAdd(s_countSkin, 1u); }\n"
+            "    int bin = int(clamp(floor(S*64.0), 0.0, 63.0));\n"
+            "    atomicAdd(s_hist[bin], 1u);\n"
+            "    s_sumS += S;\n"
+            "    s_sumLinR += lin.r;\n"
+            "    s_sumLinG += lin.g;\n"
+            "    s_sumLinB += lin.b;\n"
+            "  }\n"
+            "  barrier();\n"
+            "  if(lid.x==0 && lid.y==0){\n"
+            "    gs[groupIndex].sumS = s_sumS;\n"
+            "    gs[groupIndex].sumLinR = s_sumLinR;\n"
+            "    gs[groupIndex].sumLinG = s_sumLinG;\n"
+            "    gs[groupIndex].sumLinB = s_sumLinB;\n"
+            "    gs[groupIndex].countN = s_countN;\n"
+            "    gs[groupIndex].countVHi = s_countVHi;\n"
+            "    gs[groupIndex].countVLo = s_countVLo;\n"
+            "    gs[groupIndex].countSkin = s_countSkin;\n"
+            "    for(int i=0;i<64;i++){ gs[groupIndex].hist[i] = s_hist[i]; }\n"
+            "  }\n"
             "}\n"
         )
 
@@ -308,16 +619,15 @@ class _OpenGlPreviewBackend(PreviewBackend):
         except Exception:
             return False
 
+        context: QOpenGLContext | None = None
+        surface: QOffscreenSurface | None = None
         try:
-            context = QOpenGLContext()
-            format_hint = QSurfaceFormat()
-            format_hint.setRenderableType(QSurfaceFormat.RenderableType.OpenGL)
-            context.setFormat(format_hint)
-            if not context.create():
-                return False
+            context, format_hint = cls._initialise_context(
+                QOpenGLContext, QSurfaceFormat
+            )
 
             surface = QOffscreenSurface()
-            surface.setFormat(context.format())
+            surface.setFormat(format_hint)
             surface.create()
             if not surface.isValid():
                 return False
@@ -340,10 +650,22 @@ class _OpenGlPreviewBackend(PreviewBackend):
         except Exception:
             return False
         finally:
-            try:
-                context.doneCurrent()
-            except Exception:  # pragma: no cover - defensive
-                pass
+            if context is not None:
+                try:
+                    context.doneCurrent()
+                except Exception:  # pragma: no cover - defensive
+                    pass
+
+                try:
+                    context.deleteLater()
+                except Exception:  # pragma: no cover - some bindings lack QObject parent
+                    pass
+
+            if surface is not None:
+                try:
+                    surface.destroy()
+                except Exception:  # pragma: no cover - some bindings expose no destroy()
+                    pass
 
         return True
 
@@ -364,7 +686,7 @@ class _OpenGlPreviewBackend(PreviewBackend):
             # without handling a special case.  Rendering an empty session
             # results in a null image which mirrors the CPU backend's
             # behaviour when asked to process an invalid ``QImage``.
-            return _OpenGlPreviewSession(0, 0, 0, None)
+            return _OpenGlPreviewSession(0, 0, 0, None, ColorStats())
 
         if not self._make_current():
             raise RuntimeError("Failed to activate OpenGL context for session creation")
@@ -378,9 +700,11 @@ class _OpenGlPreviewBackend(PreviewBackend):
 
         framebuffer = QOpenGLFramebufferObject(width, height)
 
+        stats = self._compute_session_stats(texture_id, width, height, converted)
+
         self._context.doneCurrent()
 
-        return _OpenGlPreviewSession(width, height, texture_id, framebuffer)
+        return _OpenGlPreviewSession(width, height, texture_id, framebuffer, stats)
 
     def _generate_texture(self) -> int:
         """Create and return a new OpenGL texture identifier."""
@@ -421,6 +745,160 @@ class _OpenGlPreviewBackend(PreviewBackend):
             buffer,
         )
         gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+
+    def _compute_session_stats(
+        self,
+        texture_id: int,
+        width: int,
+        height: int,
+        fallback_image: QImage,
+    ) -> ColorStats:
+        """Return :class:`ColorStats` using the compute shader when available."""
+
+        fallback_stats: ColorStats | None = None
+
+        def _fallback() -> ColorStats:
+            nonlocal fallback_stats
+            if fallback_stats is None:
+                fallback_stats = compute_color_statistics(fallback_image)
+            return fallback_stats
+
+        if (
+            texture_id == 0
+            or width == 0
+            or height == 0
+            or self._compute_program is None
+            or self._stats_buffer is None
+            or self._gl43 is None
+        ):
+            return _fallback()
+
+        groups_x = (width + 15) // 16
+        groups_y = (height + 15) // 16
+        group_count = max(groups_x * groups_y, 1)
+        stride = 320
+        total_size = stride * group_count
+
+        if not self._stats_buffer.bind():
+            return _fallback()
+        # Allocate or resize the buffer to hold one record per work group.
+        self._stats_buffer.allocate(total_size)
+        self._stats_buffer.release()
+
+        gl = self._gl
+        gl43 = self._gl43
+        program = self._compute_program
+        assert program is not None  # guarded above
+
+        if not program.bind():
+            return _fallback()
+
+        gl.glActiveTexture(gl.GL_TEXTURE0)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, texture_id)
+        program.setUniformValue("uTex", 0)
+
+        buffer_id = self._stats_buffer.bufferId()
+        gl43.glBindBufferBase(gl.GL_SHADER_STORAGE_BUFFER, 1, buffer_id)
+        gl43.glDispatchCompute(groups_x, groups_y, 1)
+        gl43.glMemoryBarrier(gl.GL_SHADER_STORAGE_BARRIER_BIT | gl.GL_BUFFER_UPDATE_BARRIER_BIT)
+
+        program.release()
+        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+
+        if not self._stats_buffer.bind():
+            return _fallback()
+
+        mapped = self._stats_buffer.mapRange(
+            0,
+            total_size,
+            QOpenGLBuffer.RangeAccessFlag.ReadAccess,
+        )
+        if mapped is None:
+            self._stats_buffer.release()
+            return _fallback()
+
+        raw = bytes(mapped)
+        self._stats_buffer.unmap()
+        self._stats_buffer.release()
+
+        # Some drivers align SSBO records beyond the declared payload.  Derive the
+        # actual stride from the returned data to ensure we walk the buffer
+        # correctly on all platforms.
+        if len(raw) // group_count > stride:
+            stride = len(raw) // group_count
+
+        sum_saturation = 0.0
+        sum_lin_r = 0.0
+        sum_lin_g = 0.0
+        sum_lin_b = 0.0
+        count = 0
+        highlight_count = 0
+        dark_count = 0
+        skin_count = 0
+        histogram = [0] * 64
+
+        for index in range(group_count):
+            base = index * stride
+            if base + 288 > len(raw):
+                break
+            sum_saturation += struct.unpack_from("<f", raw, base + 0x00)[0]
+            sum_lin_r += struct.unpack_from("<f", raw, base + 0x04)[0]
+            sum_lin_g += struct.unpack_from("<f", raw, base + 0x08)[0]
+            sum_lin_b += struct.unpack_from("<f", raw, base + 0x0C)[0]
+            count += struct.unpack_from("<I", raw, base + 0x10)[0]
+            highlight_count += struct.unpack_from("<I", raw, base + 0x14)[0]
+            dark_count += struct.unpack_from("<I", raw, base + 0x18)[0]
+            skin_count += struct.unpack_from("<I", raw, base + 0x1C)[0]
+            hist_slice = struct.unpack_from("<64I", raw, base + 0x20)
+            for bin_index, bin_value in enumerate(hist_slice):
+                histogram[bin_index] += bin_value
+
+        if count == 0:
+            return ColorStats()
+
+        mean_saturation = sum_saturation / count
+        cumulative = 0
+        median_target = count // 2
+        median_saturation = 0.0
+        for bin_index, bin_value in enumerate(histogram):
+            cumulative += bin_value
+            if cumulative >= median_target:
+                median_saturation = (bin_index + 0.5) / 64.0
+                break
+
+        highlight_ratio = highlight_count / count
+        dark_ratio = dark_count / count
+        skin_ratio = skin_count / count
+
+        avg_lin_r = sum_lin_r / count
+        avg_lin_g = sum_lin_g / count
+        avg_lin_b = sum_lin_b / count
+        avg_lin = (avg_lin_r + avg_lin_g + avg_lin_b) / 3.0
+
+        def _safe_gain(value: float) -> float:
+            if value <= 1e-6:
+                return 1.0
+            return avg_lin / value
+
+        gain_r = max(0.5, min(2.5, _safe_gain(avg_lin_r)))
+        gain_g = max(0.5, min(2.5, _safe_gain(avg_lin_g)))
+        gain_b = max(0.5, min(2.5, _safe_gain(avg_lin_b)))
+
+        cast_magnitude = max(
+            abs(avg_lin_r - avg_lin),
+            abs(avg_lin_g - avg_lin),
+            abs(avg_lin_b - avg_lin),
+        )
+
+        return ColorStats(
+            saturation_mean=min(max(mean_saturation, 0.0), 1.0),
+            saturation_median=min(max(median_saturation, 0.0), 1.0),
+            highlight_ratio=min(max(highlight_ratio, 0.0), 1.0),
+            dark_ratio=min(max(dark_ratio, 0.0), 1.0),
+            skin_ratio=min(max(skin_ratio, 0.0), 1.0),
+            cast_magnitude=min(max(cast_magnitude, 0.0), 1.0),
+            white_balance_gain=(gain_r, gain_g, gain_b),
+        )
 
     def render(self, session: PreviewSession, adjustments: Mapping[str, float]) -> QImage:
         from PySide6.QtGui import QImage as QtImage
@@ -464,6 +942,19 @@ class _OpenGlPreviewBackend(PreviewBackend):
         shadows = float(adjustments.get("Shadows", 0.0))
         contrast_factor = 1.0 + float(adjustments.get("Contrast", 0.0))
         black_point = float(adjustments.get("BlackPoint", 0.0))
+        saturation = float(adjustments.get("Saturation", 0.0))
+        vibrance = float(adjustments.get("Vibrance", 0.0))
+        cast = float(adjustments.get("Cast", 0.0))
+        if (
+            "Color_Gain_R" in adjustments
+            and "Color_Gain_G" in adjustments
+            and "Color_Gain_B" in adjustments
+        ):
+            gain_r = float(adjustments.get("Color_Gain_R", 1.0))
+            gain_g = float(adjustments.get("Color_Gain_G", 1.0))
+            gain_b = float(adjustments.get("Color_Gain_B", 1.0))
+        else:
+            gain_r, gain_g, gain_b = gl_session.color_stats.white_balance_gain
 
         program.setUniformValue(self._uniform_exposure, exposure_term)
         program.setUniformValue(self._uniform_brightness, brightness_term)
@@ -472,6 +963,10 @@ class _OpenGlPreviewBackend(PreviewBackend):
         program.setUniformValue(self._uniform_shadows, shadows)
         program.setUniformValue(self._uniform_contrast, contrast_factor)
         program.setUniformValue(self._uniform_black_point, black_point)
+        program.setUniformValue(self._uniform_saturation, saturation)
+        program.setUniformValue(self._uniform_vibrance, vibrance)
+        program.setUniformValue(self._uniform_cast, cast)
+        program.setUniformValue(self._uniform_gain, gain_r, gain_g, gain_b)
 
         if not self._vertex_buffer.bind():
             program.release()
@@ -535,6 +1030,7 @@ class _OpenGlPreviewSession(PreviewSession):
     height: int
     texture_id: int
     framebuffer: "QOpenGLFramebufferObject | None"
+    color_stats: ColorStats
 
     def dispose(self) -> None:  # pragma: no cover - real cleanup happens in backend
         self.framebuffer = None

@@ -24,6 +24,7 @@ from ....config import THUMBNAIL_SEEK_GUARD_SEC, WORK_DIR_NAME
 from ....utils.pathutils import ensure_work_dir
 from ...utils import image_loader
 from ....core.image_filters import apply_adjustments
+from ....core.color_resolver import compute_color_statistics
 from ....io import sidecar
 from .video_frame_grabber import grab_video_frame
 
@@ -84,11 +85,14 @@ class ThumbnailJob(QRunnable):
         image = image_loader.load_qimage(self._abs_path, self._size)
         if image is None:
             return None
+        raw_adjustments = sidecar.load_adjustments(self._abs_path)
+        stats = compute_color_statistics(image) if raw_adjustments else None
         adjustments = sidecar.resolve_render_adjustments(
-            sidecar.load_adjustments(self._abs_path)
+            raw_adjustments,
+            color_stats=stats,
         )
         if adjustments:
-            image = apply_adjustments(image, adjustments)
+            image = apply_adjustments(image, adjustments, color_stats=stats)
         return self._composite_canvas(image)
 
     def _render_video(self) -> Optional[QImage]:  # pragma: no cover - worker helper
