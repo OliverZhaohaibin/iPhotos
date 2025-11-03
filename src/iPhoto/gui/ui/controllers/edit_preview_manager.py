@@ -156,7 +156,8 @@ class EditPreviewManager(QObject):
         self._base_pixmap = base_pixmap if not base_pixmap.isNull() else None
         self._current_preview_pixmap = self._base_pixmap
         self._current_adjustments = dict(adjustments)
-        self._color_stats = compute_color_statistics(prepared)
+        session_stats = getattr(self._preview_session, "color_stats", None)
+        self._color_stats = session_stats if isinstance(session_stats, ColorStats) else compute_color_statistics(prepared)
 
         if previous_session is not None:
             self._queue_session_for_disposal(previous_session)
