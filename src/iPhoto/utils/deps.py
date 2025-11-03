@@ -15,6 +15,7 @@ class PillowSupport:
     Image: Any
     ImageOps: Any
     ImageQt: Any
+    ImageFilter: Any
     UnidentifiedImageError: Any
 
 
@@ -36,7 +37,7 @@ def load_pillow() -> Optional[PillowSupport]:
         return None
 
     try:
-        from PIL import Image, ImageOps, UnidentifiedImageError
+        from PIL import Image, ImageFilter, ImageOps, UnidentifiedImageError
     except Exception:  # pragma: no cover - optional dependency missing or broken
         return None
 
@@ -60,6 +61,7 @@ def load_pillow() -> Optional[PillowSupport]:
         Image=Image,
         ImageOps=ImageOps,
         ImageQt=ImageQt,
+        ImageFilter=ImageFilter,
         UnidentifiedImageError=UnidentifiedImageError,
     )
 
