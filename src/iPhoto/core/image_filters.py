@@ -8,8 +8,7 @@ from PySide6.QtGui import QImage, QColor
 
 from ..utils.deps import load_pillow
 from .light_resolver import LIGHT_KEYS
-from .color_resolver import ColorStats, compute_color_statistics
-
+from .color_resolver import ColorStats, compute_color_statistics, _clamp
 
 _PILLOW_SUPPORT = load_pillow()
 

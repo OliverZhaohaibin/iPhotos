@@ -440,7 +440,7 @@ class _OpenGlPreviewBackend(PreviewBackend):
 
     def render(self, session: PreviewSession, adjustments: Mapping[str, float]) -> QImage:
         from PySide6.QtGui import QImage as QtImage
-
+        from typing import cast
         gl_session = cast(_OpenGlPreviewSession, session)
         if gl_session.width == 0 or gl_session.height == 0:
             return QImage()
