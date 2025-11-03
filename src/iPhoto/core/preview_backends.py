@@ -22,8 +22,8 @@ if TYPE_CHECKING:  # pragma: no cover - import for typing only
     from PySide6.QtOpenGL import (
         QOpenGLBuffer,
         QOpenGLFramebufferObject,
-        QOpenGLShaderProgram,
-    )
+        QOpenGLShaderProgram, QOpenGLFunctions_4_3_Core, QOpenGLVersionFunctionsFactory, QOpenGLShader,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -151,8 +151,6 @@ class _OpenGlPreviewBackend(PreviewBackend):
         from PySide6.QtGui import (
             QOffscreenSurface,
             QOpenGLContext,
-            QOpenGLFunctions_4_3_Core,
-            QOpenGLVersionFunctionsFactory,
             QSurfaceFormat,
         )
         from PySide6.QtOpenGL import QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram
