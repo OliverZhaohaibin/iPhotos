@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
@@ -78,4 +79,13 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":  # pragma: no cover - manual launch
+    logging.basicConfig(
+        level=logging.INFO,  # 设置日志级别为INFO，以捕获所有消息
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler(sys.stdout)  # 输出到控制台
+            # logging.FileHandler("app_debug.log") # 或者输出到文件
+        ]
+    )
+    log = logging.getLogger(__name__)  # 获取当前模块的logger
     raise SystemExit(main())

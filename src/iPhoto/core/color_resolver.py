@@ -199,7 +199,6 @@ def compute_color_statistics(image: QImage, *, max_sample_size: int = 1024) -> C
 
     bytes_per_line = converted.bytesPerLine()
     buffer = converted.bits()
-    buffer.setsize(converted.sizeInBytes())
     view = memoryview(buffer)
 
     hist = [0] * 64

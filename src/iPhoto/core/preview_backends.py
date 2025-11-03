@@ -75,6 +75,7 @@ class PreviewBackend(ABC):
         simple wrappers like the CPU fallback do not need any custom logic.
         """
 
+        _LOGGER.debug("Disposing session: %s", session)
         session.dispose()
 
 
@@ -88,6 +89,7 @@ class _CpuPreviewSession(PreviewSession):
     def dispose(self) -> None:  # pragma: no cover - nothing to free
         """Release held resources (no-op for pure CPU sessions)."""
 
+        _LOGGER.debug("Disposing _CpuPreviewSession. No-op.")
         # No explicit resource management is required for the CPU fallback.  The
         # controller simply drops the reference to the session, allowing Python's
         # garbage collector to reclaim the implicit ``QImage`` copy naturally.
@@ -101,10 +103,12 @@ class _CpuPreviewBackend(PreviewBackend):
     supports_realtime = False
 
     def create_session(self, image: QImage) -> PreviewSession:
+        _LOGGER.debug("CPUBackend: Creating session.")
         stats = compute_color_statistics(image) if not image.isNull() else ColorStats()
         return _CpuPreviewSession(image, stats)
 
     def render(self, session: PreviewSession, adjustments: Mapping[str, float]) -> QImage:
+        _LOGGER.debug("CPUBackend: Rendering.")
         assert isinstance(session, _CpuPreviewSession)
         return apply_adjustments(session.image, adjustments, color_stats=session.color_stats)
 
@@ -116,23 +120,28 @@ class _CudaPreviewBackend(PreviewBackend):
     supports_realtime = True
 
     def __init__(self) -> None:
+        _LOGGER.error("CUDA backend __init__ called but it is not implemented.")
         raise RuntimeError("CUDA backend is not implemented in this build")
 
     @classmethod
     def is_available(cls) -> bool:
         """Return ``True`` when the runtime provides the required CUDA stack."""
 
+        _LOGGER.debug("Checking for CUDA availability.")
         try:
             import cupy  # type: ignore  # noqa: F401
         except ImportError:
+            _LOGGER.debug("CUDA check: cupy not found.")
             return False
         _LOGGER.info("CUDA runtime detected but backend is not yet implemented; skipping")
         return False
 
     def create_session(self, image: QImage) -> PreviewSession:  # pragma: no cover - not reachable
+        _LOGGER.error("CUDA backend create_session called but it is not implemented.")
         raise NotImplementedError
 
     def render(self, session: PreviewSession, adjustments: Mapping[str, float]) -> QImage:  # pragma: no cover - not reachable
+        _LOGGER.error("CUDA backend render called but it is not implemented.")
         raise NotImplementedError
 
 
@@ -153,7 +162,7 @@ class _OpenGlPreviewBackend(PreviewBackend):
         application already requested.  Falling back to explicit versions keeps
         legacy drivers in play when no default is configured.
         """
-
+        _LOGGER.debug("OpenGL: Determining candidate formats.")
         candidates: list["QSurfaceFormat"] = []
         default_format = surface_format_cls.defaultFormat()
         if (
@@ -161,11 +170,20 @@ class _OpenGlPreviewBackend(PreviewBackend):
             == surface_format_cls.RenderableType.OpenGL
             and default_format.majorVersion() > 0
         ):
+            _LOGGER.debug(
+                "OpenGL: Found default format: Version %d.%d, Profile: %s",
+                default_format.majorVersion(),
+                default_format.minorVersion(),
+                default_format.profile(),
+            )
             # Copy the default format so adjustments performed later on do not
             # mutate the process-wide configuration.
             try:
                 candidates.append(surface_format_cls(default_format))
             except TypeError:
+                _LOGGER.warning(
+                    "OpenGL: QSurfaceFormat copy constructor failed. Manual copy."
+                )
                 # Some bindings lack the convenience copy constructor.  In that
                 # case manually mirror the relevant properties to preserve the
                 # process-wide defaults.
@@ -192,8 +210,11 @@ class _OpenGlPreviewBackend(PreviewBackend):
                     ),
                 )
                 candidates.append(format_copy)
+        else:
+            _LOGGER.debug("OpenGL: No valid default format found.")
 
         for major, minor in ((4, 3), (3, 3)):
+            _LOGGER.debug("OpenGL: Adding candidate format: %d.%d Core Profile", major, minor)
             format_hint = surface_format_cls()
             format_hint.setRenderableType(surface_format_cls.RenderableType.OpenGL)
             format_hint.setProfile(surface_format_cls.OpenGLContextProfile.CoreProfile)
@@ -214,7 +235,7 @@ class _OpenGlPreviewBackend(PreviewBackend):
         ensures that :meth:`is_available` can reuse the logic without eagerly
         importing OpenGL modules at the top level.
         """
-
+        _LOGGER.debug("OpenGL: Initialising context...")
         share_context = context_cls.globalShareContext()
         last_error: Exception | None = None
         candidate_formats: list["QSurfaceFormat"] = []
@@ -224,9 +245,18 @@ class _OpenGlPreviewBackend(PreviewBackend):
                 share_format.renderableType()
                 == surface_format_cls.RenderableType.OpenGL
             ):
+                _LOGGER.debug(
+                    "OpenGL: Global share context found. Version %d.%d, Profile: %s",
+                    share_format.majorVersion(),
+                    share_format.minorVersion(),
+                    share_format.profile(),
+                )
                 try:
                     candidate_formats.append(surface_format_cls(share_format))
                 except TypeError:
+                    _LOGGER.warning(
+                        "OpenGL: QSurfaceFormat copy constructor failed for share_format. Manual copy."
+                    )
                     cloned = surface_format_cls()
                     cloned.setRenderableType(share_format.renderableType())
                     cloned.setProfile(share_format.profile())
@@ -250,18 +280,41 @@ class _OpenGlPreviewBackend(PreviewBackend):
                         ),
                     )
                     candidate_formats.append(cloned)
+            else:
+                _LOGGER.debug("OpenGL: Global share context is not OpenGL, skipping.")
+        else:
+            _LOGGER.debug("OpenGL: No global share context found.")
 
         candidate_formats.extend(cls._candidate_formats(surface_format_cls))
+        if not candidate_formats:
+            _LOGGER.error("OpenGL: No candidate formats found for context creation.")
+            raise RuntimeError("Failed to create OpenGL context: No candidate formats.")
 
-        for format_hint in candidate_formats:
+        _LOGGER.debug("OpenGL: Trying %d candidate formats.", len(candidate_formats))
+        for i, format_hint in enumerate(candidate_formats):
+            _LOGGER.debug(
+                "OpenGL: Trying candidate %d: Version %d.%d, Profile: %s, Renderable: %s",
+                i,
+                format_hint.majorVersion(),
+                format_hint.minorVersion(),
+                format_hint.profile(),
+                format_hint.renderableType(),
+            )
             context = context_cls()
             if share_context is not None:
                 context.setShareContext(share_context)
             context.setFormat(format_hint)
             try:
                 if not context.create():
+                    _LOGGER.warning("OpenGL: context.create() failed for candidate %d.", i)
                     continue
             except Exception as exc:  # pragma: no cover - platform specific
+                _LOGGER.warning(
+                    "OpenGL: context.create() raised exception for candidate %d: %s",
+                    i,
+                    exc,
+                    exc_info=True,
+                )
                 last_error = exc
                 continue
 
@@ -270,30 +323,49 @@ class _OpenGlPreviewBackend(PreviewBackend):
                 actual_format.renderableType()
                 != surface_format_cls.RenderableType.OpenGL
             ):
+                _LOGGER.warning(
+                    "OpenGL: Candidate %d created context, but renderable type is not OpenGL (%s).",
+                    i,
+                    actual_format.renderableType(),
+                )
                 continue
 
+            _LOGGER.info(
+                "OpenGL: Successfully created context. Actual Version: %d.%d, Profile: %s",
+                actual_format.majorVersion(),
+                actual_format.minorVersion(),
+                actual_format.profile(),
+            )
             return context, actual_format
 
-        message = "Failed to create OpenGL context"
+        message = "Failed to create OpenGL context after trying all candidates."
+        _LOGGER.error(message)
         if last_error is not None:
             raise RuntimeError(message) from last_error
         raise RuntimeError(message)
 
     def __init__(self) -> None:
+        _LOGGER.debug("OpenGLBackend: Initializing...")
         # Import OpenGL heavy modules lazily so environments without an OpenGL
         # stack (for example headless CI) can still import this module without
         # immediately failing.  ``is_available`` performs the necessary feature
         # probing before the backend is constructed, so any ImportError raised
         # here indicates a configuration drift between the probe and the
         # initialiser.  Surfacing the error keeps the log output actionable.
-        from PySide6.QtGui import (
-            QOffscreenSurface,
-            QOpenGLContext,
-            QOpenGLFunctions_4_3_Core,
-            QOpenGLVersionFunctionsFactory,
-            QSurfaceFormat,
-        )
-        from PySide6.QtOpenGL import QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram
+        try:
+            # 稳定：不要再导入 QOpenGLExtraFunctions 和具体版本类
+            from PySide6.QtOpenGL import QOpenGLVersionFunctionsFactory, QOpenGLVersionProfile
+            from PySide6.QtGui import QOffscreenSurface, QOpenGLContext, QSurfaceFormat
+            from PySide6.QtOpenGL import QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram
+            # --- END FIX ---
+        except ImportError as exc:
+            _LOGGER.error(
+                "OpenGLBackend: Failed to import Qt OpenGL modules in __init__. "
+                "This should have been caught by is_available(). Error: %s",
+                exc,
+                exc_info=True,
+            )
+            raise RuntimeError("Failed to import Qt OpenGL modules") from exc
 
         super().__init__()
 
@@ -303,26 +375,54 @@ class _OpenGlPreviewBackend(PreviewBackend):
             format_used.majorVersion(),
             format_used.minorVersion(),
         )
+        _LOGGER.info(
+            "OpenGLBackend: Context initialised. Using Version: %d.%d",
+            self._context_version[0],
+            self._context_version[1],
+        )
 
         self._surface: QOffscreenSurface = QOffscreenSurface()
         self._surface.setFormat(format_used)
         self._surface.create()
         if not self._surface.isValid():
+            _LOGGER.error("OpenGLBackend: Failed to create valid QOffscreenSurface.")
             raise RuntimeError("OpenGL offscreen surface is invalid")
+        _LOGGER.debug("OpenGLBackend: QOffscreenSurface created.")
 
         if not self._context.makeCurrent(self._surface):
+            _LOGGER.error("OpenGLBackend: Failed to make OpenGL context current.")
             raise RuntimeError("Failed to make OpenGL context current")
+        _LOGGER.debug("OpenGLBackend: Context made current.")
 
         functions = self._context.functions()
-        functions.initializeOpenGLFunctions()
+        # 某些版本返回的 QOpenGLFunctions 已经初始化；调用一次也安全
+        try:
+            functions.initializeOpenGLFunctions()
+        except Exception as e:
+            _LOGGER.error("OpenGLBackend: initializeOpenGLFunctions raised: %s", e, exc_info=True)
         self._gl = functions
-        self._gl43: QOpenGLFunctions_4_3_Core | None = None
+
+        self._gl43 = None
         if self._context_version >= (4, 3):
-            self._gl43 = QOpenGLVersionFunctionsFactory.get(
-                self._context, QOpenGLFunctions_4_3_Core
-            )
-            if self._gl43 is not None:
-                self._gl43.initializeOpenGLFunctions()
+            _LOGGER.debug("OpenGLBackend: Attempting to get GL 4.3 functions via VersionProfile.")
+            prof = QOpenGLVersionProfile()
+            prof.setVersion(4, 3)
+            # 两种写法都行，任选其一：
+            prof.setProfile(QSurfaceFormat.CoreProfile)
+            gl43 = QOpenGLVersionFunctionsFactory.get(prof, self._context)
+            if gl43 is not None:
+                try:
+                    gl43.initializeOpenGLFunctions()
+                    self._gl43 = gl43
+                    _LOGGER.info("OpenGLBackend: GL 4.3 functions initialized via VersionProfile.")
+                except Exception:
+                    _LOGGER.warning("OpenGLBackend: Failed to initialize GL 4.3 version functions.")
+                    self._gl43 = None
+            else:
+                _LOGGER.warning("OpenGLBackend: GL 4.3 reported but functions not found (factory returned None).")
+        else:
+            _LOGGER.info("OpenGLBackend: GL version %s is less than 4.3, compute shader disabled.",
+                         self._context_version)
 
         # Compile and link the shader program once.  The uniforms mirror the
         # tone-mapping helper in :mod:`iPhoto.core.image_filters` so both
@@ -330,18 +430,25 @@ class _OpenGlPreviewBackend(PreviewBackend):
         # all sessions, ensuring interactive slider tweaks remain snappy.
         self._program: QOpenGLShaderProgram = QOpenGLShaderProgram()
         vertex_shader = QOpenGLShader(QOpenGLShader.ShaderTypeBit.Vertex)
+        _LOGGER.debug("OpenGLBackend: Compiling vertex shader...")
         if not vertex_shader.compileSourceCode(self._vertex_shader_source()):
             message = vertex_shader.log() or "unknown vertex shader error"
+            _LOGGER.error("OpenGLBackend: Vertex shader compilation failed: %s", message)
             raise RuntimeError(f"Failed to compile OpenGL vertex shader: {message}")
         fragment_shader = QOpenGLShader(QOpenGLShader.ShaderTypeBit.Fragment)
+        _LOGGER.debug("OpenGLBackend: Compiling fragment shader...")
         if not fragment_shader.compileSourceCode(self._fragment_shader_source()):
             message = fragment_shader.log() or "unknown fragment shader error"
+            _LOGGER.error("OpenGLBackend: Fragment shader compilation failed: %s", message)
             raise RuntimeError(f"Failed to compile OpenGL fragment shader: {message}")
         self._program.addShader(vertex_shader)
         self._program.addShader(fragment_shader)
+        _LOGGER.debug("OpenGLBackend: Linking shader program...")
         if not self._program.link():
             message = self._program.log() or "unknown shader link error"
+            _LOGGER.error("OpenGLBackend: Shader program linking failed: %s", message)
             raise RuntimeError(f"Failed to link OpenGL shader program: {message}")
+        _LOGGER.debug("OpenGLBackend: Shader program linked successfully.")
 
         # Cache attribute/uniform locations to avoid repeated string lookups
         # during each render call.  The attribute layout is a simple quad that
@@ -360,6 +467,7 @@ class _OpenGlPreviewBackend(PreviewBackend):
         self._uniform_vibrance = self._program.uniformLocation("uVibrance")
         self._uniform_cast = self._program.uniformLocation("uCast")
         self._uniform_gain = self._program.uniformLocation("uGain")
+        _LOGGER.debug("OpenGLBackend: Uniform locations cached.")
 
         # Prepare the vertex buffer containing a full screen triangle strip.
         vertices = array(
@@ -385,27 +493,46 @@ class _OpenGlPreviewBackend(PreviewBackend):
         )
         self._vertex_buffer: QOpenGLBuffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
         if not self._vertex_buffer.create():
+            _LOGGER.error("OpenGLBackend: Failed to create OpenGL vertex buffer.")
             raise RuntimeError("Failed to create OpenGL vertex buffer")
         if not self._vertex_buffer.bind():
+            _LOGGER.error("OpenGLBackend: Failed to bind OpenGL vertex buffer.")
             raise RuntimeError("Failed to bind OpenGL vertex buffer")
         raw_vertices = vertices.tobytes()
         self._vertex_buffer.allocate(raw_vertices, len(raw_vertices))
         self._vertex_buffer.release()
+        _LOGGER.debug("OpenGLBackend: Vertex buffer created and allocated.")
 
         self._compute_program: QOpenGLShaderProgram | None = None
         self._stats_buffer: QOpenGLBuffer | None = None
+        # 能力检测：必须有 GL4.3 函数，且 QOpenGLBuffer.Type 暴露了 ShaderStorageBuffer
+        _has_ssbo = False
         try:
-            self._compute_program = self._compile_compute_shader()
-            self._stats_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.ShaderStorageBuffer)
-            if not self._stats_buffer.create():
-                self._stats_buffer = None
+            from PySide6.QtOpenGL import QOpenGLBuffer as _QBuf
+            _has_ssbo = hasattr(_QBuf.Type, "ShaderStorageBuffer")
         except Exception:
-            # Compute shader support is optional; gracefully fall back to CPU
-            # statistics on hardware that lacks OpenGL 4.3 features.
-            self._compute_program = None
-            self._stats_buffer = None
+            _has_ssbo = False
 
-        self._context.doneCurrent()
+        if self._gl43 is not None and _has_ssbo:
+            try:
+                self._compute_program = self._compile_compute_shader()
+                if self._compute_program is not None:
+                    self._stats_buffer = _QBuf(_QBuf.Type.ShaderStorageBuffer)
+                    if not self._stats_buffer.create():
+                        _LOGGER.warning("OpenGLBackend: Failed to create stats buffer (SSBO). Disabling compute stats.")
+                        self._stats_buffer = None
+                        self._compute_program = None
+                    else:
+                        _LOGGER.info("OpenGLBackend: Compute shader and stats buffer created successfully.")
+            except Exception as exc:
+                _LOGGER.warning(
+                    "OpenGLBackend: Failed to enable compute stats: %s. Falling back to CPU statistics.",
+                    exc, exc_info=True
+                )
+                self._compute_program = None
+                self._stats_buffer = None
+        else:
+            _LOGGER.info("OpenGLBackend: SSBO/GL4.3 not available in this build, compute stats disabled.")
 
     @staticmethod
     def _vertex_shader_source() -> str:
@@ -485,7 +612,11 @@ class _OpenGlPreviewBackend(PreviewBackend):
     def _compile_compute_shader(self) -> "QOpenGLShaderProgram | None":
         """Compile the compute shader used to gather Color statistics."""
 
+        _LOGGER.debug("OpenGLBackend: Attempting to compile compute shader...")
         if self._gl43 is None:
+            _LOGGER.info(
+                "OpenGLBackend: GL 4.3 functions not available. Cannot compile compute shader."
+            )
             return None
 
         from PySide6.QtOpenGL import QOpenGLShader, QOpenGLShaderProgram
@@ -494,11 +625,17 @@ class _OpenGlPreviewBackend(PreviewBackend):
         shader = QOpenGLShader(QOpenGLShader.ShaderTypeBit.Compute)
         if not shader.compileSourceCode(self._compute_shader_source()):
             message = shader.log() or "unknown compute shader error"
+            _LOGGER.error("OpenGLBackend: Compute shader compilation failed: %s", message)
             raise RuntimeError(f"Failed to compile OpenGL compute shader: {message}")
         program.addShader(shader)
+        _LOGGER.debug("OpenGLBackend: Linking compute shader program...")
         if not program.link():
             message = program.log() or "unknown compute shader link error"
+            _LOGGER.error(
+                "OpenGLBackend: Compute shader program linking failed: %s", message
+            )
             raise RuntimeError(f"Failed to link OpenGL compute shader program: {message}")
+        _LOGGER.info("OpenGLBackend: Compute shader compiled and linked successfully.")
         return program
 
     @staticmethod
@@ -612,76 +749,105 @@ class _OpenGlPreviewBackend(PreviewBackend):
     @classmethod
     def is_available(cls) -> bool:
         """Return ``True`` if an OpenGL rendering context is available."""
+        _LOGGER.debug("OpenGL: Checking availability...")
+        try:
+            from PySide6.QtGui import QOffscreenSurface, QOpenGLContext, QSurfaceFormat
+        except Exception as exc:
+            _LOGGER.warning("OpenGL: Availability check failed. Cannot import QtGui OpenGL pieces: %s",
+                            exc, exc_info=True)
+            return False
 
         try:
-            from PySide6.QtGui import QOffscreenSurface
-            from PySide6.QtGui import QOpenGLContext, QSurfaceFormat
-        except Exception:
+            from PySide6.QtOpenGLWidgets import QOpenGLWidget  # 需要 Addons
+            from PySide6 import QtOpenGL as _qt_opengl  # 模块存在即可
+        except Exception as e:
+            _LOGGER.error("OpenGL availability false: %s", e)
             return False
+
+        # 若已有全局 share context，直接相信它
+        share_context = QOpenGLContext.globalShareContext()
+        if share_context is not None and share_context.isValid():
+            share_format = share_context.format()
+            if (share_format.renderableType() == QSurfaceFormat.RenderableType.OpenGL
+                    and share_format.majorVersion() >= 3):
+                _LOGGER.info(
+                    "OpenGL: Availability check: Found valid global share context. "
+                    "Version %d.%d. Assuming OpenGL is available.",
+                    share_format.majorVersion(),
+                    share_format.minorVersion(),
+                )
+                return True
+
+        _LOGGER.debug("OpenGL: Availability check: No valid global share context found, proceeding with manual check.")
 
         context: QOpenGLContext | None = None
         surface: QOffscreenSurface | None = None
         try:
-            context, format_hint = cls._initialise_context(
-                QOpenGLContext, QSurfaceFormat
-            )
+            _LOGGER.debug("OpenGL: Availability check: Initialising context...")
+            context, format_hint = cls._initialise_context(QOpenGLContext, QSurfaceFormat)
+            _LOGGER.debug("OpenGL: Availability check: Context initialised.")
 
             surface = QOffscreenSurface()
             surface.setFormat(format_hint)
             surface.create()
             if not surface.isValid():
+                _LOGGER.warning("OpenGL: Availability check: Offscreen surface is invalid.")
                 return False
 
-            if not context.makeCurrent(surface):
-                return False
+            _LOGGER.info("OpenGL: Availability check: Context and surface creation successful. Assuming available.")
+            return True
 
-            # Allocate a trivial texture to confirm that the driver issues a
-            # usable identifier.  Some Windows configurations report success
-            # when creating the context yet fail during the first real texture
-            # upload, so probing here avoids triggering runtime errors inside
-            # the edit preview pipeline.
-            functions = context.functions()
-            texture_ids = (ctypes.c_uint * 1)()
-            functions.glGenTextures(1, texture_ids)
-            texture_id = int(texture_ids[0])
-            if texture_id == 0:
-                return False
-            functions.glDeleteTextures(1, texture_ids)
-        except Exception:
+        except Exception as exc:
+            _LOGGER.warning("OpenGL: Availability check failed with exception: %s", exc, exc_info=True)
             return False
         finally:
             if context is not None:
                 try:
-                    context.doneCurrent()
-                except Exception:  # pragma: no cover - defensive
-                    pass
-
-                try:
                     context.deleteLater()
-                except Exception:  # pragma: no cover - some bindings lack QObject parent
+                except Exception:
                     pass
-
             if surface is not None:
                 try:
                     surface.destroy()
-                except Exception:  # pragma: no cover - some bindings expose no destroy()
+                except Exception:
                     pass
 
-        return True
-
     def _make_current(self) -> bool:
-        """Attempt to activate the shared OpenGL context."""
-
+        _LOGGER.debug("OpenGLBackend: Attempting to make context current...")
         try:
-            return self._context.makeCurrent(self._surface)
-        except Exception:
+            if not self._context.makeCurrent(self._surface):
+                _LOGGER.warning("OpenGLBackend: makeCurrent failed.")
+                return False
+            _LOGGER.debug("OpenGLBackend: makeCurrent successful.")
+
+            # 每次切换当前上下文后，都重新抓一次函数表
+            funcs = self._context.functions()
+            try:
+                funcs.initializeOpenGLFunctions()  # 有的实现返回 None，不要用返回值做判据
+            except Exception as e:
+                _LOGGER.warning("OpenGLBackend: initializeOpenGLFunctions raised: %s", e)
+
+            # 功能性校验：至少得有 glGenTextures
+            if not hasattr(funcs, "glGenTextures"):
+                _LOGGER.error("OpenGLBackend: QOpenGLFunctions missing glGenTextures after makeCurrent.")
+                self._context.doneCurrent()
+                return False
+
+            self._gl = funcs
+            return True
+
+        except Exception as exc:
+            _LOGGER.error("OpenGLBackend: makeCurrent raised exception: %s", exc, exc_info=True)
             return False
 
+
     def create_session(self, image: QImage) -> PreviewSession:
+        _LOGGER.debug("OpenGLBackend: Creating session...")
         from PySide6.QtGui import QImage as QtImage
         from PySide6.QtOpenGL import QOpenGLFramebufferObject
 
         if image.isNull():
+            _LOGGER.debug("OpenGLBackend: Image is null, creating empty session.")
             # Return a lightweight placeholder session so callers can proceed
             # without handling a special case.  Rendering an empty session
             # results in a null image which mirrors the CPU backend's
@@ -689,34 +855,70 @@ class _OpenGlPreviewBackend(PreviewBackend):
             return _OpenGlPreviewSession(0, 0, 0, None, ColorStats())
 
         if not self._make_current():
+            _LOGGER.error(
+                "OpenGLBackend: Failed to activate context for session creation."
+            )
             raise RuntimeError("Failed to activate OpenGL context for session creation")
 
         converted = image.convertToFormat(QtImage.Format.Format_RGBA8888)
         width = converted.width()
         height = converted.height()
+        _LOGGER.debug("OpenGLBackend: Image converted to RGBA8888 (%dx%d).", width, height)
 
         texture_id = self._generate_texture()
+        _LOGGER.debug("OpenGLBackend: Generated texture ID: %d", texture_id)
         self._upload_texture(texture_id, converted)
+        _LOGGER.debug("OpenGLBackend: Texture uploaded.")
 
         framebuffer = QOpenGLFramebufferObject(width, height)
+        if not framebuffer.isValid():
+            _LOGGER.error("OpenGLBackend: Failed to create valid FBO.")
+            # Clean up texture
+            texture_ids = (ctypes.c_uint * 1)(texture_id)
+            self._gl.glDeleteTextures(1, texture_ids)
+            self._context.doneCurrent()
+            raise RuntimeError("Failed to create OpenGL Framebuffer Object")
+
+        _LOGGER.debug("OpenGLBackend: FBO created.")
 
         stats = self._compute_session_stats(texture_id, width, height, converted)
+        _LOGGER.debug("OpenGLBackend: Color stats computed.")
 
         self._context.doneCurrent()
+        _LOGGER.debug("OpenGLBackend: Session creation complete, context released.")
 
         return _OpenGlPreviewSession(width, height, texture_id, framebuffer, stats)
 
     def _generate_texture(self) -> int:
         """Create and return a new OpenGL texture identifier."""
-
         texture_ids = (ctypes.c_uint * 1)()
         self._gl.glGenTextures(1, texture_ids)
-        return int(texture_ids[0])
+        tex = int(texture_ids[0])
+        if tex == 0:
+            _LOGGER.warning("OpenGLBackend: glGenTextures returned 0, retrying after reinit functions...")
+            # 试着重新初始化函数表（万一 makeCurrent 后被其他调用改了状态）
+            try:
+                funcs = self._context.functions()
+                if funcs.initializeOpenGLFunctions():
+                    self._gl = funcs
+                    self._gl.glGenTextures(1, texture_ids)
+                    tex = int(texture_ids[0])
+            except Exception as e:
+                _LOGGER.error("OpenGLBackend: reinit functions failed: %s", e, exc_info=True)
+            if tex == 0:
+                # 最终失败，尽量打印错误代码辅助定位
+                try:
+                    err = self._gl.glGetError()
+                    _LOGGER.error("OpenGLBackend: glGenTextures still 0, glGetError=0x%X", err)
+                except Exception:
+                    pass
+        return tex
 
     def _upload_texture(self, texture_id: int, image: QImage) -> None:
         """Upload *image* data to the GPU texture identified by *texture_id*."""
-
+        _LOGGER.debug("OpenGLBackend: Uploading texture for ID %d...", texture_id)
         if texture_id == 0:
+            _LOGGER.error("OpenGLBackend: Invalid texture ID 0 for upload.")
             raise RuntimeError("Invalid OpenGL texture identifier")
 
         # ``bits()`` returns a sip.voidptr.  Requesting the full buffer size
@@ -745,6 +947,7 @@ class _OpenGlPreviewBackend(PreviewBackend):
             buffer,
         )
         gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+        _LOGGER.debug("OpenGLBackend: Texture upload complete for ID %d.", texture_id)
 
     def _compute_session_stats(
         self,
@@ -754,36 +957,57 @@ class _OpenGlPreviewBackend(PreviewBackend):
         fallback_image: QImage,
     ) -> ColorStats:
         """Return :class:`ColorStats` using the compute shader when available."""
-
+        _LOGGER.debug("OpenGLBackend: Computing session stats...")
         fallback_stats: ColorStats | None = None
 
-        def _fallback() -> ColorStats:
+        def _fallback(reason: str) -> ColorStats:
             nonlocal fallback_stats
+            _LOGGER.warning("OpenGLBackend: %s. Falling back to CPU stats.", reason)
             if fallback_stats is None:
+                _LOGGER.debug("OpenGLBackend: Calculating CPU stats now.")
                 fallback_stats = compute_color_statistics(fallback_image)
             return fallback_stats
 
-        if (
-            texture_id == 0
-            or width == 0
-            or height == 0
-            or self._compute_program is None
-            or self._stats_buffer is None
-            or self._gl43 is None
-        ):
-            return _fallback()
+        if texture_id == 0:
+            return _fallback("Texture ID is 0")
+        if width == 0 or height == 0:
+            return _fallback(f"Invalid dimensions (width={width}, height={height})")
+        if self._compute_program is None:
+            return _fallback("Compute program not available")
+        if self._stats_buffer is None:
+            return _fallback("Stats buffer not available")
+        if self._gl43 is None:
+            return _fallback("GL 4.3 not available")
 
+        _LOGGER.debug("OpenGLBackend: Using compute shader for stats.")
         groups_x = (width + 15) // 16
         groups_y = (height + 15) // 16
         group_count = max(groups_x * groups_y, 1)
         stride = 320
         total_size = stride * group_count
+        _LOGGER.debug(
+            "OpenGLBackend: Compute dispatch groups: %dx%d (%d total)",
+            groups_x,
+            groups_y,
+            group_count,
+        )
 
         if not self._stats_buffer.bind():
-            return _fallback()
+            return _fallback("Failed to bind stats buffer")
         # Allocate or resize the buffer to hold one record per work group.
-        self._stats_buffer.allocate(total_size)
+        try:
+            self._stats_buffer.allocate(total_size)
+        except Exception as exc:
+            _LOGGER.error(
+                "OpenGLBackend: Failed to allocate stats buffer (size %d): %s",
+                total_size,
+                exc,
+                exc_info=True,
+            )
+            self._stats_buffer.release()
+            return _fallback("Failed to allocate stats buffer")
         self._stats_buffer.release()
+        _LOGGER.debug("OpenGLBackend: Stats buffer allocated (size %d).", total_size)
 
         gl = self._gl
         gl43 = self._gl43
@@ -791,7 +1015,8 @@ class _OpenGlPreviewBackend(PreviewBackend):
         assert program is not None  # guarded above
 
         if not program.bind():
-            return _fallback()
+            return _fallback("Failed to bind compute program")
+        _LOGGER.debug("OpenGLBackend: Compute program bound.")
 
         gl.glActiveTexture(gl.GL_TEXTURE0)
         gl.glBindTexture(gl.GL_TEXTURE_2D, texture_id)
@@ -799,15 +1024,18 @@ class _OpenGlPreviewBackend(PreviewBackend):
 
         buffer_id = self._stats_buffer.bufferId()
         gl43.glBindBufferBase(gl.GL_SHADER_STORAGE_BUFFER, 1, buffer_id)
+        _LOGGER.debug("OpenGLBackend: Dispatching compute shader...")
         gl43.glDispatchCompute(groups_x, groups_y, 1)
         gl43.glMemoryBarrier(gl.GL_SHADER_STORAGE_BARRIER_BIT | gl.GL_BUFFER_UPDATE_BARRIER_BIT)
+        _LOGGER.debug("OpenGLBackend: Compute dispatch complete.")
 
         program.release()
         gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
 
         if not self._stats_buffer.bind():
-            return _fallback()
+            return _fallback("Failed to bind stats buffer for reading")
 
+        _LOGGER.debug("OpenGLBackend: Mapping stats buffer for read...")
         mapped = self._stats_buffer.mapRange(
             0,
             total_size,
@@ -815,7 +1043,8 @@ class _OpenGlPreviewBackend(PreviewBackend):
         )
         if mapped is None:
             self._stats_buffer.release()
-            return _fallback()
+            return _fallback("Failed to map stats buffer")
+        _LOGGER.debug("OpenGLBackend: Stats buffer mapped.")
 
         raw = bytes(mapped)
         self._stats_buffer.unmap()
@@ -824,8 +1053,29 @@ class _OpenGlPreviewBackend(PreviewBackend):
         # Some drivers align SSBO records beyond the declared payload.  Derive the
         # actual stride from the returned data to ensure we walk the buffer
         # correctly on all platforms.
-        if len(raw) // group_count > stride:
-            stride = len(raw) // group_count
+        if len(raw) < total_size:
+            _LOGGER.warning(
+                "OpenGLBackend: Mapped buffer size (%d) is less than expected (%d).",
+                len(raw),
+                total_size,
+            )
+            return _fallback("Mapped buffer size mismatch")
+
+        actual_stride = len(raw) // group_count
+        if actual_stride > stride:
+            _LOGGER.warning(
+                "OpenGLBackend: Detected driver SSBO stride %d (expected %d).",
+                actual_stride,
+                stride,
+            )
+            stride = actual_stride
+        elif actual_stride < stride:
+            _LOGGER.error(
+                "OpenGLBackend: Mapped buffer stride (%d) is smaller than expected (%d).",
+                actual_stride,
+                stride,
+            )
+            return _fallback("Mapped buffer stride mismatch")
 
         sum_saturation = 0.0
         sum_lin_r = 0.0
@@ -837,23 +1087,39 @@ class _OpenGlPreviewBackend(PreviewBackend):
         skin_count = 0
         histogram = [0] * 64
 
+        _LOGGER.debug("OpenGLBackend: Aggregating stats from %d groups...", group_count)
         for index in range(group_count):
             base = index * stride
             if base + 288 > len(raw):
+                _LOGGER.error(
+                    "OpenGLBackend: Buffer overrun while reading group %d. Stopping aggregation.",
+                    index,
+                )
                 break
-            sum_saturation += struct.unpack_from("<f", raw, base + 0x00)[0]
-            sum_lin_r += struct.unpack_from("<f", raw, base + 0x04)[0]
-            sum_lin_g += struct.unpack_from("<f", raw, base + 0x08)[0]
-            sum_lin_b += struct.unpack_from("<f", raw, base + 0x0C)[0]
-            count += struct.unpack_from("<I", raw, base + 0x10)[0]
-            highlight_count += struct.unpack_from("<I", raw, base + 0x14)[0]
-            dark_count += struct.unpack_from("<I", raw, base + 0x18)[0]
-            skin_count += struct.unpack_from("<I", raw, base + 0x1C)[0]
-            hist_slice = struct.unpack_from("<64I", raw, base + 0x20)
-            for bin_index, bin_value in enumerate(hist_slice):
-                histogram[bin_index] += bin_value
+            try:
+                sum_saturation += struct.unpack_from("<f", raw, base + 0x00)[0]
+                sum_lin_r += struct.unpack_from("<f", raw, base + 0x04)[0]
+                sum_lin_g += struct.unpack_from("<f", raw, base + 0x08)[0]
+                sum_lin_b += struct.unpack_from("<f", raw, base + 0x0C)[0]
+                count += struct.unpack_from("<I", raw, base + 0x10)[0]
+                highlight_count += struct.unpack_from("<I", raw, base + 0x14)[0]
+                dark_count += struct.unpack_from("<I", raw, base + 0x18)[0]
+                skin_count += struct.unpack_from("<I", raw, base + 0x1C)[0]
+                hist_slice = struct.unpack_from("<64I", raw, base + 0x20)
+                for bin_index, bin_value in enumerate(hist_slice):
+                    histogram[bin_index] += bin_value
+            except struct.error as exc:
+                _LOGGER.error(
+                    "OpenGLBackend: Struct unpack failed at group %d (base=%d): %s",
+                    index,
+                    base,
+                    exc,
+                )
+                return _fallback("Failed to parse stats buffer")
 
+        _LOGGER.debug("OpenGLBackend: Aggregation complete. Total pixels: %d", count)
         if count == 0:
+            _LOGGER.warning("OpenGLBackend: Compute stats returned 0 pixel count.")
             return ColorStats()
 
         mean_saturation = sum_saturation / count
@@ -890,7 +1156,7 @@ class _OpenGlPreviewBackend(PreviewBackend):
             abs(avg_lin_b - avg_lin),
         )
 
-        return ColorStats(
+        stats = ColorStats(
             saturation_mean=min(max(mean_saturation, 0.0), 1.0),
             saturation_median=min(max(median_saturation, 0.0), 1.0),
             highlight_ratio=min(max(highlight_ratio, 0.0), 1.0),
@@ -899,24 +1165,31 @@ class _OpenGlPreviewBackend(PreviewBackend):
             cast_magnitude=min(max(cast_magnitude, 0.0), 1.0),
             white_balance_gain=(gain_r, gain_g, gain_b),
         )
+        _LOGGER.debug("OpenGLBackend: Compute stats calculation complete: %s", stats)
+        return stats
 
     def render(self, session: PreviewSession, adjustments: Mapping[str, float]) -> QImage:
+        _LOGGER.debug("OpenGLBackend: Rendering...")
         from PySide6.QtGui import QImage as QtImage
 
         gl_session = cast(_OpenGlPreviewSession, session)
         if gl_session.width == 0 or gl_session.height == 0:
+            _LOGGER.debug("OpenGLBackend: Empty session, returning null image.")
             return QImage()
 
         if not self._make_current():
+            _LOGGER.error("OpenGLBackend: Failed to activate context for rendering.")
             raise RuntimeError("Failed to activate OpenGL context for preview rendering")
 
         gl = self._gl
         framebuffer = gl_session.framebuffer
         if framebuffer is None:
+            _LOGGER.error("OpenGLBackend: Session framebuffer is None.")
             self._context.doneCurrent()
             return QImage()
 
         if not framebuffer.bind():
+            _LOGGER.error("OpenGLBackend: Failed to bind FBO for rendering.")
             self._context.doneCurrent()
             raise RuntimeError("Failed to bind OpenGL framebuffer")
 
@@ -927,6 +1200,7 @@ class _OpenGlPreviewBackend(PreviewBackend):
 
         program = self._program
         if not program.bind():
+            _LOGGER.error("OpenGLBackend: Failed to bind shader program for rendering.")
             framebuffer.release()
             self._context.doneCurrent()
             raise RuntimeError("Failed to bind OpenGL shader program")
@@ -969,6 +1243,9 @@ class _OpenGlPreviewBackend(PreviewBackend):
         program.setUniformValue(self._uniform_gain, gain_r, gain_g, gain_b)
 
         if not self._vertex_buffer.bind():
+            _LOGGER.error(
+                "OpenGLBackend: Failed to bind vertex buffer for rendering."
+            )
             program.release()
             framebuffer.release()
             gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
@@ -981,6 +1258,7 @@ class _OpenGlPreviewBackend(PreviewBackend):
         program.enableAttributeArray(self._texcoord_location)
         program.setAttributeBuffer(self._texcoord_location, gl.GL_FLOAT, 2 * 4, 2, stride)
 
+        _LOGGER.debug("OpenGLBackend: Drawing arrays...")
         gl.glDrawArrays(gl.GL_TRIANGLE_STRIP, 0, 4)
 
         program.disableAttributeArray(self._position_location)
@@ -988,27 +1266,37 @@ class _OpenGlPreviewBackend(PreviewBackend):
         self._vertex_buffer.release()
         gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
         program.release()
+        _LOGGER.debug("OpenGLBackend: Draw complete.")
 
         image = framebuffer.toImage(True).convertToFormat(QtImage.Format.Format_ARGB32)
         framebuffer.release()
+        _LOGGER.debug("OpenGLBackend: Image read back from FBO.")
 
         self._context.doneCurrent()
+        _LOGGER.debug("OpenGLBackend: Render complete, context released.")
 
         return image
 
     def dispose_session(self, session: PreviewSession) -> None:
+        _LOGGER.debug("OpenGLBackend: Disposing session...")
         gl_session = cast(_OpenGlPreviewSession, session)
 
         if gl_session.texture_id == 0 and gl_session.framebuffer is None:
+            _LOGGER.debug("OpenGLBackend: Session already empty, nothing to dispose.")
             return
 
         if self._make_current():
+            _LOGGER.debug("OpenGLBackend: Context made current for disposal.")
             if gl_session.texture_id != 0:
+                _LOGGER.debug(
+                    "OpenGLBackend: Deleting texture ID: %d", gl_session.texture_id
+                )
                 texture_ids = (ctypes.c_uint * 1)(gl_session.texture_id)
                 self._gl.glDeleteTextures(1, texture_ids)
                 gl_session.texture_id = 0
             framebuffer = gl_session.framebuffer
             if framebuffer is not None:
+                _LOGGER.debug("OpenGLBackend: Deleting FBO.")
                 # ``QOpenGLFramebufferObject`` releases its resources when the
                 # Python wrapper is destroyed.  Clearing our reference allows Qt
                 # to free the underlying OpenGL object while the context is
@@ -1018,6 +1306,11 @@ class _OpenGlPreviewBackend(PreviewBackend):
                 gl_session.framebuffer = None
                 del framebuffer
             self._context.doneCurrent()
+            _LOGGER.debug("OpenGLBackend: Disposal complete, context released.")
+        else:
+            _LOGGER.warning(
+                "OpenGLBackend: Could not make context current to dispose session. Resources may leak."
+            )
 
         gl_session.dispose()
 
@@ -1033,63 +1326,109 @@ class _OpenGlPreviewSession(PreviewSession):
     color_stats: ColorStats
 
     def dispose(self) -> None:  # pragma: no cover - real cleanup happens in backend
+        _LOGGER.debug("Disposing _OpenGlPreviewSession (clearing references).")
         self.framebuffer = None
         self.texture_id = 0
 
 
 def select_preview_backend() -> PreviewBackend:
     """Return the most capable preview backend available on the system."""
+    _LOGGER.debug("Selecting preview backend (called by select_preview_backend)...")
 
     # CUDA backend has the highest priority.
+    _LOGGER.debug("Checking for CUDA backend (called by select_preview_backend)...")
     if _CudaPreviewBackend.is_available():
         try:
             backend = _CudaPreviewBackend()
         except Exception as exc:  # pragma: no cover - defensive guard
-            _LOGGER.warning("Failed to initialise CUDA backend: %s", exc)
+            _LOGGER.warning(
+                "Failed to initialise CUDA backend: %s. Called by select_preview_backend.",
+                exc,
+                exc_info=True,
+            )
         else:
-            _LOGGER.info("Using CUDA preview backend")
+            _LOGGER.info("Using CUDA preview backend (selected by select_preview_backend).")
             return backend
+    else:
+        _LOGGER.debug("CUDA backend not available (checked by select_preview_backend).")
 
     # OpenGL is the next best choice when CUDA is not available.
+    _LOGGER.debug("Checking for OpenGL backend (called by select_preview_backend)...")
     if _OpenGlPreviewBackend.is_available():
         try:
             backend = _OpenGlPreviewBackend()
         except Exception as exc:  # pragma: no cover - defensive guard
-            _LOGGER.warning("Failed to initialise OpenGL backend: %s", exc)
+            _LOGGER.warning(
+                "Failed to initialise OpenGL backend: %s. Called by select_preview_backend.",
+                exc,
+                exc_info=True,
+            )
         else:
-            _LOGGER.info("Using OpenGL preview backend")
+            _LOGGER.info(
+                "Using OpenGL preview backend (selected by select_preview_backend)."
+            )
             return backend
+    else:
+        _LOGGER.warning(
+            "OpenGL backend not available (checked by select_preview_backend)."
+        )
 
     backend = _CpuPreviewBackend()
-    _LOGGER.info("Falling back to CPU preview backend")
+    _LOGGER.info(
+        "Falling back to CPU preview backend (by select_preview_backend)."
+    )
     return backend
 
 
 def fallback_preview_backend(previous: PreviewBackend) -> PreviewBackend:
     """Return a safer backend after *previous* reports a fatal failure."""
+    _LOGGER.warning(
+        "Falling back from previous backend: %s (called by fallback_preview_backend).",
+        previous.tier_name,
+    )
 
     # ``_CudaPreviewBackend`` currently raises during construction but the
     # ``isinstance`` guard keeps the helper forward-compatible for future
     # implementations.  Prefer stepping down one tier at a time so the caller
     # retains hardware acceleration whenever possible.
     if isinstance(previous, _CudaPreviewBackend):  # pragma: no cover - defensive
+        _LOGGER.debug(
+            "Previous backend was CUDA. Trying OpenGL... (by fallback_preview_backend)"
+        )
         if _OpenGlPreviewBackend.is_available():
             try:
                 backend = _OpenGlPreviewBackend()
-            except Exception:
-                pass
+            except Exception as exc:
+                _LOGGER.error(
+                    "Failed to initialise OpenGL as fallback from CUDA: %s. "
+                    "Falling back to CPU. (by fallback_preview_backend)",
+                    exc,
+                    exc_info=True,
+                )
             else:
                 _LOGGER.info(
-                    "Falling back from CUDA preview backend to OpenGL implementation",
+                    "Falling back from CUDA preview backend to OpenGL implementation "
+                    "(by fallback_preview_backend)."
                 )
                 return backend
+        else:
+            _LOGGER.warning(
+                "OpenGL not available as fallback from CUDA. "
+                "Falling back to CPU. (by fallback_preview_backend)"
+            )
 
     if isinstance(previous, _OpenGlPreviewBackend):
-        _LOGGER.info("Falling back from OpenGL preview backend to CPU implementation")
+        _LOGGER.info(
+            "Falling back from OpenGL preview backend to CPU implementation "
+            "(by fallback_preview_backend)."
+        )
         return _CpuPreviewBackend()
 
     # Any other backend (including the CPU fallback) drops straight to the
     # baseline CPU implementation so callers always receive a usable renderer.
+    _LOGGER.info(
+        "Defaulting to CPU implementation (by fallback_preview_backend)."
+    )
     return _CpuPreviewBackend()
 
 
