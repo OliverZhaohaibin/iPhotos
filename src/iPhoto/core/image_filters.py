@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Mapping, Sequence
+from typing import Mapping
 
 from PySide6.QtGui import QImage, QColor
 
@@ -12,6 +12,12 @@ from .color_resolver import ColorStats, compute_color_statistics
 
 
 _PILLOW_SUPPORT = load_pillow()
+
+# ``COMBINED_LUT_SIZE`` controls the resolution of the 3D lookup table that
+# bakes the tone and colour adjustments together.  A value of 33 (matching the
+# classic FilmLight/DaVinci Resolve default) strikes a balance between fidelity
+# and the amount of work required to pre-compute the cube.
+COMBINED_LUT_SIZE = 33
 
 
 # ``LIGHT_KEYS`` is re-exported from :mod:`iPhoto.core.light_resolver` so the constant lives in a
@@ -115,24 +121,30 @@ def apply_adjustments(
     # relative to the neutral slope of 1.0.
     contrast_factor = 1.0 + contrast
 
-    # A lookup table allows Pillow to apply the tone curve using C-optimised
-    # routines, dramatically reducing the time spent on large full-resolution
-    # images compared to the original Python double loop.  When Pillow is not
-    # available we gracefully fall back to the legacy buffer walker.
-    lut = _build_adjustment_lut(
-        exposure_term,
-        brightness_term,
-        brilliance_strength,
-        highlights,
-        shadows,
-        contrast_factor,
-        black_point,
-    )
+    apply_color = abs(saturation) > 1e-6 or abs(vibrance) > 1e-6 or cast > 1e-6
 
-    transformed = _apply_adjustments_with_lut(result, lut)
-    if transformed is not None:
-        _apply_color_adjustments_inplace(
-            transformed,
+    if color_stats is not None:
+        gain_r, gain_g, gain_b = color_stats.white_balance_gain
+    elif not gain_provided and apply_color:
+        color_stats = compute_color_statistics(result)
+        gain_r, gain_g, gain_b = color_stats.white_balance_gain
+
+    support = _PILLOW_SUPPORT
+    if (
+        support is not None
+        and support.Image is not None
+        and support.ImageQt is not None
+        and support.ImageFilter is not None
+    ):
+        lut = _build_combined_lut(
+            COMBINED_LUT_SIZE,
+            exposure_term,
+            brightness_term,
+            brilliance_strength,
+            highlights,
+            shadows,
+            contrast_factor,
+            black_point,
             saturation,
             vibrance,
             cast,
@@ -140,19 +152,11 @@ def apply_adjustments(
             gain_g,
             gain_b,
         )
-        return transformed
+        transformed = _apply_adjustments_with_3d_lut(result, COMBINED_LUT_SIZE, lut)
+        if transformed is not None:
+            return transformed
 
     bytes_per_line = result.bytesPerLine()
-
-    if color_stats is not None:
-        gain_r, gain_g, gain_b = color_stats.white_balance_gain
-    elif not gain_provided and (
-        abs(saturation) > 1e-6
-        or abs(vibrance) > 1e-6
-        or cast > 1e-6
-    ):
-        color_stats = compute_color_statistics(result)
-        gain_r, gain_g, gain_b = color_stats.white_balance_gain
 
     try:
         _apply_adjustments_fast(
@@ -202,7 +206,8 @@ def apply_adjustments(
     return result
 
 
-def _build_adjustment_lut(
+def _build_combined_lut(
+    size: int,
     exposure: float,
     brightness: float,
     brilliance: float,
@@ -210,31 +215,90 @@ def _build_adjustment_lut(
     shadows: float,
     contrast_factor: float,
     black_point: float,
-) -> list[int]:
-    """Pre-compute the tone curve for every possible 8-bit channel value."""
+    saturation: float,
+    vibrance: float,
+    cast: float,
+    gain_r: float,
+    gain_g: float,
+    gain_b: float,
+) -> list[float]:
+    """Return a flattened RGB 3D LUT combining tone and colour adjustments."""
 
-    lut: list[int] = []
-    for channel_value in range(256):
-        normalised = channel_value / 255.0
-        adjusted = _apply_channel_adjustments(
-            normalised,
-            exposure,
-            brightness,
-            brilliance,
-            highlights,
-            shadows,
-            contrast_factor,
-            black_point,
-        )
-        lut.append(_float_to_uint8(adjusted))
-    return lut
+    if size < 2:
+        raise ValueError("size must be at least 2 to build a 3D LUT")
+
+    table: list[float] = []
+    max_index = float(size - 1)
+
+    for b_index in range(size):
+        base_b = b_index / max_index
+        for g_index in range(size):
+            base_g = g_index / max_index
+            for r_index in range(size):
+                base_r = r_index / max_index
+
+                r_tone = _apply_channel_adjustments(
+                    base_r,
+                    exposure,
+                    brightness,
+                    brilliance,
+                    highlights,
+                    shadows,
+                    contrast_factor,
+                    black_point,
+                )
+                g_tone = _apply_channel_adjustments(
+                    base_g,
+                    exposure,
+                    brightness,
+                    brilliance,
+                    highlights,
+                    shadows,
+                    contrast_factor,
+                    black_point,
+                )
+                b_tone = _apply_channel_adjustments(
+                    base_b,
+                    exposure,
+                    brightness,
+                    brilliance,
+                    highlights,
+                    shadows,
+                    contrast_factor,
+                    black_point,
+                )
+
+                r_final, g_final, b_final = _apply_color_transform(
+                    r_tone,
+                    g_tone,
+                    b_tone,
+                    saturation,
+                    vibrance,
+                    cast,
+                    gain_r,
+                    gain_g,
+                    gain_b,
+                )
+
+                table.extend((r_final, g_final, b_final))
+
+    return table
 
 
-def _apply_adjustments_with_lut(image: QImage, lut: Sequence[int]) -> QImage | None:
-    """Attempt to transform *image* via a pre-computed lookup table."""
+def _apply_adjustments_with_3d_lut(
+    image: QImage,
+    size: int,
+    table: list[float],
+) -> QImage | None:
+    """Attempt to apply *table* as a 3D LUT via Pillow's accelerated filter."""
 
     support = _PILLOW_SUPPORT
-    if support is None or support.Image is None or support.ImageQt is None:
+    if (
+        support is None
+        or support.Image is None
+        or support.ImageQt is None
+        or support.ImageFilter is None
+    ):
         return None
 
     try:
@@ -242,21 +306,12 @@ def _apply_adjustments_with_lut(image: QImage, lut: Sequence[int]) -> QImage | N
         height = image.height()
         bytes_per_line = image.bytesPerLine()
 
-        # ``_resolve_pixel_buffer`` already performs the heavy lifting required
-        # to expose a contiguous ``memoryview`` over the QImage data across the
-        # various Qt/Python binding permutations.  Reusing it avoids the
-        # ``setsize`` AttributeError that PySide raises (and which previously
-        # forced us down the slow fallback path).
         view, buffer_guard = _resolve_pixel_buffer(image)
 
-        # Pillow is only interested in the raw byte sequence and copies it once
-        # we immediately call ``copy()`` on the resulting image.  Passing the
-        # ``memoryview`` directly therefore avoids an intermediate ``bytes``
-        # allocation while the guard keeps the underlying Qt wrapper alive long
-        # enough for Pillow to finish its own copy.
         buffer = view if isinstance(view, memoryview) else memoryview(view)
         guard = buffer_guard
-        _ = guard  # Explicitly anchor the guard for the duration of the call.
+        _ = guard
+
         pil_image = support.Image.frombuffer(
             "RGBA",
             (width, height),
@@ -267,20 +322,20 @@ def _apply_adjustments_with_lut(image: QImage, lut: Sequence[int]) -> QImage | N
             1,
         ).copy()
 
-        # ``Image.point`` applies per-channel lookup tables in native code.  We
-        # reuse the same curve for RGB while preserving the alpha channel via an
-        # identity table to ensure transparency remains untouched.
-        alpha_table = list(range(256))
-        table: list[int] = list(lut) * 3 + alpha_table
-        pil_image = pil_image.point(table)
+        alpha_channel = pil_image.getchannel("A")
+        rgb_image = pil_image.convert("RGB")
 
-        qt_image = QImage(support.ImageQt(pil_image))
+        lut_filter = support.ImageFilter.Color3DLUT(size, table, channels="RGB")
+        transformed_rgb = rgb_image.filter(lut_filter)
+
+        r, g, b = transformed_rgb.split()
+        merged = support.Image.merge("RGBA", (r, g, b, alpha_channel))
+
+        qt_image = QImage(support.ImageQt(merged))
         if qt_image.format() != QImage.Format.Format_ARGB32:
             qt_image = qt_image.convertToFormat(QImage.Format.Format_ARGB32)
         return qt_image
     except Exception:
-        # Pillow is optional; if anything goes wrong we fall back to the
-        # original buffer-walking implementation.
         return None
 
 
@@ -458,57 +513,6 @@ def _apply_adjustments_fallback(
                 )
 
             image.setPixelColor(x, y, QColor.fromRgbF(r, g, b, colour.alphaF()))
-
-
-def _apply_color_adjustments_inplace(
-    image: QImage,
-    saturation: float,
-    vibrance: float,
-    cast: float,
-    gain_r: float,
-    gain_g: float,
-    gain_b: float,
-) -> None:
-    if image.isNull():
-        return
-    apply_color = abs(saturation) > 1e-6 or abs(vibrance) > 1e-6 or cast > 1e-6
-    if not apply_color:
-        return
-
-    view, guard = _resolve_pixel_buffer(image)
-    buffer_handle = guard
-    _ = buffer_handle
-
-    if getattr(view, "readonly", False):
-        raise BufferError("QImage pixel buffer is read-only")
-
-    width = image.width()
-    height = image.height()
-    bytes_per_line = image.bytesPerLine()
-
-    for y in range(height):
-        row_offset = y * bytes_per_line
-        for x in range(width):
-            pixel_offset = row_offset + x * 4
-            b = view[pixel_offset] / 255.0
-            g = view[pixel_offset + 1] / 255.0
-            r = view[pixel_offset + 2] / 255.0
-
-            r, g, b = _apply_color_transform(
-                r,
-                g,
-                b,
-                saturation,
-                vibrance,
-                cast,
-                gain_r,
-                gain_g,
-                gain_b,
-            )
-
-            view[pixel_offset] = _float_to_uint8(b)
-            view[pixel_offset + 1] = _float_to_uint8(g)
-            view[pixel_offset + 2] = _float_to_uint8(r)
 
 
 def _apply_color_transform(
