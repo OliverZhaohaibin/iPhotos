@@ -1157,7 +1157,21 @@ class _OpenGlPreviewBackend(PreviewBackend):
             # current context state after our previous makeCurrent call.
             try:
                 funcs = self._context.functions() if self._context is not None else None
-                if funcs is not None and funcs.initializeOpenGLFunctions():
+                if funcs is not None:
+                    try:
+                        funcs.initializeOpenGLFunctions()
+                    except Exception as init_exc:
+                        _LOGGER.warning(
+                            "OpenGLBackend: initializeOpenGLFunctions raised during function table refresh: %s",
+                            init_exc,
+                            exc_info=True,
+                        )
+                    # ``initializeOpenGLFunctions`` historically returns ``None`` in
+                    # PySide builds, so never gate the assignment on its result.
+                    # Replacing ``self._gl`` ensures subsequent calls route through
+                    # the function table that actually belongs to the current
+                    # context instead of the stale instance captured before the
+                    # recovery.
                     self._gl = funcs
                     self._gl.glGenTextures(1, texture_ids)
                     tex = int(texture_ids[0])
