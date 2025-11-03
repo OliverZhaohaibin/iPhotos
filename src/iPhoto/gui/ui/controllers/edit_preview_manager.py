@@ -9,6 +9,7 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Qt, Signal
 from PySide6.QtGui import QImage, QPixmap
 
 from ....core.light_resolver import LIGHT_KEYS, resolve_light_vector
+from ....core.color_resolver import COLOR_KEYS, ColorResolver, ColorStats, compute_color_statistics
 from ....core.preview_backends import (
     PreviewBackend,
     PreviewSession,
@@ -87,6 +88,7 @@ class EditPreviewManager(QObject):
         self._base_pixmap: Optional[QPixmap] = None
         self._current_preview_pixmap: Optional[QPixmap] = None
         self._current_adjustments: dict[str, float | bool] = {}
+        self._color_stats: ColorStats | None = None
 
         self._thread_pool = QThreadPool.globalInstance()
         self._preview_job_id = 0
@@ -154,6 +156,7 @@ class EditPreviewManager(QObject):
         self._base_pixmap = base_pixmap if not base_pixmap.isNull() else None
         self._current_preview_pixmap = self._base_pixmap
         self._current_adjustments = dict(adjustments)
+        self._color_stats = compute_color_statistics(prepared)
 
         if previous_session is not None:
             self._queue_session_for_disposal(previous_session)
@@ -181,6 +184,7 @@ class EditPreviewManager(QObject):
         self._base_pixmap = None
         self._current_preview_pixmap = None
         self._current_adjustments.clear()
+        self._color_stats = None
 
     def cancel_pending_updates(self) -> None:
         """Stop timers and invalidate in-flight previews without tearing down the session."""
@@ -321,14 +325,19 @@ class EditPreviewManager(QObject):
 
         resolved: dict[str, float] = {}
         overrides: dict[str, float] = {}
+        color_overrides: dict[str, float] = {}
         master_value = float(session_values.get("Light_Master", 0.0))
         light_enabled = bool(session_values.get("Light_Enabled", True))
+        color_master = float(session_values.get("Color_Master", 0.0))
+        color_enabled = bool(session_values.get("Color_Enabled", True))
 
         for key, value in session_values.items():
-            if key in ("Light_Master", "Light_Enabled"):
+            if key in ("Light_Master", "Light_Enabled", "Color_Master", "Color_Enabled"):
                 continue
             if key in LIGHT_KEYS:
                 overrides[key] = float(value)
+            elif key in COLOR_KEYS:
+                color_overrides[key] = float(value)
             else:
                 resolved[key] = float(value)
 
@@ -336,6 +345,24 @@ class EditPreviewManager(QObject):
             resolved.update(resolve_light_vector(master_value, overrides, mode="delta"))
         else:
             resolved.update({key: 0.0 for key in LIGHT_KEYS})
+
+        stats = self._color_stats or ColorStats()
+        if color_enabled:
+            resolved.update(
+                ColorResolver.resolve_color_vector(
+                    color_master,
+                    color_overrides,
+                    stats=stats,
+                    mode="delta",
+                )
+            )
+        else:
+            resolved.update({key: 0.0 for key in COLOR_KEYS})
+
+        gain_r, gain_g, gain_b = stats.white_balance_gain
+        resolved["Color_Gain_R"] = gain_r
+        resolved["Color_Gain_G"] = gain_g
+        resolved["Color_Gain_B"] = gain_b
 
         return resolved
 

@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QStackedWidget, QWidget
 
 from ...utils import image_loader
 from ....core.image_filters import apply_adjustments
+from ....core.color_resolver import compute_color_statistics
 from ....io import sidecar
 from ..widgets.image_viewer import ImageViewer
 from ..widgets.live_badge import LiveBadge
@@ -47,13 +48,6 @@ class _AdjustedImageWorker(QRunnable):
         """Perform the expensive image work outside the GUI thread."""
 
         try:
-            raw_adjustments = sidecar.load_adjustments(self._source)
-            adjustments = sidecar.resolve_render_adjustments(raw_adjustments)
-        except Exception as exc:  # pragma: no cover - filesystem errors are rare
-            self._signals.failed.emit(self._source, str(exc))
-            return
-
-        try:
             # Requesting ``None`` as the target size forces ``QImageReader`` to
             # decode the full-resolution frame.  The detail view later scales
             # the resulting pixmap to fit the viewport while maintaining the
@@ -67,9 +61,20 @@ class _AdjustedImageWorker(QRunnable):
             self._signals.failed.emit(self._source, "Image decoder returned an empty frame")
             return
 
+        try:
+            raw_adjustments = sidecar.load_adjustments(self._source)
+            stats = compute_color_statistics(image) if raw_adjustments else None
+            adjustments = sidecar.resolve_render_adjustments(
+                raw_adjustments,
+                color_stats=stats,
+            )
+        except Exception as exc:  # pragma: no cover - filesystem errors are rare
+            self._signals.failed.emit(self._source, str(exc))
+            return
+
         if adjustments:
             try:
-                image = apply_adjustments(image, adjustments)
+                image = apply_adjustments(image, adjustments, color_stats=stats)
             except Exception as exc:  # pragma: no cover - defensive safeguard
                 self._signals.failed.emit(self._source, str(exc))
                 return

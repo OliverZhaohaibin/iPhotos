@@ -202,6 +202,10 @@ class _OpenGlPreviewBackend(PreviewBackend):
         self._uniform_shadows = self._program.uniformLocation("uShadows")
         self._uniform_contrast = self._program.uniformLocation("uContrastFactor")
         self._uniform_black_point = self._program.uniformLocation("uBlackPoint")
+        self._uniform_saturation = self._program.uniformLocation("uSaturation")
+        self._uniform_vibrance = self._program.uniformLocation("uVibrance")
+        self._uniform_cast = self._program.uniformLocation("uCast")
+        self._uniform_color_gain = self._program.uniformLocation("uColorGain")
 
         # Prepare the vertex buffer containing a full screen triangle strip.
         vertices = array(
@@ -265,6 +269,10 @@ class _OpenGlPreviewBackend(PreviewBackend):
             "uniform float uShadows;\n"
             "uniform float uContrastFactor;\n"
             "uniform float uBlackPoint;\n"
+            "uniform float uSaturation;\n"
+            "uniform float uVibrance;\n"
+            "uniform float uCast;\n"
+            "uniform vec3 uColorGain;\n"
             "varying vec2 v_texcoord;\n"
             "float clamp01(float value) {\n"
             "    return clamp(value, 0.0, 1.0);\n"
@@ -294,6 +302,14 @@ class _OpenGlPreviewBackend(PreviewBackend):
             "    tex_color.r = apply_channel(tex_color.r);\n"
             "    tex_color.g = apply_channel(tex_color.g);\n"
             "    tex_color.b = apply_channel(tex_color.b);\n"
+            "    vec3 color = tex_color.rgb * mix(vec3(1.0), uColorGain, clamp(uCast, 0.0, 1.0));\n"
+            "    float luma = dot(color, vec3(0.299, 0.587, 0.114));\n"
+            "    vec3 chroma = color - vec3(luma);\n"
+            "    float satAmt = 1.0 + uSaturation;\n"
+            "    float vibAmt = 1.0 + uVibrance;\n"
+            "    float w = 1.0 - clamp(abs(luma - 0.5) * 2.0, 0.0, 1.0);\n"
+            "    chroma *= satAmt * (1.0 + (vibAmt - 1.0) * w);\n"
+            "    tex_color.rgb = clamp(vec3(luma) + chroma, 0.0, 1.0);\n"
             "    gl_FragColor = tex_color;\n"
             "}\n"
         )
@@ -464,6 +480,12 @@ class _OpenGlPreviewBackend(PreviewBackend):
         shadows = float(adjustments.get("Shadows", 0.0))
         contrast_factor = 1.0 + float(adjustments.get("Contrast", 0.0))
         black_point = float(adjustments.get("BlackPoint", 0.0))
+        saturation = float(adjustments.get("Saturation", 0.0))
+        vibrance = float(adjustments.get("Vibrance", 0.0))
+        cast = float(adjustments.get("Cast", 0.0))
+        gain_r = float(adjustments.get("Color_Gain_R", 1.0))
+        gain_g = float(adjustments.get("Color_Gain_G", 1.0))
+        gain_b = float(adjustments.get("Color_Gain_B", 1.0))
 
         program.setUniformValue(self._uniform_exposure, exposure_term)
         program.setUniformValue(self._uniform_brightness, brightness_term)
@@ -472,6 +494,10 @@ class _OpenGlPreviewBackend(PreviewBackend):
         program.setUniformValue(self._uniform_shadows, shadows)
         program.setUniformValue(self._uniform_contrast, contrast_factor)
         program.setUniformValue(self._uniform_black_point, black_point)
+        program.setUniformValue(self._uniform_saturation, saturation)
+        program.setUniformValue(self._uniform_vibrance, vibrance)
+        program.setUniformValue(self._uniform_cast, cast)
+        program.setUniformValue(self._uniform_color_gain, gain_r, gain_g, gain_b)
 
         if not self._vertex_buffer.bind():
             program.release()
