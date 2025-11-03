@@ -369,6 +369,17 @@ class _OpenGlPreviewBackend(PreviewBackend):
 
         super().__init__()
 
+        # Cache Qt types so recovery helpers can reconstruct the context without
+        # re-importing the heavy modules on every attempt.
+        self._context_cls = QOpenGLContext
+        self._surface_format_cls = QSurfaceFormat
+        self._offscreen_surface_cls = QOffscreenSurface
+        self._buffer_cls = QOpenGLBuffer
+        self._shader_cls = QOpenGLShader
+        self._shader_program_cls = QOpenGLShaderProgram
+        self._version_profile_cls = QOpenGLVersionProfile
+        self._version_factory = QOpenGLVersionFunctionsFactory
+
         context, format_used = self._initialise_context(QOpenGLContext, QSurfaceFormat)
         self._context = context
         self._context_version = (
@@ -533,6 +544,242 @@ class _OpenGlPreviewBackend(PreviewBackend):
                 self._stats_buffer = None
         else:
             _LOGGER.info("OpenGLBackend: SSBO/GL4.3 not available in this build, compute stats disabled.")
+
+    def _destroy_gl_resources(self) -> None:
+        """Release GL objects tied to the current context."""
+
+        context = self._context
+        surface = self._surface
+        made_current = False
+        if context is not None and surface is not None:
+            try:
+                made_current = context.makeCurrent(surface)
+            except Exception as exc:
+                _LOGGER.debug(
+                    "OpenGLBackend: makeCurrent failed during teardown: %s",
+                    exc,
+                    exc_info=True,
+                )
+        if made_current:
+            try:
+                if self._program is not None:
+                    self._program.release()
+                    self._program.removeAllShaders()
+            except Exception as exc:
+                _LOGGER.debug("OpenGLBackend: Failed to release shader program: %s", exc)
+            try:
+                if self._compute_program is not None:
+                    self._compute_program.release()
+                    self._compute_program.removeAllShaders()
+            except Exception as exc:
+                _LOGGER.debug("OpenGLBackend: Failed to release compute program: %s", exc)
+            try:
+                if self._vertex_buffer is not None and self._vertex_buffer.isCreated():
+                    self._vertex_buffer.destroy()
+            except Exception as exc:
+                _LOGGER.debug("OpenGLBackend: Failed to destroy vertex buffer: %s", exc)
+            try:
+                if self._stats_buffer is not None and self._stats_buffer.isCreated():
+                    self._stats_buffer.destroy()
+            except Exception as exc:
+                _LOGGER.debug("OpenGLBackend: Failed to destroy stats buffer: %s", exc)
+            context.doneCurrent()
+
+        for attr in ("_program", "_compute_program"):
+            obj = getattr(self, attr)
+            if obj is not None:
+                try:
+                    obj.deleteLater()
+                except Exception:
+                    pass
+                setattr(self, attr, None)
+        self._vertex_buffer = None
+        self._stats_buffer = None
+
+    def _reset_context(self) -> None:
+        """Recreate the OpenGL context and rebuild persistent GL state."""
+
+        self._destroy_gl_resources()
+
+        if self._context is not None:
+            try:
+                self._context.deleteLater()
+            except Exception as exc:
+                _LOGGER.debug("OpenGLBackend: Failed to schedule context deletion: %s", exc)
+        if self._surface is not None:
+            try:
+                self._surface.destroy()
+            except Exception as exc:
+                _LOGGER.debug("OpenGLBackend: Failed to destroy offscreen surface: %s", exc)
+
+        self._context = None
+        self._surface = None
+        self._gl = None
+        self._gl43 = None
+        self._context_version = (0, 0)
+
+        context_cls = self._context_cls
+        surface_format_cls = self._surface_format_cls
+        offscreen_cls = self._offscreen_surface_cls
+        buffer_cls = self._buffer_cls
+        shader_cls = self._shader_cls
+        program_cls = self._shader_program_cls
+        version_profile_cls = self._version_profile_cls
+        version_factory = self._version_factory
+
+        context, format_used = self._initialise_context(context_cls, surface_format_cls)
+        self._context = context
+        self._context_version = (
+            format_used.majorVersion(),
+            format_used.minorVersion(),
+        )
+        _LOGGER.info(
+            "OpenGLBackend: Context initialised. Using Version: %d.%d",
+            self._context_version[0],
+            self._context_version[1],
+        )
+
+        surface = offscreen_cls()
+        surface.setFormat(format_used)
+        surface.create()
+        if not surface.isValid():
+            _LOGGER.error("OpenGLBackend: Failed to create valid QOffscreenSurface during recovery.")
+            raise RuntimeError("OpenGL offscreen surface is invalid")
+        self._surface = surface
+        _LOGGER.debug("OpenGLBackend: QOffscreenSurface created.")
+
+        if not context.makeCurrent(surface):
+            _LOGGER.error("OpenGLBackend: Failed to make OpenGL context current during recovery.")
+            raise RuntimeError("Failed to make OpenGL context current")
+        _LOGGER.debug("OpenGLBackend: Context made current.")
+
+        functions = context.functions()
+        try:
+            functions.initializeOpenGLFunctions()
+        except Exception as exc:
+            _LOGGER.error("OpenGLBackend: initializeOpenGLFunctions raised during recovery: %s", exc, exc_info=True)
+        self._gl = functions
+
+        self._gl43 = None
+        if self._context_version >= (4, 3):
+            _LOGGER.debug("OpenGLBackend: Attempting to get GL 4.3 functions via VersionProfile (recovery).")
+            prof = version_profile_cls()
+            prof.setVersion(4, 3)
+            prof.setProfile(surface_format_cls.CoreProfile)
+            gl43 = version_factory.get(prof, context)
+            if gl43 is not None:
+                try:
+                    gl43.initializeOpenGLFunctions()
+                    self._gl43 = gl43
+                    _LOGGER.info("OpenGLBackend: GL 4.3 functions initialized via VersionProfile (recovery).")
+                except Exception:
+                    _LOGGER.warning("OpenGLBackend: Failed to initialize GL 4.3 version functions during recovery.")
+                    self._gl43 = None
+        else:
+            _LOGGER.debug("OpenGLBackend: OpenGL version < 4.3, skipping GL4.3 functions during recovery.")
+
+        program = program_cls()
+        vertex_shader = shader_cls(shader_cls.ShaderTypeBit.Vertex)
+        _LOGGER.debug("OpenGLBackend: Compiling vertex shader (recovery)...")
+        if not vertex_shader.compileSourceCode(self._vertex_shader_source()):
+            message = vertex_shader.log() or "unknown vertex shader error"
+            raise RuntimeError(f"Failed to compile OpenGL vertex shader: {message}")
+        fragment_shader = shader_cls(shader_cls.ShaderTypeBit.Fragment)
+        _LOGGER.debug("OpenGLBackend: Compiling fragment shader (recovery)...")
+        if not fragment_shader.compileSourceCode(self._fragment_shader_source()):
+            message = fragment_shader.log() or "unknown fragment shader error"
+            raise RuntimeError(f"Failed to compile OpenGL fragment shader: {message}")
+        program.addShader(vertex_shader)
+        program.addShader(fragment_shader)
+        if not program.link():
+            message = program.log() or "unknown shader link error"
+            raise RuntimeError(f"Failed to link OpenGL shader program: {message}")
+        self._program = program
+
+        self._position_location = program.attributeLocation("a_position")
+        self._texcoord_location = program.attributeLocation("a_texcoord")
+        self._uniform_source = program.uniformLocation("uSourceTexture")
+        self._uniform_exposure = program.uniformLocation("uExposureTerm")
+        self._uniform_brightness = program.uniformLocation("uBrightnessTerm")
+        self._uniform_brilliance = program.uniformLocation("uBrillianceStrength")
+        self._uniform_highlights = program.uniformLocation("uHighlights")
+        self._uniform_shadows = program.uniformLocation("uShadows")
+        self._uniform_contrast = program.uniformLocation("uContrastFactor")
+        self._uniform_black_point = program.uniformLocation("uBlackPoint")
+        self._uniform_saturation = program.uniformLocation("uSaturation")
+        self._uniform_vibrance = program.uniformLocation("uVibrance")
+        self._uniform_cast = program.uniformLocation("uCast")
+        self._uniform_gain = program.uniformLocation("uGain")
+
+        vertices = array(
+            "f",
+            [
+                -1.0,
+                -1.0,
+                0.0,
+                1.0,
+                1.0,
+                -1.0,
+                1.0,
+                1.0,
+                -1.0,
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                1.0,
+                1.0,
+                0.0,
+            ],
+        )
+        vertex_buffer = buffer_cls(buffer_cls.Type.VertexBuffer)
+        if not vertex_buffer.create():
+            raise RuntimeError("Failed to create OpenGL vertex buffer")
+        if not vertex_buffer.bind():
+            raise RuntimeError("Failed to bind OpenGL vertex buffer")
+        raw_vertices = vertices.tobytes()
+        vertex_buffer.allocate(raw_vertices, len(raw_vertices))
+        vertex_buffer.release()
+        self._vertex_buffer = vertex_buffer
+
+        self._compute_program = None
+        self._stats_buffer = None
+        if self._gl43 is not None and hasattr(buffer_cls.Type, "ShaderStorageBuffer"):
+            try:
+                compute_program = self._compile_compute_shader()
+                if compute_program is not None:
+                    stats_buffer = buffer_cls(buffer_cls.Type.ShaderStorageBuffer)
+                    if not stats_buffer.create():
+                        _LOGGER.warning(
+                            "OpenGLBackend: Failed to create stats buffer (SSBO). Disabling compute stats."
+                        )
+                        compute_program = None
+                    else:
+                        self._stats_buffer = stats_buffer
+                        _LOGGER.info("OpenGLBackend: Compute shader and stats buffer created successfully (recovery).")
+                self._compute_program = compute_program
+            except Exception as exc:
+                _LOGGER.warning(
+                    "OpenGLBackend: Failed to enable compute stats during recovery: %s. Falling back to CPU statistics.",
+                    exc,
+                    exc_info=True,
+                )
+                self._compute_program = None
+                self._stats_buffer = None
+        else:
+            _LOGGER.info("OpenGLBackend: SSBO/GL4.3 not available in this build, compute stats disabled.")
+
+    def _recover_context(self) -> bool:
+        """Attempt to rebuild the OpenGL context after a fatal error."""
+
+        _LOGGER.warning("OpenGLBackend: Attempting to recover OpenGL context after failure.")
+        try:
+            self._reset_context()
+        except Exception as exc:
+            _LOGGER.error("OpenGLBackend: Context recovery failed: %s", exc, exc_info=True)
+            return False
+        _LOGGER.info("OpenGLBackend: Context recovery succeeded.")
+        return True
 
     @staticmethod
     def _vertex_shader_source() -> str:
@@ -815,12 +1062,19 @@ class _OpenGlPreviewBackend(PreviewBackend):
     def _make_current(self) -> bool:
         _LOGGER.debug("OpenGLBackend: Attempting to make context current...")
         try:
+            if self._context is None or self._surface is None:
+                _LOGGER.error(
+                    "OpenGLBackend: makeCurrent requested without an active context or surface."
+                )
+                return False
             if not self._context.makeCurrent(self._surface):
                 _LOGGER.warning("OpenGLBackend: makeCurrent failed.")
                 return False
             _LOGGER.debug("OpenGLBackend: makeCurrent successful.")
 
             # 每次切换当前上下文后，都重新抓一次函数表
+            # Refresh the function table every time the context becomes current
+            # to guard against transient wrappers returned by Qt.
             funcs = self._context.functions()
             try:
                 funcs.initializeOpenGLFunctions()  # 有的实现返回 None，不要用返回值做判据
@@ -828,6 +1082,8 @@ class _OpenGlPreviewBackend(PreviewBackend):
                 _LOGGER.warning("OpenGLBackend: initializeOpenGLFunctions raised: %s", e)
 
             # 功能性校验：至少得有 glGenTextures
+            # Sanity check that the function table exposes ``glGenTextures``
+            # before we rely on it.
             if not hasattr(funcs, "glGenTextures"):
                 _LOGGER.error("OpenGLBackend: QOpenGLFunctions missing glGenTextures after makeCurrent.")
                 self._context.doneCurrent()
@@ -897,9 +1153,11 @@ class _OpenGlPreviewBackend(PreviewBackend):
         if tex == 0:
             _LOGGER.warning("OpenGLBackend: glGenTextures returned 0, retrying after reinit functions...")
             # 试着重新初始化函数表（万一 makeCurrent 后被其他调用改了状态）
+            # Reinitialise the function table in case another widget modified the
+            # current context state after our previous makeCurrent call.
             try:
-                funcs = self._context.functions()
-                if funcs.initializeOpenGLFunctions():
+                funcs = self._context.functions() if self._context is not None else None
+                if funcs is not None and funcs.initializeOpenGLFunctions():
                     self._gl = funcs
                     self._gl.glGenTextures(1, texture_ids)
                     tex = int(texture_ids[0])
@@ -907,11 +1165,23 @@ class _OpenGlPreviewBackend(PreviewBackend):
                 _LOGGER.error("OpenGLBackend: reinit functions failed: %s", e, exc_info=True)
             if tex == 0:
                 # 最终失败，尽量打印错误代码辅助定位
+                # Emit the GL error code to aid debugging before attempting
+                # a more expensive recovery step.
                 try:
                     err = self._gl.glGetError()
                     _LOGGER.error("OpenGLBackend: glGenTextures still 0, glGetError=0x%X", err)
                 except Exception:
                     pass
+                # Attempt to recover by rebuilding the context instead of
+                # immediately falling back to the CPU renderer.
+                if self._recover_context() and self._make_current():
+                    texture_ids = (ctypes.c_uint * 1)()
+                    self._gl.glGenTextures(1, texture_ids)
+                    tex = int(texture_ids[0])
+                    if tex != 0:
+                        _LOGGER.info("OpenGLBackend: Texture allocation succeeded after context recovery.")
+                else:
+                    _LOGGER.error("OpenGLBackend: Context recovery failed or context not current after recovery.")
         return tex
 
     def _upload_texture(self, texture_id: int, image: QImage) -> None:
