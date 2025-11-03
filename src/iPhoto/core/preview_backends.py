@@ -105,7 +105,7 @@ class _CpuPreviewBackend(PreviewBackend):
 
     def render(self, session: PreviewSession, adjustments: Mapping[str, float]) -> QImage:
         assert isinstance(session, _CpuPreviewSession)
-        return apply_adjustments(session.image, adjustments)
+        return apply_adjustments(session.image, adjustments, color_stats=session.color_stats)
 
 
 class _CudaPreviewBackend(PreviewBackend):
