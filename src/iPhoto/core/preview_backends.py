@@ -184,7 +184,34 @@ class _OpenGlPreviewBackend(PreviewBackend):
 
         functions = self._context.functions()
         functions.initializeOpenGLFunctions()
-        self._gl = functions
+
+        # Wrap the QOpenGLFunctions object with a small proxy that resolves
+        # numeric GL_* constants from PyOpenGL when available. Directly
+        # setting attributes on the wrapped C++ functions object may be
+        # disallowed, so a proxy avoids that while keeping existing call
+        # sites unchanged (they still call self._gl.glBindTexture(...)).
+        try:
+            from OpenGL import GL as _pygl
+
+            class _GLProxy:
+                def __init__(self, funcs, pygl):
+                    self._funcs = funcs
+                    self._pygl = pygl
+
+                def __getattr__(self, name):
+                    # Prefer methods and attributes on the QOpenGLFunctions
+                    # instance (for gl* function bindings). Fall back to
+                    # PyOpenGL for numeric GL_* constants or other symbols.
+                    if hasattr(self._funcs, name):
+                        return getattr(self._funcs, name)
+                    if hasattr(self._pygl, name):
+                        return getattr(self._pygl, name)
+                    raise AttributeError(name)
+
+            self._gl = _GLProxy(functions, _pygl)
+        except Exception:
+            # PyOpenGL not available or import failed; use functions as-is.
+            self._gl = functions
 
         # Compile and link the shader program once.  The uniforms mirror the
         # tone-mapping helper in :mod:`iPhoto.core.image_filters` so both
@@ -729,9 +756,37 @@ class _OpenGlPreviewBackend(PreviewBackend):
         height = converted.height()
 
         texture_id = self._generate_texture()
-        self._upload_texture(texture_id, converted)
+        framebuffer = None
 
-        framebuffer = QOpenGLFramebufferObject(width, height)
+        # Some drivers or context setups may return 0 for glGenTextures.
+        # In that case try using a framebuffer-backed texture as a fallback
+        # target and upload the pixels into that texture id.  If both
+        # strategies fail we raise to trigger the higher-level fallback to
+        # the CPU backend.
+        if texture_id == 0:
+            try:
+                framebuffer = QOpenGLFramebufferObject(width, height)
+                # QOpenGLFramebufferObject.texture() returns the attached
+                # texture id which we can use for compute/statistics and
+                # shader sampling.
+                tex_from_fbo = int(framebuffer.texture())
+                if tex_from_fbo == 0:
+                    raise RuntimeError("Framebuffer did not provide a valid texture id")
+                texture_id = tex_from_fbo
+                self._upload_texture(texture_id, converted)
+            except Exception:
+                # Cleanup any created framebuffer before re-raising so the
+                # fallback path is cleaner for callers.
+                try:
+                    if framebuffer is not None:
+                        del framebuffer
+                except Exception:
+                    pass
+                raise
+        else:
+            # Normal path: we have a valid standalone texture id.
+            self._upload_texture(texture_id, converted)
+            framebuffer = QOpenGLFramebufferObject(width, height)
 
         # If compute is available, produce GPU statistics and default auto
         # adjustments.  Store them on the session for controllers to consume.
@@ -770,8 +825,36 @@ class _OpenGlPreviewBackend(PreviewBackend):
         contents.  This method assumes the OpenGL context is current.
         """
 
+        # If the caller passed texture_id == 0, attempt to obtain a usable
+        # texture id by allocating a new GL texture.  If that fails try to
+        # create a temporary framebuffer and use its attached texture id.
         if texture_id == 0:
-            raise ValueError("invalid texture id")
+            try:
+                ids = (ctypes.c_uint * 1)()
+                self._gl.glGenTextures(1, ids)
+                texture_id = int(ids[0])
+            except Exception:
+                texture_id = 0
+
+        if texture_id == 0:
+            # Last-resort: create a temporary framebuffer and use its
+            # attached texture id for the upload. Keep a reference on the
+            # backend so the texture is not freed by GC while still in use.
+            try:
+                from PySide6.QtOpenGL import QOpenGLFramebufferObject
+
+                temp_fbo = QOpenGLFramebufferObject(image.width(), image.height())
+                tex_from_fbo = int(temp_fbo.texture())
+                if tex_from_fbo != 0:
+                    texture_id = tex_from_fbo
+                    # retain the temp fbo so its underlying texture lives
+                    self._temp_upload_fbo = temp_fbo
+                else:
+                    _LOGGER.info("OpenGL upload: framebuffer provided no texture id")
+                    return
+            except Exception as ex:
+                _LOGGER.info("OpenGL upload: failed to create temporary FBO: %s", ex)
+                return
 
         gl = self._gl
         # Bind and configure texture sampling/wrap parameters
@@ -839,6 +922,17 @@ class _OpenGlPreviewBackend(PreviewBackend):
                 if getattr(self, "_vertex_buffer", None) is not None:
                     try:
                         self._vertex_buffer.destroy()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            # Destroy any temporary upload FBO retained earlier
+            try:
+                if getattr(self, "_temp_upload_fbo", None) is not None:
+                    try:
+                        # Allow Qt/GL to free the underlying handle by dropping
+                        # our reference while the context is current.
+                        self._temp_upload_fbo = None
                     except Exception:
                         pass
             except Exception:
