@@ -368,14 +368,20 @@ class _OpenGlPreviewBackend(PreviewBackend):
         width = converted.width()
         height = converted.height()
 
-        texture_id = self._generate_texture()
-        self._upload_texture(texture_id, converted)
+        # Upload pixels using a Qt-managed FBO + QPainter.  This avoids
+        # low-level glTexImage2D uploads and common cross-context/driver
+        # problems with raw pointer uploads.  The upload returns a texture
+        # id owned by Qt; keep a reference to the FBO so Qt doesn't free it
+        # while we still sample from the texture.
+        texture_id, upload_fbo = self._upload_texture(0, converted)
 
+        # Destination framebuffer (separate from the upload FBO) to render
+        # into. The upload_fbo keeps ownership of the source texture.
         framebuffer = QOpenGLFramebufferObject(width, height)
 
         self._context.doneCurrent()
 
-        return _OpenGlPreviewSession(width, height, texture_id, framebuffer)
+        return _OpenGlPreviewSession(width, height, texture_id, framebuffer, texture_owned=False)
 
     def _generate_texture(self) -> int:
         """Create and return a new OpenGL texture identifier."""
@@ -384,38 +390,40 @@ class _OpenGlPreviewBackend(PreviewBackend):
         self._gl.glGenTextures(1, texture_ids)
         return int(texture_ids[0])
 
-    def _upload_texture(self, texture_id: int, image: QImage) -> None:
-        """Upload *image* data to the GPU texture identified by *texture_id*."""
+    def _upload_texture(self, texture_id: int, image: QImage) -> tuple[int, "QOpenGLFramebufferObject"]:
+        """Upload *image* into a Qt-managed FBO using QPainter and return
+        the texture id and the FBO instance.
 
-        if texture_id == 0:
-            raise RuntimeError("Invalid OpenGL texture identifier")
+        This approach delegates pixel conversion/upload to Qt which is more
+        robust across platforms and avoids manual glTexImage2D calls.
+        """
 
-        # ``bits()`` returns a sip.voidptr.  Requesting the full buffer size
-        # ensures Qt detaches the underlying storage so the upload observes a
-        # stable snapshot of the pixels even if the caller modifies the source
-        # image later on.
-        buffer = image.bits()
-        buffer.setsize(image.sizeInBytes())
+        # Ensure the GL context is current for FBO creation and QPainter use
+        if not self._make_current():
+            raise RuntimeError("OpenGL context must be current for texture upload")
 
-        gl = self._gl
-        gl.glBindTexture(gl.GL_TEXTURE_2D, texture_id)
-        gl.glPixelStorei(gl.GL_UNPACK_ALIGNMENT, 1)
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
-        gl.glTexImage2D(
-            gl.GL_TEXTURE_2D,
-            0,
-            gl.GL_RGBA,
-            image.width(),
-            image.height(),
-            0,
-            gl.GL_RGBA,
-            gl.GL_UNSIGNED_BYTE,
-            buffer,
-        )
-        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+        from PySide6.QtOpenGL import QOpenGLFramebufferObject
+        from PySide6.QtGui import QPainter
+
+        # Create a temporary FBO and draw the QImage into it using QPainter.
+        upload_fbo = QOpenGLFramebufferObject(image.width(), image.height())
+        painter = QPainter(upload_fbo)
+        try:
+            # Draw the image at origin; QPainter handles format/row-order
+            # differences reliably across platforms.
+            painter.drawImage(0, 0, image)
+        finally:
+            painter.end()
+
+        tex = int(upload_fbo.texture())
+
+        # Keep a reference so Qt doesn't free the underlying texture while
+        # we still reference it. Store on the backend to allow cleanup later.
+        if not hasattr(self, '_temp_upload_fbos'):
+            self._temp_upload_fbos = []
+        self._temp_upload_fbos.append(upload_fbo)
+
+        return tex, upload_fbo
 
     def render(self, session: PreviewSession, adjustments: Mapping[str, float]) -> QImage:
         from PySide6.QtGui import QImage as QtImage
@@ -504,9 +512,13 @@ class _OpenGlPreviewBackend(PreviewBackend):
             return
 
         if self._make_current():
-            if gl_session.texture_id != 0:
-                texture_ids = (ctypes.c_uint * 1)(gl_session.texture_id)
-                self._gl.glDeleteTextures(1, texture_ids)
+            # Only delete textures that we explicitly created via glGenTextures
+            if getattr(gl_session, 'texture_owned', True) and gl_session.texture_id != 0:
+                try:
+                    texture_ids = (ctypes.c_uint * 1)(gl_session.texture_id)
+                    self._gl.glDeleteTextures(1, texture_ids)
+                except Exception:
+                    pass
                 gl_session.texture_id = 0
             framebuffer = gl_session.framebuffer
             if framebuffer is not None:
@@ -531,6 +543,10 @@ class _OpenGlPreviewSession(PreviewSession):
     height: int
     texture_id: int
     framebuffer: "QOpenGLFramebufferObject | None"
+    # Whether the texture id was created by glGenTextures (True) or comes
+    # from a Qt-managed FBO (False). Only owned textures should be explicitly
+    # deleted via glDeleteTextures.
+    texture_owned: bool = True
 
     def dispose(self) -> None:  # pragma: no cover - real cleanup happens in backend
         self.framebuffer = None
