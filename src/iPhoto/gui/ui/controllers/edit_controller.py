@@ -9,6 +9,7 @@ from typing import Optional, TYPE_CHECKING
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtGui import QPixmap
 
+from ....core.preview_backends import fallback_preview_backend
 from ....io import sidecar
 from ...utils import image_loader
 from ..models.asset_model import AssetModel
@@ -179,8 +180,13 @@ class EditController(QObject):
         source = self._playlist.current_source()
         if source is None:
             return
-        image = image_loader.load_qimage(source)
+        try:
+            image = image_loader.load_qimage(source)
+        except Exception:
+            _LOGGER.exception("Failed to load image for editing: %s", source)
+            return
         if image is None or image.isNull():
+            _LOGGER.warning("Image is null after load_qimage: %s", source)
             return
 
         self._current_source = source
@@ -205,7 +211,21 @@ class EditController(QObject):
             )
             self._edit_viewer_fullscreen_connected = True
 
-        initial_pixmap = self._preview_manager.start_session(image, session.values())
+        try:
+            initial_pixmap = self._preview_manager.start_session(image, session.values())
+        except Exception as exc:
+            _LOGGER.exception("Preview session start failed with %s; falling back to safer backend and retrying", exc)
+            try:
+                # Replace with a safer backend (usually CPU) and retry once.
+                self._preview_manager._preview_backend = fallback_preview_backend(
+                    self._preview_manager._preview_backend
+                )
+                initial_pixmap = self._preview_manager.start_session(image, session.values())
+            except Exception:
+                _LOGGER.exception("Retrying preview session creation also failed; aborting enter edit mode")
+                # Ensure UI stays consistent: do not enter edit mode when preview cannot be created
+                return
+
         self._compare_active = False
         if initial_pixmap.isNull():
             self._ui.edit_image_viewer.clear()
@@ -492,4 +512,3 @@ class EditController(QObject):
         """
 
         self._navigation = navigation
-

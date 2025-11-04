@@ -156,7 +156,15 @@ class EditPreviewManager(QObject):
         self._base_pixmap = base_pixmap if not base_pixmap.isNull() else None
         self._current_preview_pixmap = self._base_pixmap
         self._current_adjustments = dict(adjustments)
-        self._color_stats = compute_color_statistics(prepared)
+        try:
+            self._color_stats = compute_color_statistics(prepared)
+        except Exception:
+            # Defensive: computing color statistics can touch low-level image
+            # buffers and may fail for malformed or exotic image formats. Log
+            # the error and fall back to a safe default so the edit flow remains
+            # usable.
+            _LOGGER.exception("Failed to compute color statistics for preview image; using defaults")
+            self._color_stats = None
 
         if previous_session is not None:
             self._queue_session_for_disposal(previous_session)

@@ -5,6 +5,7 @@ from __future__ import annotations
 from io import BytesIO
 from pathlib import Path
 from typing import Optional
+import logging
 
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QImage, QImageReader, QPixmap
@@ -20,6 +21,8 @@ else:  # pragma: no cover - executed when Pillow is unavailable
     _Image = None  # type: ignore[assignment]
     _ImageOps = None  # type: ignore[assignment]
     _ImageQt = None  # type: ignore[assignment]
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def load_qimage(source: Path, target: QSize | None = None) -> Optional[QImage]:
@@ -105,7 +108,8 @@ def qimage_from_bytes(data: bytes) -> Optional[QImage]:
         with _Image.open(BytesIO(data)) as img:  # type: ignore[union-attr]
             img = _ImageOps.exif_transpose(img)
             qt_image = _ImageQt(img.convert("RGBA"))
-    except Exception:  # pragma: no cover - Pillow failures are soft
+    except Exception:
+        _LOGGER.exception("Pillow failed to decode image bytes in qimage_from_bytes")
         return None
     return QImage(qt_image)
 
@@ -121,6 +125,7 @@ def _load_with_pillow(source: Path, target: QSize | None = None) -> Optional[QIm
                 resample_filter = getattr(resample, "LANCZOS", _Image.BICUBIC)
                 img.thumbnail((target.width(), target.height()), resample_filter)
             qt_image = _ImageQt(img.convert("RGBA"))  # type: ignore[attr-defined]
-    except Exception:  # pragma: no cover - Pillow loader failure propagates softly
+    except Exception:
+        _LOGGER.exception("Pillow failed to load image from %s", source)
         return None
     return QImage(qt_image)
