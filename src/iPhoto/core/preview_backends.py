@@ -762,6 +762,64 @@ class _OpenGlPreviewBackend(PreviewBackend):
         self._gl.glGenTextures(1, texture_ids)
         return int(texture_ids[0])
 
+    def _upload_texture(self, texture_id: int, image: "QImage") -> None:
+        """Upload *image* into the given OpenGL texture handle.
+
+        The implementation reads the QImage pixel buffer and issues the
+        necessary GL calls to create a GL_RGBA8 texture matching the image
+        contents.  This method assumes the OpenGL context is current.
+        """
+
+        if texture_id == 0:
+            raise ValueError("invalid texture id")
+
+        gl = self._gl
+        # Bind and configure texture sampling/wrap parameters
+        gl.glBindTexture(gl.GL_TEXTURE_2D, texture_id)
+        try:
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)
+
+            # Ensure tight row packing for arbitrary image widths
+            try:
+                gl.glPixelStorei(gl.GL_UNPACK_ALIGNMENT, 1)
+            except Exception:
+                # glPixelStorei may not be available on some very old drivers;
+                # ignore the failure and proceed.
+                pass
+
+            # Extract raw bytes from the QImage. QImage.bits() exposes a buffer
+            # interface suitable for creating a Python memoryview.
+            buf = image.bits()
+            # Ensure the Python buffer length is set correctly when the wrapper
+            # provides a setsize method (PySide exposes this on some platforms).
+            try:
+                byte_count = image.byteCount()
+                buf.setsize(byte_count)  # type: ignore[attr-defined]
+            except Exception:
+                # If setsize isn't available, convert via memoryview which
+                # will infer the length.
+                pass
+
+            data = memoryview(buf).tobytes()
+
+            # Upload the pixels as unsigned bytes in RGBA order.
+            gl.glTexImage2D(
+                gl.GL_TEXTURE_2D,
+                0,
+                gl.GL_RGBA8,
+                image.width(),
+                image.height(),
+                0,
+                gl.GL_RGBA,
+                gl.GL_UNSIGNED_BYTE,
+                data,
+            )
+        finally:
+            gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+
     def _cleanup_gl_resources(self) -> None:
         """Free GL resources owned by the backend (SSBO, VBO)."""
         try:
