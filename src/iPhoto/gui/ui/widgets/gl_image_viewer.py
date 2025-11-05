@@ -162,6 +162,8 @@ class GLImageViewer(QOpenGLWidget):
         self._pan_start_pos = QPointF()
         self._wheel_action = "navigate"
 
+        self.reset_zoom()
+
     def set_image(self, image: Optional[QImage]) -> None:
         """Set the image to be displayed."""
         self._image = image
@@ -275,8 +277,8 @@ class GLImageViewer(QOpenGLWidget):
         """Set up the rendering context, load shaders, and allocate resources."""
         profile = QOpenGLVersionProfile()
         profile.setVersion(3, 3)
-        profile.setProfile(QOpenGLVersionProfile.CoreProfile)
-        self._gl_funcs = self.context().functions()
+        profile.setProfile(QOpenGLVersionProfile.Profile.CoreProfile)
+        self._gl_funcs = self.context().versionFunctions(profile)
         self._gl_funcs.initializeOpenGLFunctions()
         self._gl_funcs.glClearColor(0.0, 0.0, 0.0, 1.0)
 

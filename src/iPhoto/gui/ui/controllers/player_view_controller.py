@@ -131,6 +131,7 @@ class PlayerViewController(QObject):
     def show_image_surface(self) -> None:
         """Reveal the still-image viewer surface."""
 
+        self._image_viewer.reset_zoom()
         self._video_area.hide_controls(animate=False)
         if self._player_stack.currentWidget() is not self._image_viewer:
             self._player_stack.setCurrentWidget(self._image_viewer)
