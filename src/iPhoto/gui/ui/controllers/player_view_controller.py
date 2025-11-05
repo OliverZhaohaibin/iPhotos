@@ -72,15 +72,9 @@ class _AdjustedImageWorker(QRunnable):
             return
 
         # Pass the raw image and adjustments to the main thread. The GL viewer
+        # Pass the raw image and adjustments to the main thread. The GL viewer
         # will apply the adjustments on the GPU.
-        if adjustments:
-            # Pass the raw image and adjustments to the main thread. The GL viewer
-            # will apply the adjustments on the GPU.
-            self._signals.completed.emit(self._source, image, adjustments)
-        else:
-            # No adjustments, so no need to involve the GPU shader passthrough.
-            # The viewer will render the original image directly.
-            self._signals.completed.emit(self._source, image, {})
+        self._signals.completed.emit(self._source, image, adjustments or {})
 
 
 class PlayerViewController(QObject):
@@ -126,12 +120,11 @@ class PlayerViewController(QObject):
             self._player_stack.setCurrentWidget(self._placeholder)
         if not self._player_stack.isVisible():
             self._player_stack.show()
-        self._image_viewer.set_image(None)
+        self._image_viewer.set_image(QImage(), {})
 
     def show_image_surface(self) -> None:
         """Reveal the still-image viewer surface."""
 
-        self._image_viewer.reset_zoom()
         self._video_area.hide_controls(animate=False)
         if self._player_stack.currentWidget() is not self._image_viewer:
             self._player_stack.setCurrentWidget(self._image_viewer)
@@ -169,8 +162,7 @@ class PlayerViewController(QObject):
         """
 
         self._loading_source = source
-        self._image_viewer.set_image(None)
-        self._image_viewer.set_placeholder(placeholder)
+        self._image_viewer.set_image(QImage(), {})
         self.show_image_surface()
 
         signals = _AdjustedImageSignals()
@@ -279,15 +271,14 @@ class PlayerViewController(QObject):
         if image.isNull():
             if self._loading_source == source:
                 self._loading_source = None
-            self._image_viewer.set_image(None)
+            self._image_viewer.set_image(QImage(), {})
             self.imageLoadingFailed.emit(
                 source,
                 "Image decoder returned an empty frame",
             )
             return
 
-        self._image_viewer.set_adjustments(adjustments)
-        self._image_viewer.set_image(image)
+        self._image_viewer.set_image(image, adjustments)
         self.show_image_surface()
         if self._loading_source == source:
             self._loading_source = None

@@ -114,7 +114,6 @@ class PlaybackStateManager(QObject):
         self._active_live_still = None
         self._media.stop()
         self._detail_ui.hide_live_badge()
-        self._detail_ui.set_live_replay_enabled(False)
         self._detail_ui.show_detail_view()
         self._detail_ui.show_zoom_controls()
         self._detail_ui.reset_player_bar()

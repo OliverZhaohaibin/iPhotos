@@ -19,7 +19,7 @@ except Exception as exc:  # pragma: no cover - pillow missing or broken
 pytest.importorskip("PySide6", reason="PySide6 is required for GUI tests", exc_type=ImportError)
 pytest.importorskip("PySide6.QtWidgets", reason="Qt widgets not available", exc_type=ImportError)
 from PySide6.QtCore import Qt, QSize, QObject, Signal, QEventLoop
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QPixmap, QImage
 from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import (
     QApplication,  # type: ignore  # noqa: E402
@@ -57,42 +57,6 @@ from iPhotos.src.iPhoto.gui.ui.widgets.live_badge import LiveBadge
 from iPhotos.src.iPhoto.gui.ui.widgets.player_bar import PlayerBar
 from iPhotos.src.iPhoto.gui.ui.widgets.video_area import VideoArea
 from iPhotos.src.iPhoto.config import WORK_DIR_NAME
-
-
-class _StubGLImageViewer(QWidget):
-    """A non-GL mock for GLImageViewer to run in headless CI."""
-
-    replayRequested = Signal()
-    zoomChanged = Signal(float)
-    nextItemRequested = Signal()
-    prevItemRequested = Signal()
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._image: QImage | None = None
-        self._adjustments: dict[str, float] = {}
-        self._live_replay_enabled = False
-
-    def set_image(self, image: QImage | None) -> None:
-        self._image = image
-
-    def set_placeholder(self, pixmap: QPixmap | None) -> None:
-        pass
-
-    def set_adjustments(self, adjustments: dict[str, float]) -> None:
-        self._adjustments = adjustments
-
-    def set_live_replay_enabled(self, enabled: bool) -> None:
-        self._live_replay_enabled = enabled
-
-    def zoom_in(self) -> None:
-        pass
-
-    def zoom_out(self) -> None:
-        pass
-
-    def reset_zoom(self) -> None:
-        pass
 
 
 def _create_image(path: Path) -> None:
@@ -160,6 +124,39 @@ class _StubMediaController(QObject):
 
     def current_source(self) -> Path | None:
         return self.loaded
+
+
+class _StubGLImageViewer(QWidget):
+    replayRequested = Signal()
+    zoomChanged = Signal(float)
+    nextItemRequested = Signal()
+    prevItemRequested = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.image: QImage | None = None
+        self.adjustments: dict[str, float] | None = None
+        self._zoom = 1.0
+
+    def set_image(self, image: QImage, adjustments: dict[str, float]) -> None:
+        self.image = image
+        self.adjustments = adjustments
+
+    def set_live_replay_enabled(self, enabled: bool) -> None:
+        pass
+
+    def zoom_in(self) -> None:
+        self.set_zoom(self._zoom * 1.1)
+
+    def zoom_out(self) -> None:
+        self.set_zoom(self._zoom * 0.9)
+
+    def set_zoom(self, factor: float, anchor: object = None) -> None:
+        self._zoom = factor
+        self.zoomChanged.emit(self._zoom)
+
+    def viewport_center(self) -> object:
+        return SimpleNamespace()
 
 
 class _StubPreviewWindow:
@@ -661,7 +658,7 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
     # reflects production signal routing rather than shortcutting widget access.
     player_view_controller = PlayerViewController(
         player_stack,
-        image_viewer,  # type: ignore[arg-type]
+        image_viewer,
         video_area,
         placeholder,
         live_badge,
