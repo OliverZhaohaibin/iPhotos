@@ -146,12 +146,14 @@ class _OpenGlPreviewBackend(PreviewBackend):
         # initialiser.  Surfacing the error keeps the log output actionable.
         from PySide6.QtGui import QOffscreenSurface
         from PySide6.QtGui import QOpenGLContext, QSurfaceFormat
-        from PySide6.QtOpenGL import QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram
+        from PySide6.QtOpenGL import QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram, QOpenGLVersionProfile
 
         super().__init__()
 
         self._context: QOpenGLContext = QOpenGLContext()
         format_hint = QSurfaceFormat()
+        format_hint.setVersion(3, 3)
+        format_hint.setProfile(QSurfaceFormat.CoreProfile)
         format_hint.setRenderableType(QSurfaceFormat.RenderableType.OpenGL)
         self._context.setFormat(format_hint)
         if not self._context.create():
@@ -166,7 +168,11 @@ class _OpenGlPreviewBackend(PreviewBackend):
         if not self._context.makeCurrent(self._surface):
             raise RuntimeError("Failed to make OpenGL context current")
 
-        functions = self._context.functions()
+        profile = QOpenGLVersionProfile()
+        profile.setVersion(3, 3)
+        functions = self._context.versionFunctions(profile)
+        if not functions:
+            raise RuntimeError("Failed to retrieve OpenGL 3.3 functions")
         functions.initializeOpenGLFunctions()
         self._gl = functions
 
@@ -239,64 +245,60 @@ class _OpenGlPreviewBackend(PreviewBackend):
     @staticmethod
     def _vertex_shader_source() -> str:
         """Return the GLSL source code for the fullscreen quad vertex shader."""
-
-        return (
-            "#version 120\n"
-            "attribute vec2 a_position;\n"
-            "attribute vec2 a_texcoord;\n"
-            "varying vec2 v_texcoord;\n"
-            "void main() {\n"
-            "    gl_Position = vec4(a_position, 0.0, 1.0);\n"
-            "    v_texcoord = a_texcoord;\n"
-            "}\n"
-        )
+        return """
+#version 330 core
+layout (location = 0) in vec2 a_position;
+layout (location = 1) in vec2 a_texcoord;
+out vec2 v_texcoord;
+void main() {
+    gl_Position = vec4(a_position, 0.0, 1.0);
+    v_texcoord = a_texcoord;
+}
+"""
 
     @staticmethod
     def _fragment_shader_source() -> str:
         """Return the GLSL source code mirroring ``_apply_channel_adjustments``."""
-
-        return (
-            "#version 120\n"
-            "uniform sampler2D uSourceTexture;\n"
-            "uniform float uExposureTerm;\n"
-            "uniform float uBrightnessTerm;\n"
-            "uniform float uBrillianceStrength;\n"
-            "uniform float uHighlights;\n"
-            "uniform float uShadows;\n"
-            "uniform float uContrastFactor;\n"
-            "uniform float uBlackPoint;\n"
-            "varying vec2 v_texcoord;\n"
-            "float clamp01(float value) {\n"
-            "    return clamp(value, 0.0, 1.0);\n"
-            "}\n"
-            "float apply_channel(float value) {\n"
-            "    float adjusted = value + uExposureTerm + uBrightnessTerm;\n"
-            "    float mid_distance = value - 0.5;\n"
-            "    float spread = (mid_distance * 2.0);\n"
-            "    adjusted += uBrillianceStrength * (1.0 - (spread * spread));\n"
-            "    if (adjusted > 0.65) {\n"
-            "        float ratio = (adjusted - 0.65) / 0.35;\n"
-            "        adjusted += uHighlights * ratio;\n"
-            "    } else if (adjusted < 0.35) {\n"
-            "        float ratio = (0.35 - adjusted) / 0.35;\n"
-            "        adjusted += uShadows * ratio;\n"
-            "    }\n"
-            "    adjusted = (adjusted - 0.5) * uContrastFactor + 0.5;\n"
-            "    if (uBlackPoint > 0.0) {\n"
-            "        adjusted -= uBlackPoint * (1.0 - adjusted);\n"
-            "    } else if (uBlackPoint < 0.0) {\n"
-            "        adjusted -= uBlackPoint * adjusted;\n"
-            "    }\n"
-            "    return clamp01(adjusted);\n"
-            "}\n"
-            "void main() {\n"
-            "    vec4 tex_color = texture2D(uSourceTexture, v_texcoord);\n"
-            "    tex_color.r = apply_channel(tex_color.r);\n"
-            "    tex_color.g = apply_channel(tex_color.g);\n"
-            "    tex_color.b = apply_channel(tex_color.b);\n"
-            "    gl_FragColor = tex_color;\n"
-            "}\n"
-        )
+        return """
+#version 330 core
+out vec4 FragColor;
+in vec2 v_texcoord;
+uniform sampler2D uSourceTexture;
+uniform float uExposureTerm;
+uniform float uBrightnessTerm;
+uniform float uBrillianceStrength;
+uniform float uHighlights;
+uniform float uShadows;
+uniform float uContrastFactor;
+uniform float uBlackPoint;
+float apply_channel(float value) {
+    float adjusted = value + uExposureTerm + uBrightnessTerm;
+    float mid_distance = value - 0.5;
+    float spread = (mid_distance * 2.0);
+    adjusted += uBrillianceStrength * (1.0 - (spread * spread));
+    if (adjusted > 0.65) {
+        float ratio = (adjusted - 0.65) / 0.35;
+        adjusted += uHighlights * ratio;
+    } else if (adjusted < 0.35) {
+        float ratio = (0.35 - adjusted) / 0.35;
+        adjusted += uShadows * ratio;
+    }
+    adjusted = (adjusted - 0.5) * uContrastFactor + 0.5;
+    if (uBlackPoint > 0.0) {
+        adjusted -= uBlackPoint * (1.0 - adjusted);
+    } else if (uBlackPoint < 0.0) {
+        adjusted -= uBlackPoint * adjusted;
+    }
+    return clamp(adjusted, 0.0, 1.0);
+}
+void main() {
+    vec4 tex_color = texture(uSourceTexture, v_texcoord);
+    tex_color.r = apply_channel(tex_color.r);
+    tex_color.g = apply_channel(tex_color.g);
+    tex_color.b = apply_channel(tex_color.b);
+    FragColor = tex_color;
+}
+"""
 
     @classmethod
     def is_available(cls) -> bool:
@@ -311,6 +313,8 @@ class _OpenGlPreviewBackend(PreviewBackend):
         try:
             context = QOpenGLContext()
             format_hint = QSurfaceFormat()
+            format_hint.setVersion(3, 3)
+            format_hint.setProfile(QSurfaceFormat.CoreProfile)
             format_hint.setRenderableType(QSurfaceFormat.RenderableType.OpenGL)
             context.setFormat(format_hint)
             if not context.create():

@@ -1,20 +1,29 @@
-"""GPU-accelerated image viewer that uses an offscreen renderer."""
+"""GPU-accelerated image viewer."""
 
 from __future__ import annotations
 
+import numpy as np
 from typing import Optional
 
-from PySide6.QtCore import QPointF, QSize, Qt, Signal, QTimer
-from PySide6.QtGui import QImage, QMouseEvent, QPixmap, QWheelEvent
-from PySide6.QtOpenGL import QOpenGLTexture
-from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PySide6.QtCore import QPointF, Qt, Signal
+from PySide6.QtGui import QColor, QImage, QMouseEvent, QPixmap, QWheelEvent, QSurfaceFormat
+from PySide6.QtOpenGL import (
+    QOpenGLBuffer,
+    QOpenGLShader,
+    QOpenGLShaderProgram,
+    QOpenGLTexture,
+    QOpenGLVersionProfile,
+    QOpenGLVertexArrayObject,
+)
+from PySide6.QtOpenGLWidgets import QOpenGLWidget
+
 
 from ..palette import viewer_surface_color
-from .offscreen_gl_renderer import OffscreenGLRenderer
+from .shaders import FRAGMENT_SHADER, VERTEX_SHADER
 
 
-class GLImageViewer(QWidget):
-    """A QWidget that displays GPU-rendered images from an offscreen context."""
+class GLImageViewer(QOpenGLWidget):
+    """A QWidget that displays GPU-rendered images."""
 
     replayRequested = Signal()
     zoomChanged = Signal(float)
@@ -24,12 +33,11 @@ class GLImageViewer(QWidget):
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self._renderer = OffscreenGLRenderer()
-        self._label = QLabel(self)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self._label)
-        self.setStyleSheet(f"background-color: {viewer_surface_color(self)};")
+
+        fmt = QSurfaceFormat()
+        fmt.setVersion(3, 3)
+        fmt.setProfile(QSurfaceFormat.CoreProfile)
+        self.setFormat(fmt)
 
         self._image: Optional[QImage] = None
         self._texture: Optional[QOpenGLTexture] = None
@@ -42,33 +50,35 @@ class GLImageViewer(QWidget):
         self._pan_start_pos = QPointF()
         self._wheel_action = "navigate"
         self._live_replay_enabled = False
-
         self.reset_zoom()
 
     def shutdown(self) -> None:
-        """Clean up the offscreen renderer's resources."""
+        """Clean up the renderer's resources."""
+        self.makeCurrent()
         if self._texture:
             self._texture.destroy()
-        self._renderer.shutdown()
+        self.doneCurrent()
 
     def set_image(self, image: Optional[QImage], adjustments: dict[str, float]) -> None:
         """Set the image to be displayed."""
+        self.makeCurrent()
         self._image = image
         self._adjustments = adjustments
         if self._texture:
             self._texture.destroy()
             self._texture = None
         if self._image and not self._image.isNull():
-            self._texture = self._renderer.create_texture(self._image)
+            self._texture = QOpenGLTexture(self._image.mirrored())
+        self.doneCurrent()
         self.reset_zoom()
-        self._schedule_update()
+        self.update()
 
     def set_placeholder(self, pixmap: Optional[QPixmap]) -> None:
         """Set a placeholder pixmap to be displayed while the full image loads."""
         if pixmap and not pixmap.isNull():
-            self._label.setPixmap(pixmap)
+            self.set_image(pixmap.toImage(), {})
         else:
-            self._label.clear()
+            self.set_image(None, {})
 
     def set_live_replay_enabled(self, enabled: bool) -> None:
         """Allow emitting replay requests when the still frame is shown."""
@@ -84,14 +94,14 @@ class GLImageViewer(QWidget):
         if abs(clamped - self._zoom_factor) < 1e-3:
             return
         self._zoom_factor = clamped
-        self._schedule_update()
+        self.update()
         self.zoomChanged.emit(self._zoom_factor)
 
     def reset_zoom(self) -> None:
         """Return the zoom factor to ``1.0`` (fit to window)."""
         self._zoom_factor = 1.0
         self._pan_offset = QPointF(0, 0)
-        self._schedule_update()
+        self.update()
         self.zoomChanged.emit(self._zoom_factor)
 
     def zoom_in(self) -> None:
@@ -105,6 +115,81 @@ class GLImageViewer(QWidget):
     def viewport_center(self) -> QPointF:
         """Return the centre point of the widget."""
         return QPointF(self.width() / 2, self.height() / 2)
+
+    def initializeGL(self) -> None:
+        """Setup the OpenGL resources."""
+        profile = QOpenGLVersionProfile()
+        profile.setVersion(3, 3)
+        self._gl_funcs = self.context().versionFunctions(profile)
+        self._gl_funcs.initializeOpenGLFunctions()
+
+        self._shader_program = QOpenGLShaderProgram()
+        self._shader_program.addShaderFromSourceCode(QOpenGLShader.Vertex, VERTEX_SHADER)
+        self._shader_program.addShaderFromSourceCode(QOpenGLShader.Fragment, FRAGMENT_SHADER)
+        self._shader_program.link()
+
+        self._vao = QOpenGLVertexArrayObject()
+        self._vao.create()
+        self._vao.bind()
+
+        vertices = np.array([
+             1.0,  1.0, 0.0, 1.0, 1.0,
+             1.0, -1.0, 0.0, 1.0, 0.0,
+            -1.0, -1.0, 0.0, 0.0, 0.0,
+            -1.0,  1.0, 0.0, 0.0, 1.0
+        ], dtype=np.float32)
+
+        indices = np.array([0, 1, 3, 1, 2, 3], dtype=np.uint32)
+
+        self._vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
+        self._vbo.create()
+        self._vbo.bind()
+        self._vbo.allocate(vertices.tobytes(), vertices.nbytes)
+
+        self._gl_funcs.glEnableVertexAttribArray(0)
+        self._gl_funcs.glVertexAttribPointer(0, 3, self._gl_funcs.GL_FLOAT, self._gl_funcs.GL_FALSE, 5 * 4, 0)
+        self._gl_funcs.glEnableVertexAttribArray(1)
+        self._gl_funcs.glVertexAttribPointer(1, 2, self._gl_funcs.GL_FLOAT, self._gl_funcs.GL_FALSE, 5 * 4, 12)
+
+        self._ebo = QOpenGLBuffer(QOpenGLBuffer.IndexBuffer)
+        self._ebo.create()
+        self._ebo.bind()
+        self._ebo.allocate(indices.tobytes(), indices.nbytes)
+
+        self._vao.release()
+
+    def paintGL(self) -> None:
+        """Render the image with adjustments."""
+        surface_color = QColor(viewer_surface_color())
+        if surface_color.isValid():
+            r, g, b, _ = surface_color.getRgbF()
+            self._gl_funcs.glClearColor(r, g, b, 1.0)
+        else:
+            self._gl_funcs.glClearColor(0.0, 0.0, 0.0, 1.0)
+        self._gl_funcs.glClear(self._gl_funcs.GL_COLOR_BUFFER_BIT)
+
+        if not self._texture:
+            return
+
+        self._shader_program.bind()
+        self._vao.bind()
+        self._texture.bind()
+
+        self._shader_program.setUniformValue("u_zoom", self._zoom_factor)
+        self._shader_program.setUniformValue("u_pan", self._pan_offset)
+        self._shader_program.setUniformValue("is_placeholder", False)
+
+        for key in ["Brilliance", "Exposure", "Highlights", "Shadows", "Brightness", "Contrast", "BlackPoint"]:
+            self._shader_program.setUniformValue(key, self._adjustments.get(key, 0.0))
+
+        for key in ["Saturation", "Vibrance", "Cast", "Color_Gain_R", "Color_Gain_G", "Color_Gain_B"]:
+            self._shader_program.setUniformValue(key, self._adjustments.get(key, 1.0 if "Gain" in key else 0.0))
+
+        self._gl_funcs.glDrawElements(self._gl_funcs.GL_TRIANGLES, 6, self._gl_funcs.GL_UNSIGNED_INT, None)
+
+        self._texture.release()
+        self._vao.release()
+        self._shader_program.release()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -123,7 +208,7 @@ class GLImageViewer(QWidget):
             pan_delta_x = 2.0 * delta.x() / self.width()
             pan_delta_y = -2.0 * delta.y() / self.height()
             self._pan_offset += QPointF(pan_delta_x, pan_delta_y)
-            self._schedule_update()
+            self.update()
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
@@ -153,30 +238,3 @@ class GLImageViewer(QWidget):
             elif step > 0:
                 self.prevItemRequested.emit()
         event.accept()
-
-    def resizeEvent(self, event: QWheelEvent) -> None:
-        """Schedule a render when the widget is resized."""
-        super().resizeEvent(event)
-        self._schedule_update()
-
-    def _schedule_update(self) -> None:
-        """Schedule a rendering pass in the next event loop cycle."""
-        QTimer.singleShot(0, self._render_and_display)
-
-    def _render_and_display(self) -> None:
-        """Render the image with adjustments and display it on the label."""
-        if not self._texture or not self.isVisible():
-            return
-
-        label_size = self._label.size()
-        if not label_size.isValid():
-            return
-
-        rendered_qimage = self._renderer.render(
-            label_size,
-            self._texture,
-            self._adjustments,
-            self._zoom_factor,
-            self._pan_offset,
-        )
-        self._label.setPixmap(QPixmap.fromImage(rendered_qimage))
