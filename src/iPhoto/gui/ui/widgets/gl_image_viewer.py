@@ -137,6 +137,7 @@ class GLImageViewer(QOpenGLWidget):
     zoomChanged = Signal(float)
     nextItemRequested = Signal()
     prevItemRequested = Signal()
+    fullscreenExitRequested = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -256,6 +257,11 @@ class GLImageViewer(QOpenGLWidget):
             self.unsetCursor()
         super().mouseReleaseEvent(event)
 
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.fullscreenExitRequested.emit()
+        super().mouseDoubleClickEvent(event)
+
     def wheelEvent(self, event: QWheelEvent) -> None:
         """Handle wheel events for zooming or navigation."""
         if self._wheel_action == "zoom":
@@ -324,6 +330,9 @@ class GLImageViewer(QOpenGLWidget):
 
     def paintGL(self) -> None:
         """Render the current frame inside the active OpenGL context."""
+        if not self._gl_funcs:
+            return
+
         self._gl_funcs.glClear(self._gl_funcs.GL_COLOR_BUFFER_BIT)
 
         texture_to_render = self._texture if self._texture else self._placeholder_texture
@@ -355,6 +364,8 @@ class GLImageViewer(QOpenGLWidget):
 
     def resizeGL(self, w: int, h: int) -> None:
         """Called when the widget is resized."""
+        if not self._gl_funcs:
+            return
 
         iw, ih = 0, 0
         if self._image:
