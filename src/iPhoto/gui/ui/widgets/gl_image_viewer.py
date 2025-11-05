@@ -5,9 +5,22 @@ from __future__ import annotations
 from typing import Optional
 
 import numpy as np
-from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QImage, QOpenGLShader, QOpenGLShaderProgram, QOpenGLVersionProfile, QPixmap
-from PySide6.QtOpenGL import QOpenGLBuffer, QOpenGLFunctions, QOpenGLTexture, QOpenGLVertexArrayObject
+from PySide6.QtCore import QPointF, QSize, Qt, Signal
+from PySide6.QtGui import (
+    QImage,
+    QMouseEvent,
+    QOpenGLShader,
+    QOpenGLShaderProgram,
+    QOpenGLVersionProfile,
+    QPixmap,
+    QWheelEvent,
+)
+from PySide6.QtOpenGL import (
+    QOpenGLBuffer,
+    QOpenGLFunctions,
+    QOpenGLTexture,
+    QOpenGLVertexArrayObject,
+)
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import QWidget
 
@@ -18,9 +31,12 @@ layout (location = 1) in vec2 aTexCoord;
 
 out vec2 TexCoord;
 
+uniform float u_zoom;
+uniform vec2 u_pan;
+
 void main()
 {
-    gl_Position = vec4(aPos, 1.0);
+    gl_Position = vec4(aPos * u_zoom + vec3(u_pan, 0.0), 1.0);
     TexCoord = aTexCoord;
 }
 """
@@ -118,6 +134,7 @@ class GLImageViewer(QOpenGLWidget):
     """OpenGL-accelerated viewer that centers, zooms, and scrolls an image."""
 
     replayRequested = Signal()
+    zoomChanged = Signal(float)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -131,6 +148,13 @@ class GLImageViewer(QOpenGLWidget):
         self._gl_funcs: Optional[QOpenGLFunctions] = None
         self._live_replay_enabled = False
 
+        self._zoom_factor = 1.0
+        self._min_zoom = 0.1
+        self._max_zoom = 4.0
+        self._pan_offset = QPointF(0, 0)
+        self._is_panning = False
+        self._pan_start_pos = QPointF()
+
     def set_image(self, image: Optional[QImage]) -> None:
         """Set the image to be displayed."""
         self.makeCurrent()
@@ -141,6 +165,8 @@ class GLImageViewer(QOpenGLWidget):
              self._texture = QOpenGLTexture(self._image.mirrored())
         else:
             self._texture = None
+
+        self.reset_zoom()
         self.doneCurrent()
         self.update()
 
@@ -165,10 +191,72 @@ class GLImageViewer(QOpenGLWidget):
         """Allow emitting replay requests when the still frame is shown."""
         self._live_replay_enabled = bool(enabled)
 
-    def mousePressEvent(self, event):
-        if self._live_replay_enabled:
-            self.replayRequested.emit()
+    def set_zoom(self, factor: float, anchor: Optional[QPointF] = None) -> None:
+        """Set the zoom *factor* relative to the fit-to-window baseline."""
+        clamped = max(self._min_zoom, min(self._max_zoom, float(factor)))
+        if abs(clamped - self._zoom_factor) < 1e-3:
+            return
+
+        self._zoom_factor = clamped
+        self.update()
+        self.zoomChanged.emit(self._zoom_factor)
+
+    def reset_zoom(self) -> None:
+        """Return the zoom factor to ``1.0`` (fit to window)."""
+        self._zoom_factor = 1.0
+        self._pan_offset = QPointF(0, 0)
+        self.update()
+        self.zoomChanged.emit(self._zoom_factor)
+
+    def zoom_in(self) -> None:
+        """Increase the zoom factor using a standard step."""
+        self.set_zoom(self._zoom_factor + 0.1)
+
+    def zoom_out(self) -> None:
+        """Decrease the zoom factor using a standard step."""
+        self.set_zoom(self._zoom_factor - 0.1)
+
+    def viewport_center(self) -> QPointF:
+        """Return the centre point of the widget."""
+        return QPointF(self.width() / 2, self.height() / 2)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self._live_replay_enabled:
+                self.replayRequested.emit()
+            else:
+                self._is_panning = True
+                self._pan_start_pos = event.position()
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._is_panning:
+            delta = event.position() - self._pan_start_pos
+            self._pan_start_pos = event.position()
+
+            # Convert pixel delta to normalized device coordinates
+            pan_delta_x = 2.0 * delta.x() / self.width()
+            pan_delta_y = -2.0 * delta.y() / self.height() # Y is inverted in OpenGL
+
+            self._pan_offset += QPointF(pan_delta_x, pan_delta_y)
+            self.update()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._is_panning = False
+            self.unsetCursor()
+        super().mouseReleaseEvent(event)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        """Handle wheel events for zooming."""
+        angle = event.angleDelta().y()
+        if angle > 0:
+            self.zoom_in()
+        elif angle < 0:
+            self.zoom_out()
+        event.accept()
 
     def initializeGL(self) -> None:
         """Set up the rendering context, load shaders, and allocate resources."""
@@ -233,6 +321,8 @@ class GLImageViewer(QOpenGLWidget):
         self._vao.bind()
         texture_to_render.bind()
 
+        self._shader_program.setUniformValue("u_zoom", self._zoom_factor)
+        self._shader_program.setUniformValue("u_pan", self._pan_offset)
         self._shader_program.setUniformValue("is_placeholder", is_placeholder)
 
         # Set uniforms
@@ -250,12 +340,17 @@ class GLImageViewer(QOpenGLWidget):
 
     def resizeGL(self, w: int, h: int) -> None:
         """Called when the widget is resized."""
-        image_to_size = self._image if self._image else (self._placeholder_texture.image() if self._placeholder_texture else None)
 
-        if image_to_size:
+        iw, ih = 0, 0
+        if self._image:
+            iw = self._image.width()
+            ih = self._image.height()
+        elif self._placeholder_texture:
+            iw = self._placeholder_texture.width()
+            ih = self._placeholder_texture.height()
+
+        if iw > 0 and ih > 0:
             # maintain aspect ratio
-            iw = image_to_size.width()
-            ih = image_to_size.height()
             ww = w
             wh = h
 
