@@ -160,7 +160,7 @@ class GLImageViewer(QOpenGLWidget):
 
     def paintGL(self) -> None:
         """Render the image with adjustments."""
-        surface_color = QColor(viewer_surface_color())
+        surface_color = QColor(viewer_surface_color(self))
         if surface_color.isValid():
             r, g, b, _ = surface_color.getRgbF()
             self._gl_funcs.glClearColor(r, g, b, 1.0)
