@@ -7,6 +7,7 @@ from typing import Optional
 import numpy as np
 from PySide6.QtCore import QPointF, QSize, Qt, Signal
 from PySide6.QtGui import (
+    QColor,
     QImage,
     QMouseEvent,
     QOpenGLFunctions,
@@ -23,6 +24,8 @@ from PySide6.QtOpenGL import (
 )
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import QWidget
+
+from ..palette import viewer_surface_color
 
 VERTEX_SHADER = """
 #version 330 core
@@ -141,6 +144,7 @@ class GLImageViewer(QOpenGLWidget):
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
+        self.setAutoFillBackground(True)
         self._image: Optional[QImage] = None
         self._texture: Optional[QOpenGLTexture] = None
         self._placeholder_image: Optional[QImage] = None
@@ -280,7 +284,15 @@ class GLImageViewer(QOpenGLWidget):
         profile.setProfile(QOpenGLVersionProfile.Profile.CoreProfile)
         self._gl_funcs = self.context().versionFunctions(profile)
         self._gl_funcs.initializeOpenGLFunctions()
-        self._gl_funcs.glClearColor(0.0, 0.0, 0.0, 1.0)
+
+        surface_color = QColor(viewer_surface_color(self))
+        if surface_color.isValid():
+            r = surface_color.redF()
+            g = surface_color.greenF()
+            b = surface_color.blueF()
+            self._gl_funcs.glClearColor(r, g, b, 1.0)
+        else:
+            self._gl_funcs.glClearColor(0.0, 0.0, 0.0, 1.0)
 
         self._shader_program = QOpenGLShaderProgram()
         self._shader_program.addShaderFromSourceCode(QOpenGLShader.Vertex, VERTEX_SHADER)
