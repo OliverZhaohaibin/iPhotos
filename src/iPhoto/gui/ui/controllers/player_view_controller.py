@@ -10,7 +10,6 @@ from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QStackedWidget, QWidget
 
 from ...utils import image_loader
-from ....core.image_filters import apply_adjustments
 from ....core.color_resolver import compute_color_statistics
 from ....io import sidecar
 from ..widgets.gl_image_viewer import GLImageViewer
@@ -72,7 +71,16 @@ class _AdjustedImageWorker(QRunnable):
             self._signals.failed.emit(self._source, str(exc))
             return
 
-        self._signals.completed.emit(self._source, image, adjustments or {})
+        # Pass the raw image and adjustments to the main thread. The GL viewer
+        # will apply the adjustments on the GPU.
+        if adjustments:
+            # Pass the raw image and adjustments to the main thread. The GL viewer
+            # will apply the adjustments on the GPU.
+            self._signals.completed.emit(self._source, image, adjustments)
+        else:
+            # No adjustments, so no need to involve the GPU shader passthrough.
+            # The viewer will render the original image directly.
+            self._signals.completed.emit(self._source, image, {})
 
 
 class PlayerViewController(QObject):

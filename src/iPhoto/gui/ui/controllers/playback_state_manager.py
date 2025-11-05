@@ -224,8 +224,6 @@ class PlaybackStateManager(QObject):
             return
         if not self._detail_ui.player_view.is_live_badge_visible():
             return
-        if not self._detail_ui.player_view.is_showing_image():
-            return
         motion_source = self._active_live_motion or self._playlist.current_source()
         if motion_source is None:
             return

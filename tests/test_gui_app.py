@@ -51,12 +51,48 @@ from iPhotos.src.iPhoto.gui.ui.models.spacer_proxy_model import SpacerProxyModel
 from iPhotos.src.iPhoto.gui.ui.tasks.thumbnail_loader import ThumbnailJob
 from iPhotos.src.iPhoto.gui.ui.widgets.gallery_grid_view import GalleryGridView
 from iPhotos.src.iPhoto.gui.ui.widgets.filmstrip_view import FilmstripView
-from iPhotos.src.iPhoto.gui.ui.widgets.image_viewer import ImageViewer
+from iPhotos.src.iPhoto.gui.ui.widgets.gl_image_viewer import GLImageViewer
 from iPhotos.src.iPhoto.gui.ui.widgets.info_panel import InfoPanel
 from iPhotos.src.iPhoto.gui.ui.widgets.live_badge import LiveBadge
 from iPhotos.src.iPhoto.gui.ui.widgets.player_bar import PlayerBar
 from iPhotos.src.iPhoto.gui.ui.widgets.video_area import VideoArea
 from iPhotos.src.iPhoto.config import WORK_DIR_NAME
+
+
+class _StubGLImageViewer(QWidget):
+    """A non-GL mock for GLImageViewer to run in headless CI."""
+
+    replayRequested = Signal()
+    zoomChanged = Signal(float)
+    nextItemRequested = Signal()
+    prevItemRequested = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._image: QImage | None = None
+        self._adjustments: dict[str, float] = {}
+        self._live_replay_enabled = False
+
+    def set_image(self, image: QImage | None) -> None:
+        self._image = image
+
+    def set_placeholder(self, pixmap: QPixmap | None) -> None:
+        pass
+
+    def set_adjustments(self, adjustments: dict[str, float]) -> None:
+        self._adjustments = adjustments
+
+    def set_live_replay_enabled(self, enabled: bool) -> None:
+        self._live_replay_enabled = enabled
+
+    def zoom_in(self) -> None:
+        pass
+
+    def zoom_out(self) -> None:
+        pass
+
+    def reset_zoom(self) -> None:
+        pass
 
 
 def _create_image(path: Path) -> None:
@@ -593,7 +629,7 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
 
     player_stack = QStackedWidget()
     placeholder = QLabel("placeholder")
-    image_viewer = ImageViewer()
+    image_viewer = _StubGLImageViewer()
     player_stack.addWidget(placeholder)
     player_stack.addWidget(image_viewer)
     player_stack.addWidget(video_area)
@@ -625,7 +661,7 @@ def test_playback_controller_autoplays_live_photo(tmp_path: Path, qapp: QApplica
     # reflects production signal routing rather than shortcutting widget access.
     player_view_controller = PlayerViewController(
         player_stack,
-        image_viewer,
+        image_viewer,  # type: ignore[arg-type]
         video_area,
         placeholder,
         live_badge,

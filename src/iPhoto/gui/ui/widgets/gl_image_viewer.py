@@ -9,16 +9,16 @@ from PySide6.QtCore import QPointF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QImage,
     QMouseEvent,
-    QOpenGLShader,
-    QOpenGLShaderProgram,
-    QOpenGLVersionProfile,
+    QOpenGLFunctions,
     QPixmap,
     QWheelEvent,
 )
 from PySide6.QtOpenGL import (
     QOpenGLBuffer,
-    QOpenGLFunctions,
+    QOpenGLShader,
+    QOpenGLShaderProgram,
     QOpenGLTexture,
+    QOpenGLVersionProfile,
     QOpenGLVertexArrayObject,
 )
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
