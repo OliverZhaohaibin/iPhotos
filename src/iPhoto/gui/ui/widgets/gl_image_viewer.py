@@ -9,10 +9,10 @@ from PySide6.QtCore import QPointF, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QMouseEvent, QPixmap, QWheelEvent, QSurfaceFormat
 from PySide6.QtOpenGL import (
     QOpenGLBuffer,
+    QOpenGLFunctions_3_3_Core,
     QOpenGLShader,
     QOpenGLShaderProgram,
     QOpenGLTexture,
-    QOpenGLVersionProfile,
     QOpenGLVertexArrayObject,
 )
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
@@ -118,9 +118,7 @@ class GLImageViewer(QOpenGLWidget):
 
     def initializeGL(self) -> None:
         """Setup the OpenGL resources."""
-        profile = QOpenGLVersionProfile()
-        profile.setVersion(3, 3)
-        self._gl_funcs = self.context().versionFunctions(profile)
+        self._gl_funcs = QOpenGLFunctions_3_3_Core()
         self._gl_funcs.initializeOpenGLFunctions()
 
         self._shader_program = QOpenGLShaderProgram()
