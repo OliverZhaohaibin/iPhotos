@@ -143,7 +143,10 @@ class GLImageViewer(QOpenGLWidget):
         super().__init__(parent)
         self._image: Optional[QImage] = None
         self._texture: Optional[QOpenGLTexture] = None
+        self._placeholder_image: Optional[QImage] = None
         self._placeholder_texture: Optional[QOpenGLTexture] = None
+        self._texture_dirty = True
+        self._placeholder_dirty = True
         self._shader_program: Optional[QOpenGLShaderProgram] = None
         self._adjustments: dict[str, float] = {}
         self._vao = QOpenGLVertexArrayObject()
@@ -161,29 +164,18 @@ class GLImageViewer(QOpenGLWidget):
 
     def set_image(self, image: Optional[QImage]) -> None:
         """Set the image to be displayed."""
-        self.makeCurrent()
         self._image = image
-        if self._texture:
-            self._texture.destroy()
-        if self._image and not self._image.isNull():
-             self._texture = QOpenGLTexture(self._image.mirrored())
-        else:
-            self._texture = None
-
+        self._texture_dirty = True
         self.reset_zoom()
-        self.doneCurrent()
         self.update()
 
     def set_placeholder(self, pixmap: Optional[QPixmap]) -> None:
         """Set a placeholder pixmap to be displayed while the full image loads."""
-        self.makeCurrent()
-        if self._placeholder_texture:
-            self._placeholder_texture.destroy()
         if pixmap and not pixmap.isNull():
-            self._placeholder_texture = QOpenGLTexture(pixmap.toImage().mirrored())
+            self._placeholder_image = pixmap.toImage()
         else:
-            self._placeholder_texture = None
-        self.doneCurrent()
+            self._placeholder_image = None
+        self._placeholder_dirty = True
         self.update()
 
     def set_adjustments(self, adjustments: dict[str, float]) -> None:
@@ -332,6 +324,26 @@ class GLImageViewer(QOpenGLWidget):
         """Render the current frame inside the active OpenGL context."""
         if not self._gl_funcs:
             return
+
+        if self._placeholder_dirty:
+            if self._placeholder_texture:
+                self._placeholder_texture.destroy()
+                self._placeholder_texture = None
+
+            if self._placeholder_image and not self._placeholder_image.isNull():
+                self._placeholder_texture = QOpenGLTexture(self._placeholder_image.mirrored())
+
+            self._placeholder_dirty = False
+
+        if self._texture_dirty:
+            if self._texture:
+                self._texture.destroy()
+                self._texture = None
+
+            if self._image and not self._image.isNull():
+                self._texture = QOpenGLTexture(self._image.mirrored())
+
+            self._texture_dirty = False
 
         self._gl_funcs.glClear(self._gl_funcs.GL_COLOR_BUFFER_BIT)
 
