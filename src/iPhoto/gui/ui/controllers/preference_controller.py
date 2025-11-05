@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QWidget
 
 from ..media import MediaController
 from ..widgets.player_bar import PlayerBar
-from ..widgets.image_viewer import ImageViewer
+from ..widgets.gl_image_viewer import GLImageViewer
 
 
 class PreferenceController(QObject):
@@ -27,7 +27,7 @@ class PreferenceController(QObject):
         wheel_action_group: QActionGroup,
         wheel_action_zoom: QAction,
         wheel_action_navigate: QAction,
-        image_viewer: ImageViewer,
+        image_viewer: GLImageViewer,
         parent: Optional[QObject] = None,
     ) -> None:
         super().__init__(parent)

@@ -135,6 +135,8 @@ class GLImageViewer(QOpenGLWidget):
 
     replayRequested = Signal()
     zoomChanged = Signal(float)
+    nextItemRequested = Signal()
+    prevItemRequested = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -154,6 +156,7 @@ class GLImageViewer(QOpenGLWidget):
         self._pan_offset = QPointF(0, 0)
         self._is_panning = False
         self._pan_start_pos = QPointF()
+        self._wheel_action = "navigate"
 
     def set_image(self, image: Optional[QImage]) -> None:
         """Set the image to be displayed."""
@@ -190,6 +193,10 @@ class GLImageViewer(QOpenGLWidget):
     def set_live_replay_enabled(self, enabled: bool) -> None:
         """Allow emitting replay requests when the still frame is shown."""
         self._live_replay_enabled = bool(enabled)
+
+    def set_wheel_action(self, action: str) -> None:
+        """Control how the viewer reacts to wheel gestures."""
+        self._wheel_action = "zoom" if action == "zoom" else "navigate"
 
     def set_zoom(self, factor: float, anchor: Optional[QPointF] = None) -> None:
         """Set the zoom *factor* relative to the fit-to-window baseline."""
@@ -250,12 +257,20 @@ class GLImageViewer(QOpenGLWidget):
         super().mouseReleaseEvent(event)
 
     def wheelEvent(self, event: QWheelEvent) -> None:
-        """Handle wheel events for zooming."""
-        angle = event.angleDelta().y()
-        if angle > 0:
-            self.zoom_in()
-        elif angle < 0:
-            self.zoom_out()
+        """Handle wheel events for zooming or navigation."""
+        if self._wheel_action == "zoom":
+            angle = event.angleDelta().y()
+            if angle > 0:
+                self.zoom_in()
+            elif angle < 0:
+                self.zoom_out()
+        else:
+            delta = event.angleDelta()
+            step = delta.y() or delta.x()
+            if step < 0:
+                self.nextItemRequested.emit()
+            elif step > 0:
+                self.prevItemRequested.emit()
         event.accept()
 
     def initializeGL(self) -> None:

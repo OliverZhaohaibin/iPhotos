@@ -10,6 +10,7 @@ from ...facade import AppFacade
 from ..media import MediaController, PlaylistController
 from ..models.asset_model import AssetModel, Roles
 from ..widgets.asset_grid import AssetGrid
+from ..widgets.gl_image_viewer import GLImageViewer
 from .detail_ui_controller import DetailUIController
 from .playback_state_manager import PlaybackStateManager
 from .preview_controller import PreviewController
