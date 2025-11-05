@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 from ..icon import load_icon
 from ..palette import viewer_surface_color
 from .filmstrip_view import FilmstripView
-from .image_viewer import ImageViewer
+from .gl_image_viewer import GLImageViewer
 from .live_badge import LiveBadge
 from .main_window_metrics import HEADER_BUTTON_SIZE, HEADER_ICON_GLYPH_SIZE
 from .video_area import VideoArea
@@ -52,7 +52,7 @@ class DetailPageWidget(QWidget):
         # Viewer widgets -----------------------------------------------------
         self.player_stack = QStackedWidget(self)
         self.player_placeholder = QLabel("Select a photo or video to preview.", self.player_stack)
-        self.image_viewer = ImageViewer()
+        self.image_viewer = GLImageViewer()
         self.video_area = VideoArea()
         self.player_bar = self.video_area.player_bar
 
