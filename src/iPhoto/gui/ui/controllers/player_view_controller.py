@@ -113,60 +113,42 @@ class PlayerViewController(QObject):
     # ------------------------------------------------------------------
     def show_placeholder(self) -> None:
         """Display the placeholder widget and clear any previous image."""
-
         self._video_area.hide_controls(animate=False)
         self.hide_live_badge()
         if self._player_stack.currentWidget() is not self._placeholder:
             self._player_stack.setCurrentWidget(self._placeholder)
         if not self._player_stack.isVisible():
             self._player_stack.show()
-        self._image_viewer.set_image(QImage(), {})
+        # 不再上传“空图像”，而是显式清空纹理/图像
+        self._image_viewer.set_image(None, {})
 
     def show_image_surface(self) -> None:
         """Reveal the still-image viewer surface."""
-
         self._video_area.hide_controls(animate=False)
         if self._player_stack.currentWidget() is not self._image_viewer:
             self._player_stack.setCurrentWidget(self._image_viewer)
         if not self._player_stack.isVisible():
             self._player_stack.show()
-
-    def show_video_surface(self, *, interactive: bool) -> None:
-        """Reveal the video surface, toggling playback controls as needed."""
-
-        if self._player_stack.currentWidget() is not self._video_area:
-            self._player_stack.setCurrentWidget(self._video_area)
-        if not self._player_stack.isVisible():
-            self._player_stack.show()
-        self._video_area.set_controls_enabled(interactive)
-        if interactive:
-            self._video_area.show_controls(animate=False)
-        else:
-            self._video_area.hide_controls(animate=False)
+        # 立即请求一帧，确保 initializeGL/paintGL 快速触发
+        self._image_viewer.update()
 
     # ------------------------------------------------------------------
     # Content helpers
     # ------------------------------------------------------------------
     def display_image(self, source: Path, *, placeholder: Optional[QPixmap] = None) -> bool:
-        """Begin loading ``source`` asynchronously, returning scheduling success.
-
-        Parameters
-        ----------
-        source:
-            The asset that should appear in the detail viewer.
-        placeholder:
-            An optional pixmap that is displayed immediately while the worker
-            recalculates the full-resolution image.  Supplying a placeholder is
-            especially useful when returning from the edit view because it
-            preserves the user's last preview instead of flashing a blank frame.
-        """
-
+        """Begin loading ``source`` asynchronously, returning scheduling success."""
         self._loading_source = source
-        self._image_viewer.set_image(QImage(), {})
+
+        # 1) 先切到 GL 视图，保证有有效的 GL 上下文
         self.show_image_surface()
 
-        signals = _AdjustedImageSignals()
+        # 2) 若有占位图，先显示；否则仅清空，不上传空图像
+        if placeholder is not None and not placeholder.isNull():
+            self._image_viewer.set_placeholder(placeholder)
+        else:
+            self._image_viewer.set_image(None, {})
 
+        signals = _AdjustedImageSignals()
         worker = _AdjustedImageWorker(source, signals)
         self._active_workers.add(worker)
 
@@ -174,17 +156,10 @@ class PlayerViewController(QObject):
         signals.failed.connect(self._on_adjusted_image_failed)
 
         def _finalize_on_completion(img_source: Path, img: QImage, adjustments: dict) -> None:
-            """Release worker resources once the frame arrives."""
-
             self._release_worker(worker)
-            # ``deleteLater`` queues destruction on the GUI thread, ensuring the
-            # worker never dereferences a signal object that has already been
-            # freed when it posts the completion event.
             signals.deleteLater()
 
         def _finalize_on_failure(img_source: Path, message: str) -> None:
-            """Release worker resources after a terminal failure."""
-
             self._release_worker(worker)
             signals.deleteLater()
 
@@ -193,7 +168,7 @@ class PlayerViewController(QObject):
 
         try:
             self._pool.start(worker)
-        except RuntimeError as exc:  # pragma: no cover - thread pool exhaustion is rare
+        except RuntimeError as exc:  # 线程池满极少见
             self._release_worker(worker)
             self._loading_source = None
             self.imageLoadingFailed.emit(source, str(exc))
@@ -202,8 +177,8 @@ class PlayerViewController(QObject):
 
     def clear_image(self) -> None:
         """Remove any pixmap currently shown in the image viewer."""
-
-        self._image_viewer.set_image(None)
+        # 清空而非传空图像，避免一帧“空绘制/空上传”
+        self._image_viewer.set_image(None, {})
 
     # ------------------------------------------------------------------
     # Live badge helpers
@@ -264,22 +239,21 @@ class PlayerViewController(QObject):
     # ------------------------------------------------------------------
     def _on_adjusted_image_ready(self, source: Path, image: QImage, adjustments: dict) -> None:
         """Render *image* when the matching worker completes successfully."""
-
         if self._loading_source != source:
             return
 
         if image.isNull():
             if self._loading_source == source:
                 self._loading_source = None
-            self._image_viewer.set_image(QImage(), {})
-            self.imageLoadingFailed.emit(
-                source,
-                "Image decoder returned an empty frame",
-            )
+            self._image_viewer.set_image(None, {})
+            self.imageLoadingFailed.emit(source, "Image decoder returned an empty frame")
             return
 
-        self._image_viewer.set_image(image, adjustments)
+        # 先确保 GL 视图当前可见（上下文已就绪），再喂像素并强制一帧
         self.show_image_surface()
+        self._image_viewer.set_image(image, adjustments)
+        self._image_viewer.update()
+
         if self._loading_source == source:
             self._loading_source = None
 
