@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import ctypes
 import numpy as np
-from typing import Mapping, Optional, Tuple
+from typing import Mapping, Optional
 
 from PySide6.QtCore import QPointF, Qt, Signal
 from PySide6.QtGui import (
@@ -17,8 +17,8 @@ from PySide6.QtGui import (
     QImage,
     QMouseEvent,
     QWheelEvent,
-    QVector2D,
-    QSurfaceFormat, QOpenGLContext,
+    QSurfaceFormat,
+    QOpenGLContext,
 )
 from PySide6.QtOpenGL import (
     QOpenGLBuffer,
@@ -114,7 +114,10 @@ class GLImageViewer(QOpenGLWidget):
         self._zoom_factor: float = 1.0
         self._min_zoom: float = 0.1
         self._max_zoom: float = 16.0
-        self._pan_px: QPointF = QPointF(0.0, 0.0)  # 以“视口像素”为单位的平移
+        # Store the pan offset in physical viewport pixels relative to the centred
+        # image so we can translate the rendered texture the same way the legacy
+        # ``ImageViewer`` scrolled its pixmap.
+        self._pan_px: QPointF = QPointF(0.0, 0.0)
         self._is_panning: bool = False
         self._pan_start_pos: QPointF = QPointF()
         self._wheel_action: str = "zoom"  # 或 "navigate"
@@ -188,8 +191,9 @@ class GLImageViewer(QOpenGLWidget):
                 self._tex_id = 0
                 self._tex_w = self._tex_h = 0
 
-        # 只请求重绘；真正的上传放到 paintGL（上下文 current）
-        self.update()
+        # Reset the interactive transform so every new asset begins in the same
+        # fit-to-window baseline that the QWidget-based viewer exposes.
+        self.reset_zoom()
     def set_placeholder(self, pixmap) -> None:
         """Placeholder -> 也按 set_image 路径走。"""
         if pixmap and not pixmap.isNull():
@@ -218,19 +222,51 @@ class GLImageViewer(QOpenGLWidget):
         self.set_surface_color_override("#000000" if immersive else None)
 
     def set_zoom(self, factor: float, anchor: Optional[QPointF] = None) -> None:
+        """Adjust the zoom while preserving the requested *anchor* pixel."""
+
         clamped = max(self._min_zoom, min(self._max_zoom, float(factor)))
         if abs(clamped - self._zoom_factor) < 1e-6:
             return
-        # 以锚点为中心缩放：调整 pan_px 使锚点保持稳定
-        if anchor is not None:
+
+        # Default to the viewport centre so toolbar actions mirror the behaviour of
+        # the QWidget-based ``ImageViewer`` when no explicit anchor is supplied.
+        anchor_point = anchor or self.viewport_center()
+
+        if (
+            anchor_point is not None
+            and self._tex_w > 0
+            and self._tex_h > 0
+            and self.width() > 0
+            and self.height() > 0
+        ):
             dpr = self.devicePixelRatioF()
-            view_anchor_px = QPointF(anchor.x() * dpr, (self.height() - anchor.y()) * dpr)
-            old_zoom = self._zoom_factor
-            new_zoom = clamped
-            # 目标： (fragPx - pan)/zoom 保持不变 => Δpan = fragPx*(1 - new/old)
-            if old_zoom > 0:
-                delta = view_anchor_px * (1.0 - new_zoom / old_zoom)
-                self._pan_px += delta
+            view_width = float(self.width()) * dpr
+            view_height = float(self.height()) * dpr
+            base_scale = self._fit_to_view_scale(view_width, view_height)
+            old_scale = base_scale * self._zoom_factor
+            new_scale = base_scale * clamped
+            if old_scale > 1e-6 and new_scale > 0.0:
+                # Convert the Qt-provided anchor (origin top-left) into a
+                # bottom-left coordinate system so we can reuse the OpenGL
+                # convention when solving for the new pan offset.
+                anchor_bottom_left = QPointF(
+                    anchor_point.x() * dpr,
+                    view_height - anchor_point.y() * dpr,
+                )
+                view_centre = QPointF(view_width / 2.0, view_height / 2.0)
+                anchor_vector = anchor_bottom_left - view_centre
+
+                # Solve ``v = scale * t + pan`` for the pan term that keeps the
+                # texture coordinate ``t`` mapped to the same on-screen pixel ``v``
+                # after the zoom factor changes.
+                current_pan = self._pan_px
+                tex_coord_x = (anchor_vector.x() - current_pan.x()) / old_scale
+                tex_coord_y = (anchor_vector.y() - current_pan.y()) / old_scale
+                self._pan_px = QPointF(
+                    anchor_vector.x() - tex_coord_x * new_scale,
+                    anchor_vector.y() - tex_coord_y * new_scale,
+                )
+
         self._zoom_factor = clamped
         self.update()
         self.zoomChanged.emit(self._zoom_factor)
@@ -242,10 +278,10 @@ class GLImageViewer(QOpenGLWidget):
         self.zoomChanged.emit(self._zoom_factor)
 
     def zoom_in(self) -> None:
-        self.set_zoom(self._zoom_factor * 1.1)
+        self.set_zoom(self._zoom_factor * 1.1, anchor=self.viewport_center())
 
     def zoom_out(self) -> None:
-        self.set_zoom(self._zoom_factor / 1.1)
+        self.set_zoom(self._zoom_factor / 1.1, anchor=self.viewport_center())
 
     def viewport_center(self) -> QPointF:
         return QPointF(self.width() / 2, self.height() / 2)
@@ -319,6 +355,10 @@ class GLImageViewer(QOpenGLWidget):
             uniform float uVibrance;
             uniform float uColorCast;   // <- 原 uCast 改名
             uniform vec3  uGain;
+            uniform vec2  uViewSize;
+            uniform vec2  uTexSize;
+            uniform float uScale;
+            uniform vec2  uPan;
 
             float clamp01(float x) { return clamp(x, 0.0, 1.0); }
 
@@ -373,7 +413,27 @@ class GLImageViewer(QOpenGLWidget):
             }
 
             void main() {
-                vec2 uv = clamp(vUV, 0.0, 1.0);
+                if (uScale <= 0.0) {
+                    discard;
+                }
+
+                // Convert the fragment's window coordinates into a centred viewport
+                // frame before undoing the zoom/pan transform. ``gl_FragCoord`` is
+                // defined with its origin at the bottom-left corner and references
+                // pixel centres, so subtracting 0.5 yields a zero-based pixel grid.
+                vec2 fragPx = vec2(gl_FragCoord.x - 0.5, gl_FragCoord.y - 0.5);
+                vec2 viewCentre = uViewSize * 0.5;
+                vec2 viewVector = fragPx - viewCentre;
+                vec2 texVector = (viewVector - uPan) / uScale;
+                vec2 texPx = texVector + (uTexSize * 0.5);
+                vec2 uv = texPx / uTexSize;
+
+                if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+                    discard;
+                }
+
+                // The uploaded QImage data uses a top-left origin, so flip the
+                // vertical axis when sampling.
                 uv.y = 1.0 - uv.y;
 
                 vec4 texel = texture(uTex, uv);
@@ -412,8 +472,22 @@ class GLImageViewer(QOpenGLWidget):
         print("[GL INIT] Shader linked OK")
 
         names = [
-            "uTex", "uBrilliance", "uExposure", "uHighlights", "uShadows", "uBrightness",
-            "uContrast", "uBlackPoint", "uSaturation", "uVibrance", "uColorCast", "uGain"
+            "uTex",
+            "uBrilliance",
+            "uExposure",
+            "uHighlights",
+            "uShadows",
+            "uBrightness",
+            "uContrast",
+            "uBlackPoint",
+            "uSaturation",
+            "uVibrance",
+            "uColorCast",
+            "uGain",
+            "uViewSize",
+            "uTexSize",
+            "uScale",
+            "uPan",
         ]
         self._uni = {n: prog.uniformLocation(n) for n in names}
         print("[GL INIT] Uniforms:", self._uni)
@@ -433,9 +507,11 @@ class GLImageViewer(QOpenGLWidget):
             return
         from OpenGL import GL as gl
 
-        # 1) 视口 & 清屏
+        # 1) Configure the viewport to match the widget and paint the shared
+        # backdrop colour so zoomed or letterboxed regions blend into the chrome.
         dpr = self.devicePixelRatioF()
-        vw, vh = int(self.width() * dpr), int(self.height() * dpr)
+        vw = max(1, int(round(self.width() * dpr)))
+        vh = max(1, int(round(self.height() * dpr)))
         gf.glViewport(0, 0, vw, vh)
         bg = self._backdrop_color
         gf.glClearColor(bg.redF(), bg.greenF(), bg.blueF(), 1.0)
@@ -446,10 +522,6 @@ class GLImageViewer(QOpenGLWidget):
             self._upload_texture_raw_gl(self._image)
         if self._tex_id == 0:
             return
-
-        # Ensure the rendered quad preserves the source aspect ratio by letterboxing.
-        viewport = self._calculate_letterboxed_viewport(vw, vh)
-        gf.glViewport(*viewport)
 
         prog = self._shader_program
         if not prog.bind():
@@ -497,6 +569,24 @@ class GLImageViewer(QOpenGLWidget):
                 float(adj.get("Color_Gain_G", 1.0)),
                 float(adj.get("Color_Gain_B", 1.0)),
             )
+
+        # Provide the transform uniforms that reproduce the legacy pixmap viewer's
+        # "fit to window" baseline while allowing additional zoom and pan offsets.
+        view_width = float(vw)
+        view_height = float(vh)
+        base_scale = self._fit_to_view_scale(view_width, view_height)
+        effective_scale = max(base_scale * self._zoom_factor, 1e-6)
+
+        set1f("uScale", effective_scale)
+
+        def set2f(name: str, x: float, y: float) -> None:
+            loc = self._uni.get(name, -1)
+            if loc != -1:
+                gf.glUniform2f(loc, float(x), float(y))
+
+        set2f("uViewSize", view_width, view_height)
+        set2f("uTexSize", max(1.0, float(self._tex_w)), max(1.0, float(self._tex_h)))
+        set2f("uPan", float(self._pan_px.x()), float(self._pan_px.y()))
 
         # 6) 绘制
         gf.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
@@ -624,36 +714,21 @@ class GLImageViewer(QOpenGLWidget):
         if not gf:
             return
         dpr = self.devicePixelRatioF()
-        target = self._calculate_letterboxed_viewport(int(w * dpr), int(h * dpr))
-        gf.glViewport(*target)
+        gf.glViewport(0, 0, max(1, int(round(w * dpr))), max(1, int(round(h * dpr))))
 
-    def _calculate_letterboxed_viewport(self, view_width: int, view_height: int) -> Tuple[int, int, int, int]:
-        """Compute a centred viewport that preserves the texture aspect ratio."""
+    def _fit_to_view_scale(self, view_width: float, view_height: float) -> float:
+        """Return the baseline scale that fits the texture within the viewport."""
 
-        if view_width <= 0 or view_height <= 0:
-            return 0, 0, max(view_width, 0), max(view_height, 0)
         if self._tex_w <= 0 or self._tex_h <= 0:
-            return 0, 0, view_width, view_height
-
-        texture_aspect = self._tex_w / self._tex_h
-        view_aspect = view_width / view_height
-
-        if abs(texture_aspect - view_aspect) < 1e-6:
-            return 0, 0, view_width, view_height
-
-        if view_aspect > texture_aspect:
-            target_height = view_height
-            target_width = int(round(target_height * texture_aspect))
-        else:
-            target_width = view_width
-            target_height = int(round(target_width / texture_aspect))
-
-        target_width = max(1, min(target_width, view_width))
-        target_height = max(1, min(target_height, view_height))
-
-        offset_x = (view_width - target_width) // 2
-        offset_y = (view_height - target_height) // 2
-        return offset_x, offset_y, target_width, target_height
+            return 1.0
+        if view_width <= 0.0 or view_height <= 0.0:
+            return 1.0
+        width_ratio = view_width / float(self._tex_w)
+        height_ratio = view_height / float(self._tex_h)
+        scale = min(width_ratio, height_ratio)
+        if scale <= 0.0:
+            return 1.0
+        return scale
 
     @staticmethod
     def _normalise_colour(value: QColor | str) -> QColor:
