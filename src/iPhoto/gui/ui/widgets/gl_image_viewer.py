@@ -19,6 +19,7 @@ from PySide6.QtGui import (
     QWheelEvent,
     QSurfaceFormat,
     QOpenGLContext,
+    QPixmap,
 )
 from PySide6.QtOpenGL import (
     QOpenGLBuffer,
@@ -28,6 +29,7 @@ from PySide6.QtOpenGL import (
     QOpenGLVertexArrayObject, QOpenGLDebugLogger,
 )
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
+from PySide6.QtWidgets import QLabel
 from OpenGL import GL as gl
 
 # 如果你的工程没有这个函数，可以改成固定背景色
@@ -111,6 +113,7 @@ class GLImageViewer(QOpenGLWidget):
         self._image: Optional[QImage] = None
         self._adjustments: dict[str, float] = {}
         self._pending_adjustments: Optional[dict[str, float]] = None
+        self._current_image_source: Optional[object] = None
         self._zoom_factor: float = 1.0
         self._min_zoom: float = 0.1
         self._max_zoom: float = 16.0
@@ -131,6 +134,17 @@ class GLImageViewer(QOpenGLWidget):
         self._surface_override: Optional[QColor] = None
         self._backdrop_color: QColor = QColor(self._default_surface_color)
         self._apply_surface_color()
+
+        self._loading_overlay = QLabel("Loading…", self)
+        self._loading_overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._loading_overlay.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents,
+            True,
+        )
+        self._loading_overlay.setStyleSheet(
+            "background-color: rgba(0, 0, 0, 128); color: white; font-size: 18px;"
+        )
+        self._loading_overlay.hide()
 
         # 原生纹理（绕过 QOpenGLTexture；确保原图像素）
         self._tex_id: int = 0
@@ -169,15 +183,51 @@ class GLImageViewer(QOpenGLWidget):
         self,
         image: Optional[QImage],
         adjustments: Optional[Mapping[str, float]] = None,
+        *,
+        image_source: Optional[object] = None,
+        reset_view: bool = True,
     ) -> None:
-        """Display *image* together with optional colour *adjustments*."""
+        """Display *image* together with optional colour *adjustments*.
 
+        Parameters
+        ----------
+        image:
+            ``QImage`` backing the GL texture. ``None`` clears the viewer.
+        adjustments:
+            Mapping of Photos-style adjustment values to apply in the shader.
+        image_source:
+            Stable identifier describing where *image* originated.  When the
+            identifier matches the one from the previous call the viewer keeps
+            the existing GPU texture, avoiding redundant uploads during view
+            transitions.
+        reset_view:
+            ``True`` preserves the historic behaviour of resetting the zoom and
+            pan state.  Passing ``False`` keeps the current transform so edit
+            mode can reuse the detail view framing without a visible jump.
+        """
+
+        reuse_existing_texture = (
+            image_source is not None and image_source == getattr(self, "_current_image_source", None)
+        )
+
+        if reuse_existing_texture and image is not None and not image.isNull():
+            # Skip the heavy texture re-upload when the caller explicitly
+            # reports that the source asset is unchanged.  Only the adjustment
+            # uniforms need to be refreshed in this scenario.
+            self.set_adjustments(adjustments)
+            if reset_view:
+                self.reset_zoom()
+            return
+
+        self._current_image_source = image_source
         self._image = image
         mapped_adjustments = dict(adjustments or {})
         self._pending_adjustments = mapped_adjustments
         self._adjustments = mapped_adjustments
+        self._loading_overlay.hide()
 
         if image is None or image.isNull():
+            self._current_image_source = None
             # Releasing GL textures requires a current context.  ``makeCurrent``
             # safely becomes a no-op until the widget is shown, so we can call
             # it even when the viewer is still hidden during start-up.
@@ -191,15 +241,82 @@ class GLImageViewer(QOpenGLWidget):
                 self._tex_id = 0
                 self._tex_w = self._tex_h = 0
 
-        # Reset the interactive transform so every new asset begins in the same
-        # fit-to-window baseline that the QWidget-based viewer exposes.
-        self.reset_zoom()
+        if reset_view:
+            # Reset the interactive transform so every new asset begins in the
+            # same fit-to-window baseline that the QWidget-based viewer
+            # exposes.  ``reset_view`` lets callers preserve the zoom when the
+            # user toggles between detail and edit modes.
+            self.reset_zoom()
     def set_placeholder(self, pixmap) -> None:
-        """Placeholder -> 也按 set_image 路径走。"""
+        """Display *pixmap* without changing the tracked image source."""
+
         if pixmap and not pixmap.isNull():
-            self.set_image(pixmap.toImage(), {})
+            self.set_image(pixmap.toImage(), {}, image_source=self._current_image_source)
         else:
-            self.set_image(None, {})
+            self.set_image(None, {}, image_source=None)
+
+    def set_pixmap(
+        self,
+        pixmap: Optional[QPixmap],
+        image_source: Optional[object] = None,
+        *,
+        reset_view: bool = True,
+    ) -> None:
+        """Compatibility wrapper mirroring :class:`ImageViewer`.
+
+        The optional *image_source* is forwarded to :meth:`set_image` so callers
+        can keep the existing texture alive when reusing the same asset.
+        """
+
+        if pixmap is None or pixmap.isNull():
+            self.set_image(None, {}, image_source=None, reset_view=reset_view)
+            return
+        self.set_image(
+            pixmap.toImage(),
+            {},
+            image_source=image_source if image_source is not None else self._current_image_source,
+            reset_view=reset_view,
+        )
+
+    def clear(self) -> None:
+        """Reset the viewer to an empty state."""
+
+        self.set_image(None, {}, image_source=None)
+
+    def set_adjustments(self, adjustments: Optional[Mapping[str, float]] = None) -> None:
+        """Update the active adjustment uniforms without replacing the texture."""
+
+        mapped_adjustments = dict(adjustments or {})
+        self._pending_adjustments = mapped_adjustments
+        self._adjustments = mapped_adjustments
+        self.update()
+
+    def current_image_source(self) -> Optional[object]:
+        """Return the identifier describing the currently displayed image."""
+
+        return getattr(self, "_current_image_source", None)
+
+    def pixmap(self) -> Optional[QPixmap]:
+        """Return a defensive copy of the currently displayed frame."""
+
+        if self._image is None or self._image.isNull():
+            return None
+        return QPixmap.fromImage(self._image)
+
+    def set_loading(self, loading: bool) -> None:
+        """Toggle the translucent loading overlay."""
+
+        if loading:
+            self._loading_overlay.setVisible(True)
+            self._loading_overlay.raise_()
+            self._loading_overlay.resize(self.size())
+        else:
+            self._loading_overlay.hide()
+
+    def viewport_widget(self) -> "GLImageViewer":
+        """Expose the drawable widget for API parity with :class:`ImageViewer`."""
+
+        return self
 
     def set_live_replay_enabled(self, enabled: bool) -> None:
         self._live_replay_enabled = bool(enabled)
@@ -715,6 +832,11 @@ class GLImageViewer(QOpenGLWidget):
             return
         dpr = self.devicePixelRatioF()
         gf.glViewport(0, 0, max(1, int(round(w * dpr))), max(1, int(round(h * dpr))))
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        if self._loading_overlay is not None:
+            self._loading_overlay.resize(self.size())
 
     def _fit_to_view_scale(self, view_width: float, view_height: float) -> float:
         """Return the baseline scale that fits the texture within the viewport."""

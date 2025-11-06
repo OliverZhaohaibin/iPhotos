@@ -40,7 +40,6 @@ class ViewControllerManager(QObject):
             ui.view_stack,
             ui.gallery_page,
             ui.detail_page,
-            ui.edit_page,
             map_page=ui.map_page,
             parent=window,
         )

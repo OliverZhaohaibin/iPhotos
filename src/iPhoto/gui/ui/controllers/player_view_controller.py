@@ -103,6 +103,7 @@ class PlayerViewController(QObject):
         self._video_area = video_area
         self._placeholder = placeholder
         self._live_badge = live_badge
+        self._image_viewer_index = player_stack.indexOf(image_viewer)
         self._image_viewer.replayRequested.connect(self.liveReplayRequested)
         self._pool = QThreadPool.globalInstance()
         self._active_workers: Set[_AdjustedImageWorker] = set()
@@ -129,7 +130,8 @@ class PlayerViewController(QObject):
         # still viewer never inherits a faded overlay background.
         self._video_area.hide_controls(animate=False)
         if self._player_stack.currentWidget() is not self._image_viewer:
-            self._player_stack.setCurrentWidget(self._image_viewer)
+            if self._player_stack.indexOf(self._image_viewer) != -1:
+                self._player_stack.setCurrentWidget(self._image_viewer)
         if not self._player_stack.isVisible():
             self._player_stack.show()
         # Request an immediate update so the GL widget draws the latest frame as
@@ -285,7 +287,12 @@ class PlayerViewController(QObject):
 
         # 先确保 GL 视图当前可见（上下文已就绪），再喂像素并强制一帧
         self.show_image_surface()
-        self._image_viewer.set_image(image, adjustments)
+        self._image_viewer.set_image(
+            image,
+            adjustments,
+            image_source=source,
+            reset_view=True,
+        )
         self._image_viewer.update()
 
         if self._loading_source == source:

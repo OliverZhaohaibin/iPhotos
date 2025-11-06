@@ -97,6 +97,7 @@ class EditViewTransitionManager(QObject):
         self._ui.detail_chrome_container.hide()
         self._ui.edit_header_container.show()
         self._edit_header_opacity.setOpacity(1.0)
+        self._ui.filmstrip_view.hide()
 
         splitter_sizes = self._sanitise_splitter_sizes(self._ui.splitter.sizes())
         self._splitter_sizes_before_edit = list(splitter_sizes)
@@ -121,6 +122,7 @@ class EditViewTransitionManager(QObject):
 
         self._ui.detail_chrome_container.show()
         self._ui.edit_header_container.show()
+        self._ui.filmstrip_view.show()
         if animate:
             self._detail_header_opacity.setOpacity(0.0)
             self._edit_header_opacity.setOpacity(1.0)
