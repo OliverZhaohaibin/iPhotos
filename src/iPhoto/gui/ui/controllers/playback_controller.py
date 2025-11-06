@@ -72,6 +72,40 @@ class PlaybackController:
     # ------------------------------------------------------------------
     # Selection handling
     # ------------------------------------------------------------------
+    def stop_and_unload(
+        self,
+        *,
+        previous_state: object | None = None,
+        set_idle_state: bool,
+    ) -> None:
+        """Synchronously stop playback and discard any loaded media source.
+
+        Parameters
+        ----------
+        previous_state:
+            Optional hint describing the playback state that initiated the
+            reset.  Providing the original state keeps Live Photo mute
+            bookkeeping aligned with the legacy controller.
+        set_idle_state:
+            When ``True`` the playback state manager is forced back to the
+            idle state once cleanup completes.
+        """
+
+        if self._load_delay_timer.isActive():
+            self._load_delay_timer.stop()
+        self._pending_load_row = -1
+
+        state_hint = previous_state if previous_state is not None else self._state_manager.state
+
+        # Resetting through the state manager stops playback, clears Live Photo
+        # affordances, and emits ``playbackReset`` so scrub state is purged.
+        self._state_manager.reset(previous_state=state_hint, set_idle_state=set_idle_state)
+        self._detail_ui.set_player_bar_enabled(False)
+
+        # Drop the current media source so Qt releases any file handles before
+        # loading the next asset.
+        self._media.unload()
+
     def activate_index(self, index: QModelIndex) -> None:
         """Handle item activation from either the main grid or the filmstrip."""
 
@@ -104,10 +138,9 @@ class PlaybackController:
         """Update UI state to reflect the playlist's current row."""
 
         previous_row = self._playlist.previous_row()
-        self._detail_ui.handle_playlist_current_changed(row, previous_row)
         if row < 0:
-            self._state_manager.reset(previous_state=self._state_manager.state, set_idle_state=True)
-            self._clear_scrub_state()
+            self.stop_and_unload(previous_state=self._state_manager.state, set_idle_state=True)
+        self._detail_ui.handle_playlist_current_changed(row, previous_row)
 
     def handle_playlist_source_changed(self, source: Path) -> None:
         """Load and present the media source associated with the current row."""
@@ -120,26 +153,22 @@ class PlaybackController:
 
         previous_state = self._state_manager.state
         self._state_manager.begin_transition()
-        self._media.stop()
 
         current_row = self._playlist.current_row()
         if current_row == -1:
-            self._state_manager.reset(previous_state=previous_state, set_idle_state=True)
-            self._clear_scrub_state()
+            self.stop_and_unload(previous_state=previous_state, set_idle_state=True)
+            self._preview_controller.close_preview(False)
             self._detail_ui.show_placeholder()
             return
 
-        # If the user navigated away from the detail view before the playlist
-        # finished emitting, abort the media work and return the state machine
-        # to idle.  Trying to drive hidden widgets would leave the backend in an
-        # inconsistent state.
+        # Abort media work if the detail view is no longer visible.  The reset
+        # keeps the backend idle so a later activation starts from a clean
+        # slate.
         if not self._view_controller.is_detail_view_active():
-            if self._state_manager.is_transitioning():
-                self._state_manager.reset(previous_state=previous_state, set_idle_state=True)
+            self.stop_and_unload(previous_state=previous_state, set_idle_state=True)
             return
 
-        self._state_manager.reset(previous_state=previous_state, set_idle_state=False)
-        self._clear_scrub_state()
+        self.stop_and_unload(previous_state=previous_state, set_idle_state=False)
 
         self._detail_ui.update_favorite_button(current_row)
         self._detail_ui.update_header(current_row if current_row != -1 else None)
@@ -345,8 +374,7 @@ class PlaybackController:
         responsible for tab flicker.
         """
 
-        self._state_manager.reset(previous_state=self._state_manager.state, set_idle_state=True)
-        self._clear_scrub_state()
+        self.stop_and_unload(previous_state=self._state_manager.state, set_idle_state=True)
         self._playlist.clear()
         self._detail_ui.reset_for_gallery_view()
         self._preview_controller.close_preview(False)
