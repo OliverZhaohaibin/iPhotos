@@ -271,7 +271,13 @@ class EditController(QObject):
         # alive.
         self._active_image_worker = None
         self._is_loading_edit_image = True
-        self._ui.edit_image_viewer.set_loading(True)
+        if self._skip_next_preview_frame:
+            # The detail surface already uploaded the texture for this asset.  Suppressing the
+            # loading overlay keeps the transition animation visible while the background decode
+            # worker prepares its copy of the pixels for the edit preview pipeline.
+            self._ui.edit_image_viewer.set_loading(False)
+        else:
+            self._ui.edit_image_viewer.set_loading(True)
 
         worker = ImageLoadWorker(source)
         worker.signals.imageLoaded.connect(self._on_edit_image_loaded)
@@ -331,25 +337,24 @@ class EditController(QObject):
             self.leave_edit_mode(animate=False)
             return
 
-        if self._skip_next_preview_frame:
-            # The detail surface already uploaded the same GPU texture.  Keep the existing texture
-            # alive and only refresh the shader uniforms so the transition feels instantaneous.
-            self._skip_next_preview_frame = False
-            self._apply_session_adjustments_to_viewer()
-        else:
-            # A brand new asset is entering edit mode; upload its pixels once and preserve the zoom
-            # transform so the edit UI does not snap back to a centred view mid-transition.
-            resolved_adjustments = self._resolve_session_adjustments()
-            self._active_adjustments = resolved_adjustments
-            self._ui.edit_image_viewer.set_image(
-                image,
-                resolved_adjustments,
-                image_source=path,
-                reset_view=False,
-            )
-            if self._compare_active:
-                # Honour an active compare press by restoring the original look immediately.
-                self._ui.edit_image_viewer.set_adjustments({})
+        # Resolve the GPU shader uniforms before painting so both the edit preview and the GL
+        # surface share identical Photos-compatible maths.  When the ``image_source`` matches the
+        # current frame :meth:`GLImageViewer.set_image` short-circuits the expensive texture upload
+        # while still refreshing the uniforms.
+        resolved_adjustments = self._resolve_session_adjustments()
+        self._active_adjustments = resolved_adjustments
+        self._ui.edit_image_viewer.set_image(
+            image,
+            resolved_adjustments,
+            image_source=path,
+            reset_view=False,
+        )
+        self._skip_next_preview_frame = False
+        if self._compare_active:
+            # Honour an active compare press by restoring the original look immediately.  The fast
+            # path above refreshes the edit uniforms, so a second call restores the neutral shader
+            # state until the user releases the gesture.
+            self._ui.edit_image_viewer.set_adjustments({})
 
         # The worker has delivered the full-resolution frame, so the loading scrim can disappear
         # immediately.  This mirrors the legacy behaviour where the QWidget-based viewer stopped
