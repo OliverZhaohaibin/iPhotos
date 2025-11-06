@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Mapping, Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING
 
 from PySide6.QtCore import QObject, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QImage
@@ -296,7 +296,7 @@ class EditController(QObject):
         else:
             # A brand new asset is entering edit mode; upload its pixels once and preserve the zoom
             # transform so the edit UI does not snap back to a centred view mid-transition.
-            resolved_adjustments = self._resolve_shader_adjustments(session.values())
+            resolved_adjustments = self._resolve_session_adjustments()
             self._active_adjustments = resolved_adjustments
             self._ui.edit_image_viewer.set_image(
                 image,
@@ -382,19 +382,35 @@ class EditController(QObject):
 
         if self._session is None:
             return
-        adjustments = self._resolve_shader_adjustments(self._session.values())
+        adjustments = self._resolve_session_adjustments()
         self._active_adjustments = adjustments
         # Avoid repainting while the compare button is held so the user continues
         # to see the unadjusted frame until the interaction ends.
         if not self._compare_active:
             self._ui.edit_image_viewer.set_adjustments(adjustments)
 
-    def _resolve_shader_adjustments(
-        self, values: Mapping[str, float | bool]
-    ) -> dict[str, float]:
-        """Resolve *values* into the GPU-friendly adjustment mapping."""
+    def _resolve_session_adjustments(self) -> dict[str, float]:
+        """Return the current session adjustments resolved for the GL shader."""
 
-        return resolve_adjustment_mapping(values, stats=self._preview_manager.color_stats())
+        if self._session is None:
+            return {}
+
+        values = self._session.values()
+
+        # Prefer the preview manager helper so both the CPU thumbnails and the GPU shader share
+        # identical Photos-compatible math.  Fall back to the module-level resolver if the preview
+        # pipeline has not been initialised yet (for example, during early unit tests).
+        try:
+            resolved = self._preview_manager.resolve_adjustments(values)
+        except AttributeError:
+            resolved = resolve_adjustment_mapping(values, stats=self._preview_manager.color_stats())
+        else:
+            # ``resolve_adjustments`` already honours colour statistics when available.  Guard the
+            # return value here so callers always receive a defensive copy and accidental mutation
+            # cannot leak back into the preview manager's caches.
+            resolved = dict(resolved)
+
+        return resolved
 
     def _restore_active_adjustments(self) -> None:
         """Reapply the cached adjustments to the GL viewer."""
@@ -437,9 +453,7 @@ class EditController(QObject):
         if self._current_source is None or self._session is None:
             return
 
-        adjustments = self._active_adjustments or self._resolve_shader_adjustments(
-            self._session.values()
-        )
+        adjustments = self._active_adjustments or self._resolve_session_adjustments()
         if self._fullscreen_manager.enter_fullscreen_preview(
             self._current_source,
             adjustments,
@@ -451,9 +465,7 @@ class EditController(QObject):
 
         adjustments: Optional[dict[str, float]] = None
         if self._session is not None:
-            adjustments = self._active_adjustments or self._resolve_shader_adjustments(
-                self._session.values()
-            )
+            adjustments = self._active_adjustments or self._resolve_session_adjustments()
 
         if self._fullscreen_manager.exit_fullscreen_preview(
             self._current_source,
