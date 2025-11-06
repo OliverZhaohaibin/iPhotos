@@ -28,7 +28,13 @@ from .video_area import VideoArea
 class DetailPageWidget(QWidget):
     """Composite widget that mirrors the behaviour of the original detail page."""
 
-    def __init__(self, main_window: QWidget, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        main_window: QWidget,
+        parent: QWidget | None = None,
+        *,
+        image_viewer: GLImageViewer | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("detailPage")
 
@@ -52,7 +58,9 @@ class DetailPageWidget(QWidget):
         # Viewer widgets -----------------------------------------------------
         self.player_stack = QStackedWidget(self)
         self.player_placeholder = QLabel("Select a photo or video to preview.", self.player_stack)
-        self.image_viewer = GLImageViewer()
+        self.image_viewer = image_viewer or GLImageViewer()
+        if self.image_viewer.parent() not in (None, self.player_stack):
+            self.image_viewer.setParent(None)
         self.video_area = VideoArea()
         self.player_bar = self.video_area.player_bar
 
@@ -218,6 +226,8 @@ class DetailPageWidget(QWidget):
         self.player_placeholder.setMinimumHeight(320)
 
         self.player_stack.addWidget(self.player_placeholder)
+        if self.image_viewer.parent() is not self.player_stack:
+            self.image_viewer.setParent(self.player_stack)
         self.player_stack.addWidget(self.image_viewer)
         self.player_stack.addWidget(self.video_area)
         self.player_stack.setCurrentWidget(self.player_placeholder)

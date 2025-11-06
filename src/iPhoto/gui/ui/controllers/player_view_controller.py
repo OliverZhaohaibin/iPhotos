@@ -103,6 +103,7 @@ class PlayerViewController(QObject):
         self._video_area = video_area
         self._placeholder = placeholder
         self._live_badge = live_badge
+        self._image_viewer_index = player_stack.indexOf(image_viewer)
         self._image_viewer.replayRequested.connect(self.liveReplayRequested)
         self._pool = QThreadPool.globalInstance()
         self._active_workers: Set[_AdjustedImageWorker] = set()
@@ -129,7 +130,8 @@ class PlayerViewController(QObject):
         # still viewer never inherits a faded overlay background.
         self._video_area.hide_controls(animate=False)
         if self._player_stack.currentWidget() is not self._image_viewer:
-            self._player_stack.setCurrentWidget(self._image_viewer)
+            if self._player_stack.indexOf(self._image_viewer) != -1:
+                self._player_stack.setCurrentWidget(self._image_viewer)
         if not self._player_stack.isVisible():
             self._player_stack.show()
         # Request an immediate update so the GL widget draws the latest frame as
@@ -261,6 +263,22 @@ class PlayerViewController(QObject):
         """Expose the image viewer for read-only integrations."""
 
         return self._image_viewer
+
+    def release_image_viewer(self) -> GLImageViewer:
+        """Temporarily detach the GL viewer so the edit view can reuse it."""
+
+        if self._player_stack.indexOf(self._image_viewer) != -1:
+            self._player_stack.removeWidget(self._image_viewer)
+        return self._image_viewer
+
+    def attach_image_viewer(self, viewer: GLImageViewer) -> None:
+        """Reinsert *viewer* into the player stack at its original position."""
+
+        if self._player_stack.indexOf(viewer) == -1:
+            insert_index = self._image_viewer_index if self._image_viewer_index >= 0 else 1
+            insert_index = max(0, min(insert_index, self._player_stack.count()))
+            self._player_stack.insertWidget(insert_index, viewer)
+        self._image_viewer = viewer
 
     @property
     def video_area(self) -> VideoArea:

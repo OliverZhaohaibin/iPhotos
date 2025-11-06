@@ -28,6 +28,7 @@ from .widgets import (
     PhotoMapView,
     PreviewWindow,
 )
+from .widgets.gl_image_viewer import GLImageViewer
 
 
 class Ui_MainWindow(object):
@@ -115,7 +116,8 @@ class Ui_MainWindow(object):
         self.gallery_page = GalleryPageWidget()
         self.grid_view = self.gallery_page.grid_view
 
-        self.detail_page = DetailPageWidget(MainWindow)
+        shared_image_viewer = GLImageViewer()
+        self.detail_page = DetailPageWidget(MainWindow, image_viewer=shared_image_viewer)
         self.back_button = self.detail_page.back_button
         self.info_button = self.detail_page.info_button
         self.share_button = self.detail_page.share_button
@@ -137,7 +139,7 @@ class Ui_MainWindow(object):
         self.detail_header_separator = self.detail_page.detail_header_separator
         self.player_stack = self.detail_page.player_stack
         self.player_placeholder = self.detail_page.player_placeholder
-        self.image_viewer = self.detail_page.image_viewer
+        self.image_viewer = shared_image_viewer
         self.video_area = self.detail_page.video_area
         self.player_bar = self.detail_page.player_bar
         self.filmstrip_view = self.detail_page.filmstrip_view

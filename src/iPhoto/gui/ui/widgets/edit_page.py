@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 from ..icon import load_icon
 from .edit_sidebar import EditSidebar
 from .edit_topbar import SegmentedTopBar
-from .image_viewer import ImageViewer
+from .edit_viewer_host import EditViewerHost
 from .main_window_metrics import (
     EDIT_DONE_BUTTON_BACKGROUND,
     EDIT_DONE_BUTTON_BACKGROUND_DISABLED,
@@ -52,7 +52,7 @@ class EditPageWidget(QWidget):
         self.edit_compare_button = QToolButton(self)
         self.edit_reset_button = QPushButton(self)
         self.edit_done_button = QPushButton(self)
-        self.edit_image_viewer = ImageViewer()
+        self.edit_image_viewer = EditViewerHost()
         self.edit_sidebar = EditSidebar()
         self.edit_sidebar.setObjectName("editSidebar")
 
