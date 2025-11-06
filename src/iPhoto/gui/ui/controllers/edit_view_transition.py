@@ -110,8 +110,19 @@ class EditViewTransitionManager(QObject):
             animate=animate,
         )
 
-    def leave_edit_mode(self, animate: bool = True) -> None:
-        """Restore the standard chrome and animate the sidebar out of view."""
+    def leave_edit_mode(self, animate: bool = True, *, show_filmstrip: bool = True) -> None:
+        """Restore the standard chrome and animate the sidebar out of view.
+
+        Parameters
+        ----------
+        animate:
+            When ``True`` the sidebar collapse is animated; ``False`` snaps
+            everything back immediately which is useful for error recovery.
+        show_filmstrip:
+            Controls whether the filmstrip is made visible again once edit mode
+            finishes.  Callers can pass ``False`` when the user's preferences
+            request the filmstrip remain hidden on the detail page.
+        """
 
         if self._transition_direction == "exit":
             return
@@ -122,7 +133,14 @@ class EditViewTransitionManager(QObject):
 
         self._ui.detail_chrome_container.show()
         self._ui.edit_header_container.show()
-        self._ui.filmstrip_view.show()
+        if show_filmstrip:
+            self._ui.filmstrip_view.show()
+        else:
+            # Ensure the filmstrip stays hidden when the user's settings request
+            # it.  Calling ``hide`` keeps the widget state consistent even if it
+            # was temporarily shown by other UI interactions while edit mode
+            # was active.
+            self._ui.filmstrip_view.hide()
         if animate:
             self._detail_header_opacity.setOpacity(0.0)
             self._edit_header_opacity.setOpacity(1.0)

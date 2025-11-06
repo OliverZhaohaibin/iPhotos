@@ -10,6 +10,7 @@ from PySide6.QtCore import QObject, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QImage
 
 from ....io import sidecar
+from ....settings import SettingsManager
 from ..models.asset_model import AssetModel
 from ..models.edit_session import EditSession
 from ..tasks.image_load_worker import ImageLoadWorker
@@ -49,6 +50,7 @@ class EditController(QObject):
         *,
         navigation: "NavigationController" | None = None,
         detail_ui_controller: "DetailUIController" | None = None,
+        settings: SettingsManager | None = None,
     ) -> None:
         super().__init__(parent)
         # ``parent`` is the main window hosting the edit UI.  Retaining a weak reference to the
@@ -68,6 +70,10 @@ class EditController(QObject):
         # ``_detail_ui_controller`` provides access to the detail view's zoom wiring helpers so the
         # shared zoom toolbar can swap targets cleanly when the edit tools take over the header.
         self._detail_ui_controller: "DetailUIController" | None = detail_ui_controller
+        # ``_settings`` caches the shared settings manager so edit workflows can
+        # respect user preferences such as whether the filmstrip should appear
+        # after leaving the editor.
+        self._settings: SettingsManager | None = settings
         # Track whether the shared zoom controls are currently routed to the edit viewer so we can
         # disconnect them without relying on Qt to silently drop redundant requests.  Qt logs a
         # warning when asked to disconnect a link that was never created, so this boolean keeps the
@@ -365,7 +371,25 @@ class EditController(QObject):
             self._edit_viewer_fullscreen_connected = False
         self._view_controller.show_detail_view()
 
-        self._transition_manager.leave_edit_mode(animate=animate)
+        show_filmstrip = True
+        if self._settings is not None:
+            stored_preference = self._settings.get("ui.show_filmstrip", True)
+            if isinstance(stored_preference, bool):
+                show_filmstrip = stored_preference
+            elif isinstance(stored_preference, str):
+                show_filmstrip = stored_preference.strip().lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }
+            else:
+                show_filmstrip = bool(stored_preference)
+
+        self._transition_manager.leave_edit_mode(
+            animate=animate,
+            show_filmstrip=show_filmstrip,
+        )
         self._preview_manager.stop_session()
         self._skip_next_preview_frame = False
 
