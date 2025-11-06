@@ -106,6 +106,7 @@ class EditController(QObject):
         self._session: Optional[EditSession] = None
         self._current_source: Optional[Path] = None
         self._compare_active = False
+        self._skip_next_preview_frame = False
         # ``_edit_viewer_fullscreen_connected`` ensures we only connect the
         # image viewer's full screen exit signal once per controller lifetime.
         self._edit_viewer_fullscreen_connected = False
@@ -194,6 +195,17 @@ class EditController(QObject):
         session.set_values(adjustments, emit_individual=False)
         session.valuesChanged.connect(self._handle_session_changed)
         self._session = session
+        self._apply_session_adjustments_to_viewer()
+
+        # Detect whether the detail view already uploaded the same image so the
+        # edit transition can reuse the existing GPU texture without a
+        # redundant re-upload.  When the source matches we keep the user's
+        # zoom/pan framing intact.
+        viewer = self._ui.edit_image_viewer
+        current_source = viewer.current_image_source()
+        self._skip_next_preview_frame = current_source == source
+        if not self._skip_next_preview_frame:
+            viewer.reset_zoom()
 
         # Clear any stale preview content before attaching the fresh session.  The sidebar reuses
         # its last preview image until it receives an explicit replacement, so resetting it ahead
@@ -219,7 +231,6 @@ class EditController(QObject):
         if self._detail_ui_controller is not None:
             self._detail_ui_controller.disconnect_zoom_controls()
         self._connect_edit_zoom_controls()
-        self._ui.edit_image_viewer.reset_zoom()
         self._view_controller.show_edit_view()
         self._transition_manager.enter_edit_mode(animate=True)
 
@@ -274,6 +285,8 @@ class EditController(QObject):
             self.leave_edit_mode(animate=False)
             return
 
+        self._apply_session_adjustments_to_viewer()
+
         # Hand the decoded frame to the sidebar so the thumbnail workers can begin rendering their
         # filtered previews without blocking the GUI thread.
         self._ui.edit_sidebar.set_light_preview_image(image)
@@ -288,6 +301,7 @@ class EditController(QObject):
             return
         self._is_loading_edit_image = False
         self._ui.edit_image_viewer.set_loading(False)
+        self._skip_next_preview_frame = False
         _LOGGER.error("Failed to load image for editing: %s", message)
         self.leave_edit_mode(animate=False)
 
@@ -326,6 +340,7 @@ class EditController(QObject):
 
         self._transition_manager.leave_edit_mode(animate=animate)
         self._preview_manager.stop_session()
+        self._skip_next_preview_frame = False
 
     # ------------------------------------------------------------------
     def _handle_session_changed(self, values: dict) -> None:
@@ -333,9 +348,26 @@ class EditController(QObject):
         if self._session is None:
             return
         self._preview_manager.update_adjustments(self._session.values())
+        self._apply_session_adjustments_to_viewer()
+
+    def _apply_session_adjustments_to_viewer(self) -> None:
+        """Forward the latest session values to the GL viewer."""
+
+        if self._session is None:
+            return
+        self._ui.edit_image_viewer.set_adjustments(self._session.values())
 
     def _on_preview_pixmap_updated(self, pixmap: QPixmap) -> None:
         """Display *pixmap* unless the compare gesture is active."""
+
+        if self._skip_next_preview_frame:
+            # Skip the redundant first frame emitted when the edit session
+            # starts for an asset that is already visible in the detail view.
+            # The GL viewer keeps its existing texture, avoiding a disruptive
+            # flash while the edit chrome fades in.
+            self._skip_next_preview_frame = False
+            self._apply_session_adjustments_to_viewer()
+            return
 
         if self._is_loading_edit_image:
             self._is_loading_edit_image = False
@@ -345,7 +377,12 @@ class EditController(QObject):
         if pixmap.isNull():
             self._ui.edit_image_viewer.clear()
             return
-        self._ui.edit_image_viewer.set_pixmap(pixmap)
+        self._ui.edit_image_viewer.set_pixmap(
+            pixmap,
+            image_source=self._current_source,
+            reset_view=False,
+        )
+        self._apply_session_adjustments_to_viewer()
 
     def _handle_preview_cleared(self) -> None:
         """Clear the viewer and stop any pending loading indicator."""
@@ -366,6 +403,7 @@ class EditController(QObject):
             self._session = None
             self._current_source = None
             self._compare_active = False
+            self._skip_next_preview_frame = False
 
     # ------------------------------------------------------------------
     # Dedicated edit full screen workflow
@@ -409,7 +447,12 @@ class EditController(QObject):
         if base_pixmap is None or base_pixmap.isNull():
             return
         self._compare_active = True
-        self._ui.edit_image_viewer.set_pixmap(base_pixmap)
+        self._ui.edit_image_viewer.set_pixmap(
+            base_pixmap,
+            image_source=self._current_source,
+            reset_view=False,
+        )
+        self._ui.edit_image_viewer.set_adjustments({})
 
     def _handle_compare_released(self) -> None:
         """Restore the adjusted preview after a comparison glance."""
@@ -417,12 +460,22 @@ class EditController(QObject):
         self._compare_active = False
         preview_pixmap = self._preview_manager.get_current_preview_pixmap()
         if preview_pixmap is not None and not preview_pixmap.isNull():
-            self._ui.edit_image_viewer.set_pixmap(preview_pixmap)
+            self._ui.edit_image_viewer.set_pixmap(
+                preview_pixmap,
+                image_source=self._current_source,
+                reset_view=False,
+            )
+            self._apply_session_adjustments_to_viewer()
             return
         base_pixmap = self._preview_manager.get_base_image_pixmap()
         if base_pixmap is not None and not base_pixmap.isNull():
             # Fall back to the unadjusted preview if a recalculated frame is not available.
-            self._ui.edit_image_viewer.set_pixmap(base_pixmap)
+            self._ui.edit_image_viewer.set_pixmap(
+                base_pixmap,
+                image_source=self._current_source,
+                reset_view=False,
+            )
+            self._apply_session_adjustments_to_viewer()
 
     def _handle_reset_clicked(self) -> None:
         if self._session is None:

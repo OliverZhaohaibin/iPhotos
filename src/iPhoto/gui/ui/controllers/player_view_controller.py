@@ -287,7 +287,12 @@ class PlayerViewController(QObject):
 
         # 先确保 GL 视图当前可见（上下文已就绪），再喂像素并强制一帧
         self.show_image_surface()
-        self._image_viewer.set_image(image, adjustments)
+        self._image_viewer.set_image(
+            image,
+            adjustments,
+            image_source=source,
+            reset_view=True,
+        )
         self._image_viewer.update()
 
         if self._loading_source == source:
