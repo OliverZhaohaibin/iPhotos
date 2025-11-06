@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import ctypes
 import numpy as np
-from typing import Optional
+from typing import Optional, Tuple
 
 from PySide6.QtCore import QPointF, Qt, Signal
 from PySide6.QtGui import (
@@ -94,6 +94,7 @@ class GLImageViewer(QOpenGLWidget):
     nextItemRequested = Signal()
     prevItemRequested = Signal()
     fullscreenExitRequested = Signal()
+    fullscreenToggleRequested = Signal()
 
     def __init__(self, parent: Optional["QOpenGLWidget"] = None) -> None:
         super().__init__(parent)
@@ -397,6 +398,10 @@ class GLImageViewer(QOpenGLWidget):
         if self._tex_id == 0:
             return
 
+        # Ensure the rendered quad preserves the source aspect ratio by letterboxing.
+        viewport = self._calculate_letterboxed_viewport(vw, vh)
+        gf.glViewport(*viewport)
+
         prog = self._shader_program
         if not prog.bind():
             print("[GL DBG] program bind failed:", prog.log())
@@ -490,6 +495,9 @@ class GLImageViewer(QOpenGLWidget):
         tex = gl.glGenTextures(1)
         if isinstance(tex, (list, tuple)): tex = tex[0]
         self._tex_id = int(tex)
+        # Track the texture size for aspect-ratio aware viewport calculations.
+        self._tex_w = int(w)
+        self._tex_h = int(h)
 
         gl.glBindTexture(gl.GL_TEXTURE_2D, self._tex_id)
         gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA8, w, h, 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, None)
@@ -536,7 +544,14 @@ class GLImageViewer(QOpenGLWidget):
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.LeftButton:
-            self.fullscreenExitRequested.emit()
+            top_level = self.window()
+            # Toggle immersive mode depending on the top-level window state.
+            if top_level is not None and top_level.isFullScreen():
+                self.fullscreenExitRequested.emit()
+            else:
+                self.fullscreenToggleRequested.emit()
+            event.accept()
+            return
         super().mouseDoubleClickEvent(event)
 
     def wheelEvent(self, event: QWheelEvent) -> None:
@@ -560,4 +575,33 @@ class GLImageViewer(QOpenGLWidget):
         if not gf:
             return
         dpr = self.devicePixelRatioF()
-        gf.glViewport(0, 0, int(w * dpr), int(h * dpr))
+        target = self._calculate_letterboxed_viewport(int(w * dpr), int(h * dpr))
+        gf.glViewport(*target)
+
+    def _calculate_letterboxed_viewport(self, view_width: int, view_height: int) -> Tuple[int, int, int, int]:
+        """Compute a centred viewport that preserves the texture aspect ratio."""
+
+        if view_width <= 0 or view_height <= 0:
+            return 0, 0, max(view_width, 0), max(view_height, 0)
+        if self._tex_w <= 0 or self._tex_h <= 0:
+            return 0, 0, view_width, view_height
+
+        texture_aspect = self._tex_w / self._tex_h
+        view_aspect = view_width / view_height
+
+        if abs(texture_aspect - view_aspect) < 1e-6:
+            return 0, 0, view_width, view_height
+
+        if view_aspect > texture_aspect:
+            target_height = view_height
+            target_width = int(round(target_height * texture_aspect))
+        else:
+            target_width = view_width
+            target_height = int(round(target_width / texture_aspect))
+
+        target_width = max(1, min(target_width, view_width))
+        target_height = max(1, min(target_height, view_height))
+
+        offset_x = (view_width - target_width) // 2
+        offset_y = (view_height - target_height) // 2
+        return offset_x, offset_y, target_width, target_height
