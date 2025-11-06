@@ -213,9 +213,6 @@ class EditController(QObject):
             self._edit_viewer_fullscreen_connected = True
 
         self._compare_active = False
-        shared_viewer = self._player_view.release_image_viewer()
-        self._ui.edit_image_viewer.adopt_viewer(shared_viewer)
-        self._ui.edit_image_viewer.clear()
         self._set_mode("adjust")
 
         self._move_header_widgets_for_edit()
@@ -317,9 +314,6 @@ class EditController(QObject):
         if self._detail_ui_controller is not None:
             self._detail_ui_controller.connect_zoom_controls()
         self._restore_header_widgets_after_edit()
-        reattached_viewer = self._ui.edit_image_viewer.release_viewer()
-        if reattached_viewer is not None:
-            self._player_view.attach_image_viewer(reattached_viewer)
         if self._edit_viewer_fullscreen_connected:
             try:
                 self._ui.edit_image_viewer.fullscreenExitRequested.disconnect(

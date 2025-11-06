@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QSize
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtGui import QAction, QActionGroup, QColor, QFont
 from PySide6.QtWidgets import (
     QFrame,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
+    QPushButton,
+    QSizePolicy,
     QSlider,
     QStackedWidget,
     QToolButton,
@@ -18,10 +20,22 @@ from PySide6.QtWidgets import (
 
 from ..icon import load_icon
 from ..palette import viewer_surface_color
+from .edit_sidebar import EditSidebar
+from .edit_topbar import SegmentedTopBar
 from .filmstrip_view import FilmstripView
 from .gl_image_viewer import GLImageViewer
 from .live_badge import LiveBadge
-from .main_window_metrics import HEADER_BUTTON_SIZE, HEADER_ICON_GLYPH_SIZE
+from .main_window_metrics import (
+    EDIT_DONE_BUTTON_BACKGROUND,
+    EDIT_DONE_BUTTON_BACKGROUND_DISABLED,
+    EDIT_DONE_BUTTON_BACKGROUND_HOVER,
+    EDIT_DONE_BUTTON_BACKGROUND_PRESSED,
+    EDIT_DONE_BUTTON_TEXT_COLOR,
+    EDIT_DONE_BUTTON_TEXT_DISABLED,
+    EDIT_HEADER_BUTTON_HEIGHT,
+    HEADER_BUTTON_SIZE,
+    HEADER_ICON_GLYPH_SIZE,
+)
 from .video_area import VideoArea
 
 
@@ -37,6 +51,29 @@ class DetailPageWidget(QWidget):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("detailPage")
+
+        # Edit chrome -------------------------------------------------------
+        self.edit_mode_group = QActionGroup(main_window)
+        self.edit_mode_group.setExclusive(True)
+
+        self.edit_adjust_action = QAction(main_window)
+        self.edit_adjust_action.setCheckable(True)
+        self.edit_adjust_action.setChecked(True)
+        self.edit_mode_group.addAction(self.edit_adjust_action)
+
+        self.edit_crop_action = QAction(main_window)
+        self.edit_crop_action.setCheckable(True)
+        self.edit_mode_group.addAction(self.edit_crop_action)
+
+        self.edit_compare_button = QToolButton(self)
+        self.edit_reset_button = QPushButton(self)
+        self.edit_done_button = QPushButton(self)
+        self.edit_zoom_host = QWidget(self)
+        self.edit_zoom_host_layout = QHBoxLayout(self.edit_zoom_host)
+        self.edit_zoom_host_layout.setContentsMargins(0, 0, 0, 0)
+        self.edit_zoom_host_layout.setSpacing(4)
+        self.edit_sidebar = EditSidebar()
+        self.edit_sidebar.setObjectName("editSidebar")
 
         # Header widgets -----------------------------------------------------
         self.back_button = QToolButton(self)
@@ -86,7 +123,9 @@ class DetailPageWidget(QWidget):
         layout.setSpacing(6)
 
         self._build_header(main_window, layout)
-        self._build_player_area(layout)
+        self._build_player_area()
+        self._build_edit_container(main_window, layout)
+        layout.addWidget(self.filmstrip_view)
 
     def _build_header(self, main_window: QWidget, parent_layout: QVBoxLayout) -> None:
         """Create the header row containing navigation and metadata controls."""
@@ -215,8 +254,8 @@ class DetailPageWidget(QWidget):
         parent_layout.addWidget(detail_chrome_container)
         self.detail_chrome_container = detail_chrome_container
 
-    def _build_player_area(self, parent_layout: QVBoxLayout) -> None:
-        """Create the stacked media viewer and accompanying filmstrip."""
+    def _build_player_area(self) -> None:
+        """Create the stacked media viewer inside its container."""
 
         self.player_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.player_placeholder.setStyleSheet(
@@ -237,14 +276,137 @@ class DetailPageWidget(QWidget):
         player_layout.setContentsMargins(0, 0, 0, 0)
         player_layout.setSpacing(0)
         player_layout.addWidget(self.player_stack)
-        parent_layout.addWidget(player_container)
         self.player_container = player_container
-
-        parent_layout.addWidget(self.filmstrip_view)
 
         self.live_badge.setParent(player_container)
         self.badge_host = player_container
         self.live_badge.raise_()
+
+    def _build_edit_container(self, main_window: QWidget, parent_layout: QVBoxLayout) -> None:
+        """Wrap the shared viewer with the edit header and sidebar."""
+
+        del main_window  # The metrics come from module-level constants.
+
+        edit_container = QWidget(self)
+        edit_container.setObjectName("editPage")
+        self.edit_container = edit_container
+        edit_layout = QVBoxLayout(edit_container)
+        edit_layout.setContentsMargins(0, 0, 0, 0)
+        edit_layout.setSpacing(6)
+
+        self.edit_header_container = self._build_edit_header()
+        edit_layout.addWidget(self.edit_header_container)
+
+        edit_body = QWidget(edit_container)
+        edit_body_layout = QHBoxLayout(edit_body)
+        edit_body_layout.setContentsMargins(0, 0, 0, 0)
+        edit_body_layout.setSpacing(12)
+        edit_body_layout.addWidget(self.player_container, 1)
+        edit_body_layout.addWidget(self.edit_sidebar)
+        edit_layout.addWidget(edit_body, 1)
+
+        default_sidebar_min = self.edit_sidebar.minimumWidth()
+        default_sidebar_max = self.edit_sidebar.maximumWidth()
+        default_sidebar_hint = max(self.edit_sidebar.sizeHint().width(), default_sidebar_min)
+        self.edit_sidebar.setProperty("defaultMinimumWidth", default_sidebar_min)
+        self.edit_sidebar.setProperty("defaultMaximumWidth", default_sidebar_max)
+        self.edit_sidebar.setProperty("defaultPreferredWidth", default_sidebar_hint)
+        self.edit_sidebar.setMinimumWidth(0)
+        self.edit_sidebar.setMaximumWidth(0)
+        self.edit_sidebar.hide()
+
+        self.edit_header_container.hide()
+
+        parent_layout.addWidget(edit_container, 1)
+
+    def _build_edit_header(self) -> QWidget:
+        """Construct the toolbar shown while the edit chrome is visible."""
+
+        container = QWidget(self)
+        container.setObjectName("editHeaderContainer")
+        container_layout = QHBoxLayout(container)
+        container_layout.setContentsMargins(12, 0, 12, 0)
+        container_layout.setSpacing(12)
+
+        left_controls_container = QWidget(container)
+        left_controls_layout = QHBoxLayout(left_controls_container)
+        left_controls_layout.setContentsMargins(0, 0, 0, 0)
+        left_controls_layout.setSpacing(8)
+        left_controls_container.setSizePolicy(
+            QSizePolicy.Policy.Maximum,
+            QSizePolicy.Policy.Preferred,
+        )
+
+        self.edit_compare_button.setIcon(load_icon("square.fill.and.line.vertical.and.square.svg"))
+        self.edit_compare_button.setIconSize(HEADER_ICON_GLYPH_SIZE)
+        self.edit_compare_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self.edit_compare_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.edit_compare_button.setAutoRaise(True)
+        self.edit_compare_button.setFixedSize(HEADER_BUTTON_SIZE)
+        left_controls_layout.addWidget(self.edit_compare_button)
+
+        self.edit_reset_button.setAutoDefault(False)
+        self.edit_reset_button.setDefault(False)
+        self.edit_reset_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.edit_reset_button.setFixedHeight(EDIT_HEADER_BUTTON_HEIGHT)
+        left_controls_layout.addWidget(self.edit_reset_button)
+
+        self.edit_zoom_host_layout.setContentsMargins(0, 0, 0, 0)
+        self.edit_zoom_host_layout.setSpacing(4)
+        left_controls_layout.addWidget(self.edit_zoom_host)
+
+        container_layout.addWidget(left_controls_container)
+
+        self.edit_mode_control = SegmentedTopBar(
+            (
+                self.edit_adjust_action.text() or "Adjust",
+                self.edit_crop_action.text() or "Crop",
+            ),
+            container,
+        )
+        container_layout.addWidget(self.edit_mode_control, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        right_controls_container = QWidget(container)
+        right_controls_layout = QHBoxLayout(right_controls_container)
+        right_controls_layout.setContentsMargins(0, 0, 0, 0)
+        right_controls_layout.setSpacing(8)
+        right_controls_container.setSizePolicy(
+            QSizePolicy.Policy.Maximum,
+            QSizePolicy.Policy.Preferred,
+        )
+
+        self.edit_done_button.setObjectName("editDoneButton")
+        self.edit_done_button.setAutoDefault(False)
+        self.edit_done_button.setDefault(False)
+        self.edit_done_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.edit_done_button.setFixedHeight(30)
+        self.edit_done_button.setStyleSheet(
+            "QPushButton#editDoneButton {"
+            f"  background-color: {EDIT_DONE_BUTTON_BACKGROUND};"
+            "  border: none;"
+            "  border-radius: 8px;"
+            f"  color: {EDIT_DONE_BUTTON_TEXT_COLOR};"
+            "  font-weight: 600;"
+            "  padding-left: 20px;"
+            "  padding-right: 20px;"
+            "}"
+            "QPushButton#editDoneButton:hover {"
+            f"  background-color: {EDIT_DONE_BUTTON_BACKGROUND_HOVER};"
+            "}"
+            "QPushButton#editDoneButton:pressed {"
+            f"  background-color: {EDIT_DONE_BUTTON_BACKGROUND_PRESSED};"
+            "}"
+            "QPushButton#editDoneButton:disabled {"
+            f"  background-color: {EDIT_DONE_BUTTON_BACKGROUND_DISABLED};"
+            f"  color: {EDIT_DONE_BUTTON_TEXT_DISABLED};"
+            "}"
+        )
+        right_controls_layout.addWidget(self.edit_done_button)
+
+        container_layout.addWidget(right_controls_container)
+        self.edit_right_controls_layout = right_controls_layout
+
+        return container
 
     def _configure_header_button(self, button: QToolButton, icon_name: str, tooltip: str) -> None:
         """Normalize header button appearance to the design defaults."""

@@ -264,22 +264,6 @@ class PlayerViewController(QObject):
 
         return self._image_viewer
 
-    def release_image_viewer(self) -> GLImageViewer:
-        """Temporarily detach the GL viewer so the edit view can reuse it."""
-
-        if self._player_stack.indexOf(self._image_viewer) != -1:
-            self._player_stack.removeWidget(self._image_viewer)
-        return self._image_viewer
-
-    def attach_image_viewer(self, viewer: GLImageViewer) -> None:
-        """Reinsert *viewer* into the player stack at its original position."""
-
-        if self._player_stack.indexOf(viewer) == -1:
-            insert_index = self._image_viewer_index if self._image_viewer_index >= 0 else 1
-            insert_index = max(0, min(insert_index, self._player_stack.count()))
-            self._player_stack.insertWidget(insert_index, viewer)
-        self._image_viewer = viewer
-
     @property
     def video_area(self) -> VideoArea:
         """Expose the video area for media output bindings."""

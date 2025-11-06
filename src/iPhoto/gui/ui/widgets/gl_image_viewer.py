@@ -19,6 +19,7 @@ from PySide6.QtGui import (
     QWheelEvent,
     QSurfaceFormat,
     QOpenGLContext,
+    QPixmap,
 )
 from PySide6.QtOpenGL import (
     QOpenGLBuffer,
@@ -28,6 +29,7 @@ from PySide6.QtOpenGL import (
     QOpenGLVertexArrayObject, QOpenGLDebugLogger,
 )
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
+from PySide6.QtWidgets import QLabel
 from OpenGL import GL as gl
 
 # 如果你的工程没有这个函数，可以改成固定背景色
@@ -132,6 +134,17 @@ class GLImageViewer(QOpenGLWidget):
         self._backdrop_color: QColor = QColor(self._default_surface_color)
         self._apply_surface_color()
 
+        self._loading_overlay = QLabel("Loading…", self)
+        self._loading_overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._loading_overlay.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents,
+            True,
+        )
+        self._loading_overlay.setStyleSheet(
+            "background-color: rgba(0, 0, 0, 128); color: white; font-size: 18px;"
+        )
+        self._loading_overlay.hide()
+
         # 原生纹理（绕过 QOpenGLTexture；确保原图像素）
         self._tex_id: int = 0
         self._tex_w: int = 0
@@ -176,6 +189,7 @@ class GLImageViewer(QOpenGLWidget):
         mapped_adjustments = dict(adjustments or {})
         self._pending_adjustments = mapped_adjustments
         self._adjustments = mapped_adjustments
+        self._loading_overlay.hide()
 
         if image is None or image.isNull():
             # Releasing GL textures requires a current context.  ``makeCurrent``
@@ -200,6 +214,41 @@ class GLImageViewer(QOpenGLWidget):
             self.set_image(pixmap.toImage(), {})
         else:
             self.set_image(None, {})
+
+    def set_pixmap(self, pixmap: Optional[QPixmap]) -> None:
+        """Compatibility wrapper mirroring :class:`ImageViewer`."""
+
+        if pixmap is None or pixmap.isNull():
+            self.set_image(None, {})
+            return
+        self.set_image(pixmap.toImage(), {})
+
+    def clear(self) -> None:
+        """Reset the viewer to an empty state."""
+
+        self.set_image(None, {})
+
+    def pixmap(self) -> Optional[QPixmap]:
+        """Return a defensive copy of the currently displayed frame."""
+
+        if self._image is None or self._image.isNull():
+            return None
+        return QPixmap.fromImage(self._image)
+
+    def set_loading(self, loading: bool) -> None:
+        """Toggle the translucent loading overlay."""
+
+        if loading:
+            self._loading_overlay.setVisible(True)
+            self._loading_overlay.raise_()
+            self._loading_overlay.resize(self.size())
+        else:
+            self._loading_overlay.hide()
+
+    def viewport_widget(self) -> "GLImageViewer":
+        """Expose the drawable widget for API parity with :class:`ImageViewer`."""
+
+        return self
 
     def set_live_replay_enabled(self, enabled: bool) -> None:
         self._live_replay_enabled = bool(enabled)
@@ -715,6 +764,11 @@ class GLImageViewer(QOpenGLWidget):
             return
         dpr = self.devicePixelRatioF()
         gf.glViewport(0, 0, max(1, int(round(w * dpr))), max(1, int(round(h * dpr))))
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        if self._loading_overlay is not None:
+            self._loading_overlay.resize(self.size())
 
     def _fit_to_view_scale(self, view_width: float, view_height: float) -> float:
         """Return the baseline scale that fits the texture within the viewport."""
