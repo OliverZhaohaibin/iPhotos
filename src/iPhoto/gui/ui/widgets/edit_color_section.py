@@ -45,7 +45,7 @@ class EditColorSection(QWidget):
         layout.setSpacing(8)
 
         self.master_slider = ThumbnailStripSlider(
-            "Color",
+            None,
             self,
             minimum=-1.0,
             maximum=1.0,
