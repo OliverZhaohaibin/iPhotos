@@ -79,6 +79,22 @@ class ImageViewer(QWidget):
         self._scroll_area.setWidget(self._label)
         self._scroll_area.viewport().installEventFilter(self)
 
+        # ``_loading_overlay`` presents a translucent message while expensive
+        # background work (such as decoding or tone-mapping a large image) is
+        # in flight.  Painting it as a child widget keeps the implementation
+        # simple and avoids introducing additional layout containers around the
+        # scroll area while still covering the entire viewer surface.
+        self._loading_overlay = QLabel("Loading…", self)
+        self._loading_overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._loading_overlay.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents,
+            True,
+        )
+        self._loading_overlay.setStyleSheet(
+            "background-color: rgba(0, 0, 0, 128); color: white; font-size: 18px;"
+        )
+        self._loading_overlay.hide()
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._scroll_area)
@@ -121,6 +137,7 @@ class ImageViewer(QWidget):
     def set_pixmap(self, pixmap: Optional[QPixmap]) -> None:
         """Display *pixmap* and update the scaled rendering."""
 
+        self._loading_overlay.hide()
         self._pixmap = pixmap
         if self._pixmap is None or self._pixmap.isNull():
             self._label.clear()
@@ -180,6 +197,16 @@ class ImageViewer(QWidget):
         self._base_size = None
         self._zoom_factor = 1.0
         self.zoomChanged.emit(self._zoom_factor)
+        self._loading_overlay.hide()
+
+    def set_loading(self, loading: bool) -> None:
+        """Toggle the inline loading indicator on the viewer surface."""
+
+        if loading:
+            self._loading_overlay.setGeometry(self.rect())
+            self._loading_overlay.show()
+            return
+        self._loading_overlay.hide()
 
     def set_wheel_action(self, action: str) -> None:
         """Control how the viewer reacts to wheel gestures.
@@ -194,6 +221,13 @@ class ImageViewer(QWidget):
         """
 
         self._wheel_action = "zoom" if action == "zoom" else "navigate"
+
+    def resizeEvent(self, event: QEvent) -> None:  # type: ignore[override]
+        """Ensure the loading overlay always covers the full viewer area."""
+
+        super().resizeEvent(event)
+        if self._loading_overlay.isVisible():
+            self._loading_overlay.setGeometry(self.rect())
 
     def set_live_replay_enabled(self, enabled: bool) -> None:
         """Allow emitting replay requests when the still frame is shown."""
