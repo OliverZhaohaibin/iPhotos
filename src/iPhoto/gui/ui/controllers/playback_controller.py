@@ -10,7 +10,6 @@ from ...facade import AppFacade
 from ..media import MediaController, PlaylistController
 from ..models.asset_model import AssetModel, Roles
 from ..widgets.asset_grid import AssetGrid
-from ..widgets.gl_image_viewer import GLImageViewer
 from .detail_ui_controller import DetailUIController
 from .playback_state_manager import PlaybackStateManager
 from .preview_controller import PreviewController
@@ -123,64 +122,99 @@ class PlaybackController:
         self._state_manager.begin_transition()
         self._media.stop()
 
-        # Load the new source immediately.  Deferring via ``QTimer.singleShot``
-        # meant the heavy ``currentChanged`` UI updates from the model ran to
-        # completion *before* we even queued the media work, which made preview
-        # activation feel sluggish.  Running the load in the same event loop
-        # turn keeps the visual transition and media hand-off tightly coupled.
-        self._load_new_source(source, previous_state)
+        current_row = self._playlist.current_row()
+        if current_row == -1:
+            self._state_manager.reset(previous_state=previous_state, set_idle_state=True)
+            self._clear_scrub_state()
+            self._detail_ui.show_placeholder()
+            return
 
-    def _load_new_source(self, source: Path, previous_state: object) -> None:
-        """Finalise media loading after a playlist change has been committed."""
-
-        # Even though ``handle_playlist_source_changed`` now invokes this helper
-        # immediately, selection changes can still be deferred via
-        # ``_perform_delayed_load`` while the user scrolls quickly.  By the time
-        # this method executes the UI might have switched back to a gallery or
-        # map view, so attempting to drive the player would target hidden
-        # widgets.  Bail out early in that scenario and reset the playback state
-        # to avoid confusing the underlying ``QMediaPlayer``.
+        # If the user navigated away from the detail view before the playlist
+        # finished emitting, abort the media work and return the state machine
+        # to idle.  Trying to drive hidden widgets would leave the backend in an
+        # inconsistent state.
         if not self._view_controller.is_detail_view_active():
             if self._state_manager.is_transitioning():
-                self._state_manager.reset(
-                    previous_state=previous_state,
-                    set_idle_state=True,
-                )
+                self._state_manager.reset(previous_state=previous_state, set_idle_state=True)
             return
 
         self._state_manager.reset(previous_state=previous_state, set_idle_state=False)
         self._clear_scrub_state()
 
-        current_row = self._playlist.current_row()
         self._detail_ui.update_favorite_button(current_row)
         self._detail_ui.update_header(current_row if current_row != -1 else None)
         self._preview_controller.close_preview(False)
 
-        is_video = False
-        is_live_photo = False
-        still_path: Path | None = None
-        if current_row != -1:
-            index = self._model.index(current_row, 0)
-            if index.isValid():
-                is_video = bool(index.data(Roles.IS_VIDEO))
-                is_live_photo = bool(index.data(Roles.IS_LIVE))
-                if is_live_photo:
-                    still_raw = index.data(Roles.ABS)
-                    if still_raw:
-                        still_path = Path(str(still_raw))
+        index = self._model.index(current_row, 0)
+        self.load_asset(index, fallback_source=source, previous_state=previous_state)
 
-        if not is_video and not is_live_photo:
-            target_row = current_row if current_row != -1 else None
-            self._state_manager.display_image_asset(source, target_row)
-            self._clear_scrub_state()
+    def load_asset(
+        self,
+        index: QModelIndex,
+        *,
+        fallback_source: Path | None = None,
+        previous_state: object | None = None,
+    ) -> None:
+        """Load *index* into the player, handling images, videos and Live Photos."""
+
+        if not index.isValid():
+            self._detail_ui.show_placeholder()
+            self._state_manager.reset(previous_state=self._state_manager.state, set_idle_state=True)
             return
 
-        self._state_manager.start_media_playback(
-            source,
-            is_live_photo=is_live_photo,
-            still_path=still_path,
-            previous_state=previous_state,
-        )
+        def _coerce_path(value: object) -> Path | None:
+            if isinstance(value, Path):
+                return value
+            if isinstance(value, str) and value:
+                return Path(value)
+            return None
+
+        media_state = previous_state if previous_state is not None else self._state_manager.state
+        is_live_photo = bool(index.data(Roles.IS_LIVE))
+        is_video = bool(index.data(Roles.IS_VIDEO))
+        still_path = _coerce_path(index.data(Roles.ABS))
+
+        if is_live_photo:
+            motion_path = _coerce_path(index.data(Roles.LIVE_MOTION_ABS))
+            if motion_path is None:
+                rel_motion = index.data(Roles.LIVE_MOTION_REL)
+                if isinstance(rel_motion, str) and rel_motion:
+                    album_root = self._model.source_model().album_root()
+                    if album_root is not None:
+                        motion_path = (album_root / rel_motion).resolve()
+            if motion_path is None and fallback_source is not None:
+                motion_path = fallback_source
+            if motion_path is not None:
+                self._state_manager.start_media_playback(
+                    motion_path,
+                    is_live_photo=True,
+                    still_path=still_path,
+                    previous_state=media_state,
+                )
+                return
+            # Fall back to the still frame if the paired motion clip is missing.
+            is_live_photo = False
+
+        if is_video and not is_live_photo:
+            video_path = _coerce_path(index.data(Roles.ABS)) or fallback_source
+            if video_path is not None:
+                self._state_manager.start_media_playback(
+                    video_path,
+                    is_live_photo=False,
+                    still_path=None,
+                    previous_state=media_state,
+                )
+                return
+
+        image_path = still_path or fallback_source
+        if image_path is not None:
+            self._state_manager.display_image_asset(image_path, index.row())
+            return
+
+        # Reaching this point means the model did not provide any usable path.
+        self._detail_ui.show_status_message("Unable to load the selected item")
+        self._detail_ui.show_placeholder()
+        self._state_manager.reset(previous_state=self._state_manager.state, set_idle_state=True)
 
     # ------------------------------------------------------------------
     # Media callbacks

@@ -124,13 +124,47 @@ class PlayerViewController(QObject):
 
     def show_image_surface(self) -> None:
         """Reveal the still-image viewer surface."""
+
+        # Hide lingering transport controls from the video surface so the
+        # still viewer never inherits a faded overlay background.
         self._video_area.hide_controls(animate=False)
         if self._player_stack.currentWidget() is not self._image_viewer:
             self._player_stack.setCurrentWidget(self._image_viewer)
         if not self._player_stack.isVisible():
             self._player_stack.show()
-        # 立即请求一帧，确保 initializeGL/paintGL 快速触发
+        # Request an immediate update so the GL widget draws the latest frame as
+        # soon as Qt processes the next paint cycle, mirroring the responsiveness
+        # of the legacy QLabel-based viewer.
         self._image_viewer.update()
+
+    def show_video_surface(self, *, interactive: bool) -> None:
+        """Switch the stacked widget to the video surface.
+
+        Parameters
+        ----------
+        interactive:
+            ``True`` enables the floating playback controls (used for regular
+            videos). ``False`` keeps the controls hidden so Live Photos can play
+            unobstructed while still allowing the badge to trigger replays.
+        """
+
+        self._video_area.set_controls_enabled(interactive)
+        if interactive:
+            # Present the controls immediately so keyboard users see the
+            # transport state without having to move the pointer.
+            self._video_area.show_controls(animate=False)
+        else:
+            self._video_area.hide_controls(animate=False)
+
+        if self._player_stack.currentWidget() is not self._video_area:
+            self._player_stack.setCurrentWidget(self._video_area)
+        if not self._player_stack.isVisible():
+            self._player_stack.show()
+
+        # Hand focus to the graphics view so space/arrow shortcuts continue to
+        # target the media surface, matching the ergonomics of the legacy
+        # QWidget-based implementation.
+        self._video_area.video_view().setFocus()
 
     # ------------------------------------------------------------------
     # Content helpers
