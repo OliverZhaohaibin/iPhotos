@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import ctypes
 import numpy as np
-from typing import Optional, Tuple
+from typing import Mapping, Optional, Tuple
 
 from PySide6.QtCore import QPointF, Qt, Signal
 from PySide6.QtGui import (
@@ -109,6 +109,8 @@ class GLImageViewer(QOpenGLWidget):
 
         # 状态
         self._image: Optional[QImage] = None
+        self._adjustments: dict[str, float] = {}
+        self._pending_adjustments: Optional[dict[str, float]] = None
         self._zoom_factor: float = 1.0
         self._min_zoom: float = 0.1
         self._max_zoom: float = 16.0
@@ -117,6 +119,15 @@ class GLImageViewer(QOpenGLWidget):
         self._pan_start_pos: QPointF = QPointF()
         self._wheel_action: str = "zoom"  # 或 "navigate"
         self._live_replay_enabled: bool = False
+
+        # Track the viewer surface colour so immersive mode can temporarily
+        # switch to a pure black canvas.  ``viewer_surface_color`` returns a
+        # palette-derived colour string, which we normalise to ``QColor`` for
+        # reliable comparisons and GL clear colour conversion.
+        self._default_surface_color = self._normalise_colour(viewer_surface_color(self))
+        self._surface_override: Optional[QColor] = None
+        self._backdrop_color: QColor = QColor(self._default_surface_color)
+        self._apply_surface_color()
 
         # 原生纹理（绕过 QOpenGLTexture；确保原图像素）
         self._tex_id: int = 0
@@ -151,9 +162,32 @@ class GLImageViewer(QOpenGLWidget):
         finally:
             self.doneCurrent()
 
-    def set_image(self, image: QImage, adjustments=None):
+    def set_image(
+        self,
+        image: Optional[QImage],
+        adjustments: Optional[Mapping[str, float]] = None,
+    ) -> None:
+        """Display *image* together with optional colour *adjustments*."""
+
         self._image = image
-        self._pending_adjustments = adjustments
+        mapped_adjustments = dict(adjustments or {})
+        self._pending_adjustments = mapped_adjustments
+        self._adjustments = mapped_adjustments
+
+        if image is None or image.isNull():
+            # Releasing GL textures requires a current context.  ``makeCurrent``
+            # safely becomes a no-op until the widget is shown, so we can call
+            # it even when the viewer is still hidden during start-up.
+            if self.context() is not None:
+                self.makeCurrent()
+                try:
+                    self._delete_raw_texture()
+                finally:
+                    self.doneCurrent()
+            else:
+                self._tex_id = 0
+                self._tex_w = self._tex_h = 0
+
         # 只请求重绘；真正的上传放到 paintGL（上下文 current）
         self.update()
     def set_placeholder(self, pixmap) -> None:
@@ -168,6 +202,20 @@ class GLImageViewer(QOpenGLWidget):
 
     def set_wheel_action(self, action: str) -> None:
         self._wheel_action = "zoom" if action == "zoom" else "navigate"
+
+    def set_surface_color_override(self, colour: str | None) -> None:
+        """Override the viewer backdrop with *colour* or restore the default."""
+
+        if colour is None:
+            self._surface_override = None
+        else:
+            self._surface_override = self._normalise_colour(colour)
+        self._apply_surface_color()
+
+    def set_immersive_background(self, immersive: bool) -> None:
+        """Toggle the pure black immersive backdrop used in immersive mode."""
+
+        self.set_surface_color_override("#000000" if immersive else None)
 
     def set_zoom(self, factor: float, anchor: Optional[QPointF] = None) -> None:
         clamped = max(self._min_zoom, min(self._max_zoom, float(factor)))
@@ -389,7 +437,8 @@ class GLImageViewer(QOpenGLWidget):
         dpr = self.devicePixelRatioF()
         vw, vh = int(self.width() * dpr), int(self.height() * dpr)
         gf.glViewport(0, 0, vw, vh)
-        gf.glClearColor(0.0, 0.0, 0.0, 1.0)
+        bg = self._backdrop_color
+        gf.glClearColor(bg.redF(), bg.greenF(), bg.blueF(), 1.0)
         gf.glClear(gl.GL_COLOR_BUFFER_BIT)
 
         # 2) 纹理延迟上传
@@ -605,3 +654,20 @@ class GLImageViewer(QOpenGLWidget):
         offset_x = (view_width - target_width) // 2
         offset_y = (view_height - target_height) // 2
         return offset_x, offset_y, target_width, target_height
+
+    @staticmethod
+    def _normalise_colour(value: QColor | str) -> QColor:
+        """Return a valid ``QColor`` derived from *value* (defaulting to black)."""
+
+        colour = QColor(value)
+        if not colour.isValid():
+            colour = QColor("#000000")
+        return colour
+
+    def _apply_surface_color(self) -> None:
+        """Synchronise the widget stylesheet and GL clear colour backdrop."""
+
+        target = self._surface_override or self._default_surface_color
+        self.setStyleSheet(f"background-color: {target.name()}; border: none;")
+        self._backdrop_color = QColor(target)
+        self.update()
