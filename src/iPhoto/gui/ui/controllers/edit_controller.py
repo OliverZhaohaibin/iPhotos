@@ -180,15 +180,6 @@ class EditController(QObject):
         source = self._playlist.current_source()
         if source is None:
             return
-        try:
-            image = image_loader.load_qimage(source)
-        except Exception:
-            _LOGGER.exception("Failed to load image for editing: %s", source)
-            return
-        if image is None or image.isNull():
-            _LOGGER.warning("Image is null after load_qimage: %s", source)
-            return
-
         self._current_source = source
 
         adjustments = sidecar.load_adjustments(source)
@@ -198,7 +189,11 @@ class EditController(QObject):
         session.valuesChanged.connect(self._handle_session_changed)
         self._session = session
 
-        self._ui.edit_sidebar.set_light_preview_image(image)
+        # Clear any stale preview content before attaching the fresh session.  The sidebar reuses
+        # its last preview image until it receives an explicit replacement, so resetting it ahead
+        # of the new binding avoids showing thumbnails from the previously edited asset while the
+        # replacement image is loading in the background.
+        self._ui.edit_sidebar.set_light_preview_image(None)
         self._ui.edit_sidebar.set_session(session)
         self._ui.edit_sidebar.refresh()
         if not self._edit_viewer_fullscreen_connected:
@@ -211,26 +206,8 @@ class EditController(QObject):
             )
             self._edit_viewer_fullscreen_connected = True
 
-        try:
-            initial_pixmap = self._preview_manager.start_session(image, session.values())
-        except Exception as exc:
-            _LOGGER.exception("Preview session start failed with %s; falling back to safer backend and retrying", exc)
-            try:
-                # Replace with a safer backend (usually CPU) and retry once.
-                self._preview_manager._preview_backend = fallback_preview_backend(
-                    self._preview_manager._preview_backend
-                )
-                initial_pixmap = self._preview_manager.start_session(image, session.values())
-            except Exception:
-                _LOGGER.exception("Retrying preview session creation also failed; aborting enter edit mode")
-                # Ensure UI stays consistent: do not enter edit mode when preview cannot be created
-                return
-
         self._compare_active = False
-        if initial_pixmap.isNull():
-            self._ui.edit_image_viewer.clear()
-        else:
-            self._ui.edit_image_viewer.set_pixmap(initial_pixmap)
+        self._ui.edit_image_viewer.clear()
         self._set_mode("adjust")
 
         self._move_header_widgets_for_edit()
@@ -242,6 +219,87 @@ class EditController(QObject):
         self._transition_manager.enter_edit_mode(animate=True)
 
         self.editingStarted.emit(source)
+
+        # Defer the expensive image I/O and initial preview generation to the next event loop turn
+        # so the transition animation can begin immediately.  ``QTimer.singleShot`` is preferred
+        # over ``QMetaObject.invokeMethod`` here because it executes the callback after Qt has a
+        # chance to process pending paint events, guaranteeing that the edit chrome becomes visible
+        # before heavy work resumes on the GUI thread.
+        QTimer.singleShot(0, self._load_edit_assets_deferred)
+
+    def _load_edit_assets_deferred(self) -> None:
+        """Load the edit image and kick off the initial preview once the UI is visible."""
+
+        # Guard against late deliveries when the user exits the edit view before the deferred load
+        # runs.  The transition manager resets ``_session`` and ``_current_source`` once the exit
+        # animation finishes, so the ``None`` checks cover both natural and error-triggered exits.
+        if self._session is None or self._current_source is None:
+            return
+
+        session = self._session
+        source = self._current_source
+
+        if not self._view_controller.is_edit_view_active():
+            # If the view controller has already switched back to the detail view we silently abort
+            # to avoid flashing an outdated preview as the user navigates away.
+            return
+
+        try:
+            image = image_loader.load_qimage(source)
+        except Exception:
+            _LOGGER.exception("Failed to load image for editing: %s", source)
+            self.leave_edit_mode(animate=False)
+            return
+        if image is None or image.isNull():
+            _LOGGER.warning("Image is null after load_qimage: %s", source)
+            self.leave_edit_mode(animate=False)
+            return
+
+        if not self._edit_viewer_fullscreen_connected:
+            # Route double-click exit requests from the edit viewer through the controller so the
+            # dedicated full screen manager can restore the chrome even when immersive mode is
+            # triggered outside the frameless window manager.
+            self._ui.edit_image_viewer.fullscreenExitRequested.connect(
+                self.exit_fullscreen_preview
+            )
+            self._edit_viewer_fullscreen_connected = True
+
+        try:
+            initial_pixmap = self._preview_manager.start_session(image, session.values())
+        except Exception as exc:
+            _LOGGER.exception(
+                "Preview session start failed with %s; falling back to safer backend and retrying",
+                exc,
+            )
+            try:
+                # Replace with a safer backend (usually CPU) and retry once.
+                self._preview_manager._preview_backend = fallback_preview_backend(
+                    self._preview_manager._preview_backend
+                )
+                initial_pixmap = self._preview_manager.start_session(image, session.values())
+            except Exception:
+                _LOGGER.exception(
+                    "Retrying preview session creation also failed; aborting enter edit mode"
+                )
+                self.leave_edit_mode(animate=False)
+                return
+
+        # The user might have closed the editor while the preview was being prepared.  Confirm that
+        # the session and source still match before mutating widgets so the UI cannot flicker back
+        # into the edit state unexpectedly.
+        if self._session is not session or self._current_source != source:
+            return
+
+        if initial_pixmap.isNull():
+            self._ui.edit_image_viewer.clear()
+        else:
+            self._ui.edit_image_viewer.set_pixmap(initial_pixmap)
+
+        # Now that the base image is ready, hand it to the sidebar so the asynchronous thumbnail
+        # workers can begin rendering previews for the Light and Color strips without blocking the
+        # GUI thread.
+        self._ui.edit_sidebar.set_light_preview_image(image)
+        self._ui.edit_sidebar.refresh()
 
     def leave_edit_mode(self, animate: bool = True) -> None:
         """Return to the standard detail view, optionally animating the transition."""
