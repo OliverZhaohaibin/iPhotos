@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
 from PySide6.QtCore import QObject, QThreadPool, QTimer, Signal
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtGui import QImage
 
 from ....io import sidecar
 from ..models.asset_model import AssetModel
@@ -89,8 +89,6 @@ class EditController(QObject):
         self._is_loading_edit_image = False
 
         self._preview_manager = EditPreviewManager(self._ui.edit_image_viewer, self)
-        self._preview_manager.preview_updated.connect(self._on_preview_pixmap_updated)
-        self._preview_manager.image_cleared.connect(self._handle_preview_cleared)
 
         self._transition_manager = EditViewTransitionManager(self._ui, self._window, self)
         self._transition_manager.transition_finished.connect(self._on_transition_finished)
@@ -285,7 +283,26 @@ class EditController(QObject):
             self.leave_edit_mode(animate=False)
             return
 
-        self._apply_session_adjustments_to_viewer()
+        if self._skip_next_preview_frame:
+            # The detail surface already uploaded the same GPU texture.  Keep the existing texture
+            # alive and only refresh the shader uniforms so the transition feels instantaneous.
+            self._skip_next_preview_frame = False
+            self._apply_session_adjustments_to_viewer()
+        else:
+            # A brand new asset is entering edit mode; upload its pixels once and preserve the zoom
+            # transform so the edit UI does not snap back to a centred view mid-transition.
+            self._ui.edit_image_viewer.set_image(
+                image,
+                session.values(),
+                image_source=path,
+                reset_view=False,
+            )
+
+        # The worker has delivered the full-resolution frame, so the loading scrim can disappear
+        # immediately.  This mirrors the legacy behaviour where the QWidget-based viewer stopped
+        # animating the spinner as soon as decoding finished.
+        self._is_loading_edit_image = False
+        self._ui.edit_image_viewer.set_loading(False)
 
         # Hand the decoded frame to the sidebar so the thumbnail workers can begin rendering their
         # filtered previews without blocking the GUI thread.
@@ -357,41 +374,6 @@ class EditController(QObject):
             return
         self._ui.edit_image_viewer.set_adjustments(self._session.values())
 
-    def _on_preview_pixmap_updated(self, pixmap: QPixmap) -> None:
-        """Display *pixmap* unless the compare gesture is active."""
-
-        if self._skip_next_preview_frame:
-            # Skip the redundant first frame emitted when the edit session
-            # starts for an asset that is already visible in the detail view.
-            # The GL viewer keeps its existing texture, avoiding a disruptive
-            # flash while the edit chrome fades in.
-            self._skip_next_preview_frame = False
-            self._apply_session_adjustments_to_viewer()
-            return
-
-        if self._is_loading_edit_image:
-            self._is_loading_edit_image = False
-            self._ui.edit_image_viewer.set_loading(False)
-        if self._compare_active:
-            return
-        if pixmap.isNull():
-            self._ui.edit_image_viewer.clear()
-            return
-        self._ui.edit_image_viewer.set_pixmap(
-            pixmap,
-            image_source=self._current_source,
-            reset_view=False,
-        )
-        self._apply_session_adjustments_to_viewer()
-
-    def _handle_preview_cleared(self) -> None:
-        """Clear the viewer and stop any pending loading indicator."""
-
-        self._ui.edit_image_viewer.clear()
-        if self._is_loading_edit_image:
-            self._is_loading_edit_image = False
-            self._ui.edit_image_viewer.set_loading(False)
-
     def _on_transition_finished(self, direction: str) -> None:
         """Clean up controller state after the transition manager completes."""
 
@@ -399,7 +381,8 @@ class EditController(QObject):
             self._ui.edit_header_container.hide()
             self._ui.edit_sidebar.set_session(None)
             self._ui.edit_sidebar.set_light_preview_image(None)
-            self._ui.edit_image_viewer.clear()
+            # Do not call ``clear`` on the shared GL viewer here.  The retained texture lets the
+            # detail surface display the adjusted frame instantly when the edit chrome slides away.
             self._session = None
             self._current_source = None
             self._compare_active = False
@@ -443,39 +426,14 @@ class EditController(QObject):
     def _handle_compare_pressed(self) -> None:
         """Display the original photo while the compare button is held."""
 
-        base_pixmap = self._preview_manager.get_base_image_pixmap()
-        if base_pixmap is None or base_pixmap.isNull():
-            return
         self._compare_active = True
-        self._ui.edit_image_viewer.set_pixmap(
-            base_pixmap,
-            image_source=self._current_source,
-            reset_view=False,
-        )
         self._ui.edit_image_viewer.set_adjustments({})
 
     def _handle_compare_released(self) -> None:
         """Restore the adjusted preview after a comparison glance."""
 
         self._compare_active = False
-        preview_pixmap = self._preview_manager.get_current_preview_pixmap()
-        if preview_pixmap is not None and not preview_pixmap.isNull():
-            self._ui.edit_image_viewer.set_pixmap(
-                preview_pixmap,
-                image_source=self._current_source,
-                reset_view=False,
-            )
-            self._apply_session_adjustments_to_viewer()
-            return
-        base_pixmap = self._preview_manager.get_base_image_pixmap()
-        if base_pixmap is not None and not base_pixmap.isNull():
-            # Fall back to the unadjusted preview if a recalculated frame is not available.
-            self._ui.edit_image_viewer.set_pixmap(
-                base_pixmap,
-                image_source=self._current_source,
-                reset_view=False,
-            )
-            self._apply_session_adjustments_to_viewer()
+        self._apply_session_adjustments_to_viewer()
 
     def _handle_reset_clicked(self) -> None:
         if self._session is None:

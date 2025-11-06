@@ -91,7 +91,11 @@ class EditFullscreenManager(QObject):
             return False
 
         try:
-            initial_pixmap = self._preview_manager.start_session(
+            # Prime the preview backend so full resolution adjustments remain responsive while the
+            # viewer owns the entire window.  The returned pixmap is intentionally ignored because
+            # the shared GL viewer now consumes the decoded image directly instead of relying on a
+            # QWidget-backed surface.
+            _ = self._preview_manager.start_session(
                 full_res_image,
                 adjustments,
                 scale_for_viewport=False,
@@ -172,10 +176,12 @@ class EditFullscreenManager(QObject):
 
         self._fullscreen_active = True
 
-        if initial_pixmap.isNull():
-            self._ui.edit_image_viewer.clear()
-        else:
-            self._ui.edit_image_viewer.set_pixmap(initial_pixmap)
+        self._ui.edit_image_viewer.set_image(
+            full_res_image,
+            adjustments,
+            image_source=source,
+            reset_view=True,
+        )
         self._ui.edit_image_viewer.reset_zoom()
 
         return True
@@ -254,7 +260,10 @@ class EditFullscreenManager(QObject):
             return True
 
         try:
-            initial_pixmap = self._preview_manager.start_session(
+            # Keep the preview backend warm so the edit sidebar and histogram continue to refresh
+            # while the immersive layout is active.  The GL viewer already owns the correct texture,
+            # therefore the pixmap result is intentionally discarded.
+            _ = self._preview_manager.start_session(
                 source_image,
                 adjustments,
                 scale_for_viewport=True,
@@ -267,10 +276,12 @@ class EditFullscreenManager(QObject):
             self._preview_manager.stop_session()
             return True
 
-        if initial_pixmap.isNull():
-            self._ui.edit_image_viewer.clear()
-        else:
-            self._ui.edit_image_viewer.set_pixmap(initial_pixmap)
+        self._ui.edit_image_viewer.set_image(
+            source_image,
+            adjustments,
+            image_source=source,
+            reset_view=True,
+        )
         self._ui.edit_image_viewer.reset_zoom()
 
         return True
