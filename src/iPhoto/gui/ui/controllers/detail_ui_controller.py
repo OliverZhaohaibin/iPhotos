@@ -164,6 +164,12 @@ class DetailUIController(QObject):
         self._view_controller.show_detail_view()
         self._filmstrip_view.doItemsLayout()
 
+        index = self._model.index(current_row, 0)
+        if index.isValid() and bool(index.data(Roles.IS_IMAGE)):
+            self.show_zoom_controls()
+        else:
+            self.hide_zoom_controls()
+
     def update_favorite_button(
         self, row: int, *, is_featured: Optional[bool] = None
     ) -> None:
