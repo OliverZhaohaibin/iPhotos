@@ -291,9 +291,10 @@ class EditController(QObject):
         else:
             # A brand new asset is entering edit mode; upload its pixels once and preserve the zoom
             # transform so the edit UI does not snap back to a centred view mid-transition.
+            resolved_adjustments = self._preview_manager.resolve_adjustments(session.values())
             self._ui.edit_image_viewer.set_image(
                 image,
-                session.values(),
+                resolved_adjustments,
                 image_source=path,
                 reset_view=False,
             )
@@ -372,7 +373,11 @@ class EditController(QObject):
 
         if self._session is None:
             return
-        self._ui.edit_image_viewer.set_adjustments(self._session.values())
+        adjustments = self._preview_manager.resolve_adjustments(self._session.values())
+        # The preview manager normalises master sliders, toggle states and colour statistics into
+        # the shader uniform space.  Feeding the resolved mapping into the OpenGL viewer keeps the
+        # hardware path aligned with the CPU preview without duplicating resolver math.
+        self._ui.edit_image_viewer.set_adjustments(adjustments)
 
     def _on_transition_finished(self, direction: str) -> None:
         """Clean up controller state after the transition manager completes."""
@@ -404,9 +409,10 @@ class EditController(QObject):
         if self._current_source is None or self._session is None:
             return
 
+        resolved_adjustments = self._preview_manager.resolve_adjustments(self._session.values())
         if self._fullscreen_manager.enter_fullscreen_preview(
             self._current_source,
-            self._session.values(),
+            resolved_adjustments,
         ):
             self._compare_active = False
 
@@ -415,7 +421,7 @@ class EditController(QObject):
 
         adjustments: Optional[dict[str, float]] = None
         if self._session is not None:
-            adjustments = self._session.values()
+            adjustments = self._preview_manager.resolve_adjustments(self._session.values())
 
         if self._fullscreen_manager.exit_fullscreen_preview(
             self._current_source,

@@ -181,6 +181,18 @@ class EditPreviewManager(QObject):
         self._preview_update_timer.stop()
         self._preview_update_timer.start()
 
+    # ------------------------------------------------------------------
+    def resolve_adjustments(self, session_values: Mapping[str, float | bool]) -> dict[str, float]:
+        """Return the shader-friendly adjustment mapping derived from *session_values*.
+
+        The edit controller uses this helper to update the OpenGL viewer immediately after
+        sliders change.  Reusing the preview manager's resolver guarantees that the GPU path
+        applies the same Photos-compatible colour math as the CPU preview renderer.  Keeping the
+        two surfaces perfectly in sync avoids duplicating transformation logic across modules.
+        """
+
+        return self._resolve_final_adjustments(session_values)
+
     def get_base_image_pixmap(self) -> Optional[QPixmap]:
         """Return the unadjusted pixmap currently backing the preview surface."""
 
