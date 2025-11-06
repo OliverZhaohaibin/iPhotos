@@ -54,6 +54,9 @@ class EditColorSection(QWidget):
         self.master_slider.set_preview_generator(self._generate_master_preview)
         self.master_slider.valueChanged.connect(self._handle_master_slider_changed)
         self.master_slider.clickedWhenDisabled.connect(self._handle_disabled_slider_click)
+        # Offload thumbnail rendering to the shared thread pool so dragging the
+        # slider never blocks the GUI thread.
+        self.master_slider.set_thumbnail_job_factory(self._queue_master_thumbnail_generation)
         layout.addWidget(self.master_slider)
 
         options_container = QFrame(self)
@@ -205,29 +208,33 @@ class EditColorSection(QWidget):
             if self._session is not None:
                 self._session.set_color_stats(stats)
         self.master_slider.setImage(image)
-        self._start_master_thumbnail_generation()
 
     # ------------------------------------------------------------------
-    def _start_master_thumbnail_generation(self) -> None:
-        """Launch a background worker to populate the Color slider thumbnails."""
+    def _queue_master_thumbnail_generation(
+        self, slider: ThumbnailStripSlider, generation: int
+    ) -> None:
+        """Submit a worker that regenerates the master slider thumbnails."""
 
-        image = self.master_slider.base_image()
+        image = slider.base_image()
         if image is None:
             return
 
-        values = self.master_slider.tick_values()
+        values = slider.tick_values()
         if not values:
             return
 
         worker = ThumbnailGeneratorWorker(
             image,
             values,
-            self.master_slider.preview_generator(),
-            target_height=self.master_slider.track_height(),
-            generation_id=self.master_slider.generation_id(),
+            slider.preview_generator(),
+            target_height=slider.track_height(),
+            generation_id=generation,
         )
 
-        worker.signals.thumbnail_ready.connect(self.master_slider.update_thumbnail)
+        worker.signals.thumbnail_ready.connect(
+            slider.update_thumbnail,
+            Qt.ConnectionType.QueuedConnection,
+        )
         worker.signals.error.connect(partial(self._on_thumbnail_error, worker))
         worker.signals.finished.connect(partial(self._on_thumbnail_finished, worker))
 

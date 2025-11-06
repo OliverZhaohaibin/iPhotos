@@ -51,6 +51,9 @@ class EditLightSection(QWidget):
         )
         self.master_slider.valueChanged.connect(self._handle_master_slider_changed)
         self.master_slider.clickedWhenDisabled.connect(self._handle_disabled_slider_click)
+        # Render the thumbnail strip asynchronously so the UI thread never blocks while
+        # the preview frames are generated for each tick position.
+        self.master_slider.set_thumbnail_job_factory(self._queue_master_thumbnail_generation)
         layout.addWidget(self.master_slider)
 
         # Use a frameless ``QFrame`` so the collapsible section displays plain sliders
@@ -200,7 +203,6 @@ class EditLightSection(QWidget):
         """Forward *image* to the master slider so it can refresh thumbnails."""
 
         self.master_slider.setImage(image)
-        self._start_master_thumbnail_generation()
 
     @Slot()
     def _handle_disabled_slider_click(self) -> None:
@@ -209,26 +211,31 @@ class EditLightSection(QWidget):
             self._session.set_value("Light_Enabled", True)
 
     # ------------------------------------------------------------------
-    def _start_master_thumbnail_generation(self) -> None:
-        """Launch a background task that fills the master slider thumbnails."""
+    def _queue_master_thumbnail_generation(
+        self, slider: ThumbnailStripSlider, generation: int
+    ) -> None:
+        """Submit a background worker that repopulates the slider thumbnails."""
 
-        image = self.master_slider.base_image()
+        image = slider.base_image()
         if image is None:
             return
 
-        values = self.master_slider.tick_values()
+        values = slider.tick_values()
         if not values:
             return
 
         worker = ThumbnailGeneratorWorker(
             image,
             values,
-            self.master_slider.preview_generator(),
-            target_height=self.master_slider.track_height(),
-            generation_id=self.master_slider.generation_id(),
+            slider.preview_generator(),
+            target_height=slider.track_height(),
+            generation_id=generation,
         )
 
-        worker.signals.thumbnail_ready.connect(self.master_slider.update_thumbnail)
+        worker.signals.thumbnail_ready.connect(
+            slider.update_thumbnail,
+            Qt.ConnectionType.QueuedConnection,
+        )
         worker.signals.error.connect(partial(self._on_thumbnail_error, worker))
         worker.signals.finished.connect(partial(self._on_thumbnail_finished, worker))
 

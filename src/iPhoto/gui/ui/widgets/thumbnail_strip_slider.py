@@ -64,6 +64,8 @@ class ThumbnailStripSlider(QFrame):
         self._tick_values: List[float] = []
         self._thumbnails: List[Optional[QPixmap]] = []
         self._placeholder_cache: dict[int, QPixmap] = {}
+        self._thumbnail_job_factory: Optional[Callable[["ThumbnailStripSlider", int], None]] = None
+        self._scheduled_generation: Optional[int] = None
         self._generation = 0
         self._preview_generator: Callable[[QImage, float], QImage] = self._generate_light_preview
 
@@ -121,6 +123,9 @@ class ThumbnailStripSlider(QFrame):
         self._placeholder_cache.clear()
         self._reset_thumbnails()
         self._track_frame.update()
+
+        # Request a fresh batch of thumbnails via the registered background job factory.
+        self.request_thumbnail_generation()
 
     def setValue(self, value: float, *, emit: bool = True) -> None:
         """Update the slider to *value* and optionally notify listeners."""
@@ -187,6 +192,50 @@ class ThumbnailStripSlider(QFrame):
         self._bump_generation()
         self._reset_thumbnails()
         self._track_frame.update()
+
+        # Changing the generator invalidates existing previews.  Ask the caller to
+        # repopulate the strip asynchronously so the UI never blocks while the
+        # new transformation is rendered.
+        self.request_thumbnail_generation()
+
+    def set_thumbnail_job_factory(
+        self,
+        factory: Optional[Callable[["ThumbnailStripSlider", int], None]],
+    ) -> None:
+        """Register *factory* to refresh thumbnails on a background thread.
+
+        The callable receives the slider instance and the current generation
+        token.  Passing ``None`` disables automatic thumbnail generation.  The
+        slider immediately requests a refresh when a new factory is installed so
+        freshly bound controllers do not have to trigger the first pass
+        explicitly.
+        """
+
+        self._thumbnail_job_factory = factory
+        self._scheduled_generation = None
+        self.request_thumbnail_generation()
+
+    def request_thumbnail_generation(self) -> None:
+        """Ask the registered job factory to repopulate the thumbnail strip.
+
+        Calling this method is safe even if no factory is configured or the
+        slider does not currently have a base image.  Duplicate requests for the
+        same generation token are ignored so controllers can freely call this
+        helper after updating supporting state (for example, colour statistics)
+        without having to track whether a worker is already in flight.
+        """
+
+        if self._thumbnail_job_factory is None:
+            return
+        if self._base_image is None or self._base_image.isNull():
+            return
+        if not self._tick_values:
+            return
+        generation = self._generation
+        if self._scheduled_generation == generation:
+            return
+        self._scheduled_generation = generation
+        self._thumbnail_job_factory(self, generation)
 
     # ------------------------------------------------------------------
     def tick_values(self) -> List[float]:
@@ -258,6 +307,7 @@ class ThumbnailStripSlider(QFrame):
         """Advance the generation counter to invalidate stale thumbnail updates."""
 
         self._generation += 1
+        self._scheduled_generation = None
         return self._generation
 
     def _ensure_placeholder_pixmap(self, height: int) -> QPixmap:
