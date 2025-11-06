@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, Set
+from typing import Mapping, Optional, Set
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 from PySide6.QtGui import QImage, QPixmap
@@ -171,18 +171,28 @@ class PlayerViewController(QObject):
     # ------------------------------------------------------------------
     # Content helpers
     # ------------------------------------------------------------------
-    def display_image(self, source: Path, *, placeholder: Optional[QPixmap] = None) -> bool:
+    def display_image(
+        self,
+        source: Path,
+        *,
+        immediate_adjustments: Optional[Mapping[str, float]] = None,
+    ) -> bool:
         """Begin loading ``source`` asynchronously, returning scheduling success."""
+        # ``immediate_adjustments`` lets the edit workflow push freshly
+        # calculated shader uniforms into the GL viewer while the background
+        # worker reloads the full-resolution frame.  The parameter defaults to
+        # ``None`` so regular playback transitions continue to behave exactly as
+        # before without paying any extra cost.
         self._loading_source = source
 
         # 1) 先切到 GL 视图，保证有有效的 GL 上下文
         self.show_image_surface()
-
-        # 2) 若有占位图，先显示；否则仅清空，不上传空图像
-        if placeholder is not None and not placeholder.isNull():
-            self._image_viewer.set_placeholder(placeholder)
-        else:
-            self._image_viewer.set_image(None, {})
+        self._image_viewer.set_loading(True)
+        if (
+            immediate_adjustments is not None
+            and self._image_viewer.current_image_source() == source
+        ):
+            self._image_viewer.set_adjustments(dict(immediate_adjustments))
 
         signals = _AdjustedImageSignals()
         worker = _AdjustedImageWorker(source, signals)
@@ -193,10 +203,12 @@ class PlayerViewController(QObject):
 
         def _finalize_on_completion(img_source: Path, img: QImage, adjustments: dict) -> None:
             self._release_worker(worker)
+            self._image_viewer.set_loading(False)
             signals.deleteLater()
 
         def _finalize_on_failure(img_source: Path, message: str) -> None:
             self._release_worker(worker)
+            self._image_viewer.set_loading(False)
             signals.deleteLater()
 
         signals.completed.connect(_finalize_on_completion)
@@ -294,6 +306,7 @@ class PlayerViewController(QObject):
             reset_view=True,
         )
         self._image_viewer.update()
+        self._image_viewer.set_loading(False)
 
         if self._loading_source == source:
             self._loading_source = None
@@ -307,6 +320,7 @@ class PlayerViewController(QObject):
         if self._loading_source == source:
             self._loading_source = None
         self._image_viewer.set_image(None)
+        self._image_viewer.set_loading(False)
         self.imageLoadingFailed.emit(source, message)
 
     def _release_worker(self, worker: _AdjustedImageWorker) -> None:

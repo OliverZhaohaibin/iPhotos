@@ -9,9 +9,12 @@ from typing import Optional, TYPE_CHECKING
 from PySide6.QtCore import QObject, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QImage
 
-from ....io import sidecar
 from ..models.asset_model import AssetModel
 from ..models.edit_session import EditSession
+from ..tasks.adjustment_workers import (
+    AdjustmentLoadWorker,
+    AdjustmentSaveWorker,
+)
 from ..tasks.image_load_worker import ImageLoadWorker
 from ..tasks.thumbnail_loader import ThumbnailLoader
 from ..ui_main_window import Ui_MainWindow
@@ -89,6 +92,9 @@ class EditController(QObject):
         self._is_loading_edit_image = False
 
         self._preview_manager = EditPreviewManager(self._ui.edit_image_viewer, self)
+        self._preview_manager.color_stats_ready.connect(
+            lambda _stats: self._apply_session_adjustments_to_viewer()
+        )
 
         self._transition_manager = EditViewTransitionManager(self._ui, self._window, self)
         self._transition_manager.transition_finished.connect(self._on_transition_finished)
@@ -113,6 +119,9 @@ class EditController(QObject):
         # ``_edit_viewer_fullscreen_connected`` ensures we only connect the
         # image viewer's full screen exit signal once per controller lifetime.
         self._edit_viewer_fullscreen_connected = False
+        self._active_adjustment_worker: AdjustmentLoadWorker | None = None
+        self._adjustment_load_job_id = 0
+        self._active_save_workers: set[AdjustmentSaveWorker] = set()
         ui.edit_reset_button.clicked.connect(self._handle_reset_clicked)
         ui.edit_done_button.clicked.connect(self._handle_done_clicked)
         ui.edit_adjust_action.triggered.connect(lambda checked: self._handle_mode_change("adjust", checked))
@@ -120,6 +129,12 @@ class EditController(QObject):
         ui.edit_compare_button.pressed.connect(self._handle_compare_pressed)
         ui.edit_compare_button.released.connect(self._handle_compare_released)
         ui.edit_mode_control.currentIndexChanged.connect(self._handle_top_bar_index_changed)
+        ui.edit_info_button.clicked.connect(lambda: ui.info_button.click())
+        ui.edit_favorite_button.clicked.connect(lambda: ui.favorite_button.click())
+        ui.info_button.clicked.connect(lambda: QTimer.singleShot(0, self._sync_edit_header_buttons))
+        ui.favorite_button.clicked.connect(
+            lambda: QTimer.singleShot(0, self._sync_edit_header_buttons)
+        )
 
         playlist.currentChanged.connect(self._handle_playlist_change)
         playlist.sourceChanged.connect(lambda _path: self._handle_playlist_change())
@@ -136,9 +151,9 @@ class EditController(QObject):
             return
 
         viewer = self._ui.edit_image_viewer
-        self._ui.zoom_in_button.clicked.connect(viewer.zoom_in)
-        self._ui.zoom_out_button.clicked.connect(viewer.zoom_out)
-        self._ui.zoom_slider.valueChanged.connect(self._handle_edit_zoom_slider_changed)
+        self._ui.edit_zoom_in_button.clicked.connect(viewer.zoom_in)
+        self._ui.edit_zoom_out_button.clicked.connect(viewer.zoom_out)
+        self._ui.edit_zoom_slider.valueChanged.connect(self._handle_edit_zoom_slider_changed)
         viewer.zoomChanged.connect(self._handle_edit_viewer_zoom_changed)
         self._edit_zoom_controls_connected = True
 
@@ -150,9 +165,9 @@ class EditController(QObject):
 
         viewer = self._ui.edit_image_viewer
         try:
-            self._ui.zoom_in_button.clicked.disconnect(viewer.zoom_in)
-            self._ui.zoom_out_button.clicked.disconnect(viewer.zoom_out)
-            self._ui.zoom_slider.valueChanged.disconnect(self._handle_edit_zoom_slider_changed)
+            self._ui.edit_zoom_in_button.clicked.disconnect(viewer.zoom_in)
+            self._ui.edit_zoom_out_button.clicked.disconnect(viewer.zoom_out)
+            self._ui.edit_zoom_slider.valueChanged.disconnect(self._handle_edit_zoom_slider_changed)
             viewer.zoomChanged.disconnect(self._handle_edit_viewer_zoom_changed)
         finally:
             # Ensure the state flag is cleared even if Qt reports that some of the links had already
@@ -164,7 +179,7 @@ class EditController(QObject):
     def _handle_edit_zoom_slider_changed(self, value: int) -> None:
         """Translate slider *value* percentages into edit viewer zoom factors."""
 
-        slider = self._ui.zoom_slider
+        slider = self._ui.edit_zoom_slider
         clamped = max(slider.minimum(), min(slider.maximum(), value))
         factor = float(clamped) / 100.0
         viewer = self._ui.edit_image_viewer
@@ -173,7 +188,7 @@ class EditController(QObject):
     def _handle_edit_viewer_zoom_changed(self, factor: float) -> None:
         """Synchronise the slider position when the edit viewer reports a new zoom *factor*."""
 
-        slider = self._ui.zoom_slider
+        slider = self._ui.edit_zoom_slider
         slider_value = max(slider.minimum(), min(slider.maximum(), int(round(factor * 100.0))))
         if slider_value == slider.value():
             return
@@ -192,10 +207,7 @@ class EditController(QObject):
             return
         self._current_source = source
 
-        adjustments = sidecar.load_adjustments(source)
-
         session = EditSession(self)
-        session.set_values(adjustments, emit_individual=False)
         session.valuesChanged.connect(self._handle_session_changed)
         self._session = session
         self._apply_session_adjustments_to_viewer()
@@ -242,6 +254,7 @@ class EditController(QObject):
         # Start loading the full resolution image on the worker pool immediately so the
         # transition animation can play without waiting for disk I/O or decode work.
         self._start_async_edit_load(source)
+        self._start_async_adjustment_load(source)
 
     def _start_async_edit_load(self, source: Path) -> None:
         """Kick off the threaded image load for *source*."""
@@ -261,6 +274,86 @@ class EditController(QObject):
         worker.signals.loadFailed.connect(self._on_edit_image_load_failed)
         self._active_image_worker = worker
         QThreadPool.globalInstance().start(worker)
+
+    def _start_async_adjustment_load(self, source: Path) -> None:
+        """Load persisted adjustments without blocking the GUI thread."""
+
+        self._adjustment_load_job_id += 1
+        job_id = self._adjustment_load_job_id
+        worker = AdjustmentLoadWorker(source)
+        self._active_adjustment_worker = worker
+
+        def _handle_loaded(path: Path, adjustments: dict, *, expected_job=job_id) -> None:
+            if expected_job != self._adjustment_load_job_id:
+                return
+            self._active_adjustment_worker = None
+            self._on_adjustments_loaded(path, adjustments)
+
+        def _handle_failed(path: Path, message: str, *, expected_job=job_id) -> None:
+            if expected_job != self._adjustment_load_job_id:
+                return
+            self._active_adjustment_worker = None
+            self._on_adjustments_load_failed(path, message)
+
+        worker.signals.loaded.connect(_handle_loaded)
+        worker.signals.failed.connect(_handle_failed)
+        QThreadPool.globalInstance().start(worker)
+
+    def _on_adjustments_loaded(self, path: Path, adjustments: dict) -> None:
+        """Apply *adjustments* delivered by the background load."""
+
+        if self._session is None or self._current_source != path:
+            return
+        if adjustments:
+            self._session.set_values(adjustments, emit_individual=False)
+
+    def _on_adjustments_load_failed(self, path: Path, message: str) -> None:
+        """Log a failure to load adjustments for *path* without aborting edit mode."""
+
+        del path  # The controller already records the active source separately.
+        _LOGGER.warning("Failed to load adjustments for edit session: %s", message)
+
+    def _start_async_adjustment_save(self, source: Path, adjustments: dict[str, float | bool]) -> None:
+        """Persist *adjustments* to disk on a worker thread."""
+
+        worker = AdjustmentSaveWorker(source, adjustments)
+        self._active_save_workers.add(worker)
+
+        def _handle_success(path: Path, *, worker_ref=worker) -> None:
+            self._active_save_workers.discard(worker_ref)
+            self._on_adjustments_saved(path)
+
+        def _handle_failure(path: Path, message: str, *, worker_ref=worker) -> None:
+            self._active_save_workers.discard(worker_ref)
+            self._on_adjustments_save_failed(path, message)
+
+        worker.signals.succeeded.connect(_handle_success)
+        worker.signals.failed.connect(_handle_failure)
+        try:
+            QThreadPool.globalInstance().start(worker)
+        except RuntimeError as exc:
+            self._active_save_workers.discard(worker)
+            self._on_adjustments_save_failed(source, str(exc))
+
+    def _on_adjustments_saved(self, path: Path) -> None:
+        """Refresh thumbnails after the background save finishes."""
+
+        self._schedule_thumbnail_refresh(path)
+        if self._navigation is not None:
+            try:
+                self._navigation.release_tree_refresh_suppression_if_edit()
+            except AttributeError:
+                pass
+
+    def _on_adjustments_save_failed(self, path: Path, message: str) -> None:
+        """Report sidecar save failures while releasing navigation suppression."""
+
+        _LOGGER.error("Failed to save adjustments for %s: %s", path, message)
+        if self._navigation is not None:
+            try:
+                self._navigation.release_tree_refresh_suppression_if_edit()
+            except AttributeError:
+                pass
 
     def _on_edit_image_loaded(self, path: Path, image: QImage) -> None:
         """Handle a successfully decoded edit image."""
@@ -502,11 +595,8 @@ class EditController(QObject):
         # controller state.  The detail player needs the same asset path to
         # reload the freshly saved adjustments once the edit chrome is hidden.
         source = self._current_source
-        # Capture the rendered preview so the detail view can reuse it while
-        # the background worker recalculates the full-resolution frame.  A copy
-        # keeps the pixmap alive after the edit widgets tear down their state.
-        preview_pixmap = self._ui.edit_image_viewer.pixmap()
         adjustments = self._session.values()
+        resolved_adjustments = self._active_adjustments or self._resolve_session_adjustments()
         if self._navigation is not None:
             # Saving adjustments writes sidecar files, which triggers the
             # filesystem watcher to rebuild the sidebar tree.  That rebuild
@@ -516,16 +606,12 @@ class EditController(QObject):
             # those callbacks are ignored until the detail surface finishes
             # updating.
             self._navigation.suppress_tree_refresh_for_edit()
-        sidecar.save_adjustments(source, adjustments)
-        # Defer cache invalidation until after the detail surface has been
-        # restored so the gallery does not briefly become the active view while
-        # its thumbnails refresh in the background.
-        self._schedule_thumbnail_refresh(source)
+        self._start_async_adjustment_save(source, adjustments)
         self.leave_edit_mode(animate=True)
-        # ``display_image`` schedules an asynchronous reload; logging the
-        # boolean result would not improve the UX, so simply trigger it and
-        # fall back to the playlist selection handlers if scheduling fails.
-        self._player_view.display_image(source, placeholder=preview_pixmap)
+        # ``display_image`` schedules an asynchronous reload while immediately
+        # applying the in-memory adjustments, keeping the detail view in sync
+        # without forcing a GPU read-back of the edit preview surface.
+        self._player_view.display_image(source, immediate_adjustments=resolved_adjustments)
         self.editingFinished.emit(source)
 
     def _refresh_thumbnail_cache(self, source: Path) -> None:
@@ -601,26 +687,38 @@ class EditController(QObject):
         self._ui.edit_mode_control.setCurrentIndex(index, animate=not from_top_bar)
 
     def _move_header_widgets_for_edit(self) -> None:
-        """Reparent shared toolbar widgets into the edit header."""
+        """Show the edit-specific controls while hiding the detail toolbar."""
 
         ui = self._ui
-        if ui.edit_zoom_host_layout.indexOf(ui.zoom_widget) == -1:
-            ui.edit_zoom_host_layout.addWidget(ui.zoom_widget)
-        ui.zoom_widget.show()
-
-        right_layout = ui.edit_right_controls_layout
-        if right_layout.indexOf(ui.info_button) == -1:
-            right_layout.insertWidget(0, ui.info_button)
-        if right_layout.indexOf(ui.favorite_button) == -1:
-            right_layout.insertWidget(1, ui.favorite_button)
+        ui.zoom_widget.hide()
+        ui.info_button.hide()
+        ui.favorite_button.hide()
+        ui.edit_zoom_widget.show()
+        ui.edit_info_button.show()
+        ui.edit_favorite_button.show()
+        self._sync_edit_header_buttons()
 
     def _restore_header_widgets_after_edit(self) -> None:
-        """Return shared toolbar widgets to the detail header layout."""
+        """Restore the detail toolbar visibility after edit mode ends."""
 
         ui = self._ui
-        ui.detail_actions_layout.insertWidget(ui.detail_info_button_index, ui.info_button)
-        ui.detail_actions_layout.insertWidget(ui.detail_favorite_button_index, ui.favorite_button)
-        ui.detail_header_layout.insertWidget(ui.detail_zoom_widget_index, ui.zoom_widget)
+        ui.zoom_widget.show()
+        ui.info_button.show()
+        ui.favorite_button.show()
+        ui.edit_zoom_widget.hide()
+        ui.edit_info_button.hide()
+        ui.edit_favorite_button.hide()
+
+    def _sync_edit_header_buttons(self) -> None:
+        """Mirror the detail header button state onto the edit toolbar."""
+
+        ui = self._ui
+        ui.edit_info_button.setIcon(ui.info_button.icon())
+        ui.edit_info_button.setEnabled(ui.info_button.isEnabled())
+        ui.edit_info_button.setToolTip(ui.info_button.toolTip())
+        ui.edit_favorite_button.setIcon(ui.favorite_button.icon())
+        ui.edit_favorite_button.setEnabled(ui.favorite_button.isEnabled())
+        ui.edit_favorite_button.setToolTip(ui.favorite_button.toolTip())
 
     def _handle_playlist_change(self) -> None:
         if self._view_controller.is_edit_view_active():

@@ -13,7 +13,6 @@ from ....core.color_resolver import (
     COLOR_KEYS,
     ColorResolver,
     ColorStats,
-    compute_color_statistics,
 )
 from ....core.preview_backends import (
     PreviewBackend,
@@ -22,6 +21,7 @@ from ....core.preview_backends import (
     select_preview_backend,
 )
 from ..widgets.image_viewer import ImageViewer
+from ..tasks.color_stats_worker import ColorStatsWorker
 from ..tasks.preview_render_worker import PreviewRenderWorker
 
 _LOGGER = logging.getLogger(__name__)
@@ -100,6 +100,9 @@ class EditPreviewManager(QObject):
     image_cleared = Signal()
     """Emitted when no preview image is available and the viewer should clear."""
 
+    color_stats_ready = Signal(ColorStats)
+    """Emitted after fresh colour statistics have been computed."""
+
     def __init__(self, viewer: ImageViewer, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
         self._viewer = viewer
@@ -135,6 +138,7 @@ class EditPreviewManager(QObject):
         self._preview_update_timer.setSingleShot(True)
         self._preview_update_timer.setInterval(50)
         self._preview_update_timer.timeout.connect(self._start_preview_job)
+        self._active_color_stats_workers: set[ColorStatsWorker] = set()
 
     # ------------------------------------------------------------------
     # Public API used by :class:`EditController`
@@ -192,15 +196,13 @@ class EditPreviewManager(QObject):
         self._base_pixmap = base_pixmap if not base_pixmap.isNull() else None
         self._current_preview_pixmap = self._base_pixmap
         self._current_adjustments = dict(adjustments)
-        try:
-            self._color_stats = compute_color_statistics(prepared)
-        except Exception:
-            # Defensive: computing color statistics can touch low-level image
-            # buffers and may fail for malformed or exotic image formats. Log
-            # the error and fall back to a safe default so the edit flow remains
-            # usable.
-            _LOGGER.exception("Failed to compute color statistics for preview image; using defaults")
-            self._color_stats = None
+        # Color statistics are intentionally computed on a worker thread to keep
+        # the GUI responsive when very large frames enter edit mode.  The
+        # resulting stats are cached and re-emitted via ``color_stats_ready`` so
+        # the controller can refresh shader uniforms without blocking on CPU
+        # work.
+        self._color_stats = None
+        self._request_color_statistics(prepared)
 
         if previous_session is not None:
             self._queue_session_for_disposal(previous_session)
@@ -229,6 +231,7 @@ class EditPreviewManager(QObject):
         self._current_preview_pixmap = None
         self._current_adjustments.clear()
         self._color_stats = None
+        self._cancel_color_statistics_requests()
 
     def cancel_pending_updates(self) -> None:
         """Stop timers and invalidate in-flight previews without tearing down the session."""
@@ -424,3 +427,38 @@ class EditPreviewManager(QObject):
         if any(queued is session for queued in self._pending_session_disposals):
             return
         self._pending_session_disposals.append(session)
+
+    # ------------------------------------------------------------------
+    # Colour statistics helpers
+    # ------------------------------------------------------------------
+    def _request_color_statistics(self, image: QImage) -> None:
+        """Compute colour statistics for *image* on the shared worker pool."""
+
+        worker = ColorStatsWorker(image)
+        self._active_color_stats_workers.add(worker)
+
+        def _handle_completed(stats: ColorStats, *, worker_ref=worker) -> None:
+            self._active_color_stats_workers.discard(worker_ref)
+            self._color_stats = stats
+            self.color_stats_ready.emit(stats)
+            if self._current_adjustments:
+                # Re-render previews so colour sensitive adjustments pick up the
+                # refined statistics.
+                self._start_preview_job()
+
+        def _handle_failed(message: str, *, worker_ref=worker) -> None:
+            _LOGGER.warning("Color statistics computation failed: %s", message)
+            self._active_color_stats_workers.discard(worker_ref)
+            self._color_stats = None
+
+        worker.signals.completed.connect(_handle_completed)
+        worker.signals.failed.connect(_handle_failed)
+        self._thread_pool.start(worker)
+
+    def _cancel_color_statistics_requests(self) -> None:
+        """Drop references to active colour-statistics workers."""
+
+        if not self._active_color_stats_workers:
+            return
+        for worker in list(self._active_color_stats_workers):
+            self._active_color_stats_workers.discard(worker)

@@ -156,8 +156,12 @@ class Ui_MainWindow(object):
         self.edit_sidebar = self.detail_page.edit_sidebar
         self.edit_mode_control = self.detail_page.edit_mode_control
         self.edit_header_container = self.detail_page.edit_header_container
-        self.edit_zoom_host = self.detail_page.edit_zoom_host
-        self.edit_zoom_host_layout = self.detail_page.edit_zoom_host_layout
+        self.edit_zoom_widget = self.detail_page.edit_zoom_widget
+        self.edit_zoom_slider = self.detail_page.edit_zoom_slider
+        self.edit_zoom_in_button = self.detail_page.edit_zoom_in_button
+        self.edit_zoom_out_button = self.detail_page.edit_zoom_out_button
+        self.edit_info_button = self.detail_page.edit_info_button
+        self.edit_favorite_button = self.detail_page.edit_favorite_button
         self.edit_right_controls_layout = self.detail_page.edit_right_controls_layout
 
         right_panel = QWidget()

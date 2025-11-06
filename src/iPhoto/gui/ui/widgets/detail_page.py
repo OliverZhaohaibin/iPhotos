@@ -68,10 +68,12 @@ class DetailPageWidget(QWidget):
         self.edit_compare_button = QToolButton(self)
         self.edit_reset_button = QPushButton(self)
         self.edit_done_button = QPushButton(self)
-        self.edit_zoom_host = QWidget(self)
-        self.edit_zoom_host_layout = QHBoxLayout(self.edit_zoom_host)
-        self.edit_zoom_host_layout.setContentsMargins(0, 0, 0, 0)
-        self.edit_zoom_host_layout.setSpacing(4)
+        self.edit_zoom_widget = QWidget(self)
+        self.edit_zoom_slider = QSlider(Qt.Orientation.Horizontal, self.edit_zoom_widget)
+        self.edit_zoom_in_button = QToolButton(self.edit_zoom_widget)
+        self.edit_zoom_out_button = QToolButton(self.edit_zoom_widget)
+        self.edit_info_button = QToolButton(self)
+        self.edit_favorite_button = QToolButton(self)
         self.edit_sidebar = EditSidebar()
         self.edit_sidebar.setObjectName("editSidebar")
 
@@ -351,9 +353,27 @@ class DetailPageWidget(QWidget):
         self.edit_reset_button.setFixedHeight(EDIT_HEADER_BUTTON_HEIGHT)
         left_controls_layout.addWidget(self.edit_reset_button)
 
-        self.edit_zoom_host_layout.setContentsMargins(0, 0, 0, 0)
-        self.edit_zoom_host_layout.setSpacing(4)
-        left_controls_layout.addWidget(self.edit_zoom_host)
+        small_button_size = QSize(
+            int(HEADER_BUTTON_SIZE.width() / 2),
+            int(HEADER_BUTTON_SIZE.height() / 2),
+        )
+        edit_zoom_layout = QHBoxLayout(self.edit_zoom_widget)
+        edit_zoom_layout.setContentsMargins(0, 0, 0, 0)
+        edit_zoom_layout.setSpacing(4)
+        self._configure_header_button(self.edit_zoom_out_button, "minus.svg", "Zoom Out")
+        self.edit_zoom_out_button.setFixedSize(small_button_size)
+        edit_zoom_layout.addWidget(self.edit_zoom_out_button)
+        self.edit_zoom_slider.setRange(10, 400)
+        self.edit_zoom_slider.setSingleStep(5)
+        self.edit_zoom_slider.setPageStep(25)
+        self.edit_zoom_slider.setValue(100)
+        self.edit_zoom_slider.setFixedWidth(90)
+        self.edit_zoom_slider.setToolTip("Zoom")
+        edit_zoom_layout.addWidget(self.edit_zoom_slider)
+        self._configure_header_button(self.edit_zoom_in_button, "plus.svg", "Zoom In")
+        self.edit_zoom_in_button.setFixedSize(small_button_size)
+        edit_zoom_layout.addWidget(self.edit_zoom_in_button)
+        left_controls_layout.addWidget(self.edit_zoom_widget)
 
         container_layout.addWidget(left_controls_container)
 
@@ -374,6 +394,13 @@ class DetailPageWidget(QWidget):
             QSizePolicy.Policy.Maximum,
             QSizePolicy.Policy.Preferred,
         )
+
+        self._configure_header_button(self.edit_info_button, "info.circle.svg", "Info")
+        right_controls_layout.addWidget(self.edit_info_button)
+
+        self._configure_header_button(self.edit_favorite_button, "suit.heart.svg", "Add to Favorites")
+        self.edit_favorite_button.setEnabled(False)
+        right_controls_layout.addWidget(self.edit_favorite_button)
 
         self.edit_done_button.setObjectName("editDoneButton")
         self.edit_done_button.setAutoDefault(False)
@@ -405,6 +432,10 @@ class DetailPageWidget(QWidget):
 
         container_layout.addWidget(right_controls_container)
         self.edit_right_controls_layout = right_controls_layout
+
+        self.edit_zoom_widget.hide()
+        self.edit_info_button.hide()
+        self.edit_favorite_button.hide()
 
         return container
 

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Callable
 
 from PySide6.QtCore import (
     QObject,
     QEasingCurve,
     QParallelAnimationGroup,
     QPropertyAnimation,
+    QTimer,
     QVariantAnimation,
     Signal,
 )
@@ -63,6 +64,7 @@ class EditViewTransitionManager(QObject):
         self._splitter_sizes_before_edit: list[int] | None = None
         self._transition_group: QParallelAnimationGroup | None = None
         self._transition_direction: str | None = None
+        self._theme_timer: QTimer | None = None
 
         self._edit_header_opacity = QGraphicsOpacityEffect(ui.edit_header_container)
         self._edit_header_opacity.setOpacity(1.0)
@@ -103,7 +105,7 @@ class EditViewTransitionManager(QObject):
         self._splitter_sizes_before_edit = list(splitter_sizes)
         self._prepare_navigation_sidebar_for_entry()
         self._prepare_edit_sidebar_for_entry()
-        self._theme_manager.apply_dark_theme()
+        self._schedule_theme_change(self._theme_manager.apply_dark_theme)
         self._start_transition_animation(
             entering=True,
             splitter_start_sizes=splitter_sizes,
@@ -118,7 +120,7 @@ class EditViewTransitionManager(QObject):
 
         self._prepare_navigation_sidebar_for_exit()
         self._prepare_edit_sidebar_for_exit()
-        self._theme_manager.restore_light_theme()
+        self._schedule_theme_change(self._theme_manager.restore_light_theme)
 
         self._ui.detail_chrome_container.show()
         self._ui.edit_header_container.show()
@@ -328,6 +330,29 @@ class EditViewTransitionManager(QObject):
 
         if direction:
             self.transition_finished.emit(direction)
+
+    def _schedule_theme_change(self, callback: Callable[[], None]) -> None:
+        """Run *callback* in the next event loop iteration."""
+
+        if self._theme_timer is not None:
+            try:
+                self._theme_timer.stop()
+            finally:
+                self._theme_timer.deleteLater()
+            self._theme_timer = None
+
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+
+        def _invoke() -> None:
+            if self._theme_timer is timer:
+                self._theme_timer = None
+            callback()
+            timer.deleteLater()
+
+        timer.timeout.connect(_invoke)
+        timer.start(0)
+        self._theme_timer = timer
 
     def _finalise_enter_transition(self) -> None:
         sidebar = self._ui.edit_sidebar

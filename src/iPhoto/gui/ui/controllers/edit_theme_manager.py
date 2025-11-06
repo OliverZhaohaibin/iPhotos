@@ -183,8 +183,16 @@ class EditThemeManager:
                     )
 
         self._ui.edit_sidebar.set_control_icon_tint(dark_icon_color)
-        self._ui.zoom_out_button.setIcon(load_icon("minus.svg", color=dark_icon_hex))
-        self._ui.zoom_in_button.setIcon(load_icon("plus.svg", color=dark_icon_hex))
+        tinted_minus = load_icon("minus.svg", color=dark_icon_hex)
+        tinted_plus = load_icon("plus.svg", color=dark_icon_hex)
+        tinted_info = load_icon("info.circle.svg", color=dark_icon_hex)
+        tinted_favorite = load_icon("suit.heart.svg", color=dark_icon_hex)
+        self._ui.zoom_out_button.setIcon(tinted_minus)
+        self._ui.zoom_in_button.setIcon(tinted_plus)
+        self._ui.edit_zoom_out_button.setIcon(tinted_minus)
+        self._ui.edit_zoom_in_button.setIcon(tinted_plus)
+        self._ui.edit_info_button.setIcon(tinted_info)
+        self._ui.edit_favorite_button.setIcon(tinted_favorite)
 
         if self._detail_ui_controller is not None:
             self._detail_ui_controller.set_toolbar_icon_tint(dark_icon_color)
@@ -430,6 +438,10 @@ class EditThemeManager:
 
         self._ui.zoom_out_button.setIcon(load_icon("minus.svg"))
         self._ui.zoom_in_button.setIcon(load_icon("plus.svg"))
+        self._ui.edit_zoom_out_button.setIcon(load_icon("minus.svg"))
+        self._ui.edit_zoom_in_button.setIcon(load_icon("plus.svg"))
+        self._ui.edit_info_button.setIcon(load_icon("info.circle.svg"))
+        self._ui.edit_favorite_button.setIcon(load_icon("suit.heart.svg"))
         if self._detail_ui_controller is not None:
             self._detail_ui_controller.set_toolbar_icon_tint(None)
         else:
