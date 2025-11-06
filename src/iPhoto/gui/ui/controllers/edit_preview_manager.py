@@ -9,7 +9,12 @@ from PySide6.QtCore import QObject, QThreadPool, QTimer, Qt, Signal
 from PySide6.QtGui import QImage, QPixmap
 
 from ....core.light_resolver import LIGHT_KEYS, resolve_light_vector
-from ....core.color_resolver import COLOR_KEYS, ColorResolver, ColorStats, compute_color_statistics
+from ....core.color_resolver import (
+    COLOR_KEYS,
+    ColorResolver,
+    ColorStats,
+    compute_color_statistics,
+)
 from ....core.preview_backends import (
     PreviewBackend,
     PreviewSession,
@@ -20,6 +25,70 @@ from ..widgets.image_viewer import ImageViewer
 from ..tasks.preview_render_worker import PreviewRenderWorker
 
 _LOGGER = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Adjustment helpers
+# ---------------------------------------------------------------------------
+
+def resolve_adjustment_mapping(
+    session_values: Mapping[str, float | bool],
+    *,
+    stats: ColorStats | None = None,
+) -> dict[str, float]:
+    """Return shader-friendly adjustments derived from *session_values*.
+
+    The helper mirrors the Photos-compatible colour math used by the CPU preview
+    renderer so both the OpenGL shader and the background pixmap pipeline apply
+    identical transformations.  Passing a :class:`ColorStats` instance ensures
+    colour tools such as the Cast slider honour the white balance sampled from
+    the source frame while keeping the function side-effect free for callers
+    that do not have statistics available yet.
+    """
+
+    resolved: dict[str, float] = {}
+    overrides: dict[str, float] = {}
+    color_overrides: dict[str, float] = {}
+
+    master_value = float(session_values.get("Light_Master", 0.0))
+    light_enabled = bool(session_values.get("Light_Enabled", True))
+    color_master = float(session_values.get("Color_Master", 0.0))
+    color_enabled = bool(session_values.get("Color_Enabled", True))
+
+    for key, value in session_values.items():
+        if key in ("Light_Master", "Light_Enabled", "Color_Master", "Color_Enabled"):
+            continue
+        if key in LIGHT_KEYS:
+            overrides[key] = float(value)
+        elif key in COLOR_KEYS:
+            color_overrides[key] = float(value)
+        else:
+            resolved[key] = float(value)
+
+    if light_enabled:
+        resolved.update(resolve_light_vector(master_value, overrides, mode="delta"))
+    else:
+        resolved.update({key: 0.0 for key in LIGHT_KEYS})
+
+    stats_obj = stats or ColorStats()
+    if color_enabled:
+        resolved.update(
+            ColorResolver.resolve_color_vector(
+                color_master,
+                color_overrides,
+                stats=stats_obj,
+                mode="delta",
+            )
+        )
+    else:
+        resolved.update({key: 0.0 for key in COLOR_KEYS})
+
+    gain_r, gain_g, gain_b = stats_obj.white_balance_gain
+    resolved["Color_Gain_R"] = float(gain_r)
+    resolved["Color_Gain_G"] = float(gain_g)
+    resolved["Color_Gain_B"] = float(gain_b)
+
+    return resolved
 
 
 class EditPreviewManager(QObject):
@@ -191,7 +260,7 @@ class EditPreviewManager(QObject):
         two surfaces perfectly in sync avoids duplicating transformation logic across modules.
         """
 
-        return self._resolve_final_adjustments(session_values)
+        return resolve_adjustment_mapping(session_values, stats=self._color_stats)
 
     def get_base_image_pixmap(self) -> Optional[QPixmap]:
         """Return the unadjusted pixmap currently backing the preview surface."""
@@ -271,7 +340,10 @@ class EditPreviewManager(QObject):
         self._preview_job_id += 1
         job_id = self._preview_job_id
 
-        final_adjustments = self._resolve_final_adjustments(self._current_adjustments)
+        final_adjustments = resolve_adjustment_mapping(
+            self._current_adjustments,
+            stats=self._color_stats,
+        )
 
         worker = PreviewRenderWorker(
             self._preview_backend,
@@ -290,54 +362,10 @@ class EditPreviewManager(QObject):
         worker.signals.finished.connect(_handle_worker_finished)
         self._thread_pool.start(worker)
 
-    def _resolve_final_adjustments(
-        self,
-        session_values: Mapping[str, float | bool],
-    ) -> dict[str, float]:
-        """Blend the Light master slider, options and toggle into renderable values."""
+    def color_stats(self) -> ColorStats | None:
+        """Expose the most recent colour statistics for reuse in the GL path."""
 
-        resolved: dict[str, float] = {}
-        overrides: dict[str, float] = {}
-        color_overrides: dict[str, float] = {}
-        master_value = float(session_values.get("Light_Master", 0.0))
-        light_enabled = bool(session_values.get("Light_Enabled", True))
-        color_master = float(session_values.get("Color_Master", 0.0))
-        color_enabled = bool(session_values.get("Color_Enabled", True))
-
-        for key, value in session_values.items():
-            if key in ("Light_Master", "Light_Enabled", "Color_Master", "Color_Enabled"):
-                continue
-            if key in LIGHT_KEYS:
-                overrides[key] = float(value)
-            elif key in COLOR_KEYS:
-                color_overrides[key] = float(value)
-            else:
-                resolved[key] = float(value)
-
-        if light_enabled:
-            resolved.update(resolve_light_vector(master_value, overrides, mode="delta"))
-        else:
-            resolved.update({key: 0.0 for key in LIGHT_KEYS})
-
-        stats = self._color_stats or ColorStats()
-        if color_enabled:
-            resolved.update(
-                ColorResolver.resolve_color_vector(
-                    color_master,
-                    color_overrides,
-                    stats=stats,
-                    mode="delta",
-                )
-            )
-        else:
-            resolved.update({key: 0.0 for key in COLOR_KEYS})
-
-        gain_r, gain_g, gain_b = stats.white_balance_gain
-        resolved["Color_Gain_R"] = gain_r
-        resolved["Color_Gain_G"] = gain_g
-        resolved["Color_Gain_B"] = gain_b
-
-        return resolved
+        return self._color_stats
 
     def _on_preview_ready(self, image: QImage, job_id: int) -> None:
         """Update the preview if the emitted job matches the latest request."""

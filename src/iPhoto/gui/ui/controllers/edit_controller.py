@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional, TYPE_CHECKING
+from typing import Mapping, Optional, TYPE_CHECKING
 
 from PySide6.QtCore import QObject, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QImage
@@ -16,7 +16,7 @@ from ..tasks.image_load_worker import ImageLoadWorker
 from ..tasks.thumbnail_loader import ThumbnailLoader
 from ..ui_main_window import Ui_MainWindow
 from .edit_fullscreen_manager import EditFullscreenManager
-from .edit_preview_manager import EditPreviewManager
+from .edit_preview_manager import EditPreviewManager, resolve_adjustment_mapping
 from .edit_view_transition import EditViewTransitionManager
 from .player_view_controller import PlayerViewController
 from .view_controller import ViewController
@@ -104,6 +104,11 @@ class EditController(QObject):
         self._session: Optional[EditSession] = None
         self._current_source: Optional[Path] = None
         self._compare_active = False
+        # ``_active_adjustments`` caches the resolved shader values representing the
+        # most recent session state.  Storing the mapping lets compare mode and
+        # the full screen workflow reapply the exact GPU uniforms without
+        # recalculating them repeatedly.
+        self._active_adjustments: dict[str, float] = {}
         self._skip_next_preview_frame = False
         # ``_edit_viewer_fullscreen_connected`` ensures we only connect the
         # image viewer's full screen exit signal once per controller lifetime.
@@ -291,13 +296,17 @@ class EditController(QObject):
         else:
             # A brand new asset is entering edit mode; upload its pixels once and preserve the zoom
             # transform so the edit UI does not snap back to a centred view mid-transition.
-            resolved_adjustments = self._preview_manager.resolve_adjustments(session.values())
+            resolved_adjustments = self._resolve_shader_adjustments(session.values())
+            self._active_adjustments = resolved_adjustments
             self._ui.edit_image_viewer.set_image(
                 image,
                 resolved_adjustments,
                 image_source=path,
                 reset_view=False,
             )
+            if self._compare_active:
+                # Honour an active compare press by restoring the original look immediately.
+                self._ui.edit_image_viewer.set_adjustments({})
 
         # The worker has delivered the full-resolution frame, so the loading scrim can disappear
         # immediately.  This mirrors the legacy behaviour where the QWidget-based viewer stopped
@@ -373,11 +382,29 @@ class EditController(QObject):
 
         if self._session is None:
             return
-        adjustments = self._preview_manager.resolve_adjustments(self._session.values())
-        # The preview manager normalises master sliders, toggle states and colour statistics into
-        # the shader uniform space.  Feeding the resolved mapping into the OpenGL viewer keeps the
-        # hardware path aligned with the CPU preview without duplicating resolver math.
-        self._ui.edit_image_viewer.set_adjustments(adjustments)
+        adjustments = self._resolve_shader_adjustments(self._session.values())
+        self._active_adjustments = adjustments
+        # Avoid repainting while the compare button is held so the user continues
+        # to see the unadjusted frame until the interaction ends.
+        if not self._compare_active:
+            self._ui.edit_image_viewer.set_adjustments(adjustments)
+
+    def _resolve_shader_adjustments(
+        self, values: Mapping[str, float | bool]
+    ) -> dict[str, float]:
+        """Resolve *values* into the GPU-friendly adjustment mapping."""
+
+        return resolve_adjustment_mapping(values, stats=self._preview_manager.color_stats())
+
+    def _restore_active_adjustments(self) -> None:
+        """Reapply the cached adjustments to the GL viewer."""
+
+        if self._compare_active:
+            return
+        if self._active_adjustments:
+            self._ui.edit_image_viewer.set_adjustments(self._active_adjustments)
+        else:
+            self._ui.edit_image_viewer.set_adjustments({})
 
     def _on_transition_finished(self, direction: str) -> None:
         """Clean up controller state after the transition manager completes."""
@@ -391,6 +418,7 @@ class EditController(QObject):
             self._session = None
             self._current_source = None
             self._compare_active = False
+            self._active_adjustments = {}
             self._skip_next_preview_frame = False
 
     # ------------------------------------------------------------------
@@ -409,10 +437,12 @@ class EditController(QObject):
         if self._current_source is None or self._session is None:
             return
 
-        resolved_adjustments = self._preview_manager.resolve_adjustments(self._session.values())
+        adjustments = self._active_adjustments or self._resolve_shader_adjustments(
+            self._session.values()
+        )
         if self._fullscreen_manager.enter_fullscreen_preview(
             self._current_source,
-            resolved_adjustments,
+            adjustments,
         ):
             self._compare_active = False
 
@@ -421,7 +451,9 @@ class EditController(QObject):
 
         adjustments: Optional[dict[str, float]] = None
         if self._session is not None:
-            adjustments = self._preview_manager.resolve_adjustments(self._session.values())
+            adjustments = self._active_adjustments or self._resolve_shader_adjustments(
+                self._session.values()
+            )
 
         if self._fullscreen_manager.exit_fullscreen_preview(
             self._current_source,
@@ -439,7 +471,7 @@ class EditController(QObject):
         """Restore the adjusted preview after a comparison glance."""
 
         self._compare_active = False
-        self._apply_session_adjustments_to_viewer()
+        self._restore_active_adjustments()
 
     def _handle_reset_clicked(self) -> None:
         if self._session is None:
