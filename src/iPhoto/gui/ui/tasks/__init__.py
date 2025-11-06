@@ -3,6 +3,10 @@
 from .asset_loader_worker import AssetLoaderWorker
 from .import_worker import ImportSignals, ImportWorker
 from .scanner_worker import ScannerWorker
+from .thumbnail_generator_worker import (
+    ThumbnailGeneratorSignals,
+    ThumbnailGeneratorWorker,
+)
 from .thumbnail_loader import ThumbnailJob, ThumbnailLoader
 
 __all__ = [
@@ -10,6 +14,8 @@ __all__ = [
     "ImportSignals",
     "ImportWorker",
     "ScannerWorker",
+    "ThumbnailGeneratorSignals",
+    "ThumbnailGeneratorWorker",
     "ThumbnailJob",
     "ThumbnailLoader",
 ]

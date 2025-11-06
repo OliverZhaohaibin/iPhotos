@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import logging
+from functools import partial
 from typing import Dict, Optional
 
 
-from PySide6.QtCore import Signal, Slot, Qt
+from PySide6.QtCore import QThreadPool, Signal, Slot, Qt
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -20,6 +22,10 @@ from ..models.edit_session import EditSession
 from .collapsible_section import CollapsibleSection
 from .edit_strip import BWSlider
 from .thumbnail_strip_slider import ThumbnailStripSlider
+from ..tasks.thumbnail_generator_worker import ThumbnailGeneratorWorker
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class EditLightSection(QWidget):
@@ -29,6 +35,8 @@ class EditLightSection(QWidget):
         super().__init__(parent)
         self._session: Optional[EditSession] = None
         self._rows: Dict[str, _SliderRow] = {}
+        self._thread_pool = QThreadPool.globalInstance()
+        self._active_thumbnail_workers: list[ThumbnailGeneratorWorker] = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -192,12 +200,58 @@ class EditLightSection(QWidget):
         """Forward *image* to the master slider so it can refresh thumbnails."""
 
         self.master_slider.setImage(image)
+        self._start_master_thumbnail_generation()
 
     @Slot()
     def _handle_disabled_slider_click(self) -> None:
         """Re-enables the Light adjustments if a disabled slider is clicked."""
         if self._session is not None and not self._session.value("Light_Enabled"):
             self._session.set_value("Light_Enabled", True)
+
+    # ------------------------------------------------------------------
+    def _start_master_thumbnail_generation(self) -> None:
+        """Launch a background task that fills the master slider thumbnails."""
+
+        image = self.master_slider.base_image()
+        if image is None:
+            return
+
+        values = self.master_slider.tick_values()
+        if not values:
+            return
+
+        worker = ThumbnailGeneratorWorker(
+            image,
+            values,
+            self.master_slider.preview_generator(),
+            target_height=self.master_slider.track_height(),
+            generation_id=self.master_slider.generation_id(),
+        )
+
+        worker.signals.thumbnail_ready.connect(self.master_slider.update_thumbnail)
+        worker.signals.error.connect(partial(self._on_thumbnail_error, worker))
+        worker.signals.finished.connect(partial(self._on_thumbnail_finished, worker))
+
+        self._active_thumbnail_workers.append(worker)
+        self._thread_pool.start(worker)
+
+    @Slot(int, str)
+    def _on_thumbnail_error(self, worker: ThumbnailGeneratorWorker, generation_id: int, message: str) -> None:
+        """Log thumbnail generation failures while keeping the worker alive."""
+
+        del generation_id  # The slider ignores stale generations automatically.
+        if worker in self._active_thumbnail_workers:
+            _LOGGER.error("Light thumbnail generation failed: %s", message)
+
+    @Slot(int)
+    def _on_thumbnail_finished(self, worker: ThumbnailGeneratorWorker, generation_id: int) -> None:
+        """Release references to completed workers so they can be garbage collected."""
+
+        del generation_id
+        try:
+            self._active_thumbnail_workers.remove(worker)
+        except ValueError:
+            pass
 
 
 class _SliderRow(QFrame):
