@@ -10,6 +10,11 @@ from .thumbnail_generator_worker import (
     ThumbnailGeneratorWorker,
 )
 from .thumbnail_loader import ThumbnailJob, ThumbnailLoader
+from .edit_sidebar_preview_worker import (
+    EditSidebarPreviewResult,
+    EditSidebarPreviewSignals,
+    EditSidebarPreviewWorker,
+)
 
 __all__ = [
     "AssetLoaderWorker",
@@ -24,4 +29,7 @@ __all__ = [
     "ThumbnailGeneratorWorker",
     "ThumbnailJob",
     "ThumbnailLoader",
+    "EditSidebarPreviewResult",
+    "EditSidebarPreviewSignals",
+    "EditSidebarPreviewWorker",
 ]

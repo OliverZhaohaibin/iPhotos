@@ -15,6 +15,10 @@ from ..models.asset_model import AssetModel
 from ..models.edit_session import EditSession
 from ..tasks.image_load_worker import ImageLoadWorker
 from ..tasks.thumbnail_loader import ThumbnailLoader
+from ..tasks.edit_sidebar_preview_worker import (
+    EditSidebarPreviewResult,
+    EditSidebarPreviewWorker,
+)
 from ..ui_main_window import Ui_MainWindow
 from .edit_fullscreen_manager import EditFullscreenManager
 from .edit_preview_manager import EditPreviewManager, resolve_adjustment_mapping
@@ -131,6 +135,13 @@ class EditController(QObject):
         playlist.sourceChanged.connect(lambda _path: self._handle_playlist_change())
 
         ui.edit_header_container.hide()
+
+        # The sidebar preview worker runs after the full-resolution image is decoded to avoid
+        # blocking the transition animation.  Tracking the generation number keeps stale results
+        # from briefly replacing the preview when the user switches assets rapidly.
+        self._sidebar_preview_generation = 0
+        self._sidebar_preview_worker: EditSidebarPreviewWorker | None = None
+        self._sidebar_preview_worker_generation: int | None = None
 
     # ------------------------------------------------------------------
     # Zoom toolbar management
@@ -268,6 +279,32 @@ class EditController(QObject):
         self._active_image_worker = worker
         QThreadPool.globalInstance().start(worker)
 
+    def _start_sidebar_preview_preparation(self, image: QImage) -> None:
+        """Prepare a scaled preview for the edit sidebar without blocking the GUI thread."""
+
+        if image.isNull():
+            return
+
+        self._sidebar_preview_generation += 1
+        generation = self._sidebar_preview_generation
+
+        track_height = max(1, self._ui.edit_sidebar.preview_thumbnail_height())
+        # The slider thumbnails are fairly small, however a taller source provides better quality
+        # for intermediate filters while remaining inexpensive to compute off the main thread.
+        target_height = max(track_height * 6, 320)
+
+        worker = EditSidebarPreviewWorker(
+            image,
+            generation=generation,
+            target_height=target_height,
+        )
+        worker.signals.ready.connect(self._handle_sidebar_preview_ready)
+        worker.signals.error.connect(self._handle_sidebar_preview_error)
+        worker.signals.finished.connect(self._handle_sidebar_preview_finished)
+        self._sidebar_preview_worker = worker
+        self._sidebar_preview_worker_generation = generation
+        QThreadPool.globalInstance().start(worker)
+
     def _on_edit_image_loaded(self, path: Path, image: QImage) -> None:
         """Handle a successfully decoded edit image."""
 
@@ -322,8 +359,7 @@ class EditController(QObject):
 
         # Hand the decoded frame to the sidebar so the thumbnail workers can begin rendering their
         # filtered previews without blocking the GUI thread.
-        self._ui.edit_sidebar.set_light_preview_image(image)
-        self._ui.edit_sidebar.refresh()
+        self._start_sidebar_preview_preparation(image)
 
     def _on_edit_image_load_failed(self, path: Path, message: str) -> None:
         """Abort the edit flow when the source image fails to load."""
@@ -337,6 +373,37 @@ class EditController(QObject):
         self._skip_next_preview_frame = False
         _LOGGER.error("Failed to load image for editing: %s", message)
         self.leave_edit_mode(animate=False)
+
+    def _handle_sidebar_preview_ready(
+        self,
+        result: EditSidebarPreviewResult,
+        generation: int,
+    ) -> None:
+        """Apply the asynchronously prepared sidebar preview when it matches the active asset."""
+
+        if generation != self._sidebar_preview_generation:
+            return
+        if self._session is None or not self._view_controller.is_edit_view_active():
+            return
+        self._ui.edit_sidebar.set_light_preview_image(
+            result.image,
+            color_stats=result.stats,
+        )
+        self._ui.edit_sidebar.refresh()
+
+    def _handle_sidebar_preview_error(self, generation: int, message: str) -> None:
+        """Log errors from the preview worker without interrupting the edit flow."""
+
+        if generation != self._sidebar_preview_generation:
+            return
+        _LOGGER.error("Edit sidebar preview preparation failed: %s", message)
+
+    def _handle_sidebar_preview_finished(self, generation: int) -> None:
+        """Release the sidebar worker reference once its signals have been delivered."""
+
+        if generation == self._sidebar_preview_worker_generation:
+            self._sidebar_preview_worker = None
+            self._sidebar_preview_worker_generation = None
 
     def leave_edit_mode(self, animate: bool = True) -> None:
         """Return to the standard detail view, optionally animating the transition."""

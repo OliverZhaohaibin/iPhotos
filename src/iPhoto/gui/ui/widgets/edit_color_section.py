@@ -196,10 +196,19 @@ class EditColorSection(QWidget):
         for row in self._rows.values():
             row.setEnabled(enabled)
 
-    def set_preview_image(self, image) -> None:
+    def set_preview_image(
+        self,
+        image,
+        *,
+        color_stats: ColorStats | None = None,
+    ) -> None:
         """Forward *image* to the master slider and refresh cached statistics."""
 
-        if image is not None:
+        if color_stats is not None:
+            self._color_stats = color_stats
+            if self._session is not None:
+                self._session.set_color_stats(color_stats)
+        elif image is not None:
             stats = compute_color_statistics(image)
             self._color_stats = stats
             if self._session is not None:

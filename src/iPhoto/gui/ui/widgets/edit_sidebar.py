@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from ....core.light_resolver import LIGHT_KEYS
-from ....core.color_resolver import COLOR_KEYS
+from ....core.color_resolver import COLOR_KEYS, ColorStats
 from ..models.edit_session import EditSession
 from .edit_light_section import EditLightSection
 from .edit_color_section import EditColorSection
@@ -33,6 +33,7 @@ class EditSidebar(QWidget):
         super().__init__(parent)
         self._session: Optional[EditSession] = None
         self._light_preview_image = None
+        self._color_stats: ColorStats | None = None
         self._control_icon_tint: QColor | None = None
         # Track whether the Light header controls have active signal bindings so we can
         # disconnect them safely without triggering PySide warnings when no connection exists.
@@ -231,12 +232,16 @@ class EditSidebar(QWidget):
             self._sync_color_toggle_state()
             if self._light_preview_image is not None:
                 self._light_section.set_preview_image(self._light_preview_image)
-                self._color_section.set_preview_image(self._light_preview_image)
+                self._color_section.set_preview_image(
+                    self._light_preview_image,
+                    color_stats=self._color_stats,
+                )
         else:
             self.light_toggle_button.setChecked(False)
             self._update_light_toggle_icon(False)
             self.color_toggle_button.setChecked(False)
             self._update_color_toggle_icon(False)
+            self._color_stats = None
 
     def session(self) -> Optional[EditSession]:
         return self._session
@@ -256,12 +261,26 @@ class EditSidebar(QWidget):
         self._sync_light_toggle_state()
         self._sync_color_toggle_state()
 
-    def set_light_preview_image(self, image) -> None:
-        """Provide *image* to the Light section for generating slider thumbnails."""
+    def set_light_preview_image(
+        self,
+        image,
+        *,
+        color_stats: ColorStats | None = None,
+    ) -> None:
+        """Provide *image* and optional *color_stats* to the edit tool sections."""
 
         self._light_preview_image = image
+        self._color_stats = color_stats
         self._light_section.set_preview_image(image)
-        self._color_section.set_preview_image(image)
+        self._color_section.set_preview_image(image, color_stats=color_stats)
+
+    def preview_thumbnail_height(self) -> int:
+        """Return the vertical pixel span used by the master thumbnail strips."""
+
+        return max(
+            self._light_section.master_slider.track_height(),
+            self._color_section.master_slider.track_height(),
+        )
 
     def _build_separator(self, parent: QWidget) -> QFrame:
         """Return a subtle divider separating adjacent section headers."""
