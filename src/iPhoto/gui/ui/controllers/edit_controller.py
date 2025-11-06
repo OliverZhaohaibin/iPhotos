@@ -6,14 +6,13 @@ import logging
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
-from PySide6.QtCore import QObject, QTimer, Signal
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import QObject, QThreadPool, QTimer, Signal
+from PySide6.QtGui import QImage, QPixmap
 
-from ....core.preview_backends import fallback_preview_backend
 from ....io import sidecar
-from ...utils import image_loader
 from ..models.asset_model import AssetModel
 from ..models.edit_session import EditSession
+from ..tasks.image_load_worker import ImageLoadWorker
 from ..tasks.thumbnail_loader import ThumbnailLoader
 from ..ui_main_window import Ui_MainWindow
 from .edit_fullscreen_manager import EditFullscreenManager
@@ -82,9 +81,16 @@ class EditController(QObject):
         # so it can reload its thumbnails.
         self._pending_thumbnail_refreshes: set[str] = set()
 
+        # Track the background image loader so we can avoid queueing multiple
+        # decode jobs for the same asset if the user re-enters the edit view
+        # quickly.  The worker owns the heavy file I/O, leaving the GUI thread
+        # free to animate the transition into the edit chrome.
+        self._active_image_worker: ImageLoadWorker | None = None
+        self._is_loading_edit_image = False
+
         self._preview_manager = EditPreviewManager(self._ui.edit_image_viewer, self)
         self._preview_manager.preview_updated.connect(self._on_preview_pixmap_updated)
-        self._preview_manager.image_cleared.connect(self._ui.edit_image_viewer.clear)
+        self._preview_manager.image_cleared.connect(self._handle_preview_cleared)
 
         self._transition_manager = EditViewTransitionManager(self._ui, self._window, self)
         self._transition_manager.transition_finished.connect(self._on_transition_finished)
@@ -220,91 +226,79 @@ class EditController(QObject):
 
         self.editingStarted.emit(source)
 
-        # Defer the expensive image I/O and initial preview generation to the next event loop turn
-        # so the transition animation can begin immediately.  ``QTimer.singleShot`` is preferred
-        # over ``QMetaObject.invokeMethod`` here because it executes the callback after Qt has a
-        # chance to process pending paint events, guaranteeing that the edit chrome becomes visible
-        # before heavy work resumes on the GUI thread.
-        QTimer.singleShot(0, self._load_edit_assets_deferred)
+        # Start loading the full resolution image on the worker pool immediately so the
+        # transition animation can play without waiting for disk I/O or decode work.
+        self._start_async_edit_load(source)
 
-    def _load_edit_assets_deferred(self) -> None:
-        """Load the edit image and kick off the initial preview once the UI is visible."""
+    def _start_async_edit_load(self, source: Path) -> None:
+        """Kick off the threaded image load for *source*."""
 
-        # Guard against late deliveries when the user exits the edit view before the deferred load
-        # runs.  The transition manager resets ``_session`` and ``_current_source`` once the exit
-        # animation finishes, so the ``None`` checks cover both natural and error-triggered exits.
-        if self._session is None or self._current_source is None:
+        if self._session is None:
+            return
+        # Reset any previous worker reference so a stale ``ImageLoadWorker`` finishing late does
+        # not try to update widgets for an unrelated asset.  The session check above already guards
+        # against most late deliveries, but clearing the pointer avoids keeping unnecessary objects
+        # alive.
+        self._active_image_worker = None
+        self._is_loading_edit_image = True
+        self._ui.edit_image_viewer.set_loading(True)
+
+        worker = ImageLoadWorker(source)
+        worker.signals.imageLoaded.connect(self._on_edit_image_loaded)
+        worker.signals.loadFailed.connect(self._on_edit_image_load_failed)
+        self._active_image_worker = worker
+        QThreadPool.globalInstance().start(worker)
+
+    def _on_edit_image_loaded(self, path: Path, image: QImage) -> None:
+        """Handle a successfully decoded edit image."""
+
+        self._active_image_worker = None
+        if self._session is None or self._current_source != path:
+            return
+        if not self._view_controller.is_edit_view_active():
             return
 
         session = self._session
-        source = self._current_source
-
-        if not self._view_controller.is_edit_view_active():
-            # If the view controller has already switched back to the detail view we silently abort
-            # to avoid flashing an outdated preview as the user navigates away.
-            return
-
-        try:
-            image = image_loader.load_qimage(source)
-        except Exception:
-            _LOGGER.exception("Failed to load image for editing: %s", source)
-            self.leave_edit_mode(animate=False)
-            return
-        if image is None or image.isNull():
-            _LOGGER.warning("Image is null after load_qimage: %s", source)
-            self.leave_edit_mode(animate=False)
-            return
 
         if not self._edit_viewer_fullscreen_connected:
-            # Route double-click exit requests from the edit viewer through the controller so the
-            # dedicated full screen manager can restore the chrome even when immersive mode is
-            # triggered outside the frameless window manager.
             self._ui.edit_image_viewer.fullscreenExitRequested.connect(
                 self.exit_fullscreen_preview
             )
             self._edit_viewer_fullscreen_connected = True
 
         try:
-            initial_pixmap = self._preview_manager.start_session(image, session.values())
-        except Exception as exc:
-            _LOGGER.exception(
-                "Preview session start failed with %s; falling back to safer backend and retrying",
-                exc,
-            )
-            try:
-                # Replace with a safer backend (usually CPU) and retry once.
-                self._preview_manager._preview_backend = fallback_preview_backend(
-                    self._preview_manager._preview_backend
-                )
-                initial_pixmap = self._preview_manager.start_session(image, session.values())
-            except Exception:
-                _LOGGER.exception(
-                    "Retrying preview session creation also failed; aborting enter edit mode"
-                )
-                self.leave_edit_mode(animate=False)
-                return
-
-        # The user might have closed the editor while the preview was being prepared.  Confirm that
-        # the session and source still match before mutating widgets so the UI cannot flicker back
-        # into the edit state unexpectedly.
-        if self._session is not session or self._current_source != source:
+            self._preview_manager.start_session(image, session.values())
+        except Exception:
+            _LOGGER.exception("Failed to initialise preview session for %s", path)
+            self._is_loading_edit_image = False
+            self._ui.edit_image_viewer.set_loading(False)
+            self.leave_edit_mode(animate=False)
             return
 
-        if initial_pixmap.isNull():
-            self._ui.edit_image_viewer.clear()
-        else:
-            self._ui.edit_image_viewer.set_pixmap(initial_pixmap)
-
-        # Now that the base image is ready, hand it to the sidebar so the asynchronous thumbnail
-        # workers can begin rendering previews for the Light and Color strips without blocking the
-        # GUI thread.
+        # Hand the decoded frame to the sidebar so the thumbnail workers can begin rendering their
+        # filtered previews without blocking the GUI thread.
         self._ui.edit_sidebar.set_light_preview_image(image)
         self._ui.edit_sidebar.refresh()
+
+    def _on_edit_image_load_failed(self, path: Path, message: str) -> None:
+        """Abort the edit flow when the source image fails to load."""
+
+        del path  # The controller already stores the active source path separately.
+        self._active_image_worker = None
+        if not self._is_loading_edit_image:
+            return
+        self._is_loading_edit_image = False
+        self._ui.edit_image_viewer.set_loading(False)
+        _LOGGER.error("Failed to load image for editing: %s", message)
+        self.leave_edit_mode(animate=False)
 
     def leave_edit_mode(self, animate: bool = True) -> None:
         """Return to the standard detail view, optionally animating the transition."""
 
         self._preview_manager.cancel_pending_updates()
+        if self._is_loading_edit_image:
+            self._is_loading_edit_image = False
+            self._ui.edit_image_viewer.set_loading(False)
         if self._fullscreen_manager.is_in_fullscreen():
             self.exit_fullscreen_preview()
         if (
@@ -344,12 +338,23 @@ class EditController(QObject):
     def _on_preview_pixmap_updated(self, pixmap: QPixmap) -> None:
         """Display *pixmap* unless the compare gesture is active."""
 
+        if self._is_loading_edit_image:
+            self._is_loading_edit_image = False
+            self._ui.edit_image_viewer.set_loading(False)
         if self._compare_active:
             return
         if pixmap.isNull():
             self._ui.edit_image_viewer.clear()
             return
         self._ui.edit_image_viewer.set_pixmap(pixmap)
+
+    def _handle_preview_cleared(self) -> None:
+        """Clear the viewer and stop any pending loading indicator."""
+
+        self._ui.edit_image_viewer.clear()
+        if self._is_loading_edit_image:
+            self._is_loading_edit_image = False
+            self._ui.edit_image_viewer.set_loading(False)
 
     def _on_transition_finished(self, direction: str) -> None:
         """Clean up controller state after the transition manager completes."""

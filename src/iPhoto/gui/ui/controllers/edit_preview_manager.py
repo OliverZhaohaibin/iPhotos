@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Mapping, Optional
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Qt, Signal
+from PySide6.QtCore import QObject, QThreadPool, QTimer, Qt, Signal
 from PySide6.QtGui import QImage, QPixmap
 
 from ....core.light_resolver import LIGHT_KEYS, resolve_light_vector
@@ -17,55 +17,9 @@ from ....core.preview_backends import (
     select_preview_backend,
 )
 from ..widgets.image_viewer import ImageViewer
+from ..tasks.preview_render_worker import PreviewRenderWorker
 
 _LOGGER = logging.getLogger(__name__)
-
-
-class _PreviewSignals(QObject):
-    """Signals emitted by :class:`_PreviewWorker` once processing completes."""
-
-    finished = Signal(QImage, int)
-    """Emitted with the adjusted image and the job identifier."""
-
-
-class _PreviewWorker(QRunnable):
-    """Execute preview rendering in a background thread."""
-
-    def __init__(
-        self,
-        backend: PreviewBackend,
-        session: PreviewSession,
-        adjustments: Mapping[str, float | bool],
-        job_id: int,
-        signals: _PreviewSignals,
-    ) -> None:
-        super().__init__()
-        self._backend = backend
-        self._session = session
-        # Store a dedicated copy of the adjustment mapping so that a live
-        # :class:`EditSession` mutating values mid-render does not affect the
-        # in-flight job.
-        self._adjustments = dict(adjustments)
-        self._job_id = job_id
-        self._signals = signals
-
-    def run(self) -> None:  # type: ignore[override]
-        """Perform the tone-mapping work and notify listeners when done."""
-
-        try:
-            adjusted = self._backend.render(self._session, self._adjustments)
-        except Exception:
-            # Propagate failures by emitting a null image.  The controller will
-            # discard outdated or invalid results, so surfacing ``None`` keeps
-            # the UI responsive even if processing fails unexpectedly.
-            adjusted = QImage()
-        self._signals.finished.emit(adjusted, self._job_id)
-
-    @property
-    def session(self) -> PreviewSession:
-        """Expose the backend session used by this worker."""
-
-        return self._session
 
 
 class EditPreviewManager(QObject):
@@ -80,7 +34,20 @@ class EditPreviewManager(QObject):
     def __init__(self, viewer: ImageViewer, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
         self._viewer = viewer
-        self._preview_backend: PreviewBackend = select_preview_backend()
+        backend = select_preview_backend()
+        if backend.supports_realtime:
+            # Hardware accelerated backends expect to run on the GUI thread.  The
+            # edit workflow now renders previews on a thread pool to keep the UI
+            # responsive, so fall back to the CPU implementation when required.
+            fallback = fallback_preview_backend(backend)
+            if fallback is not backend:
+                _LOGGER.info(
+                    "Switching preview backend from %s to %s for threaded rendering",
+                    backend.tier_name,
+                    fallback.tier_name,
+                )
+                backend = fallback
+        self._preview_backend: PreviewBackend = backend
         _LOGGER.info("Initialised edit preview backend: %s", self._preview_backend.tier_name)
 
         self._preview_session: Optional[PreviewSession] = None
@@ -92,7 +59,7 @@ class EditPreviewManager(QObject):
 
         self._thread_pool = QThreadPool.globalInstance()
         self._preview_job_id = 0
-        self._active_preview_workers: set[_PreviewWorker] = set()
+        self._active_preview_workers: set[PreviewRenderWorker] = set()
         self._pending_session_disposals: list[PreviewSession] = []
 
         self._preview_update_timer = QTimer(self)
@@ -292,37 +259,23 @@ class EditPreviewManager(QObject):
         self._preview_job_id += 1
         job_id = self._preview_job_id
 
-        if self._preview_backend.supports_realtime:
-            try:
-                final_adjustments = self._resolve_final_adjustments(self._current_adjustments)
-                image = self._preview_backend.render(
-                    self._preview_session,
-                    final_adjustments,
-                )
-            except Exception:
-                image = QImage()
-            self._on_preview_ready(image, job_id)
-            return
-
-        signals = _PreviewSignals()
-        signals.finished.connect(self._on_preview_ready)
-
         final_adjustments = self._resolve_final_adjustments(self._current_adjustments)
 
-        worker = _PreviewWorker(
+        worker = PreviewRenderWorker(
             self._preview_backend,
             self._preview_session,
             final_adjustments,
             job_id,
-            signals,
         )
         self._active_preview_workers.add(worker)
+
+        worker.signals.finished.connect(self._on_preview_ready)
 
         def _handle_worker_finished(_image: QImage, _finished_job: int, *, worker_ref=worker) -> None:
             self._active_preview_workers.discard(worker_ref)
             self._dispose_retired_sessions()
 
-        signals.finished.connect(_handle_worker_finished)
+        worker.signals.finished.connect(_handle_worker_finished)
         self._thread_pool.start(worker)
 
     def _resolve_final_adjustments(
