@@ -160,12 +160,19 @@ class GLImageViewer(QOpenGLWidget):
 
         if image is None or image.isNull():
             self._current_image_source = None
-            if self.context() is not None and self._renderer is not None:
-                self.makeCurrent()
-                try:
-                    self._renderer.delete_texture()
-                finally:
-                    self.doneCurrent()
+            renderer = self._renderer
+            if renderer is not None:
+                gl_context = self.context()
+                if gl_context is not None:
+                    # ``set_image(None)`` is frequently triggered while the widget is
+                    # still hidden, meaning the GL context (and therefore the
+                    # renderer) may not have been created yet.  Guard the cleanup so
+                    # we only touch GPU state when a live context is bound.
+                    self.makeCurrent()
+                    try:
+                        renderer.delete_texture()
+                    finally:
+                        self.doneCurrent()
 
         if reset_view:
             # Reset the interactive transform so every new asset begins in the

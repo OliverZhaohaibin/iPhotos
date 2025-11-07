@@ -135,9 +135,9 @@ class GLRenderer:
         if image.isNull():
             raise ValueError("Cannot upload a null QImage")
 
-        from PySide6.QtGui import QImage as _QImageAlias  # Local import for clarity
-
-        qimage = image.convertToFormat(_QImageAlias.Format_RGBA8888)
+        # Convert to a tightly packed RGBA8888 surface, which matches the shader
+        # expectations and keeps the upload logic uniform for all callers.
+        qimage = image.convertToFormat(QImage.Format.Format_RGBA8888)
         width, height = qimage.width(), qimage.height()
         buffer = qimage.constBits()
         byte_count = qimage.sizeInBytes()
