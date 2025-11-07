@@ -30,7 +30,7 @@ class BWParams:
         """
 
         return BWParams(
-            intensity=_clamp(self.intensity, 0.0, 1.0),
+            intensity=_clamp(self.intensity, -1.0, 1.0),
             neutrals=_clamp(self.neutrals, -1.0, 1.0),
             tone=_clamp(self.tone, -1.0, 1.0),
             grain=_clamp(self.grain, 0.0, 1.0),
@@ -44,30 +44,78 @@ def _clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, float(value)))
 
 
-def smooth01(value: float) -> float:
-    """Smoothly interpolate ``value`` within ``[0, 1]`` using a Hermite curve."""
+def _clamp01(value: float) -> float:
+    """Return ``value`` constrained to the ``[0.0, 1.0]`` range."""
 
-    clamped = _clamp(value, 0.0, 1.0)
-    return clamped * clamped * (3.0 - 2.0 * clamped)
+    if value < 0.0:
+        return 0.0
+    if value > 1.0:
+        return 1.0
+    return value
+
+
+def _lerp(start: float, end: float, fraction: float) -> float:
+    """Linearly interpolate between *start* and *end* using *fraction*."""
+
+    return start + (end - start) * fraction
+
+
+def _smoothstep(edge0: float, edge1: float, value: float) -> float:
+    """Return a smooth interpolation factor between *edge0* and *edge1*."""
+
+    if edge0 == edge1:
+        return 0.0
+    t = _clamp01((value - edge0) / (edge1 - edge0))
+    return t * t * (3.0 - 2.0 * t)
+
+
+# Anchor definitions mirror the GLSL shader so CPU previews and GPU renders match.
+_ANCHOR_CENTER: Dict[str, float] = {
+    "Intensity": 0.0,
+    "Neutrals": 0.0,
+    "Tone": 0.0,
+}
+_ANCHOR_LEFT: Dict[str, float] = {
+    "Intensity": -0.7,
+    "Neutrals": 0.2,
+    "Tone": -0.1,
+}
+_ANCHOR_RIGHT: Dict[str, float] = {
+    "Intensity": 0.8,
+    "Neutrals": -0.05,
+    "Tone": 0.6,
+}
 
 
 def aggregate_curve(master: float) -> Dict[str, float]:
     """Return derived parameters for the master slider position *master*.
 
-    The master slider simultaneously tweaks intensity, neutrals, and tone using
-    a Photos-inspired curve.  Returning a mapping keeps the helper flexible so
-    both the UI and CPU preview pipeline can consume the same transformation
-    without duplicating the maths.
+    The anchor interpolation mirrors :mod:`BW_final.py` so that the master slider
+    transitions smoothly between "soft", "neutral", and "rich" looks while
+    generating values in the ``[-1, 1]`` range expected by the updated shader.
     """
 
     master = _clamp(master, 0.0, 1.0)
-    intensity = smooth01(master)
-    neutrals = _clamp(0.25 * (2.0 * master - 1.0), -1.0, 1.0)
-    tone = _clamp(-0.10 + 0.60 * master, -1.0, 1.0)
+
+    anchors: Dict[str, float]
+    m = _clamp01(master)
+    if m <= 0.5:
+        s = _smoothstep(0.0, 0.5, m)
+        anchors = {
+            key: _lerp(_ANCHOR_LEFT[key], _ANCHOR_CENTER[key], s)
+            for key in _ANCHOR_CENTER
+        }
+    else:
+        s = _smoothstep(0.5, 1.0, m)
+        anchors = {
+            key: _lerp(_ANCHOR_CENTER[key], _ANCHOR_RIGHT[key], s)
+            for key in _ANCHOR_CENTER
+        }
+
     return {
-        "Intensity": intensity,
-        "Neutrals": neutrals,
-        "Tone": tone,
+        "Intensity": _clamp(anchors["Intensity"], -1.0, 1.0),
+        "Neutrals": _clamp(anchors["Neutrals"], -1.0, 1.0),
+        "Tone": _clamp(anchors["Tone"], -1.0, 1.0),
     }
 
 
@@ -109,5 +157,4 @@ __all__ = [
     "aggregate_curve",
     "apply_bw_preview",
     "params_from_master",
-    "smooth01",
 ]

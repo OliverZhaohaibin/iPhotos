@@ -11,7 +11,6 @@ from PySide6.QtCore import QThreadPool, Signal, Slot
 from PySide6.QtWidgets import QFrame, QVBoxLayout, QWidget
 
 from ....core.bw_resolver import BWParams, apply_bw_preview, params_from_master
-from ....core.bw_resolver import smooth01  # re-exported for inversion helpers
 from ..models.edit_session import EditSession
 from ..tasks.thumbnail_generator_worker import ThumbnailGeneratorWorker
 from .collapsible_section import CollapsibleSubSection
@@ -76,7 +75,7 @@ class EditBWSection(QWidget):
         options_layout.setSpacing(6)
 
         specs = [
-            _SliderSpec("Intensity", "BW_Intensity", 0.0, 1.0),
+            _SliderSpec("Intensity", "BW_Intensity", -1.0, 1.0),
             _SliderSpec("Neutrals", "BW_Neutrals", -1.0, 1.0),
             _SliderSpec("Tone", "BW_Tone", -1.0, 1.0),
             _SliderSpec("Grain", "BW_Grain", 0.0, 1.0),
@@ -139,7 +138,8 @@ class EditBWSection(QWidget):
 
         enabled = bool(self._session.value("BW_Enabled"))
         params = self._session_params()
-        master_value = self._resolve_master_value(params)
+        # The persisted master value directly reflects the one-way master slider state.
+        master_value = params.master
         self._updating_ui = True
         try:
             self._apply_enabled_state(enabled)
@@ -194,43 +194,6 @@ class EditBWSection(QWidget):
                 slider.setValue(params.tone, emit=False)
             elif key == "BW_Grain":
                 slider.setValue(params.grain, emit=False)
-
-    def _resolve_master_value(self, params: BWParams) -> float:
-        if params.master > 1e-6:
-            derived = params_from_master(params.master, grain=params.grain)
-            if self._params_match(params, derived):
-                return params.master
-        if params.intensity <= 1e-6:
-            return 0.0
-        candidate = self._invert_smooth01(max(0.0, min(1.0, params.intensity)))
-        derived = params_from_master(candidate, grain=params.grain)
-        if self._params_match(params, derived):
-            return candidate
-        return 0.0
-
-    def _params_match(self, lhs: BWParams, rhs: BWParams) -> bool:
-        """Return ``True`` when *lhs* and *rhs* agree within persisted precision."""
-
-        # The sidecar serialiser stores slider values with two decimal places, so we need
-        # to compare with a tolerance that is at least as large.  Using ``1e-2`` ensures
-        # that round-trip persistence via XML does not cause us to discard a previously
-        # stored master value when we reconstruct the UI state.
-        return (
-            abs(lhs.intensity - rhs.intensity) < 1e-2
-            and abs(lhs.neutrals - rhs.neutrals) < 1e-2
-            and abs(lhs.tone - rhs.tone) < 1e-2
-        )
-
-    def _invert_smooth01(self, value: float) -> float:
-        value = max(0.0, min(1.0, value))
-        low, high = 0.0, 1.0
-        for _ in range(16):
-            mid = (low + high) / 2.0
-            if smooth01(mid) < value:
-                low = mid
-            else:
-                high = mid
-        return (low + high) / 2.0
 
     def _gather_slider_params(self, *, master_override: Optional[float] = None) -> BWParams:
         intensity = self._sliders["BW_Intensity"].value()
