@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QGraphicsOpacityEffect,
 )
 
+from ..palette import Edit_SIDEBAR_SUB_FONT
 from ....core.color_resolver import COLOR_KEYS, COLOR_RANGES, ColorResolver, ColorStats
 from ....core.color_resolver import compute_color_statistics
 from ....core.image_filters import apply_adjustments
@@ -81,6 +82,7 @@ class EditColorSection(QWidget):
             "slider.horizontal.3.svg",
             options_container,
             self,
+            title_font=Edit_SIDEBAR_SUB_FONT
         )
         self.options_section.set_expanded(False)
         layout.addWidget(self.options_section)

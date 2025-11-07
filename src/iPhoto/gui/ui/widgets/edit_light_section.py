@@ -17,9 +17,10 @@ from PySide6.QtWidgets import (
     QGraphicsOpacityEffect,
 )
 
+from ..palette import Edit_SIDEBAR_SUB_FONT
 from ....core.light_resolver import LIGHT_KEYS, _clamp, resolve_light_vector
 from ..models.edit_session import EditSession
-from .collapsible_section import CollapsibleSection
+from .collapsible_section import CollapsibleSection, CollapsibleSubSection
 from .edit_strip import BWSlider
 from .thumbnail_strip_slider import ThumbnailStripSlider
 from ..tasks.thumbnail_generator_worker import ThumbnailGeneratorWorker
@@ -78,7 +79,7 @@ class EditLightSection(QWidget):
             options_layout.addWidget(row)
             self._rows[key] = row
 
-        self.options_section = CollapsibleSection(
+        self.options_section = CollapsibleSubSection(
             "Options",
             "slider.horizontal.3.svg",
             options_container,

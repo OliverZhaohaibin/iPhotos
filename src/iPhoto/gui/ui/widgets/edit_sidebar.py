@@ -22,7 +22,7 @@ from ..models.edit_session import EditSession
 from .edit_light_section import EditLightSection
 from .edit_color_section import EditColorSection
 from .collapsible_section import CollapsibleSection
-from ..palette import SIDEBAR_BACKGROUND_COLOR
+from ..palette import SIDEBAR_BACKGROUND_COLOR, Edit_SIDEBAR_FONT
 from ..icon import load_icon
 
 
@@ -93,6 +93,7 @@ class EditSidebar(QWidget):
             "sun.max.svg",
             self._light_section,
             scroll_content,
+            title_font=Edit_SIDEBAR_FONT
         )
 
         self.light_reset_button = QToolButton(self._light_section_container)
@@ -119,6 +120,7 @@ class EditSidebar(QWidget):
             "color.circle.svg",
             self._color_section,
             scroll_content,
+            title_font=Edit_SIDEBAR_FONT
         )
 
         self.color_reset_button = QToolButton(self._color_section_container)
@@ -146,6 +148,7 @@ class EditSidebar(QWidget):
             "circle.lefthalf.fill.svg",
             bw_placeholder,
             scroll_content,
+            title_font=Edit_SIDEBAR_FONT
         )
         bw_container.set_expanded(False)
         scroll_layout.addWidget(bw_container)

@@ -6,7 +6,7 @@ from typing import Optional
 
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtGui import QColor, QPalette, QFont
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..icon import load_icon
+from ..palette import Edit_SIDEBAR_SUB_FONT
 
 
 class CollapsibleSection(QFrame):
@@ -29,6 +30,7 @@ class CollapsibleSection(QFrame):
         icon_name: str,
         content: QWidget,
         parent: Optional[QWidget] = None,
+        title_font: Optional[QFont] = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("collapsibleSection")
@@ -86,7 +88,7 @@ class CollapsibleSection(QFrame):
         self._custom_controls_layout.setContentsMargins(0, 0, 0, 0)
         self._custom_controls_layout.setSpacing(4)
         header_layout.addLayout(self._custom_controls_layout)
-
+        self._title_label.setFont(title_font or Edit_SIDEBAR_SUB_FONT)
 
         self._header.mouseReleaseEvent = self._forward_click_to_button  # type: ignore[assignment]
         layout.addWidget(self._header)
@@ -196,3 +198,19 @@ class CollapsibleSection(QFrame):
                 tint_hex = str(tint)
             self._toggle_icon_tint = tint_hex
         self._update_header_icon()
+
+class CollapsibleSubSection(CollapsibleSection):
+    def __init__(
+        self,
+        title: str,
+        icon_name: str,
+        content: QWidget,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(
+            title=title,
+            icon_name=icon_name,
+            content=content,
+            parent=parent,
+            title_font=Edit_SIDEBAR_SUB_FONT
+        )
