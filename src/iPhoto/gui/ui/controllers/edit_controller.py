@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
-from PySide6.QtCore import QObject, QThreadPool, QTimer, Signal
+from PySide6.QtCore import QObject, QThreadPool, QTimer, Signal, QSize
 from PySide6.QtGui import QImage
 
 from ....io import sidecar
@@ -142,6 +142,12 @@ class EditController(QObject):
         self._sidebar_preview_generation = 0
         self._sidebar_preview_worker: EditSidebarPreviewWorker | None = None
         self._sidebar_preview_worker_generation: int | None = None
+        # ``_sidebar_preview_started`` tracks whether the current edit session
+        # has already queued preview rendering work.  The flag allows the
+        # controller to opportunistically kick off the sidebar preview using an
+        # existing cached thumbnail while still falling back to the
+        # full-resolution frame when no cache entry is available.
+        self._sidebar_preview_started = False
 
     # ------------------------------------------------------------------
     # Zoom toolbar management
@@ -234,6 +240,9 @@ class EditController(QObject):
         self._ui.edit_sidebar.set_light_preview_image(None)
         self._ui.edit_sidebar.set_session(session)
         self._ui.edit_sidebar.refresh()
+        # Reset the sidebar preview flag so the new session can reuse a cached
+        # thumbnail immediately if one is available.
+        self._sidebar_preview_started = False
         if not self._edit_viewer_fullscreen_connected:
             # Route double-click exit requests from the edit viewer through the
             # controller so the dedicated full screen manager can restore the
@@ -254,11 +263,17 @@ class EditController(QObject):
         self._view_controller.show_edit_view()
         self._transition_manager.enter_edit_mode(animate=True)
 
-        self.editingStarted.emit(source)
-
         # Start loading the full resolution image on the worker pool immediately so the
         # transition animation can play without waiting for disk I/O or decode work.
         self._start_async_edit_load(source)
+
+        # Attempt to start the sidebar preview generation immediately using an
+        # existing cached thumbnail.  Falling back to the full-resolution image
+        # happens later inside :meth:`_on_edit_image_loaded` when no cached
+        # representation is ready yet.
+        self._try_start_sidebar_preview_from_cache(source)
+
+        self.editingStarted.emit(source)
 
     def _start_async_edit_load(self, source: Path) -> None:
         """Kick off the threaded image load for *source*."""
@@ -284,6 +299,73 @@ class EditController(QObject):
         worker.signals.loadFailed.connect(self._on_edit_image_load_failed)
         self._active_image_worker = worker
         QThreadPool.globalInstance().start(worker)
+
+    def _try_start_sidebar_preview_from_cache(self, source: Path) -> None:
+        """Kick off the sidebar preview using cached thumbnails when possible.
+
+        The edit sidebar can display useful feedback long before the
+        full-resolution frame finishes decoding.  By consulting the asset model
+        for cached metadata and reusing an existing medium-sized thumbnail we
+        can start rendering the preview and slider strips in parallel with the
+        heavy image load.  Any errors are logged and silently ignored so the
+        standard high-resolution fallback remains intact.
+        """
+
+        if self._session is None or self._sidebar_preview_started:
+            return
+
+        try:
+            source_model = self._asset_model.source_model()
+            metadata = source_model.metadata_for_absolute_path(source)
+            if not metadata:
+                return
+
+            rel = metadata.get("rel")
+            if not isinstance(rel, str) or not rel:
+                return
+
+            is_video = metadata.get("type") == "video"
+            is_image = not is_video
+
+            still_image_time = metadata.get("still_image_time")
+            duration = metadata.get("duration")
+
+            # Request a medium sized thumbnail that the gallery grid likely
+            # cached already.  A 512px square offers enough resolution for the
+            # sidebar preview while remaining inexpensive to fetch from disk or
+            # memory.
+            thumb_size = QSize(512, 512)
+            safe_still_time = (
+                float(still_image_time)
+                if isinstance(still_image_time, (int, float))
+                else None
+            )
+            safe_duration = (
+                float(duration)
+                if isinstance(duration, (int, float))
+                else None
+            )
+            cached_pixmap = self._thumbnail_loader.request(
+                rel,
+                source,
+                thumb_size,
+                is_image=is_image,
+                is_video=is_video,
+                still_image_time=safe_still_time,
+                duration=safe_duration,
+                priority=ThumbnailLoader.Priority.VISIBLE,
+            )
+
+            if cached_pixmap is None or cached_pixmap.isNull():
+                return
+
+            self._start_sidebar_preview_preparation(cached_pixmap.toImage())
+            self._sidebar_preview_started = True
+        except Exception:
+            # The edit flow must remain responsive even when metadata lookup or
+            # thumbnail retrieval fails.  Logging the error helps diagnose cache
+            # issues without forcing the user to wait for the fallback path.
+            _LOGGER.warning("Failed to start sidebar preview from cached thumbnail", exc_info=True)
 
     def _start_sidebar_preview_preparation(self, image: QImage) -> None:
         """Prepare a scaled preview for the edit sidebar without blocking the GUI thread."""
@@ -364,7 +446,9 @@ class EditController(QObject):
 
         # Hand the decoded frame to the sidebar so the thumbnail workers can begin rendering their
         # filtered previews without blocking the GUI thread.
-        self._start_sidebar_preview_preparation(image)
+        if not self._sidebar_preview_started:
+            self._start_sidebar_preview_preparation(image)
+            self._sidebar_preview_started = True
 
     def _on_edit_image_load_failed(self, path: Path, message: str) -> None:
         """Abort the edit flow when the source image fails to load."""
