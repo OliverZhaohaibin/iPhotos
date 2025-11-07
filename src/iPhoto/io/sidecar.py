@@ -10,6 +10,7 @@ from ..core.light_resolver import LIGHT_KEYS, resolve_light_vector
 from ..core.color_resolver import COLOR_KEYS, ColorResolver, ColorStats
 
 BW_KEYS = (
+    "BW_Master",
     "BW_Intensity",
     "BW_Neutrals",
     "BW_Tone",
@@ -209,6 +210,8 @@ def resolve_render_adjustments(
             overrides[key] = numeric_value
         elif key in COLOR_KEYS:
             color_overrides[key] = numeric_value
+        elif key == "BW_Master":
+            continue
         else:
             resolved[key] = numeric_value
 

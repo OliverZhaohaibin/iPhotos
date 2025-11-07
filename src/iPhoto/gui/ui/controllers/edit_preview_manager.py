@@ -58,6 +58,8 @@ def resolve_adjustment_mapping(
     for key, value in session_values.items():
         if key in ("Light_Master", "Light_Enabled", "Color_Master", "Color_Enabled"):
             continue
+        if key == "BW_Master":
+            continue
         if key in LIGHT_KEYS:
             overrides[key] = float(value)
         elif key in COLOR_KEYS:

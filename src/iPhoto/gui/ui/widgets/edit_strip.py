@@ -15,6 +15,9 @@ class BWSlider(QWidget):
     valueChanged = Signal(float)
     """Emitted whenever the slider's value changes."""
 
+    valueCommitted = Signal(float)
+    """Emitted after the user finishes an interaction and settles on a value."""
+
     def __init__(
         self,
         name: str = "Intensity",
@@ -109,11 +112,13 @@ class BWSlider(QWidget):
         if event.button() == Qt.MouseButton.LeftButton and self._dragging:
             self._dragging = False
             self.unsetCursor()
+            self.valueCommitted.emit(self._value)
 
     def wheelEvent(self, event):  # type: ignore[override]
         step = (self._maximum - self._minimum) * 0.01
         delta = event.angleDelta().y() / 120.0
         self.setValue(self._value + delta * step)
+        self.valueCommitted.emit(self._value)
 
     def keyPressEvent(self, event):  # type: ignore[override]
         step = (self._maximum - self._minimum) * 0.01
@@ -123,6 +128,8 @@ class BWSlider(QWidget):
             self.setValue(self._value + step)
         else:
             super().keyPressEvent(event)
+            return
+        self.valueCommitted.emit(self._value)
 
     # ------------------------------------------------------------------
     # Rendering helpers

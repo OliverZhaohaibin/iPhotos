@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import Qt, Slot
+from PySide6.QtCore import Qt, Slot, Signal
 from PySide6.QtGui import QPalette, QColor
 from PySide6.QtWidgets import (
     QFrame,
@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 
 from ....core.light_resolver import LIGHT_KEYS
 from ....core.color_resolver import COLOR_KEYS, ColorStats
+from ....core.bw_resolver import BWParams
 from ..models.edit_session import EditSession
 from .edit_light_section import EditLightSection
 from .edit_color_section import EditColorSection
@@ -29,6 +30,12 @@ from ..icon import load_icon
 
 class EditSidebar(QWidget):
     """Sidebar that exposes the available editing tools."""
+
+    bwParamsPreviewed = Signal(BWParams)
+    """Relays live Black & White adjustments to the controller."""
+
+    bwParamsCommitted = Signal(BWParams)
+    """Emitted when Black & White adjustments should be written to the session."""
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -169,6 +176,9 @@ class EditSidebar(QWidget):
         scroll_layout.addStretch(1)
         scroll_content.setLayout(scroll_layout)
         scroll.setWidget(scroll_content)
+
+        self._bw_section.paramsPreviewed.connect(self.bwParamsPreviewed)
+        self._bw_section.paramsCommitted.connect(self.bwParamsCommitted)
 
         adjust_layout.addWidget(scroll)
         adjust_container.setLayout(adjust_layout)
@@ -369,6 +379,7 @@ class EditSidebar(QWidget):
         if self._session is None:
             return
         updates = {
+            "BW_Master": 0.0,
             "BW_Intensity": 0.0,
             "BW_Neutrals": 0.0,
             "BW_Tone": 0.0,
