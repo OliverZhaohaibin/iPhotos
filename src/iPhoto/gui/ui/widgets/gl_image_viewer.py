@@ -332,15 +332,20 @@ class GLImageViewer(QOpenGLWidget):
 
         self.makeCurrent()
         try:
-            gf = self._gl_funcs
-            if gf is None:
-                gf = QOpenGLFunctions_3_3_Core()
-                gf.initializeOpenGLFunctions()
-                self._gl_funcs = gf
+            if self._gl_funcs is None or self._renderer is None:
+                # Off-screen rendering can be triggered before the widget ever hits the
+                # on-screen GL lifecycle (e.g. a preview request while the window is
+                # still hidden).  Creating the renderer here would immediately be undone
+                # by ``initializeGL`` because Qt rebuilds the context once the widget is
+                # shown.  Instead of doing redundant work, bail out and let the caller
+                # retry after the viewer is fully initialised.
+                _LOGGER.warning(
+                    "render_offscreen_image: renderer not initialized, skipping."
+                )
+                return QImage()
 
-            if self._renderer is None:
-                self._renderer = GLRenderer(gf, parent=self)
-                self._renderer.initialize_resources()
+            gf = self._gl_funcs
+            assert gf is not None, "_gl_funcs should be set when renderer exists"
 
             if not self._renderer.has_texture():
                 self._renderer.upload_texture(self._image)
