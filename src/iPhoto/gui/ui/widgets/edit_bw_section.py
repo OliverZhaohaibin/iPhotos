@@ -209,10 +209,16 @@ class EditBWSection(QWidget):
         return 0.0
 
     def _params_match(self, lhs: BWParams, rhs: BWParams) -> bool:
+        """Return ``True`` when *lhs* and *rhs* agree within persisted precision."""
+
+        # The sidecar serialiser stores slider values with two decimal places, so we need
+        # to compare with a tolerance that is at least as large.  Using ``1e-2`` ensures
+        # that round-trip persistence via XML does not cause us to discard a previously
+        # stored master value when we reconstruct the UI state.
         return (
-            abs(lhs.intensity - rhs.intensity) < 1e-3
-            and abs(lhs.neutrals - rhs.neutrals) < 1e-3
-            and abs(lhs.tone - rhs.tone) < 1e-3
+            abs(lhs.intensity - rhs.intensity) < 1e-2
+            and abs(lhs.neutrals - rhs.neutrals) < 1e-2
+            and abs(lhs.tone - rhs.tone) < 1e-2
         )
 
     def _invert_smooth01(self, value: float) -> float:
@@ -271,7 +277,10 @@ class EditBWSection(QWidget):
             intensity=derived.intensity,
             neutrals=derived.neutrals,
             tone=derived.tone,
-            grain=derived.grain,
+            # ``params_from_master`` only models the derived trio of sliders, so we must
+            # read the current grain value directly from the UI control to keep the user's
+            # chosen texture strength intact when the master slider is committed.
+            grain=self._sliders["BW_Grain"].value(),
             master=value,
         )
         self.paramsCommitted.emit(final_params)
