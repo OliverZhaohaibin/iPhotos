@@ -49,12 +49,13 @@ class EditBWSection(QWidget):
         self._active_thumbnail_workers: list[ThumbnailGeneratorWorker] = []
         self._updating_ui = False
 
+        # Match the surrounding light/color sections so separators and padding align.
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
         self.master_slider = ThumbnailStripSlider(
-            "Black & White",
+            None,
             self,
             minimum=0.0,
             maximum=1.0,
@@ -69,8 +70,9 @@ class EditBWSection(QWidget):
         options_container = QFrame(self)
         options_container.setFrameShape(QFrame.Shape.NoFrame)
         options_container.setFrameShadow(QFrame.Shadow.Plain)
+        # Keep the manual sliders indented by 12px so they line up with peers.
         options_layout = QVBoxLayout(options_container)
-        options_layout.setContentsMargins(0, 0, 0, 0)
+        options_layout.setContentsMargins(12, 12, 12, 12)
         options_layout.setSpacing(6)
 
         specs = [
@@ -146,7 +148,6 @@ class EditBWSection(QWidget):
             for key, slider in self._sliders.items():
                 slider.setEnabled(enabled)
             self._apply_params_to_sliders(params)
-            self._sync_options_expansion(master_value, params)
         finally:
             self._updating_ui = False
 
@@ -193,15 +194,6 @@ class EditBWSection(QWidget):
                 slider.setValue(params.tone, emit=False)
             elif key == "BW_Grain":
                 slider.setValue(params.grain, emit=False)
-
-    def _sync_options_expansion(self, master_value: float, params: BWParams) -> None:
-        manual_active = master_value <= 1e-6 and (
-            abs(params.intensity) > 1e-6
-            or abs(params.neutrals) > 1e-6
-            or abs(params.tone) > 1e-6
-            or abs(params.grain) > 1e-6
-        )
-        self.options_section.set_expanded(manual_active)
 
     def _resolve_master_value(self, params: BWParams) -> float:
         if params.master > 1e-6:
@@ -268,14 +260,21 @@ class EditBWSection(QWidget):
         self._updating_ui = True
         try:
             self._apply_params_to_sliders(params)
-            self._sync_options_expansion(value, params)
         finally:
             self._updating_ui = False
         self.paramsPreviewed.emit(params)
 
     def _handle_master_slider_committed(self, value: float) -> None:
-        params = params_from_master(value, grain=self._sliders["BW_Grain"].value())
-        self.paramsCommitted.emit(params)
+        derived = params_from_master(value, grain=self._sliders["BW_Grain"].value())
+        # Rebuild the payload so the master value is persisted alongside the derived sliders.
+        final_params = BWParams(
+            intensity=derived.intensity,
+            neutrals=derived.neutrals,
+            tone=derived.tone,
+            grain=derived.grain,
+            master=value,
+        )
+        self.paramsCommitted.emit(final_params)
 
     def _handle_slider_changed(self, key: str, _value: float) -> None:
         if self._updating_ui:
@@ -285,7 +284,6 @@ class EditBWSection(QWidget):
             self.master_slider.blockSignals(True)
             self.master_slider.setValue(0.0)
             self.master_slider.blockSignals(False)
-            self._sync_options_expansion(0.0, self._gather_slider_params(master_override=0.0))
         finally:
             self._updating_ui = False
         params = self._gather_slider_params(master_override=0.0)
