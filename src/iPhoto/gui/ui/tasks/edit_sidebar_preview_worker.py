@@ -1,5 +1,4 @@
 """Background worker that prepares preview assets for the edit sidebar."""
-
 from __future__ import annotations
 
 import logging
@@ -55,7 +54,8 @@ class EditSidebarPreviewWorker(QRunnable):
         # cross-thread races and prevents Qt from throwing warnings about detached buffers.
         self._source_image = QImage(source_image)
         self._generation = int(generation)
-        self._target_height = max(64, int(target_height))
+        requested_height = int(target_height)
+        self._target_height = -1 if requested_height < 0 else max(64, requested_height)
         self.signals = EditSidebarPreviewSignals()
 
     # ------------------------------------------------------------------
@@ -68,7 +68,13 @@ class EditSidebarPreviewWorker(QRunnable):
             return
 
         try:
-            preview = self._prepare_preview_image(self._source_image)
+            if self._target_height == -1:
+                preview = self._source_image
+                if preview.format() != QImage.Format.Format_ARGB32:
+                    preview = preview.convertToFormat(QImage.Format.Format_ARGB32)
+            else:
+                preview = self._prepare_preview_image(self._source_image)
+
             stats = self._compute_statistics(preview)
             result = EditSidebarPreviewResult(preview, stats)
             self.signals.ready.emit(result, self._generation)

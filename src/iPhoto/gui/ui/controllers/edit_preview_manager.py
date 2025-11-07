@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Mapping, Optional
 
-from PySide6.QtCore import QObject, QThreadPool, QTimer, Qt, Signal
+from PySide6.QtCore import QObject, QThreadPool, QTimer, Qt, Signal, QSize
 from PySide6.QtGui import QImage, QPixmap
 
 from ....core.light_resolver import LIGHT_KEYS, resolve_light_vector
@@ -276,6 +276,27 @@ class EditPreviewManager(QObject):
         """Expose the QImage currently used as the base render target."""
 
         return self._base_image
+
+    def generate_scaled_neutral_preview(self, target_size: QSize) -> QImage:
+        """Render a neutral GPU-scaled preview suitable for sidebar statistics.
+
+        The helper delegates to :class:`GLImageViewer` so the scaling happens
+        entirely on the GPU using the exact shader and sampling pipeline that is
+        employed for onscreen rendering.  The returned image is always
+        ``Format_ARGB32`` to ensure the sidebar worker can compute colour
+        statistics without incurring additional conversions.
+        """
+
+        if self._viewer is None:
+            _LOGGER.warning("generate_scaled_neutral_preview: viewer was not initialised")
+            return QImage()
+
+        neutral_adjustments = resolve_adjustment_mapping({}, stats=self._color_stats)
+        try:
+            return self._viewer.render_offscreen_image(target_size, neutral_adjustments)
+        except Exception:
+            _LOGGER.exception("generate_scaled_neutral_preview: GPU render failed")
+            return QImage()
 
     # ------------------------------------------------------------------
     # Internal helpers mirrored from the legacy controller implementation

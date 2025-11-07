@@ -11,7 +11,9 @@ import ctypes
 import numpy as np
 from typing import Mapping, Optional
 
-from PySide6.QtCore import QPointF, Qt, Signal
+import logging
+
+from PySide6.QtCore import QPointF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QImage,
@@ -23,6 +25,8 @@ from PySide6.QtGui import (
 )
 from PySide6.QtOpenGL import (
     QOpenGLBuffer,
+    QOpenGLFramebufferObject,
+    QOpenGLFramebufferObjectFormat,
     QOpenGLFunctions_3_3_Core,
     QOpenGLShader,
     QOpenGLShaderProgram,
@@ -31,6 +35,9 @@ from PySide6.QtOpenGL import (
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import QLabel
 from OpenGL import GL as gl
+
+
+_LOGGER = logging.getLogger(__name__)
 
 # 如果你的工程没有这个函数，可以改成固定背景色
 try:
@@ -402,6 +409,179 @@ class GLImageViewer(QOpenGLWidget):
 
     def viewport_center(self) -> QPointF:
         return QPointF(self.width() / 2, self.height() / 2)
+
+    # --------------------------- Off-screen rendering ---------------------------
+
+    def render_offscreen_image(
+        self,
+        target_size: QSize,
+        adjustments: Optional[Mapping[str, float]] = None,
+    ) -> QImage:
+        """Render the current texture into an off-screen framebuffer.
+
+        Parameters
+        ----------
+        target_size:
+            Final size of the rendered preview.  The method clamps the width
+            and height to at least one pixel to avoid driver errors caused by
+            zero-sized viewports.
+        adjustments:
+            Mapping of shader uniform values to apply during rendering.  Passing
+            ``None`` renders the frame using the viewer's current adjustment
+            state.
+
+        Returns
+        -------
+        QImage
+            CPU-side image containing the rendered frame.  The image is always
+            converted to ``Format_ARGB32`` so downstream consumers can compute
+            statistics without needing to normalise the pixel layout first.
+        """
+
+        if target_size.isEmpty():
+            _LOGGER.warning("render_offscreen_image: target size was empty")
+            return QImage()
+
+        context = self.context()
+        if context is None:
+            _LOGGER.warning("render_offscreen_image: no OpenGL context available")
+            return QImage()
+
+        if self._image is None or self._image.isNull():
+            _LOGGER.warning("render_offscreen_image: no source image bound to the viewer")
+            return QImage()
+
+        # Ensure we have a usable texture before issuing draw commands.  The
+        # upload path mirrors the guard inside :meth:`paintGL` so repeated calls
+        # remain cheap once the texture is resident on the GPU.
+        self.makeCurrent()
+        try:
+            if self._tex_id == 0:
+                self._upload_texture_raw_gl(self._image)
+            if self._tex_id == 0:
+                _LOGGER.error("render_offscreen_image: texture upload failed")
+                return QImage()
+
+            gf = self._gl_funcs
+            if gf is None:
+                gf = QOpenGLFunctions_3_3_Core()
+                gf.initializeOpenGLFunctions()
+                self._gl_funcs = gf
+
+            width = max(1, int(target_size.width()))
+            height = max(1, int(target_size.height()))
+
+            # Preserve the caller's framebuffer binding and viewport so invoking
+            # this helper does not disturb the widget's onscreen presentation.
+            previous_fbo = gl.glGetIntegerv(gl.GL_FRAMEBUFFER_BINDING)
+            previous_viewport = gl.glGetIntegerv(gl.GL_VIEWPORT)
+
+            fbo_format = QOpenGLFramebufferObjectFormat()
+            fbo_format.setAttachment(QOpenGLFramebufferObject.CombinedDepthStencil)
+            fbo_format.setTextureTarget(gl.GL_TEXTURE_2D)
+            fbo = QOpenGLFramebufferObject(width, height, fbo_format)
+            if not fbo.isValid():
+                _LOGGER.error("render_offscreen_image: failed to allocate framebuffer object")
+                return QImage()
+
+            try:
+                fbo.bind()
+                gf.glViewport(0, 0, width, height)
+                gf.glClearColor(0.0, 0.0, 0.0, 0.0)
+                gf.glClear(gl.GL_COLOR_BUFFER_BIT)
+
+                prog = self._shader_program
+                if prog is None or not prog.bind():
+                    _LOGGER.error("render_offscreen_image: shader program was not available")
+                    return QImage()
+
+                try:
+                    if self._dummy_vao:
+                        self._dummy_vao.bind()
+
+                    # Apply adjustment uniforms using the same helpers as the onscreen path.
+                    adj = dict(adjustments or self._adjustments)
+
+                    def uniform_location(name: str) -> int:
+                        return self._uni.get(name, -1)
+
+                    def set1f(name: str, value: float) -> None:
+                        loc = uniform_location(name)
+                        if loc != -1:
+                            gf.glUniform1f(loc, float(value))
+
+                    def set2f(name: str, x: float, y: float) -> None:
+                        loc = uniform_location(name)
+                        if loc != -1:
+                            gf.glUniform2f(loc, float(x), float(y))
+
+                    def set3f(name: str, x: float, y: float, z: float) -> None:
+                        loc = uniform_location(name)
+                        if loc != -1:
+                            gf.glUniform3f(loc, float(x), float(y), float(z))
+
+                    gf.glActiveTexture(gl.GL_TEXTURE0)
+                    gf.glBindTexture(gl.GL_TEXTURE_2D, int(self._tex_id))
+                    tex_loc = uniform_location("uTex")
+                    if tex_loc != -1:
+                        gf.glUniform1i(tex_loc, 0)
+
+                    def adjustment_value(key: str, default: float = 0.0) -> float:
+                        return float(adj.get(key, default))
+
+                    set1f("uBrilliance", adjustment_value("Brilliance"))
+                    set1f("uExposure", adjustment_value("Exposure"))
+                    set1f("uHighlights", adjustment_value("Highlights"))
+                    set1f("uShadows", adjustment_value("Shadows"))
+                    set1f("uBrightness", adjustment_value("Brightness"))
+                    set1f("uContrast", adjustment_value("Contrast"))
+                    set1f("uBlackPoint", adjustment_value("BlackPoint"))
+                    set1f("uSaturation", adjustment_value("Saturation"))
+                    set1f("uVibrance", adjustment_value("Vibrance"))
+                    set1f("uColorCast", adjustment_value("Cast"))
+
+                    set3f(
+                        "uGain",
+                        float(adj.get("Color_Gain_R", 1.0)),
+                        float(adj.get("Color_Gain_G", 1.0)),
+                        float(adj.get("Color_Gain_B", 1.0)),
+                    )
+
+                    view_width = float(width)
+                    view_height = float(height)
+                    base_scale = self._fit_to_view_scale(view_width, view_height)
+                    effective_scale = max(base_scale, 1e-6)
+                    set1f("uScale", effective_scale)
+                    set2f("uViewSize", view_width, view_height)
+                    set2f("uTexSize", float(max(1, self._tex_w)), float(max(1, self._tex_h)))
+                    set2f("uPan", 0.0, 0.0)
+
+                    gf.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
+
+                    if self._dummy_vao:
+                        self._dummy_vao.release()
+                finally:
+                    prog.release()
+
+                # ``toImage`` performs a synchronous read-back which is acceptable for the
+                # modest preview sizes involved here and dramatically simpler than wiring up
+                # asynchronous PBO downloads.
+                return fbo.toImage().convertToFormat(QImage.Format.Format_ARGB32)
+            finally:
+                fbo.release()
+                gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, previous_fbo)
+                try:
+                    x, y, w, h = [int(v) for v in previous_viewport]
+                    gf.glViewport(x, y, w, h)
+                except Exception:
+                    # ``glGetIntegerv`` may return ctypes arrays that do not iterate cleanly on
+                    # some drivers.  Silently skip viewport restoration if conversion fails; the
+                    # widget will correct the viewport the next time ``paintGL`` runs.
+                    pass
+        finally:
+            self.doneCurrent()
+
+        return QImage()
 
     # --------------------------- GL lifecycle ---------------------------
 
