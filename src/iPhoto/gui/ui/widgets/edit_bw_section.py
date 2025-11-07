@@ -345,4 +345,4 @@ class EditBWSection(QWidget):
         params = params_from_master(value, grain=self._sliders["BW_Grain"].value())
         return apply_bw_preview(image, params)
 
-*** End of File
+__all__ = ["EditBWSection"]

@@ -171,7 +171,6 @@ class EditSidebar(QWidget):
         self._bw_section_container.add_header_control(self.bw_reset_button)
         self._bw_section_container.add_header_control(self.bw_toggle_button)
 
-        self._bw_section_container.set_expanded(False)
         scroll_layout.addWidget(self._bw_section_container)
         scroll_layout.addStretch(1)
         scroll_content.setLayout(scroll_layout)
