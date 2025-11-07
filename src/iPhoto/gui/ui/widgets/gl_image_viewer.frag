@@ -15,6 +15,8 @@ uniform float uSaturation;
 uniform float uVibrance;
 uniform float uColorCast;
 uniform vec3  uGain;
+uniform vec4  uBWParams;
+uniform float uTime;
 uniform vec2  uViewSize;
 uniform vec2  uTexSize;
 uniform float uScale;
@@ -72,6 +74,49 @@ vec3 apply_color_transform(vec3 rgb,
     return clamp(vec3(luma) + chroma, 0.0, 1.0);
 }
 
+float rand(vec2 n) {
+    return fract(sin(dot(n, vec2(12.9898, 4.1414))) * 43758.5453);
+}
+
+vec3 apply_bw(vec3 color, vec2 uv) {
+    float intensity = clamp(uBWParams.x, 0.0, 1.0);
+    float neutrals = clamp(uBWParams.y, -1.0, 1.0);
+    float tone = clamp(uBWParams.z, -1.0, 1.0);
+    float grain = clamp(uBWParams.w, 0.0, 1.0);
+
+    if (intensity <= 0.0 && grain <= 0.0) {
+        return color;
+    }
+
+    const vec3 C_LUMA = vec3(0.2126, 0.7152, 0.0722);
+    float luma = dot(color, C_LUMA);
+    vec3 bw = mix(color, vec3(luma), intensity);
+
+    if (abs(neutrals) > 1e-4) {
+        vec3 neutral_mix = mix(bw, color, abs(neutrals));
+        if (neutrals > 0.0) {
+            bw = neutral_mix;
+        } else {
+            // Negative neutrals deepen the monochrome mix while preserving highlights.
+            bw = mix(neutral_mix, bw, 0.5);
+        }
+    }
+
+    if (abs(tone) > 1e-4) {
+        float centred = luma * 2.0 - 1.0;
+        float tone_mix = (centred + tone * (1.0 - abs(centred))) * 0.5 + 0.5;
+        bw = mix(bw, vec3(tone_mix), abs(tone));
+    }
+
+    if (grain > 0.0) {
+        vec2 grain_seed = uv + vec2(uTime, uTime * 0.37);
+        float noise = rand(grain_seed) * 2.0 - 1.0;
+        bw = mix(bw, clamp(bw * (1.0 + noise * 0.2), 0.0, 1.0), grain);
+    }
+
+    return bw;
+}
+
 void main() {
     if (uScale <= 0.0) {
         discard;
@@ -106,5 +151,6 @@ void main() {
                         uHighlights, uShadows, contrast_factor, uBlackPoint);
 
     c = apply_color_transform(c, uSaturation, uVibrance, uColorCast, uGain);
+    c = apply_bw(c, uv);
     FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
 }

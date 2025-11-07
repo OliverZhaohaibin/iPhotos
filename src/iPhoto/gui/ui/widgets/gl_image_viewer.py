@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Mapping, Optional
 
 import logging
+import time
 
 from PySide6.QtCore import QPointF, QSize, Qt, Signal
 from PySide6.QtGui import (
@@ -82,6 +83,11 @@ class GLImageViewer(QOpenGLWidget):
         self._surface_override: Optional[QColor] = None
         self._backdrop_color: QColor = QColor(self._default_surface_color)
         self._apply_surface_color()
+
+        # ``_time_base`` anchors the monotonic clock used by the shader grain generator.  Resetting
+        # the start time keeps the uniform values numerically small even after long application
+        # sessions.
+        self._time_base = time.monotonic()
 
         self._loading_overlay = QLabel("Loading…", self)
         self._loading_overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -157,6 +163,7 @@ class GLImageViewer(QOpenGLWidget):
         self._image = image
         self._adjustments = dict(adjustments or {})
         self._loading_overlay.hide()
+        self._time_base = time.monotonic()
 
         if image is None or image.isNull():
             self._current_image_source = None
@@ -376,12 +383,14 @@ class GLImageViewer(QOpenGLWidget):
                 texture_size = self._renderer.texture_size()
                 base_scale = compute_fit_to_view_scale(texture_size, float(width), float(height))
                 effective_scale = max(base_scale, 1e-6)
+                time_value = time.monotonic() - self._time_base
                 self._renderer.render(
                     view_width=float(width),
                     view_height=float(height),
                     scale=effective_scale,
                     pan=QPointF(0.0, 0.0),
                     adjustments=dict(adjustments or self._adjustments),
+                    time_value=time_value,
                 )
 
                 return fbo.toImage().convertToFormat(QImage.Format.Format_ARGB32)
@@ -451,12 +460,15 @@ class GLImageViewer(QOpenGLWidget):
         zoom_factor = self._transform_controller.get_zoom_factor()
         effective_scale = max(base_scale * zoom_factor, 1e-6)
 
+        time_value = time.monotonic() - self._time_base
+
         self._renderer.render(
             view_width=float(vw),
             view_height=float(vh),
             scale=effective_scale,
             pan=self._transform_controller.get_pan_pixels(),
             adjustments=self._adjustments,
+            time_value=time_value,
         )
 
     # --------------------------- Events ---------------------------

@@ -48,6 +48,18 @@ class EditSession(QObject):
             self._values[key] = 0.0
             self._ranges[key] = (-1.0, 1.0)
 
+        # ``BW_*`` parameters drive the GPU-only black & white pass.  Intensity and grain operate in
+        # the ``[0.0, 1.0]`` range while the other controls are symmetric to allow both warm and
+        # cool adjustments.
+        self._values["BW_Intensity"] = 0.0
+        self._ranges["BW_Intensity"] = (0.0, 1.0)
+        self._values["BW_Neutrals"] = 0.0
+        self._ranges["BW_Neutrals"] = (-1.0, 1.0)
+        self._values["BW_Tone"] = 0.0
+        self._ranges["BW_Tone"] = (-1.0, 1.0)
+        self._values["BW_Grain"] = 0.0
+        self._ranges["BW_Grain"] = (0.0, 1.0)
+
     # ------------------------------------------------------------------
     # Accessors
     def value(self, key: str) -> float | bool:
@@ -118,6 +130,12 @@ class EditSession(QObject):
         }
         defaults.update({key: 0.0 for key in LIGHT_KEYS})
         defaults.update({key: 0.0 for key in COLOR_KEYS})
+        defaults.update({
+            "BW_Intensity": 0.0,
+            "BW_Neutrals": 0.0,
+            "BW_Tone": 0.0,
+            "BW_Grain": 0.0,
+        })
         self.set_values(defaults, emit_individual=True)
         self.resetPerformed.emit()
 
