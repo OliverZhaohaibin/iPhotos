@@ -406,8 +406,10 @@ class GLImageViewer(QOpenGLWidget):
         except Exception as exc:
             print(f"[GLDBG] Logger init failed: {exc}")
 
-        if self._renderer is None:
-            self._renderer = GLRenderer(gf, parent=self)
+        if self._renderer is not None:
+            self._renderer.destroy_resources()
+
+        self._renderer = GLRenderer(gf, parent=self)
         self._renderer.initialize_resources()
 
         dpr = self.devicePixelRatioF()
