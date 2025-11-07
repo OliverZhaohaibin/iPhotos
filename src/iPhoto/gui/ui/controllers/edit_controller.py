@@ -6,10 +6,11 @@ import logging
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
-from PySide6.QtCore import QObject, QThreadPool, QTimer, Signal, QSize
+from PySide6.QtCore import QObject, QThreadPool, QTimer, Signal, QSize, Slot
 from PySide6.QtGui import QImage
 
 from ....io import sidecar
+from ....core.bw_resolver import BWParams
 from ....settings import SettingsManager
 from ..models.asset_model import AssetModel
 from ..models.edit_session import EditSession
@@ -99,6 +100,8 @@ class EditController(QObject):
         self._is_loading_edit_image = False
 
         self._preview_manager = EditPreviewManager(self._ui.edit_image_viewer, self)
+        self._ui.edit_sidebar.bwParamsPreviewed.connect(self._handle_bw_previewed)
+        self._ui.edit_sidebar.bwParamsCommitted.connect(self._handle_bw_committed)
 
         self._transition_manager = EditViewTransitionManager(self._ui, self._window, self)
         self._transition_manager.transition_finished.connect(self._on_transition_finished)
@@ -532,6 +535,39 @@ class EditController(QObject):
         # to see the unadjusted frame until the interaction ends.
         if not self._compare_active:
             self._ui.edit_image_viewer.set_adjustments(adjustments)
+
+    @Slot(BWParams)
+    def _handle_bw_previewed(self, params: BWParams) -> None:
+        """Apply *params* to the viewer without mutating the session."""
+
+        if self._session is None or self._compare_active:
+            return
+        if not bool(self._session.value("BW_Enabled")):
+            return
+        base = dict(self._active_adjustments or self._resolve_session_adjustments())
+        base["BWIntensity"] = params.intensity
+        base["BWNeutrals"] = params.neutrals
+        base["BWTone"] = params.tone
+        base["BWGrain"] = params.grain
+        self._ui.edit_image_viewer.set_adjustments(base)
+
+    @Slot(BWParams)
+    def _handle_bw_committed(self, params: BWParams) -> None:
+        """Persist *params* into the session and re-enable the effect if needed."""
+
+        if self._session is None:
+            return
+        clamped = params.clamp()
+        updates = {
+            "BW_Master": clamped.master,
+            "BW_Intensity": clamped.intensity,
+            "BW_Neutrals": clamped.neutrals,
+            "BW_Tone": clamped.tone,
+            "BW_Grain": clamped.grain,
+        }
+        self._session.set_values(updates)
+        if not bool(self._session.value("BW_Enabled")):
+            self._session.set_value("BW_Enabled", True)
 
     def _resolve_session_adjustments(self) -> dict[str, float]:
         """Return the current session adjustments resolved for the GL shader."""

@@ -105,6 +105,8 @@ class GLRenderer:
                 "uVibrance",
                 "uColorCast",
                 "uGain",
+                "uBWParams",
+                "uTime",
                 "uViewSize",
                 "uTexSize",
                 "uScale",
@@ -217,6 +219,7 @@ class GLRenderer:
         scale: float,
         pan: QPointF,
         adjustments: Mapping[str, float],
+        time_value: float | None = None,
     ) -> None:
         """Draw the textured triangle covering the current viewport."""
 
@@ -259,6 +262,15 @@ class GLRenderer:
                 float(adjustments.get("Color_Gain_G", 1.0)),
                 float(adjustments.get("Color_Gain_B", 1.0)),
             )
+            self._set_uniform4f(
+                "uBWParams",
+                adjustment_value("BWIntensity"),
+                adjustment_value("BWNeutrals"),
+                adjustment_value("BWTone"),
+                adjustment_value("BWGrain"),
+            )
+            if time_value is not None:
+                self._set_uniform1f("uTime", time_value)
 
             self._set_uniform1f("uScale", max(scale, 1e-6))
             self._set_uniform2f("uViewSize", max(view_width, 1.0), max(view_height, 1.0))
@@ -314,3 +326,8 @@ class GLRenderer:
         location = self._uniform_locations.get(name, -1)
         if location != -1:
             self._gl_funcs.glUniform3f(location, float(x), float(y), float(z))
+
+    def _set_uniform4f(self, name: str, x: float, y: float, z: float, w: float) -> None:
+        location = self._uniform_locations.get(name, -1)
+        if location != -1:
+            self._gl_funcs.glUniform4f(location, float(x), float(y), float(z), float(w))

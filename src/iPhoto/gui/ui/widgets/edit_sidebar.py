@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import Qt, Slot
+from PySide6.QtCore import Qt, Slot, Signal
 from PySide6.QtGui import QPalette, QColor
 from PySide6.QtWidgets import (
     QFrame,
@@ -18,9 +18,11 @@ from PySide6.QtWidgets import (
 
 from ....core.light_resolver import LIGHT_KEYS
 from ....core.color_resolver import COLOR_KEYS, ColorStats
+from ....core.bw_resolver import BWParams
 from ..models.edit_session import EditSession
 from .edit_light_section import EditLightSection
 from .edit_color_section import EditColorSection
+from .edit_bw_section import EditBWSection
 from .collapsible_section import CollapsibleSection
 from ..palette import SIDEBAR_BACKGROUND_COLOR, Edit_SIDEBAR_FONT
 from ..icon import load_icon
@@ -28,6 +30,12 @@ from ..icon import load_icon
 
 class EditSidebar(QWidget):
     """Sidebar that exposes the available editing tools."""
+
+    bwParamsPreviewed = Signal(BWParams)
+    """Relays live Black & White adjustments to the controller."""
+
+    bwParamsCommitted = Signal(BWParams)
+    """Emitted when Black & White adjustments should be written to the session."""
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -39,6 +47,7 @@ class EditSidebar(QWidget):
         # disconnect them safely without triggering PySide warnings when no connection exists.
         self._light_controls_connected = False
         self._color_controls_connected = False
+        self._bw_controls_connected = False
 
         # Match the classic sidebar chrome so the edit tools retain the soft blue
         # background the rest of the application uses for navigation panes.
@@ -141,20 +150,34 @@ class EditSidebar(QWidget):
 
         scroll_layout.addWidget(self._build_separator(scroll_content))
 
-        bw_placeholder = QLabel("Black & White adjustments are coming soon.", scroll_content)
-        bw_placeholder.setWordWrap(True)
-        bw_container = CollapsibleSection(
+        self._bw_section = EditBWSection(scroll_content)
+        self._bw_section_container = CollapsibleSection(
             "Black & White",
             "circle.lefthalf.fill.svg",
-            bw_placeholder,
+            self._bw_section,
             scroll_content,
-            title_font=Edit_SIDEBAR_FONT
+            title_font=Edit_SIDEBAR_FONT,
         )
-        bw_container.set_expanded(False)
-        scroll_layout.addWidget(bw_container)
+
+        self.bw_reset_button = QToolButton(self._bw_section_container)
+        self.bw_reset_button.setAutoRaise(True)
+        self.bw_reset_button.setIcon(load_icon("arrow.uturn.left.svg"))
+        self.bw_reset_button.setToolTip("Reset Black & White adjustments")
+        self.bw_toggle_button = QToolButton(self._bw_section_container)
+        self.bw_toggle_button.setAutoRaise(True)
+        self.bw_toggle_button.setCheckable(True)
+        self.bw_toggle_button.setIcon(load_icon("circle.svg"))
+        self.bw_toggle_button.setToolTip("Toggle Black & White adjustments")
+        self._bw_section_container.add_header_control(self.bw_reset_button)
+        self._bw_section_container.add_header_control(self.bw_toggle_button)
+
+        scroll_layout.addWidget(self._bw_section_container)
         scroll_layout.addStretch(1)
         scroll_content.setLayout(scroll_layout)
         scroll.setWidget(scroll_content)
+
+        self._bw_section.paramsPreviewed.connect(self.bwParamsPreviewed)
+        self._bw_section.paramsCommitted.connect(self.bwParamsCommitted)
 
         adjust_layout.addWidget(scroll)
         adjust_container.setLayout(adjust_layout)
@@ -220,9 +243,21 @@ class EditSidebar(QWidget):
                 pass
             self._color_controls_connected = False
 
+        if self._bw_controls_connected:
+            try:
+                self.bw_reset_button.clicked.disconnect(self._on_bw_reset)
+            except (TypeError, RuntimeError):
+                pass
+            try:
+                self.bw_toggle_button.toggled.disconnect(self._on_bw_toggled)
+            except (TypeError, RuntimeError):
+                pass
+            self._bw_controls_connected = False
+
         self._session = session
         self._light_section.bind_session(session)
         self._color_section.bind_session(session)
+        self._bw_section.bind_session(session)
         if session is not None:
             self.light_reset_button.clicked.connect(self._on_light_reset)
             self.light_toggle_button.toggled.connect(self._on_light_toggled)
@@ -231,20 +266,29 @@ class EditSidebar(QWidget):
             session.valueChanged.connect(self._on_session_value_changed)
             self._light_controls_connected = True
             self._color_controls_connected = True
+            self.bw_reset_button.clicked.connect(self._on_bw_reset)
+            self.bw_toggle_button.toggled.connect(self._on_bw_toggled)
+            self._bw_controls_connected = True
+            self.bw_reset_button.setEnabled(True)
             self._sync_light_toggle_state()
             self._sync_color_toggle_state()
+            self._sync_bw_toggle_state()
             if self._light_preview_image is not None:
                 self._light_section.set_preview_image(self._light_preview_image)
                 self._color_section.set_preview_image(
                     self._light_preview_image,
                     color_stats=self._color_stats,
                 )
+                self._bw_section.set_preview_image(self._light_preview_image)
         else:
             self.light_toggle_button.setChecked(False)
             self._update_light_toggle_icon(False)
             self.color_toggle_button.setChecked(False)
             self._update_color_toggle_icon(False)
             self._color_stats = None
+            self.bw_reset_button.setEnabled(False)
+            self.bw_toggle_button.setChecked(False)
+            self._update_bw_toggle_icon(False)
 
     def session(self) -> Optional[EditSession]:
         return self._session
@@ -261,8 +305,10 @@ class EditSidebar(QWidget):
 
         self._light_section.refresh_from_session()
         self._color_section.refresh_from_session()
+        self._bw_section.refresh_from_session()
         self._sync_light_toggle_state()
         self._sync_color_toggle_state()
+        self._sync_bw_toggle_state()
 
     def set_light_preview_image(
         self,
@@ -276,6 +322,7 @@ class EditSidebar(QWidget):
         self._color_stats = color_stats
         self._light_section.set_preview_image(image)
         self._color_section.set_preview_image(image, color_stats=color_stats)
+        self._bw_section.set_preview_image(image)
 
     def preview_thumbnail_height(self) -> int:
         """Return the vertical pixel span used by the master thumbnail strips."""
@@ -327,6 +374,27 @@ class EditSidebar(QWidget):
             return
         self._session.set_value("Color_Enabled", checked)
 
+    def _on_bw_reset(self) -> None:
+        if self._session is None:
+            return
+        updates = {
+            "BW_Master": 0.0,
+            "BW_Intensity": 0.0,
+            "BW_Neutrals": 0.0,
+            "BW_Tone": 0.0,
+            "BW_Grain": 0.0,
+            "BW_Enabled": True,
+        }
+        self._session.set_values(updates)
+        self._bw_section.refresh_from_session()
+        self._sync_bw_toggle_state()
+
+    def _on_bw_toggled(self, checked: bool) -> None:
+        self._update_bw_toggle_icon(checked)
+        if self._session is None:
+            return
+        self._session.set_value("BW_Enabled", checked)
+
     @Slot(str, object)  # 使用 object 以匹配 (float | bool)
     def _on_session_value_changed(self, key: str, value: object) -> None:
         """Listen for session changes (e.g., from sliders) to sync the toggle button."""
@@ -335,6 +403,8 @@ class EditSidebar(QWidget):
             self._sync_light_toggle_state()
         if key == "Color_Enabled":
             self._sync_color_toggle_state()
+        if key == "BW_Enabled":
+            self._sync_bw_toggle_state()
 
     def _sync_light_toggle_state(self) -> None:
         if self._session is None:
@@ -380,6 +450,30 @@ class EditSidebar(QWidget):
             )
             self.color_toggle_button.setIcon(load_icon("circle.svg", color=tint_name))
 
+    def _sync_bw_toggle_state(self) -> None:
+        if self._session is None:
+            block = self.bw_toggle_button.blockSignals(True)
+            self.bw_toggle_button.setChecked(False)
+            self.bw_toggle_button.blockSignals(block)
+            self._update_bw_toggle_icon(False)
+            return
+        enabled = bool(self._session.value("BW_Enabled"))
+        block = self.bw_toggle_button.blockSignals(True)
+        self.bw_toggle_button.setChecked(enabled)
+        self.bw_toggle_button.blockSignals(block)
+        self._update_bw_toggle_icon(enabled)
+
+    def _update_bw_toggle_icon(self, enabled: bool) -> None:
+        if enabled:
+            self.bw_toggle_button.setIcon(load_icon("checkmark.circle.svg"))
+        else:
+            tint_name = (
+                self._control_icon_tint.name(QColor.NameFormat.HexArgb)
+                if self._control_icon_tint
+                else None
+            )
+            self.bw_toggle_button.setIcon(load_icon("circle.svg", color=tint_name))
+
 
     def set_control_icon_tint(self, color: QColor | None) -> None:
         """Apply a color tint to all header control icons."""
@@ -391,5 +485,10 @@ class EditSidebar(QWidget):
         self.color_reset_button.setIcon(
             load_icon("arrow.uturn.left.svg", color=tint_name)
         )
+        self.bw_reset_button.setIcon(
+            load_icon("arrow.uturn.left.svg", color=tint_name)
+        )
         self._sync_light_toggle_state()
         self._sync_color_toggle_state()
+        self._sync_bw_toggle_state()
+

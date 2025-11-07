@@ -9,6 +9,14 @@ import xml.etree.ElementTree as ET
 from ..core.light_resolver import LIGHT_KEYS, resolve_light_vector
 from ..core.color_resolver import COLOR_KEYS, ColorResolver, ColorStats
 
+BW_KEYS = (
+    "BW_Master",
+    "BW_Intensity",
+    "BW_Neutrals",
+    "BW_Tone",
+    "BW_Grain",
+)
+
 _SIDE_CAR_ROOT = "iPhotoAdjustments"
 _LIGHT_NODE = "Light"
 _VERSION_ATTR = "version"
@@ -87,6 +95,22 @@ def load_adjustments(asset_path: Path) -> Dict[str, float | bool]:
             result[key] = float(element.text.strip())
         except ValueError:
             continue
+    bw_enabled = light_node.find("BW_Enabled")
+    if bw_enabled is not None and bw_enabled.text is not None:
+        text = bw_enabled.text.strip().lower()
+        result["BW_Enabled"] = text in {"1", "true", "yes", "on"}
+    else:
+        result["BW_Enabled"] = True
+
+    for key in BW_KEYS:
+        element = light_node.find(key)
+        if element is None or element.text is None:
+            continue
+        try:
+            result[key] = float(element.text.strip())
+        except ValueError:
+            continue
+
     return result
 
 
@@ -121,6 +145,15 @@ def save_adjustments(asset_path: Path, adjustments: Mapping[str, float | bool]) 
     color_enabled.text = "true" if color_enabled_value else "false"
 
     for key in COLOR_KEYS:
+        value = float(adjustments.get(key, 0.0))
+        child = ET.SubElement(light, key)
+        child.text = f"{value:.2f}"
+
+    bw_enabled = ET.SubElement(light, "BW_Enabled")
+    bw_enabled_value = bool(adjustments.get("BW_Enabled", True))
+    bw_enabled.text = "true" if bw_enabled_value else "false"
+
+    for key in BW_KEYS:
         value = float(adjustments.get(key, 0.0))
         child = ET.SubElement(light, key)
         child.text = f"{value:.2f}"
@@ -177,13 +210,16 @@ def resolve_render_adjustments(
             overrides[key] = numeric_value
         elif key in COLOR_KEYS:
             color_overrides[key] = numeric_value
+        elif key == "BW_Master":
+            continue
         else:
             resolved[key] = numeric_value
 
     if light_enabled:
-        resolved.update(resolve_light_vector(master_value, overrides, mode="delta"))
+        light_values = resolve_light_vector(master_value, overrides, mode="delta")
     else:
-        resolved.update({key: 0.0 for key in LIGHT_KEYS})
+        light_values = {key: 0.0 for key in LIGHT_KEYS}
+    resolved.update(light_values)
     stats = color_stats or ColorStats()
     color_master = float(adjustments.get("Color_Master", 0.0))
     color_enabled = bool(adjustments.get("Color_Enabled", True))
@@ -202,8 +238,16 @@ def resolve_render_adjustments(
     resolved["Color_Gain_G"] = gain_g
     resolved["Color_Gain_B"] = gain_b
 
-    if not light_enabled:
-        return resolved
+    bw_enabled = bool(adjustments.get("BW_Enabled", True))
+    if bw_enabled:
+        resolved["BWIntensity"] = float(adjustments.get("BW_Intensity", 0.0))
+        resolved["BWNeutrals"] = float(adjustments.get("BW_Neutrals", 0.0))
+        resolved["BWTone"] = float(adjustments.get("BW_Tone", 0.0))
+        resolved["BWGrain"] = float(adjustments.get("BW_Grain", 0.0))
+    else:
+        resolved["BWIntensity"] = 0.0
+        resolved["BWNeutrals"] = 0.0
+        resolved["BWTone"] = 0.0
+        resolved["BWGrain"] = 0.0
 
-    resolved.update(resolve_light_vector(master_value, overrides, mode="delta"))
     return resolved
