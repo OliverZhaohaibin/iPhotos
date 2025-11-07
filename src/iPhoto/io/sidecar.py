@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, Mapping
 import xml.etree.ElementTree as ET
 
+from ..core.bw_resolver import BWParams, resolve_effective_params
 from ..core.light_resolver import LIGHT_KEYS, resolve_light_vector
 from ..core.color_resolver import COLOR_KEYS, ColorResolver, ColorStats
 
@@ -240,12 +241,21 @@ def resolve_render_adjustments(
 
     bw_enabled = bool(adjustments.get("BW_Enabled", True))
     if bw_enabled:
-        resolved["BWIntensity"] = float(adjustments.get("BW_Intensity", 0.0))
-        resolved["BWNeutrals"] = float(adjustments.get("BW_Neutrals", 0.0))
-        resolved["BWTone"] = float(adjustments.get("BW_Tone", 0.0))
-        resolved["BWGrain"] = float(adjustments.get("BW_Grain", 0.0))
+        master = float(adjustments.get("BW_Master", 0.5))
+        user_params = BWParams(
+            master=master,
+            intensity=float(adjustments.get("BW_Intensity", 0.5)),
+            neutrals=float(adjustments.get("BW_Neutrals", 0.0)),
+            tone=float(adjustments.get("BW_Tone", 0.0)),
+            grain=float(adjustments.get("BW_Grain", 0.0)),
+        )
+        effective = resolve_effective_params(master, user_params)
+        resolved["BWIntensity"] = effective.intensity
+        resolved["BWNeutrals"] = effective.neutrals
+        resolved["BWTone"] = effective.tone
+        resolved["BWGrain"] = effective.grain
     else:
-        resolved["BWIntensity"] = 0.0
+        resolved["BWIntensity"] = 0.5
         resolved["BWNeutrals"] = 0.0
         resolved["BWTone"] = 0.0
         resolved["BWGrain"] = 0.0

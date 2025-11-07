@@ -15,7 +15,10 @@ uniform float uSaturation;
 uniform float uVibrance;
 uniform float uColorCast;
 uniform vec3  uGain;
-uniform vec4  uBWParams;
+uniform float uIntensity01;
+uniform float uNeutrals;
+uniform float uTone;
+uniform float uGrain;
 uniform float uTime;
 uniform vec2  uViewSize;
 uniform vec2  uTexSize;
@@ -79,19 +82,21 @@ vec3 apply_color_transform(vec3 rgb,
     return clamp(vec3(luma) + chroma, 0.0, 1.0);
 }
 
-float gamma_neutral_signed(float gray, float neutral_adjust) {
-    // Positive values brighten neutrals, negative values darken them.
-    float magnitude = 0.6 * abs(neutral_adjust);
-    float gamma = (neutral_adjust >= 0.0) ? pow(2.0, -magnitude) : pow(2.0, magnitude);
+float gamma_neutral(float gray, float neutral_amount) {
+    // Neutral adjustments are centred around 0.5 so 0.5 is the no-op point.
+    float n = 0.6 * (neutral_amount - 0.5);
+    float gamma = pow(2.0, -n * 2.0);
     return pow(clamp(gray, 0.0, 1.0), gamma);
 }
 
-float contrast_tone_signed(float gray, float tone_adjust) {
-    // Apply an S-curve controlled by the tone adjustment.
+float contrast_tone(float gray, float tone_amount) {
+    // Tone adjustments also centre around 0.5 and apply an S-curve.
+    float t = tone_amount - 0.5;
+    float k = (t >= 0.0) ? mix(1.0, 2.2, t * 2.0) : mix(1.0, 0.6, -t * 2.0);
     float x = clamp(gray, 0.0, 1.0);
-    float epsilon = 1e-6;
-    float logit = log(clamp(x, epsilon, 1.0 - epsilon) / clamp(1.0 - x, epsilon, 1.0 - epsilon));
-    float k = (tone_adjust >= 0.0) ? mix(1.0, 2.2, tone_adjust) : mix(1.0, 0.6, -tone_adjust);
+    float eps = 1e-6;
+    float x_safe = clamp(x, eps, 1.0 - eps);
+    float logit = log(x_safe / clamp(1.0 - x_safe, eps, 1.0 - eps));
     float y = 1.0 / (1.0 + exp(-logit * k));
     return clamp(y, 0.0, 1.0);
 }
@@ -106,31 +111,33 @@ float grain_noise(vec2 uv, float grain_amount) {
 }
 
 vec3 apply_bw(vec3 color, vec2 uv) {
-    float intensity = clamp(uBWParams.x, -1.0, 1.0);
-    float neutrals = clamp(uBWParams.y, -1.0, 1.0);
-    float tone = clamp(uBWParams.z, -1.0, 1.0);
-    float grain = clamp(uBWParams.w, 0.0, 1.0);
+    float intensity = clamp(uIntensity01, 0.0, 1.0);
+    float neutrals = clamp(uNeutrals, 0.0, 1.0);
+    float tone = clamp(uTone, 0.0, 1.0);
+    float grain = clamp(uGrain, 0.0, 1.0);
 
-    if (abs(intensity) <= 1e-4 && abs(neutrals) <= 1e-4 && abs(tone) <= 1e-4 && grain <= 0.0) {
+    if (abs(intensity - 0.5) <= 1e-4 && neutrals <= 1e-4 && tone <= 1e-4 && grain <= 0.0) {
         return color;
     }
 
     float g0 = luminance(color);
 
-    // Anchors that define the soft, neutral, and rich looks driven by the master slider.
-    float g_soft = pow(g0, 0.85);
     float g_neutral = g0;
-    float g_rich = contrast_tone_signed(g0, 0.35);
+    float g_soft_base = pow(g0, 0.82);
+    float g_soft = (contrast_tone(g_soft_base, 0.0) + g_soft_base) * 0.5;
+    float g_rich = contrast_tone(pow(g0, 1.0 / 1.22), 0.35);
 
     float gray;
-    if (intensity >= 0.0) {
-        gray = mix(g_neutral, g_rich, intensity);
+    if (intensity >= 0.5) {
+        float t = (intensity - 0.5) / 0.5;
+        gray = mix(g_neutral, g_rich, t);
     } else {
-        gray = mix(g_soft, g_neutral, intensity + 1.0);
+        float t = (0.5 - intensity) / 0.5;
+        gray = mix(g_soft, g_neutral, t);
     }
 
-    gray = gamma_neutral_signed(gray, neutrals);
-    gray = contrast_tone_signed(gray, tone);
+    gray = gamma_neutral(gray, neutrals);
+    gray = contrast_tone(gray, tone);
     gray += grain_noise(uv * uTexSize, grain);
     gray = clamp(gray, 0.0, 1.0);
 

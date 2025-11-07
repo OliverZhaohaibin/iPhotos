@@ -105,7 +105,10 @@ class GLRenderer:
                 "uVibrance",
                 "uColorCast",
                 "uGain",
-                "uBWParams",
+                "uIntensity01",
+                "uNeutrals",
+                "uTone",
+                "uGrain",
                 "uTime",
                 "uViewSize",
                 "uTexSize",
@@ -262,13 +265,10 @@ class GLRenderer:
                 float(adjustments.get("Color_Gain_G", 1.0)),
                 float(adjustments.get("Color_Gain_B", 1.0)),
             )
-            self._set_uniform4f(
-                "uBWParams",
-                adjustment_value("BWIntensity"),
-                adjustment_value("BWNeutrals"),
-                adjustment_value("BWTone"),
-                adjustment_value("BWGrain"),
-            )
+            self._set_uniform1f("uIntensity01", adjustment_value("BWIntensity", 0.5))
+            self._set_uniform1f("uNeutrals", adjustment_value("BWNeutrals", 0.0))
+            self._set_uniform1f("uTone", adjustment_value("BWTone", 0.0))
+            self._set_uniform1f("uGrain", adjustment_value("BWGrain", 0.0))
             if time_value is not None:
                 self._set_uniform1f("uTime", time_value)
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from typing import Mapping, Sequence
 
+
 from PySide6.QtGui import QImage, QColor
 
 from ..utils.deps import load_pillow
@@ -83,11 +84,13 @@ def apply_adjustments(
     )
 
     bw_enabled = bool(adjustments.get("BW_Enabled", adjustments.get("BWEnabled", True)))
-    bw_intensity = float(adjustments.get("BW_Intensity", adjustments.get("BWIntensity", 0.0)))
+    bw_intensity = float(adjustments.get("BW_Intensity", adjustments.get("BWIntensity", 0.5)))
     bw_neutrals = float(adjustments.get("BW_Neutrals", adjustments.get("BWNeutrals", 0.0)))
     bw_tone = float(adjustments.get("BW_Tone", adjustments.get("BWTone", 0.0)))
     bw_grain = float(adjustments.get("BW_Grain", adjustments.get("BWGrain", 0.0)))
-    apply_bw = bw_enabled and (abs(bw_intensity) > 1e-6 or abs(bw_grain) > 1e-6)
+    apply_bw = bw_enabled and (
+        abs(bw_intensity - 0.5) > 1e-6 or abs(bw_neutrals) > 1e-6 or abs(bw_tone) > 1e-6 or abs(bw_grain) > 1e-6
+    )
 
     if all(
         abs(value) < 1e-6
@@ -407,10 +410,7 @@ def _apply_adjustments_fast(
                 )
 
             if apply_bw_effect:
-                noise = 0.0
-                if abs(bw_grain) > 1e-6:
-                    noise = _grain_noise(x, y, width, height)
-                r, g, b = _apply_bw_channels(
+                r, g, b = _apply_bw_effect_scalar(
                     r,
                     g,
                     b,
@@ -418,7 +418,10 @@ def _apply_adjustments_fast(
                     bw_neutrals,
                     bw_tone,
                     bw_grain,
-                    noise,
+                    x,
+                    y,
+                    width,
+                    height,
                 )
 
             view[pixel_offset] = _float_to_uint8(b)
@@ -511,10 +514,7 @@ def _apply_adjustments_fallback(
                 )
 
             if apply_bw_effect:
-                noise = 0.0
-                if abs(bw_grain) > 1e-6:
-                    noise = _grain_noise(x, y, width, height)
-                r, g, b = _apply_bw_channels(
+                r, g, b = _apply_bw_effect_scalar(
                     r,
                     g,
                     b,
@@ -522,7 +522,10 @@ def _apply_adjustments_fallback(
                     bw_neutrals,
                     bw_tone,
                     bw_grain,
-                    noise,
+                    x,
+                    y,
+                    width,
+                    height,
                 )
 
             image.setPixelColor(x, y, QColor.fromRgbF(r, g, b, colour.alphaF()))
@@ -655,10 +658,7 @@ def _apply_bw_only(
             b = view[pixel_offset] / 255.0
             g = view[pixel_offset + 1] / 255.0
             r = view[pixel_offset + 2] / 255.0
-            noise = 0.0
-            if abs(grain) > 1e-6:
-                noise = _grain_noise(x, y, width, height)
-            r, g, b = _apply_bw_channels(
+            r, g, b = _apply_bw_effect_scalar(
                 r,
                 g,
                 b,
@@ -666,7 +666,10 @@ def _apply_bw_only(
                 neutrals,
                 tone,
                 grain,
-                noise,
+                x,
+                y,
+                width,
+                height,
             )
             view[pixel_offset] = _float_to_uint8(b)
             view[pixel_offset + 1] = _float_to_uint8(g)
@@ -690,10 +693,7 @@ def _apply_bw_using_qcolor(
             r = colour.redF()
             g = colour.greenF()
             b = colour.blueF()
-            noise = 0.0
-            if abs(grain) > 1e-6:
-                noise = _grain_noise(x, y, width, height)
-            r, g, b = _apply_bw_channels(
+            r, g, b = _apply_bw_effect_scalar(
                 r,
                 g,
                 b,
@@ -701,12 +701,15 @@ def _apply_bw_using_qcolor(
                 neutrals,
                 tone,
                 grain,
-                noise,
+                x,
+                y,
+                width,
+                height,
             )
             image.setPixelColor(x, y, QColor.fromRgbF(r, g, b, colour.alphaF()))
 
 
-def _apply_bw_channels(
+def _apply_bw_effect_scalar(
     r: float,
     g: float,
     b: float,
@@ -714,52 +717,66 @@ def _apply_bw_channels(
     neutrals: float,
     tone: float,
     grain: float,
-    noise: float,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
 ) -> tuple[float, float, float]:
-    """Return the transformed RGB triple for the Black & White effect."""
+    """Return a grayscale triple that mirrors the GPU Black & White effect."""
 
-    # Clamp user supplied parameters to the shader's expected ranges so the preview mirrors
-    # the GPU output even when sidecar files contain out-of-bounds values.
     intensity = _clamp01(intensity)
-    neutrals_amount = _clamp01(abs(neutrals))
-    tone_amount = _clamp01(abs(tone))
+    neutrals = _clamp01(neutrals)
+    tone = _clamp01(tone)
     grain_amount = _clamp01(grain)
-    noise = max(-1.0, min(1.0, noise))
 
-    original = (r, g, b)
     luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    base = _clamp01(luma)
 
-    bw_r = _mix(original[0], luma, intensity)
-    bw_g = _mix(original[1], luma, intensity)
-    bw_b = _mix(original[2], luma, intensity)
+    g_neutral = base
+    g_soft_base = math.pow(base, 0.82)
+    g_soft = (_bw_contrast_tone(g_soft_base, 0.0) + g_soft_base) * 0.5
+    g_rich = _bw_contrast_tone(math.pow(base, 1.0 / 1.22), 0.35)
 
-    if neutrals >= 0.0 and neutrals_amount > 1e-6:
-        bw_r = _mix(bw_r, original[0], neutrals_amount)
-        bw_g = _mix(bw_g, original[1], neutrals_amount)
-        bw_b = _mix(bw_b, original[2], neutrals_amount)
+    if intensity >= 0.5:
+        mix_factor = (intensity - 0.5) / 0.5
+        gray = _mix(g_neutral, g_rich, mix_factor)
+    else:
+        mix_factor = (0.5 - intensity) / 0.5
+        gray = _mix(g_soft, g_neutral, mix_factor)
 
-    if tone_amount > 1e-6:
-        t = luma * 2.0 - 1.0
-        tm = (t + tone * (1.0 - abs(t))) * 0.5 + 0.5
-        tm = _clamp01(tm)
-        bw_r = _mix(bw_r, tm, tone_amount)
-        bw_g = _mix(bw_g, tm, tone_amount)
-        bw_b = _mix(bw_b, tm, tone_amount)
+    gray = _bw_gamma_neutral(gray, neutrals)
+    gray = _bw_contrast_tone(gray, tone)
 
     if grain_amount > 1e-6:
-        scale = 1.0 + noise * 0.2
-        grain_r = bw_r * scale
-        grain_g = bw_g * scale
-        grain_b = bw_b * scale
-        bw_r = _mix(bw_r, grain_r, grain_amount)
-        bw_g = _mix(bw_g, grain_g, grain_amount)
-        bw_b = _mix(bw_b, grain_b, grain_amount)
+        gray += _grain_noise(x, y, width, height) * grain_amount
 
-    return _clamp01(bw_r), _clamp01(bw_g), _clamp01(bw_b)
+    gray = _clamp01(gray)
+    return gray, gray, gray
+
+
+def _bw_gamma_neutral(value: float, neutral_amount: float) -> float:
+    """Apply the neutral gamma tweak used by the GLSL shader."""
+
+    n = 0.6 * (neutral_amount - 0.5)
+    gamma = math.pow(2.0, -n * 2.0)
+    return math.pow(_clamp01(value), gamma)
+
+
+def _bw_contrast_tone(value: float, tone_amount: float) -> float:
+    """Apply the tone S-curve used by the GLSL shader."""
+
+    t = tone_amount - 0.5
+    slope = _mix(1.0, 2.2, t * 2.0) if t >= 0.0 else _mix(1.0, 0.6, -t * 2.0)
+    x = _clamp01(value)
+    eps = 1e-6
+    x_safe = max(eps, min(1.0 - eps, x))
+    logit = math.log(x_safe / (1.0 - x_safe))
+    y = 1.0 / (1.0 + math.exp(-logit * slope))
+    return _clamp01(y)
 
 
 def _grain_noise(x: int, y: int, width: int, height: int) -> float:
-    """Return a deterministic pseudo random noise value in ``[-1.0, 1.0]`` for grain."""
+    """Return a deterministic pseudo random noise value in ``[-0.1, 0.1]``."""
 
     if width <= 0 or height <= 0:
         return 0.0
@@ -770,7 +787,7 @@ def _grain_noise(x: int, y: int, width: int, height: int) -> float:
     seed = u * 12.9898 + v * 78.233
     noise = math.sin(seed) * 43758.5453
     fraction = noise - math.floor(noise)
-    return fraction * 2.0 - 1.0
+    return (fraction - 0.5) * 0.2
 
 
 def _mix(a: float, b: float, t: float) -> float:

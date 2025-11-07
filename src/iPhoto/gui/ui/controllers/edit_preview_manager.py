@@ -8,13 +8,14 @@ from typing import Mapping, Optional
 from PySide6.QtCore import QObject, QThreadPool, QTimer, Qt, Signal, QSize
 from PySide6.QtGui import QImage, QPixmap
 
-from ....core.light_resolver import LIGHT_KEYS, resolve_light_vector
+from ....core.bw_resolver import BWParams, resolve_effective_params
 from ....core.color_resolver import (
     COLOR_KEYS,
     ColorResolver,
     ColorStats,
     compute_color_statistics,
 )
+from ....core.light_resolver import LIGHT_KEYS, resolve_light_vector
 from ....core.preview_backends import (
     PreviewBackend,
     PreviewSession,
@@ -95,12 +96,21 @@ def resolve_adjustment_mapping(
     # them keeps the adjustment mapping comprehensive.
     bw_enabled = bool(session_values.get("BW_Enabled", True))
     if bw_enabled:
-        resolved["BWIntensity"] = float(session_values.get("BW_Intensity", 0.0))
-        resolved["BWNeutrals"] = float(session_values.get("BW_Neutrals", 0.0))
-        resolved["BWTone"] = float(session_values.get("BW_Tone", 0.0))
-        resolved["BWGrain"] = float(session_values.get("BW_Grain", 0.0))
+        master = float(session_values.get("BW_Master", 0.5))
+        user_params = BWParams(
+            master=master,
+            intensity=float(session_values.get("BW_Intensity", 0.5)),
+            neutrals=float(session_values.get("BW_Neutrals", 0.0)),
+            tone=float(session_values.get("BW_Tone", 0.0)),
+            grain=float(session_values.get("BW_Grain", 0.0)),
+        )
+        effective = resolve_effective_params(master, user_params)
+        resolved["BWIntensity"] = effective.intensity
+        resolved["BWNeutrals"] = effective.neutrals
+        resolved["BWTone"] = effective.tone
+        resolved["BWGrain"] = effective.grain
     else:
-        resolved["BWIntensity"] = 0.0
+        resolved["BWIntensity"] = 0.5
         resolved["BWNeutrals"] = 0.0
         resolved["BWTone"] = 0.0
         resolved["BWGrain"] = 0.0

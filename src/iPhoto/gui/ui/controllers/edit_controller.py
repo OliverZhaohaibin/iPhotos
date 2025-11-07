@@ -557,15 +557,6 @@ class EditController(QObject):
 
         if self._session is None:
             return
-        clamped = params.clamp()
-        updates = {
-            "BW_Master": clamped.master,
-            "BW_Intensity": clamped.intensity,
-            "BW_Neutrals": clamped.neutrals,
-            "BW_Tone": clamped.tone,
-            "BW_Grain": clamped.grain,
-        }
-        self._session.set_values(updates)
         if not bool(self._session.value("BW_Enabled")):
             self._session.set_value("BW_Enabled", True)
 

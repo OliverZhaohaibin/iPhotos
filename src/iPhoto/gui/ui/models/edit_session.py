@@ -48,22 +48,21 @@ class EditSession(QObject):
             self._values[key] = 0.0
             self._ranges[key] = (-1.0, 1.0)
 
-        # ``BW_*`` parameters drive the GPU-only black & white pass.  Intensity now mirrors the
-        # shader/master range and accepts signed values in ``[-1.0, 1.0]`` while grain remains
-        # clamped to ``[0.0, 1.0]``.  ``BW_Master`` stores the aggregate slider position so the UI
-        # can reproduce the derived parameters after a round-trip through the sidecar.  ``BW_Enabled``
-        # mirrors the Light/Color toggles so the UI can disable the effect without discarding the
-        # user tuned slider values.
-        self._values["BW_Master"] = 0.0
-        self._ranges["BW_Master"] = (-1.0, 1.0)
+        # ``BW_*`` parameters drive the GPU-only black & white pass.  The latest decoupled model uses
+        # ``[0, 1]`` ranges for every slider so the master control becomes an anchor position while
+        # the secondary sliders act as offsets.  ``BW_Master`` stores the anchor location whereas the
+        # other values represent the user supplied offsets.  ``BW_Enabled`` mirrors the Light/Color
+        # toggles so the UI can disable the effect without discarding the tuned slider values.
+        self._values["BW_Master"] = 0.5
+        self._ranges["BW_Master"] = (0.0, 1.0)
         self._values["BW_Enabled"] = True
         self._ranges["BW_Enabled"] = (0.0, 1.0)
-        self._values["BW_Intensity"] = 0.0
-        self._ranges["BW_Intensity"] = (-1.0, 1.0)
+        self._values["BW_Intensity"] = 0.5
+        self._ranges["BW_Intensity"] = (0.0, 1.0)
         self._values["BW_Neutrals"] = 0.0
-        self._ranges["BW_Neutrals"] = (-1.0, 1.0)
+        self._ranges["BW_Neutrals"] = (0.0, 1.0)
         self._values["BW_Tone"] = 0.0
-        self._ranges["BW_Tone"] = (-1.0, 1.0)
+        self._ranges["BW_Tone"] = (0.0, 1.0)
         self._values["BW_Grain"] = 0.0
         self._ranges["BW_Grain"] = (0.0, 1.0)
 
@@ -138,9 +137,9 @@ class EditSession(QObject):
         defaults.update({key: 0.0 for key in LIGHT_KEYS})
         defaults.update({key: 0.0 for key in COLOR_KEYS})
         defaults.update({
-            "BW_Master": 0.0,
+            "BW_Master": 0.5,
             "BW_Enabled": True,
-            "BW_Intensity": 0.0,
+            "BW_Intensity": 0.5,
             "BW_Neutrals": 0.0,
             "BW_Tone": 0.0,
             "BW_Grain": 0.0,

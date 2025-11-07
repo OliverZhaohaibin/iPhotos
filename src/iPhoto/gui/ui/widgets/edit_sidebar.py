@@ -378,8 +378,8 @@ class EditSidebar(QWidget):
         if self._session is None:
             return
         updates = {
-            "BW_Master": 0.0,
-            "BW_Intensity": 0.0,
+            "BW_Master": 0.5,
+            "BW_Intensity": 0.5,
             "BW_Neutrals": 0.0,
             "BW_Tone": 0.0,
             "BW_Grain": 0.0,

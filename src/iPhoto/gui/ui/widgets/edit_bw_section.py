@@ -10,7 +10,7 @@ from typing import Dict, Optional
 from PySide6.QtCore import QThreadPool, Signal, Slot
 from PySide6.QtWidgets import QFrame, QVBoxLayout, QWidget
 
-from ....core.bw_resolver import BWParams, apply_bw_preview, params_from_master
+from ....core.bw_resolver import BWParams, apply_bw_preview, resolve_effective_params
 from ..models.edit_session import EditSession
 from ..tasks.thumbnail_generator_worker import ThumbnailGeneratorWorker
 from .collapsible_section import CollapsibleSubSection
@@ -58,7 +58,7 @@ class EditBWSection(QWidget):
             self,
             minimum=0.0,
             maximum=1.0,
-            initial=0.0,
+            initial=0.5,
         )
         self.master_slider.set_preview_generator(self._generate_master_preview)
         self.master_slider.valueChanged.connect(self._handle_master_slider_changed)
@@ -75,13 +75,25 @@ class EditBWSection(QWidget):
         options_layout.setSpacing(6)
 
         specs = [
-            _SliderSpec("Intensity", "BW_Intensity", -1.0, 1.0),
-            _SliderSpec("Neutrals", "BW_Neutrals", -1.0, 1.0),
-            _SliderSpec("Tone", "BW_Tone", -1.0, 1.0),
+            _SliderSpec("Intensity", "BW_Intensity", 0.0, 1.0),
+            _SliderSpec("Neutrals", "BW_Neutrals", 0.0, 1.0),
+            _SliderSpec("Tone", "BW_Tone", 0.0, 1.0),
             _SliderSpec("Grain", "BW_Grain", 0.0, 1.0),
         ]
+        initial_values = {
+            "BW_Intensity": 0.5,
+            "BW_Neutrals": 0.0,
+            "BW_Tone": 0.0,
+            "BW_Grain": 0.0,
+        }
         for spec in specs:
-            slider = BWSlider(spec.label, self, minimum=spec.minimum, maximum=spec.maximum, initial=0.0)
+            slider = BWSlider(
+                spec.label,
+                self,
+                minimum=spec.minimum,
+                maximum=spec.maximum,
+                initial=initial_values.get(spec.key, 0.0),
+            )
             slider.valueChanged.connect(partial(self._handle_slider_changed, spec.key))
             slider.valueCommitted.connect(partial(self._handle_slider_committed, spec.key))
             options_layout.addWidget(slider)
@@ -123,7 +135,7 @@ class EditBWSection(QWidget):
         else:
             self._reset_slider_values()
             self._apply_enabled_state(False)
-            self.master_slider.update_from_value(0.0)
+            self.master_slider.update_from_value(0.5)
             self.options_section.set_expanded(False)
 
     def refresh_from_session(self) -> None:
@@ -138,16 +150,17 @@ class EditBWSection(QWidget):
 
         enabled = bool(self._session.value("BW_Enabled"))
         params = self._session_params()
-        # The persisted master value directly reflects the one-way master slider state.
-        master_value = params.master
         self._updating_ui = True
         try:
             self._apply_enabled_state(enabled)
             self.master_slider.setEnabled(enabled)
-            self.master_slider.update_from_value(master_value if enabled else 0.0)
+            self.master_slider.update_from_value(params.master if enabled else 0.5)
             for key, slider in self._sliders.items():
                 slider.setEnabled(enabled)
-            self._apply_params_to_sliders(params)
+            self._sliders["BW_Intensity"].setValue(params.intensity, emit=False)
+            self._sliders["BW_Neutrals"].setValue(params.neutrals, emit=False)
+            self._sliders["BW_Tone"].setValue(params.tone, emit=False)
+            self._sliders["BW_Grain"].setValue(params.grain, emit=False)
         finally:
             self._updating_ui = False
 
@@ -161,8 +174,11 @@ class EditBWSection(QWidget):
     def _reset_slider_values(self) -> None:
         self._updating_ui = True
         try:
-            for slider in self._sliders.values():
-                slider.setValue(0.0, emit=False)
+            self.master_slider.setValue(0.5, emit=False)
+            self._sliders["BW_Intensity"].setValue(0.5, emit=False)
+            self._sliders["BW_Neutrals"].setValue(0.0, emit=False)
+            self._sliders["BW_Tone"].setValue(0.0, emit=False)
+            self._sliders["BW_Grain"].setValue(0.0, emit=False)
         finally:
             self._updating_ui = False
 
@@ -184,30 +200,32 @@ class EditBWSection(QWidget):
             master=float(self._session.value("BW_Master")),
         )
 
-    def _apply_params_to_sliders(self, params: BWParams) -> None:
-        for key, slider in self._sliders.items():
-            if key == "BW_Intensity":
-                slider.setValue(params.intensity, emit=False)
-            elif key == "BW_Neutrals":
-                slider.setValue(params.neutrals, emit=False)
-            elif key == "BW_Tone":
-                slider.setValue(params.tone, emit=False)
-            elif key == "BW_Grain":
-                slider.setValue(params.grain, emit=False)
+    def _gather_user_params(self) -> BWParams:
+        """Return the user supplied slider values as a :class:`BWParams` bundle."""
 
-    def _gather_slider_params(self, *, master_override: Optional[float] = None) -> BWParams:
-        intensity = self._sliders["BW_Intensity"].value()
-        neutrals = self._sliders["BW_Neutrals"].value()
-        tone = self._sliders["BW_Tone"].value()
-        grain = self._sliders["BW_Grain"].value()
-        master = master_override if master_override is not None else self.master_slider.value()
         return BWParams(
-            intensity=intensity,
-            neutrals=neutrals,
-            tone=tone,
-            grain=grain,
-            master=master,
+            master=self.master_slider.value(),
+            intensity=self._sliders["BW_Intensity"].value(),
+            neutrals=self._sliders["BW_Neutrals"].value(),
+            tone=self._sliders["BW_Tone"].value(),
+            grain=self._sliders["BW_Grain"].value(),
         )
+
+    def _emit_preview_params(self) -> None:
+        """Compute the effective parameters and emit the preview signal."""
+
+        if self._updating_ui:
+            return
+        user_params = self._gather_user_params()
+        effective = resolve_effective_params(user_params.master, user_params)
+        self.paramsPreviewed.emit(effective)
+
+    def _emit_commit_params(self) -> None:
+        """Compute the effective parameters and emit the commit signal."""
+
+        user_params = self._gather_user_params()
+        effective = resolve_effective_params(user_params.master, user_params)
+        self.paramsCommitted.emit(effective)
 
     # ------------------------------------------------------------------
     @Slot(str, object)
@@ -225,45 +243,22 @@ class EditBWSection(QWidget):
     def _handle_master_slider_changed(self, value: float) -> None:
         if self._updating_ui:
             return
-        params = params_from_master(value, grain=self._sliders["BW_Grain"].value())
-        self._updating_ui = True
-        try:
-            self._apply_params_to_sliders(params)
-        finally:
-            self._updating_ui = False
-        self.paramsPreviewed.emit(params)
+        self._emit_preview_params()
 
     def _handle_master_slider_committed(self, value: float) -> None:
-        derived = params_from_master(value, grain=self._sliders["BW_Grain"].value())
-        # Rebuild the payload so the master value is persisted alongside the derived sliders.
-        final_params = BWParams(
-            intensity=derived.intensity,
-            neutrals=derived.neutrals,
-            tone=derived.tone,
-            # ``params_from_master`` only models the derived trio of sliders, so we must
-            # read the current grain value directly from the UI control to keep the user's
-            # chosen texture strength intact when the master slider is committed.
-            grain=self._sliders["BW_Grain"].value(),
-            master=value,
-        )
-        self.paramsCommitted.emit(final_params)
+        if self._session is not None:
+            self._session.set_value("BW_Master", value)
+        self._emit_commit_params()
 
     def _handle_slider_changed(self, key: str, _value: float) -> None:
         if self._updating_ui:
             return
-        self._updating_ui = True
-        try:
-            self.master_slider.blockSignals(True)
-            self.master_slider.setValue(0.0)
-            self.master_slider.blockSignals(False)
-        finally:
-            self._updating_ui = False
-        params = self._gather_slider_params(master_override=0.0)
-        self.paramsPreviewed.emit(params)
+        self._emit_preview_params()
 
     def _handle_slider_committed(self, key: str, value: float) -> None:
-        params = self._gather_slider_params(master_override=0.0)
-        self.paramsCommitted.emit(params)
+        if self._session is not None:
+            self._session.set_value(key, value)
+        self._emit_commit_params()
         self.adjustmentChanged.emit(key, value)
 
     @Slot()
@@ -305,7 +300,8 @@ class EditBWSection(QWidget):
             pass
 
     def _generate_master_preview(self, image, value: float):
-        params = params_from_master(value, grain=self._sliders["BW_Grain"].value())
-        return apply_bw_preview(image, params)
+        user_params = self._gather_user_params()
+        effective = resolve_effective_params(value, user_params)
+        return apply_bw_preview(image, effective)
 
 __all__ = ["EditBWSection"]

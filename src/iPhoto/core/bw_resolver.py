@@ -2,37 +2,39 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from typing import Dict
+from typing import TYPE_CHECKING, Dict
 
-from PySide6.QtGui import QImage
+import numpy as np
 
-from .image_filters import apply_adjustments
+if TYPE_CHECKING:
+    from PySide6.QtGui import QImage
+    from .image_filters import apply_adjustments
 
 
 @dataclass(frozen=True)
 class BWParams:
     """Container bundling the Black & White adjustment parameters."""
 
-    intensity: float = 0.0
+    intensity: float = 0.5
     neutrals: float = 0.0
     tone: float = 0.0
     grain: float = 0.0
-    master: float = 0.0
+    master: float = 0.5
 
     def clamp(self) -> "BWParams":
         """Return a clamped copy that respects the slider ranges.
 
-        The edit UI should already keep values within the supported ranges, but
-        thumbnail generators and deserialisation helpers call this method as an
-        additional safety net so downstream renderers never receive out-of-range
-        uniforms.
+        The edit UI keeps values within the supported ranges, but thumbnail
+        generators and deserialisation helpers call this method as an extra
+        safety net so downstream renderers never receive out-of-range uniforms.
         """
 
         return BWParams(
-            intensity=_clamp(self.intensity, -1.0, 1.0),
-            neutrals=_clamp(self.neutrals, -1.0, 1.0),
-            tone=_clamp(self.tone, -1.0, 1.0),
+            intensity=_clamp(self.intensity, 0.0, 1.0),
+            neutrals=_clamp(self.neutrals, 0.0, 1.0),
+            tone=_clamp(self.tone, 0.0, 1.0),
             grain=_clamp(self.grain, 0.0, 1.0),
             master=_clamp(self.master, 0.0, 1.0),
         )
@@ -54,94 +56,96 @@ def _clamp01(value: float) -> float:
     return value
 
 
-def _lerp(start: float, end: float, fraction: float) -> float:
-    """Linearly interpolate between *start* and *end* using *fraction*."""
+def gauss(mu: float, sigma: float, value: float) -> float:
+    """Return the normal distribution weight for *value* given *mu*/*sigma*."""
 
-    return start + (end - start) * fraction
-
-
-def _smoothstep(edge0: float, edge1: float, value: float) -> float:
-    """Return a smooth interpolation factor between *edge0* and *edge1*."""
-
-    if edge0 == edge1:
+    if sigma <= 0.0:
         return 0.0
-    t = _clamp01((value - edge0) / (edge1 - edge0))
-    return t * t * (3.0 - 2.0 * t)
+    distance = (value - mu) / sigma
+    return float(math.exp(-0.5 * distance * distance))
+
+
+def mix3(left: float, center: float, right: float, w_left: float, w_center: float, w_right: float) -> float:
+    """Return a weighted blend of the three anchor values."""
+
+    weights = np.array([w_left, w_center, w_right], dtype=float)
+    total = float(np.sum(weights))
+    if total <= 1e-8:
+        return center
+    normalised = weights / total
+    anchors = np.array([left, center, right], dtype=float)
+    return float(np.sum(anchors * normalised))
 
 
 # Anchor definitions mirror the GLSL shader so CPU previews and GPU renders match.
-_ANCHOR_CENTER: Dict[str, float] = {
-    "Intensity": 0.0,
-    "Neutrals": 0.0,
-    "Tone": 0.0,
+ANCHOR_CENTER: Dict[str, float] = {
+    "Intensity": 0.50,
+    "Neutrals": 0.00,
+    "Tone": 0.00,
 }
-_ANCHOR_LEFT: Dict[str, float] = {
-    "Intensity": -0.7,
-    "Neutrals": 0.2,
-    "Tone": -0.1,
+ANCHOR_LEFT: Dict[str, float] = {
+    "Intensity": 0.20,
+    "Neutrals": 0.20,
+    "Tone": 0.10,
 }
-_ANCHOR_RIGHT: Dict[str, float] = {
-    "Intensity": 0.8,
-    "Neutrals": -0.05,
-    "Tone": 0.6,
+ANCHOR_RIGHT: Dict[str, float] = {
+    "Intensity": 0.80,
+    "Neutrals": 0.10,
+    "Tone": 0.60,
 }
 
+# Defaults are expressed using shader terminology so documentation remains consistent.
+DEFAULTS = {"Intensity": 0.50, "Neutrals": 0.00, "Tone": 0.00}
 
-def aggregate_curve(master: float) -> Dict[str, float]:
-    """Return derived parameters for the master slider position *master*.
 
-    The anchor interpolation mirrors :mod:`BW_final.py` so that the master slider
-    transitions smoothly between "soft", "neutral", and "rich" looks while
-    generating values in the ``[-1, 1]`` range expected by the updated shader.
+def resolve_effective_params(master: float, user_vals: BWParams) -> BWParams:
+    """Return the effective shader parameters for *master* and *user_vals*.
+
+    The computation mirrors :mod:`BW_final.py` so the CPU thumbnails, GPU
+    renderer, and persisted session values stay perfectly aligned.  The master
+    slider selects a weighted combination of three anchor looks via Gaussian
+    kernels and the user sliders provide offsets relative to the neutral anchor.
     """
 
-    master = _clamp(master, 0.0, 1.0)
+    master_clamped = _clamp(master, 0.0, 1.0)
 
-    anchors: Dict[str, float]
-    m = _clamp01(master)
-    if m <= 0.5:
-        s = _smoothstep(0.0, 0.5, m)
-        anchors = {
-            key: _lerp(_ANCHOR_LEFT[key], _ANCHOR_CENTER[key], s)
-            for key in _ANCHOR_CENTER
-        }
-    else:
-        s = _smoothstep(0.5, 1.0, m)
-        anchors = {
-            key: _lerp(_ANCHOR_CENTER[key], _ANCHOR_RIGHT[key], s)
-            for key in _ANCHOR_CENTER
-        }
+    sig_l = 0.30
+    sig_c = 0.26
+    sig_r = 0.30
+    weight_left = gauss(0.00, sig_l, master_clamped)
+    weight_center = gauss(0.50, sig_c, master_clamped)
+    weight_right = gauss(1.00, sig_r, master_clamped)
 
-    return {
-        "Intensity": _clamp(anchors["Intensity"], -1.0, 1.0),
-        "Neutrals": _clamp(anchors["Neutrals"], -1.0, 1.0),
-        "Tone": _clamp(anchors["Tone"], -1.0, 1.0),
-    }
+    anchors: Dict[str, float] = {}
+    for key in ("Intensity", "Neutrals", "Tone"):
+        anchors[key] = mix3(
+            ANCHOR_LEFT[key],
+            ANCHOR_CENTER[key],
+            ANCHOR_RIGHT[key],
+            weight_left,
+            weight_center,
+            weight_right,
+        )
 
+    effective_intensity = anchors["Intensity"] + (user_vals.intensity - DEFAULTS["Intensity"])
+    effective_neutrals = anchors["Neutrals"] + (user_vals.neutrals - DEFAULTS["Neutrals"])
+    effective_tone = anchors["Tone"] + (user_vals.tone - DEFAULTS["Tone"])
 
-def params_from_master(master: float, *, grain: float = 0.0) -> BWParams:
-    """Return a :class:`BWParams` instance resolved from *master* and *grain*."""
-
-    curve = aggregate_curve(master)
     return BWParams(
-        intensity=curve["Intensity"],
-        neutrals=curve["Neutrals"],
-        tone=curve["Tone"],
-        grain=_clamp(grain, 0.0, 1.0),
-        master=_clamp(master, 0.0, 1.0),
+        intensity=_clamp(effective_intensity, 0.0, 1.0),
+        neutrals=_clamp(effective_neutrals, 0.0, 1.0),
+        tone=_clamp(effective_tone, 0.0, 1.0),
+        grain=_clamp(user_vals.grain, 0.0, 1.0),
+        master=master_clamped,
     )
 
 
-def apply_bw_preview(image: QImage, params: BWParams, *, enabled: bool = True) -> QImage:
-    """Return a preview frame with *params* applied on top of *image*.
+def apply_bw_preview(image: "QImage", effective_params: BWParams, *, enabled: bool = True) -> "QImage":
+    """Return a preview frame with *effective_params* applied on top of *image*."""
 
-    The helper feeds :func:`apply_adjustments` with a minimal adjustment mapping
-    so the CPU thumbnail pipeline reuses the production-tested tone curves.  The
-    grain effect is intentionally included because the edit preview already
-    renders per-frame noise and we want thumbnails to match the live viewer.
-    """
+    from .image_filters import apply_adjustments
 
-    clamped = params.clamp()
+    clamped = effective_params.clamp()
     adjustments = {
         "BW_Enabled": bool(enabled),
         "BW_Intensity": clamped.intensity,
@@ -153,8 +157,11 @@ def apply_bw_preview(image: QImage, params: BWParams, *, enabled: bool = True) -
 
 
 __all__ = [
+    "ANCHOR_CENTER",
+    "ANCHOR_LEFT",
+    "ANCHOR_RIGHT",
     "BWParams",
-    "aggregate_curve",
+    "DEFAULTS",
     "apply_bw_preview",
-    "params_from_master",
+    "resolve_effective_params",
 ]
