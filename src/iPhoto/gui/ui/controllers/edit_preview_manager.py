@@ -91,10 +91,17 @@ def resolve_adjustment_mapping(
     # Preserve the dedicated Black & White parameters even though the CPU preview currently does
     # not implement the effect.  The GPU pipeline consumes these uniforms directly, so including
     # them keeps the adjustment mapping comprehensive.
-    resolved["BWIntensity"] = float(session_values.get("BW_Intensity", 0.0))
-    resolved["BWNeutrals"] = float(session_values.get("BW_Neutrals", 0.0))
-    resolved["BWTone"] = float(session_values.get("BW_Tone", 0.0))
-    resolved["BWGrain"] = float(session_values.get("BW_Grain", 0.0))
+    bw_enabled = bool(session_values.get("BW_Enabled", True))
+    if bw_enabled:
+        resolved["BWIntensity"] = float(session_values.get("BW_Intensity", 0.0))
+        resolved["BWNeutrals"] = float(session_values.get("BW_Neutrals", 0.0))
+        resolved["BWTone"] = float(session_values.get("BW_Tone", 0.0))
+        resolved["BWGrain"] = float(session_values.get("BW_Grain", 0.0))
+    else:
+        resolved["BWIntensity"] = 0.0
+        resolved["BWNeutrals"] = 0.0
+        resolved["BWTone"] = 0.0
+        resolved["BWGrain"] = 0.0
 
     return resolved
 

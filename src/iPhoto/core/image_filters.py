@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Mapping, Sequence
 
 from PySide6.QtGui import QImage, QColor
@@ -81,6 +82,13 @@ def apply_adjustments(
         or "Color_Gain_B" in adjustments
     )
 
+    bw_enabled = bool(adjustments.get("BW_Enabled", adjustments.get("BWEnabled", True)))
+    bw_intensity = float(adjustments.get("BW_Intensity", adjustments.get("BWIntensity", 0.0)))
+    bw_neutrals = float(adjustments.get("BW_Neutrals", adjustments.get("BWNeutrals", 0.0)))
+    bw_tone = float(adjustments.get("BW_Tone", adjustments.get("BWTone", 0.0)))
+    bw_grain = float(adjustments.get("BW_Grain", adjustments.get("BWGrain", 0.0)))
+    apply_bw = bw_enabled and (abs(bw_intensity) > 1e-6 or abs(bw_grain) > 1e-6)
+
     if all(
         abs(value) < 1e-6
         for value in (
@@ -93,9 +101,10 @@ def apply_adjustments(
             black_point,
         )
     ) and all(abs(value) < 1e-6 for value in (saturation, vibrance)) and cast < 1e-6:
-        # Nothing to do – return a cheap copy so callers still get a detached
-        # instance they are free to mutate independently.
-        return QImage(result)
+        if not apply_bw:
+            # Nothing to do – return a cheap copy so callers still get a detached
+            # instance they are free to mutate independently.
+            return QImage(result)
 
     width = result.width()
     height = result.height()
@@ -139,6 +148,14 @@ def apply_adjustments(
             gain_g,
             gain_b,
         )
+        if apply_bw:
+            _apply_bw_only(
+                transformed,
+                bw_intensity,
+                bw_neutrals,
+                bw_tone,
+                bw_grain,
+            )
         return transformed
 
     bytes_per_line = result.bytesPerLine()
@@ -172,6 +189,11 @@ def apply_adjustments(
             gain_r,
             gain_g,
             gain_b,
+            apply_bw,
+            bw_intensity,
+            bw_neutrals,
+            bw_tone,
+            bw_grain,
         )
     except (BufferError, RuntimeError, TypeError):
         # If the fast path fails we degrade gracefully to the slower, but very
@@ -196,6 +218,11 @@ def apply_adjustments(
             gain_r,
             gain_g,
             gain_b,
+            apply_bw,
+            bw_intensity,
+            bw_neutrals,
+            bw_tone,
+            bw_grain,
         )
 
     return result
@@ -301,6 +328,11 @@ def _apply_adjustments_fast(
     gain_r: float,
     gain_g: float,
     gain_b: float,
+    apply_bw: bool,
+    bw_intensity: float,
+    bw_neutrals: float,
+    bw_tone: float,
+    bw_grain: float,
 ) -> None:
     """Mutate ``image`` in-place using direct pixel buffer access.
 
@@ -319,6 +351,7 @@ def _apply_adjustments_fast(
         raise BufferError("QImage pixel buffer is read-only")
 
     apply_color = abs(saturation) > 1e-6 or abs(vibrance) > 1e-6 or cast > 1e-6
+    apply_bw_effect = apply_bw
 
     for y in range(height):
         row_offset = y * bytes_per_line
@@ -373,6 +406,21 @@ def _apply_adjustments_fast(
                     gain_b,
                 )
 
+            if apply_bw_effect:
+                noise = 0.0
+                if abs(bw_grain) > 1e-6:
+                    noise = _grain_noise(x, y, width, height)
+                r, g, b = _apply_bw_channels(
+                    r,
+                    g,
+                    b,
+                    bw_intensity,
+                    bw_neutrals,
+                    bw_tone,
+                    bw_grain,
+                    noise,
+                )
+
             view[pixel_offset] = _float_to_uint8(b)
             view[pixel_offset + 1] = _float_to_uint8(g)
             view[pixel_offset + 2] = _float_to_uint8(r)
@@ -397,6 +445,11 @@ def _apply_adjustments_fallback(
     gain_r: float,
     gain_g: float,
     gain_b: float,
+    apply_bw: bool,
+    bw_intensity: float,
+    bw_neutrals: float,
+    bw_tone: float,
+    bw_grain: float,
 ) -> None:
     """Slow but robust QColor-based tone mapping fallback.
 
@@ -407,6 +460,7 @@ def _apply_adjustments_fallback(
     """
 
     apply_color = abs(saturation) > 1e-6 or abs(vibrance) > 1e-6 or cast > 1e-6
+    apply_bw_effect = apply_bw
 
     for y in range(height):
         for x in range(width):
@@ -454,6 +508,21 @@ def _apply_adjustments_fallback(
                     gain_r,
                     gain_g,
                     gain_b,
+                )
+
+            if apply_bw_effect:
+                noise = 0.0
+                if abs(bw_grain) > 1e-6:
+                    noise = _grain_noise(x, y, width, height)
+                r, g, b = _apply_bw_channels(
+                    r,
+                    g,
+                    b,
+                    bw_intensity,
+                    bw_neutrals,
+                    bw_tone,
+                    bw_grain,
+                    noise,
                 )
 
             image.setPixelColor(x, y, QColor.fromRgbF(r, g, b, colour.alphaF()))
@@ -545,6 +614,172 @@ def _apply_color_transform(
     g = _clamp(luma + chroma_g, 0.0, 1.0)
     b = _clamp(luma + chroma_b, 0.0, 1.0)
     return r, g, b
+
+
+def _apply_bw_only(
+    image: QImage,
+    intensity: float,
+    neutrals: float,
+    tone: float,
+    grain: float,
+) -> None:
+    """Apply the Black & White pass to *image* in-place."""
+
+    if image.isNull():
+        return
+    if abs(intensity) <= 1e-6 and abs(grain) <= 1e-6:
+        # Mirror the shader's early exit so neutral parameter values do not waste cycles.
+        return
+
+    width = image.width()
+    height = image.height()
+    bytes_per_line = image.bytesPerLine()
+
+    try:
+        view, guard = _resolve_pixel_buffer(image)
+    except (BufferError, RuntimeError, TypeError):
+        view = None
+        guard = None
+
+    if view is None or getattr(view, "readonly", False):
+        _apply_bw_using_qcolor(image, intensity, neutrals, tone, grain)
+        return
+
+    buffer_guard = guard
+    _ = buffer_guard
+
+    for y in range(height):
+        row_offset = y * bytes_per_line
+        for x in range(width):
+            pixel_offset = row_offset + x * 4
+            b = view[pixel_offset] / 255.0
+            g = view[pixel_offset + 1] / 255.0
+            r = view[pixel_offset + 2] / 255.0
+            noise = 0.0
+            if abs(grain) > 1e-6:
+                noise = _grain_noise(x, y, width, height)
+            r, g, b = _apply_bw_channels(
+                r,
+                g,
+                b,
+                intensity,
+                neutrals,
+                tone,
+                grain,
+                noise,
+            )
+            view[pixel_offset] = _float_to_uint8(b)
+            view[pixel_offset + 1] = _float_to_uint8(g)
+            view[pixel_offset + 2] = _float_to_uint8(r)
+
+
+def _apply_bw_using_qcolor(
+    image: QImage,
+    intensity: float,
+    neutrals: float,
+    tone: float,
+    grain: float,
+) -> None:
+    """Fallback Black & White routine that relies on ``QColor`` accessors."""
+
+    width = image.width()
+    height = image.height()
+    for y in range(height):
+        for x in range(width):
+            colour = image.pixelColor(x, y)
+            r = colour.redF()
+            g = colour.greenF()
+            b = colour.blueF()
+            noise = 0.0
+            if abs(grain) > 1e-6:
+                noise = _grain_noise(x, y, width, height)
+            r, g, b = _apply_bw_channels(
+                r,
+                g,
+                b,
+                intensity,
+                neutrals,
+                tone,
+                grain,
+                noise,
+            )
+            image.setPixelColor(x, y, QColor.fromRgbF(r, g, b, colour.alphaF()))
+
+
+def _apply_bw_channels(
+    r: float,
+    g: float,
+    b: float,
+    intensity: float,
+    neutrals: float,
+    tone: float,
+    grain: float,
+    noise: float,
+) -> tuple[float, float, float]:
+    """Return the transformed RGB triple for the Black & White effect."""
+
+    # Clamp user supplied parameters to the shader's expected ranges so the preview mirrors
+    # the GPU output even when sidecar files contain out-of-bounds values.
+    intensity = _clamp01(intensity)
+    neutrals_amount = _clamp01(abs(neutrals))
+    tone_amount = _clamp01(abs(tone))
+    grain_amount = _clamp01(grain)
+    noise = max(-1.0, min(1.0, noise))
+
+    original = (r, g, b)
+    luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+    bw_r = _mix(original[0], luma, intensity)
+    bw_g = _mix(original[1], luma, intensity)
+    bw_b = _mix(original[2], luma, intensity)
+
+    if neutrals >= 0.0 and neutrals_amount > 1e-6:
+        bw_r = _mix(bw_r, original[0], neutrals_amount)
+        bw_g = _mix(bw_g, original[1], neutrals_amount)
+        bw_b = _mix(bw_b, original[2], neutrals_amount)
+
+    if tone_amount > 1e-6:
+        t = luma * 2.0 - 1.0
+        tm = (t + tone * (1.0 - abs(t))) * 0.5 + 0.5
+        tm = _clamp01(tm)
+        bw_r = _mix(bw_r, tm, tone_amount)
+        bw_g = _mix(bw_g, tm, tone_amount)
+        bw_b = _mix(bw_b, tm, tone_amount)
+
+    if grain_amount > 1e-6:
+        scale = 1.0 + noise * 0.2
+        grain_r = bw_r * scale
+        grain_g = bw_g * scale
+        grain_b = bw_b * scale
+        bw_r = _mix(bw_r, grain_r, grain_amount)
+        bw_g = _mix(bw_g, grain_g, grain_amount)
+        bw_b = _mix(bw_b, grain_b, grain_amount)
+
+    return _clamp01(bw_r), _clamp01(bw_g), _clamp01(bw_b)
+
+
+def _grain_noise(x: int, y: int, width: int, height: int) -> float:
+    """Return a deterministic pseudo random noise value in ``[-1.0, 1.0]`` for grain."""
+
+    if width <= 0 or height <= 0:
+        return 0.0
+    u = float(x) / float(max(width - 1, 1))
+    v = float(y) / float(max(height - 1, 1))
+    # Mirror the shader's ``rand`` function using a sine-based hash so the grain pattern stays
+    # consistent across preview passes without requiring additional state.
+    seed = u * 12.9898 + v * 78.233
+    noise = math.sin(seed) * 43758.5453
+    fraction = noise - math.floor(noise)
+    return fraction * 2.0 - 1.0
+
+
+def _mix(a: float, b: float, t: float) -> float:
+    t = _clamp01(t)
+    return a * (1.0 - t) + b * t
+
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
 
 
 def _resolve_pixel_buffer(image: QImage) -> tuple[memoryview, object]:
