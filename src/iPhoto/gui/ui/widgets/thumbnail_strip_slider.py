@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List, Optional
+from typing import Callable, List, Optional
 
-from PySide6.QtCore import Qt, QPointF, QRectF, QSize, Signal
+from PySide6.QtCore import Qt, QPointF, QRectF, QSize, Signal, Slot
 from PySide6.QtGui import (
     QColor,
     QImage,
@@ -26,14 +25,6 @@ from PySide6.QtWidgets import (
 
 from ....core.image_filters import apply_adjustments
 from ....core.light_resolver import resolve_light_vector
-
-
-@dataclass
-class _TickPreview:
-    """Store a preview pixmap for a particular slider value."""
-
-    value: float
-    pixmap: QPixmap
 
 
 class ThumbnailStripSlider(QFrame):
@@ -70,9 +61,11 @@ class ThumbnailStripSlider(QFrame):
         self._pressed = False
 
         self._base_image: Optional[QImage] = None
-        self._scaled: Optional[QImage] = None
-        self._scaled_height = 0
-        self._tick_previews: List[_TickPreview] = []
+        self._tick_values: List[float] = []
+        self._thumbnails: List[Optional[QPixmap]] = []
+        self._placeholder_cache: dict[int, QPixmap] = {}
+        self._generation = 0
+        self._preview_generator: Callable[[QImage, float], QImage] = self._generate_light_preview
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -101,6 +94,10 @@ class ThumbnailStripSlider(QFrame):
         self._opacity_effect = QGraphicsOpacityEffect(self)
         self.setGraphicsEffect(self._opacity_effect)
 
+        # Initialise the placeholder state so the painter can immediately render the
+        # slider without waiting for background thumbnails to arrive.
+        self._reset_thumbnails()
+
     # ------------------------------------------------------------------
     def set_label(self, text: str) -> None:
         """Update the caption rendered above the track."""
@@ -113,15 +110,16 @@ class ThumbnailStripSlider(QFrame):
 
         if isinstance(image, QPixmap):
             image = image.toImage()
+        self._bump_generation()
         if image is None or image.isNull():
             self._base_image = None
-            self._scaled = None
-            self._tick_previews.clear()
+            self._placeholder_cache.clear()
+            self._reset_thumbnails()
             self._track_frame.update()
             return
         self._base_image = image.convertToFormat(QImage.Format.Format_ARGB32)
-        self._scaled = None
-        self._tick_previews.clear()
+        self._placeholder_cache.clear()
+        self._reset_thumbnails()
         self._track_frame.update()
 
     def setValue(self, value: float, *, emit: bool = True) -> None:
@@ -182,6 +180,57 @@ class ThumbnailStripSlider(QFrame):
         super().mousePressEvent(event)
 
     # ------------------------------------------------------------------
+    def set_preview_generator(self, generator: Callable[[QImage, float], QImage]) -> None:
+        """Set the callable used to generate preview thumbnails."""
+
+        self._preview_generator = generator
+        self._bump_generation()
+        self._reset_thumbnails()
+        self._track_frame.update()
+
+    # ------------------------------------------------------------------
+    def tick_values(self) -> List[float]:
+        """Return the slider values represented by each thumbnail slot."""
+
+        return list(self._tick_values)
+
+    def generation_id(self) -> int:
+        """Return the current thumbnail generation token."""
+
+        return self._generation
+
+    def track_height(self) -> int:
+        """Expose the visual height of the thumbnail strip for worker scaling."""
+
+        return self._track_height
+
+    def preview_generator(self) -> Callable[[QImage, float], QImage]:
+        """Return the callable used to produce adjustment previews."""
+
+        return self._preview_generator
+
+    def base_image(self) -> Optional[QImage]:
+        """Return a detached copy of the currently assigned base preview image."""
+
+        if self._base_image is None or self._base_image.isNull():
+            return None
+        return QImage(self._base_image)
+
+    @Slot(int, QImage, int)
+    def update_thumbnail(self, index: int, image: QImage, generation: int) -> None:
+        """Apply an updated thumbnail delivered from the background worker."""
+
+        if generation != self._generation:
+            # A newer generation is already in-flight; ignore stale results.
+            return
+        if index < 0 or index >= len(self._thumbnails):
+            return
+        if image.isNull():
+            self._thumbnails[index] = None
+        else:
+            self._thumbnails[index] = QPixmap.fromImage(image)
+        self._track_frame.update()
+
     def _clamp(self, value: float) -> float:
         return max(self._minimum, min(self._maximum, float(value)))
 
@@ -191,37 +240,49 @@ class ThumbnailStripSlider(QFrame):
             return 0.0
         return (value - self._minimum) / span
 
-    def _ensure_scaled(self, height: int) -> None:
-        if self._base_image is None:
-            return
-        if self._scaled is not None and self._scaled_height == height:
-            return
-        self._scaled = self._base_image.scaledToHeight(
-            height,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        self._scaled_height = height
-        self._tick_previews.clear()
+    def _reset_thumbnails(self) -> None:
+        """Clear the cached thumbnail pixmaps while keeping slot counts consistent."""
 
-    def _ensure_tick_previews(self, track_rect: QRectF) -> None:
-        if self._base_image is None:
-            return
-        self._ensure_scaled(int(track_rect.height()))
-        if self._scaled is None or self._tick_previews:
-            return
-        values = [
-            self._minimum + i * (self._maximum - self._minimum) / (self._tick_count - 1)
-            for i in range(self._tick_count)
-        ]
-        for value in values:
-            preview = self._generate_preview(self._scaled, value)
-            self._tick_previews.append(
-                _TickPreview(value, QPixmap.fromImage(preview))
+        self._tick_values = self._compute_tick_values()
+        self._thumbnails = [None for _ in self._tick_values]
+
+    def _compute_tick_values(self) -> List[float]:
+        """Derive evenly spaced slider values for the configured tick count."""
+
+        if self._tick_count <= 1:
+            return [self._minimum]
+        step = (self._maximum - self._minimum) / (self._tick_count - 1)
+        return [self._minimum + i * step for i in range(self._tick_count)]
+
+    def _bump_generation(self) -> int:
+        """Advance the generation counter to invalidate stale thumbnail updates."""
+
+        self._generation += 1
+        return self._generation
+
+    def _ensure_placeholder_pixmap(self, height: int) -> QPixmap:
+        """Return a cached placeholder pixmap scaled to *height* pixels tall."""
+
+        height = max(1, int(height))
+        cached = self._placeholder_cache.get(height)
+        if cached is not None:
+            return cached
+        if self._base_image is not None and not self._base_image.isNull():
+            scaled = self._base_image.scaledToHeight(
+                height,
+                Qt.TransformationMode.SmoothTransformation,
             )
+            pixmap = QPixmap.fromImage(scaled)
+        else:
+            width = max(1, int(height * 1.5))
+            pixmap = QPixmap(width, height)
+            placeholder_color = self.palette().base().color().darker(115)
+            pixmap.fill(placeholder_color)
+        self._placeholder_cache[height] = pixmap
+        return pixmap
 
-    def _generate_preview(self, image: QImage, value: float) -> QImage:
-        """Return an adjusted preview using *image* and the Light resolver."""
-
+    @staticmethod
+    def _generate_light_preview(image: QImage, value: float) -> QImage:
         adjustments = resolve_light_vector(value, None)
         return apply_adjustments(image, adjustments)
 
@@ -275,29 +336,30 @@ class _ThumbnailTrack(QWidget):
         painter.setBrush(base_color)
         painter.drawPath(path)
 
-        slider._ensure_tick_previews(rect)
-        if slider._tick_previews:
-            segment_width = rect.width() / len(slider._tick_previews)
+        thumbnails = slider._thumbnails
+        if thumbnails:
+            segment_width = rect.width() / len(thumbnails)
+            placeholder = slider._ensure_placeholder_pixmap(int(rect.height()))
             painter.save()
             painter.setClipPath(path)
             x = rect.left()
-            for preview in slider._tick_previews:
-                pixmap = preview.pixmap
-                if not pixmap.isNull():
+            for pixmap in thumbnails:
+                current = pixmap or placeholder
+                if not current.isNull():
                     target = QRectF(x, rect.top(), segment_width, rect.height())
-                    pixmap_ratio = pixmap.width() / max(1.0, pixmap.height())
+                    pixmap_ratio = current.width() / max(1.0, current.height())
                     target_ratio = target.width() / max(1.0, target.height())
                     if pixmap_ratio > target_ratio:
-                        height = pixmap.height()
+                        height = current.height()
                         width = int(height * target_ratio)
-                        sx = max(0, (pixmap.width() - width) // 2)
+                        sx = max(0, (current.width() - width) // 2)
                         source = QRectF(sx, 0, width, height)
                     else:
-                        width = pixmap.width()
+                        width = current.width()
                         height = int(width / target_ratio)
-                        sy = max(0, (pixmap.height() - height) // 2)
+                        sy = max(0, (current.height() - height) // 2)
                         source = QRectF(0, sy, width, height)
-                    painter.drawPixmap(target, pixmap, source)
+                    painter.drawPixmap(target, current, source)
                 x += segment_width
             painter.restore()
 

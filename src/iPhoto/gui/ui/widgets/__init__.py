@@ -7,7 +7,6 @@ from .gallery_grid_view import GalleryGridView
 from .chrome_status_bar import ChromeStatusBar
 from .custom_title_bar import CustomTitleBar
 from .detail_page import DetailPageWidget
-from .edit_page import EditPageWidget
 from .filmstrip_view import FilmstripView
 from .image_viewer import ImageViewer
 from .edit_sidebar import EditSidebar
@@ -33,7 +32,6 @@ __all__ = [
     "ImageViewer",
     "EditSidebar",
     "DetailPageWidget",
-    "EditPageWidget",
     "MainHeaderWidget",
     "InfoPanel",
     "PlayerBar",

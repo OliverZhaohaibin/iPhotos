@@ -458,6 +458,7 @@ class FramelessWindowManager(QObject):
         self._ui.minimize_button.clicked.connect(self._window.showMinimized)
         self._ui.close_button.clicked.connect(self._window.close)
         self._ui.fullscreen_button.clicked.connect(self.toggle_fullscreen)
+        self._ui.image_viewer.fullscreenToggleRequested.connect(self.toggle_fullscreen)
         self._ui.image_viewer.fullscreenExitRequested.connect(self.exit_fullscreen)
         self._ui.video_area.fullscreenExitRequested.connect(self.exit_fullscreen)
 

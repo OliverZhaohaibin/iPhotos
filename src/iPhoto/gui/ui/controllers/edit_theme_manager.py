@@ -68,7 +68,8 @@ class EditThemeManager:
         self._window = window
         self._detail_ui_controller: "DetailUIController" | None = None
 
-        self._default_edit_page_stylesheet = ui.edit_page.styleSheet()
+        self._edit_container = ui.detail_page.edit_container
+        self._default_edit_page_stylesheet = self._edit_container.styleSheet()
         self._default_sidebar_stylesheet = ui.sidebar.styleSheet()
         self._default_statusbar_stylesheet = ui.status_bar.styleSheet()
         self._default_window_chrome_stylesheet = ui.window_chrome.styleSheet()
@@ -150,7 +151,7 @@ class EditThemeManager:
 
         if self._edit_theme_applied:
             return
-        self._ui.edit_page.setStyleSheet(self.EDIT_DARK_STYLESHEET)
+        self._edit_container.setStyleSheet(self.EDIT_DARK_STYLESHEET)
         self._ui.edit_image_viewer.set_surface_color_override("#111111")
 
         dark_icon_color = QColor("#FFFFFF")
@@ -405,7 +406,7 @@ class EditThemeManager:
             )
         )
 
-        self._ui.edit_page.setStyleSheet(self.EDIT_DARK_STYLESHEET)
+        self._edit_container.setStyleSheet(self.EDIT_DARK_STYLESHEET)
         self._edit_theme_applied = True
 
     def restore_light_theme(self) -> None:
@@ -414,7 +415,7 @@ class EditThemeManager:
         if not self._edit_theme_applied:
             return
 
-        self._ui.edit_page.setStyleSheet(self._default_edit_page_stylesheet)
+        self._edit_container.setStyleSheet(self._default_edit_page_stylesheet)
         self._ui.edit_image_viewer.set_surface_color_override(None)
         self._ui.edit_sidebar.set_control_icon_tint(None)
         self._ui.edit_compare_button.setIcon(

@@ -8,7 +8,7 @@ from PySide6.QtGui import QImage, QColor
 
 from ..utils.deps import load_pillow
 from .light_resolver import LIGHT_KEYS
-
+from .color_resolver import ColorStats, compute_color_statistics, _clamp
 
 _PILLOW_SUPPORT = load_pillow()
 
@@ -19,7 +19,11 @@ _PILLOW_SUPPORT = load_pillow()
 # risk subtle drift across the code base.
 
 
-def apply_adjustments(image: QImage, adjustments: Mapping[str, float]) -> QImage:
+def apply_adjustments(
+    image: QImage,
+    adjustments: Mapping[str, float],
+    color_stats: ColorStats | None = None,
+) -> QImage:
     """Return a new :class:`QImage` with *adjustments* applied.
 
     The function intentionally works on a copy of *image* so that the caller can
@@ -65,16 +69,30 @@ def apply_adjustments(image: QImage, adjustments: Mapping[str, float]) -> QImage
     brightness = float(adjustments.get("Brightness", 0.0))
     contrast = float(adjustments.get("Contrast", 0.0))
     black_point = float(adjustments.get("BlackPoint", 0.0))
+    saturation = float(adjustments.get("Saturation", 0.0))
+    vibrance = float(adjustments.get("Vibrance", 0.0))
+    cast = float(adjustments.get("Cast", 0.0))
+    gain_r = float(adjustments.get("Color_Gain_R", 1.0))
+    gain_g = float(adjustments.get("Color_Gain_G", 1.0))
+    gain_b = float(adjustments.get("Color_Gain_B", 1.0))
+    gain_provided = (
+        "Color_Gain_R" in adjustments
+        or "Color_Gain_G" in adjustments
+        or "Color_Gain_B" in adjustments
+    )
 
-    if all(abs(value) < 1e-6 for value in (
-        brilliance,
-        exposure,
-        highlights,
-        shadows,
-        brightness,
-        contrast,
-        black_point,
-    )):
+    if all(
+        abs(value) < 1e-6
+        for value in (
+            brilliance,
+            exposure,
+            highlights,
+            shadows,
+            brightness,
+            contrast,
+            black_point,
+        )
+    ) and all(abs(value) < 1e-6 for value in (saturation, vibrance)) and cast < 1e-6:
         # Nothing to do – return a cheap copy so callers still get a detached
         # instance they are free to mutate independently.
         return QImage(result)
@@ -112,9 +130,28 @@ def apply_adjustments(image: QImage, adjustments: Mapping[str, float]) -> QImage
 
     transformed = _apply_adjustments_with_lut(result, lut)
     if transformed is not None:
+        _apply_color_adjustments_inplace(
+            transformed,
+            saturation,
+            vibrance,
+            cast,
+            gain_r,
+            gain_g,
+            gain_b,
+        )
         return transformed
 
     bytes_per_line = result.bytesPerLine()
+
+    if color_stats is not None:
+        gain_r, gain_g, gain_b = color_stats.white_balance_gain
+    elif not gain_provided and (
+        abs(saturation) > 1e-6
+        or abs(vibrance) > 1e-6
+        or cast > 1e-6
+    ):
+        color_stats = compute_color_statistics(result)
+        gain_r, gain_g, gain_b = color_stats.white_balance_gain
 
     try:
         _apply_adjustments_fast(
@@ -129,6 +166,12 @@ def apply_adjustments(image: QImage, adjustments: Mapping[str, float]) -> QImage
             shadows,
             contrast_factor,
             black_point,
+            saturation,
+            vibrance,
+            cast,
+            gain_r,
+            gain_g,
+            gain_b,
         )
     except (BufferError, RuntimeError, TypeError):
         # If the fast path fails we degrade gracefully to the slower, but very
@@ -147,6 +190,12 @@ def apply_adjustments(image: QImage, adjustments: Mapping[str, float]) -> QImage
             shadows,
             contrast_factor,
             black_point,
+            saturation,
+            vibrance,
+            cast,
+            gain_r,
+            gain_g,
+            gain_b,
         )
 
     return result
@@ -246,6 +295,12 @@ def _apply_adjustments_fast(
     shadows: float,
     contrast_factor: float,
     black_point: float,
+    saturation: float,
+    vibrance: float,
+    cast: float,
+    gain_r: float,
+    gain_g: float,
+    gain_b: float,
 ) -> None:
     """Mutate ``image`` in-place using direct pixel buffer access.
 
@@ -262,6 +317,8 @@ def _apply_adjustments_fast(
 
     if getattr(view, "readonly", False):
         raise BufferError("QImage pixel buffer is read-only")
+
+    apply_color = abs(saturation) > 1e-6 or abs(vibrance) > 1e-6 or cast > 1e-6
 
     for y in range(height):
         row_offset = y * bytes_per_line
@@ -303,6 +360,19 @@ def _apply_adjustments_fast(
                 black_point,
             )
 
+            if apply_color:
+                r, g, b = _apply_color_transform(
+                    r,
+                    g,
+                    b,
+                    saturation,
+                    vibrance,
+                    cast,
+                    gain_r,
+                    gain_g,
+                    gain_b,
+                )
+
             view[pixel_offset] = _float_to_uint8(b)
             view[pixel_offset + 1] = _float_to_uint8(g)
             view[pixel_offset + 2] = _float_to_uint8(r)
@@ -321,6 +391,12 @@ def _apply_adjustments_fallback(
     shadows: float,
     contrast_factor: float,
     black_point: float,
+    saturation: float,
+    vibrance: float,
+    cast: float,
+    gain_r: float,
+    gain_g: float,
+    gain_b: float,
 ) -> None:
     """Slow but robust QColor-based tone mapping fallback.
 
@@ -329,6 +405,8 @@ def _apply_adjustments_fallback(
     function mirrors the fast path's tone mapping so both implementations yield
     identical visual output.
     """
+
+    apply_color = abs(saturation) > 1e-6 or abs(vibrance) > 1e-6 or cast > 1e-6
 
     for y in range(height):
         for x in range(width):
@@ -365,7 +443,108 @@ def _apply_adjustments_fallback(
                 black_point,
             )
 
+            if apply_color:
+                r, g, b = _apply_color_transform(
+                    r,
+                    g,
+                    b,
+                    saturation,
+                    vibrance,
+                    cast,
+                    gain_r,
+                    gain_g,
+                    gain_b,
+                )
+
             image.setPixelColor(x, y, QColor.fromRgbF(r, g, b, colour.alphaF()))
+
+
+def _apply_color_adjustments_inplace(
+    image: QImage,
+    saturation: float,
+    vibrance: float,
+    cast: float,
+    gain_r: float,
+    gain_g: float,
+    gain_b: float,
+) -> None:
+    if image.isNull():
+        return
+    apply_color = abs(saturation) > 1e-6 or abs(vibrance) > 1e-6 or cast > 1e-6
+    if not apply_color:
+        return
+
+    view, guard = _resolve_pixel_buffer(image)
+    buffer_handle = guard
+    _ = buffer_handle
+
+    if getattr(view, "readonly", False):
+        raise BufferError("QImage pixel buffer is read-only")
+
+    width = image.width()
+    height = image.height()
+    bytes_per_line = image.bytesPerLine()
+
+    for y in range(height):
+        row_offset = y * bytes_per_line
+        for x in range(width):
+            pixel_offset = row_offset + x * 4
+            b = view[pixel_offset] / 255.0
+            g = view[pixel_offset + 1] / 255.0
+            r = view[pixel_offset + 2] / 255.0
+
+            r, g, b = _apply_color_transform(
+                r,
+                g,
+                b,
+                saturation,
+                vibrance,
+                cast,
+                gain_r,
+                gain_g,
+                gain_b,
+            )
+
+            view[pixel_offset] = _float_to_uint8(b)
+            view[pixel_offset + 1] = _float_to_uint8(g)
+            view[pixel_offset + 2] = _float_to_uint8(r)
+
+
+def _apply_color_transform(
+    r: float,
+    g: float,
+    b: float,
+    saturation: float,
+    vibrance: float,
+    cast: float,
+    gain_r: float,
+    gain_g: float,
+    gain_b: float,
+) -> tuple[float, float, float]:
+    mix_r = (1.0 - cast) + gain_r * cast
+    mix_g = (1.0 - cast) + gain_g * cast
+    mix_b = (1.0 - cast) + gain_b * cast
+    r *= mix_r
+    g *= mix_g
+    b *= mix_b
+
+    luma = 0.299 * r + 0.587 * g + 0.114 * b
+    chroma_r = r - luma
+    chroma_g = g - luma
+    chroma_b = b - luma
+
+    sat_amt = 1.0 + saturation
+    vib_amt = 1.0 + vibrance
+    w = 1.0 - _clamp(abs(luma - 0.5) * 2.0, 0.0, 1.0)
+    chroma_scale = sat_amt * (1.0 + (vib_amt - 1.0) * w)
+    chroma_r *= chroma_scale
+    chroma_g *= chroma_scale
+    chroma_b *= chroma_scale
+
+    r = _clamp(luma + chroma_r, 0.0, 1.0)
+    g = _clamp(luma + chroma_g, 0.0, 1.0)
+    b = _clamp(luma + chroma_b, 0.0, 1.0)
+    return r, g, b
 
 
 def _resolve_pixel_buffer(image: QImage) -> tuple[memoryview, object]:

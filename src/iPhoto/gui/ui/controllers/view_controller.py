@@ -23,7 +23,6 @@ class ViewController(QObject):
         view_stack: QStackedWidget,
         gallery_page: QWidget | None,
         detail_page: QWidget | None,
-        edit_page: QWidget | None,
         map_page: QWidget | None = None,
         parent: QObject | None = None,
     ) -> None:
@@ -33,9 +32,9 @@ class ViewController(QObject):
         self._view_stack = view_stack
         self._gallery_page = gallery_page
         self._detail_page = detail_page
-        self._edit_page = edit_page
         self._map_page = map_page
         self._active_gallery_page = gallery_page
+        self._edit_mode_active = False
 
     def show_gallery_view(self) -> None:
         """Switch to the gallery view and notify listeners."""
@@ -44,6 +43,7 @@ class ViewController(QObject):
         if target is not None:
             if self._view_stack.currentWidget() is not target:
                 self._view_stack.setCurrentWidget(target)
+        self._edit_mode_active = False
         self.galleryViewShown.emit()
 
     def show_detail_view(self) -> None:
@@ -52,15 +52,16 @@ class ViewController(QObject):
         if self._detail_page is not None:
             if self._view_stack.currentWidget() is not self._detail_page:
                 self._view_stack.setCurrentWidget(self._detail_page)
+        self._edit_mode_active = False
         self.detailViewShown.emit()
 
     def show_edit_view(self) -> None:
         """Switch to the edit view and notify listeners."""
 
-        if self._edit_page is None:
-            return
-        if self._view_stack.currentWidget() is not self._edit_page:
-            self._view_stack.setCurrentWidget(self._edit_page)
+        if self._detail_page is not None:
+            if self._view_stack.currentWidget() is not self._detail_page:
+                self._view_stack.setCurrentWidget(self._detail_page)
+        self._edit_mode_active = True
         self.editViewShown.emit()
 
     def show_map_view(self) -> None:
@@ -71,6 +72,7 @@ class ViewController(QObject):
         self._active_gallery_page = self._map_page
         if self._view_stack.currentWidget() is not self._map_page:
             self._view_stack.setCurrentWidget(self._map_page)
+        self._edit_mode_active = False
         self.galleryViewShown.emit()
 
     def restore_default_gallery(self) -> None:
@@ -90,4 +92,4 @@ class ViewController(QObject):
     def is_edit_view_active(self) -> bool:
         """Return ``True`` when the edit page is the current widget."""
 
-        return self._edit_page is not None and self._view_stack.currentWidget() is self._edit_page
+        return self._edit_mode_active

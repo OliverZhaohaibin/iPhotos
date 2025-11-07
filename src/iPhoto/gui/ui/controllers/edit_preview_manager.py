@@ -5,10 +5,16 @@ from __future__ import annotations
 import logging
 from typing import Mapping, Optional
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Qt, Signal
+from PySide6.QtCore import QObject, QThreadPool, QTimer, Qt, Signal, QSize
 from PySide6.QtGui import QImage, QPixmap
 
 from ....core.light_resolver import LIGHT_KEYS, resolve_light_vector
+from ....core.color_resolver import (
+    COLOR_KEYS,
+    ColorResolver,
+    ColorStats,
+    compute_color_statistics,
+)
 from ....core.preview_backends import (
     PreviewBackend,
     PreviewSession,
@@ -16,55 +22,73 @@ from ....core.preview_backends import (
     select_preview_backend,
 )
 from ..widgets.image_viewer import ImageViewer
+from ..tasks.preview_render_worker import PreviewRenderWorker
 
 _LOGGER = logging.getLogger(__name__)
 
 
-class _PreviewSignals(QObject):
-    """Signals emitted by :class:`_PreviewWorker` once processing completes."""
+# ---------------------------------------------------------------------------
+# Adjustment helpers
+# ---------------------------------------------------------------------------
 
-    finished = Signal(QImage, int)
-    """Emitted with the adjusted image and the job identifier."""
+def resolve_adjustment_mapping(
+    session_values: Mapping[str, float | bool],
+    *,
+    stats: ColorStats | None = None,
+) -> dict[str, float]:
+    """Return shader-friendly adjustments derived from *session_values*.
 
+    The helper mirrors the Photos-compatible colour math used by the CPU preview
+    renderer so both the OpenGL shader and the background pixmap pipeline apply
+    identical transformations.  Passing a :class:`ColorStats` instance ensures
+    colour tools such as the Cast slider honour the white balance sampled from
+    the source frame while keeping the function side-effect free for callers
+    that do not have statistics available yet.
+    """
 
-class _PreviewWorker(QRunnable):
-    """Execute preview rendering in a background thread."""
+    resolved: dict[str, float] = {}
+    overrides: dict[str, float] = {}
+    color_overrides: dict[str, float] = {}
 
-    def __init__(
-        self,
-        backend: PreviewBackend,
-        session: PreviewSession,
-        adjustments: Mapping[str, float | bool],
-        job_id: int,
-        signals: _PreviewSignals,
-    ) -> None:
-        super().__init__()
-        self._backend = backend
-        self._session = session
-        # Store a dedicated copy of the adjustment mapping so that a live
-        # :class:`EditSession` mutating values mid-render does not affect the
-        # in-flight job.
-        self._adjustments = dict(adjustments)
-        self._job_id = job_id
-        self._signals = signals
+    master_value = float(session_values.get("Light_Master", 0.0))
+    light_enabled = bool(session_values.get("Light_Enabled", True))
+    color_master = float(session_values.get("Color_Master", 0.0))
+    color_enabled = bool(session_values.get("Color_Enabled", True))
 
-    def run(self) -> None:  # type: ignore[override]
-        """Perform the tone-mapping work and notify listeners when done."""
+    for key, value in session_values.items():
+        if key in ("Light_Master", "Light_Enabled", "Color_Master", "Color_Enabled"):
+            continue
+        if key in LIGHT_KEYS:
+            overrides[key] = float(value)
+        elif key in COLOR_KEYS:
+            color_overrides[key] = float(value)
+        else:
+            resolved[key] = float(value)
 
-        try:
-            adjusted = self._backend.render(self._session, self._adjustments)
-        except Exception:
-            # Propagate failures by emitting a null image.  The controller will
-            # discard outdated or invalid results, so surfacing ``None`` keeps
-            # the UI responsive even if processing fails unexpectedly.
-            adjusted = QImage()
-        self._signals.finished.emit(adjusted, self._job_id)
+    if light_enabled:
+        resolved.update(resolve_light_vector(master_value, overrides, mode="delta"))
+    else:
+        resolved.update({key: 0.0 for key in LIGHT_KEYS})
 
-    @property
-    def session(self) -> PreviewSession:
-        """Expose the backend session used by this worker."""
+    stats_obj = stats or ColorStats()
+    if color_enabled:
+        resolved.update(
+            ColorResolver.resolve_color_vector(
+                color_master,
+                color_overrides,
+                stats=stats_obj,
+                mode="delta",
+            )
+        )
+    else:
+        resolved.update({key: 0.0 for key in COLOR_KEYS})
 
-        return self._session
+    gain_r, gain_g, gain_b = stats_obj.white_balance_gain
+    resolved["Color_Gain_R"] = float(gain_r)
+    resolved["Color_Gain_G"] = float(gain_g)
+    resolved["Color_Gain_B"] = float(gain_b)
+
+    return resolved
 
 
 class EditPreviewManager(QObject):
@@ -79,7 +103,20 @@ class EditPreviewManager(QObject):
     def __init__(self, viewer: ImageViewer, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
         self._viewer = viewer
-        self._preview_backend: PreviewBackend = select_preview_backend()
+        backend = select_preview_backend()
+        if backend.supports_realtime:
+            # Hardware accelerated backends expect to run on the GUI thread.  The
+            # edit workflow now renders previews on a thread pool to keep the UI
+            # responsive, so fall back to the CPU implementation when required.
+            fallback = fallback_preview_backend(backend)
+            if fallback is not backend:
+                _LOGGER.info(
+                    "Switching preview backend from %s to %s for threaded rendering",
+                    backend.tier_name,
+                    fallback.tier_name,
+                )
+                backend = fallback
+        self._preview_backend: PreviewBackend = backend
         _LOGGER.info("Initialised edit preview backend: %s", self._preview_backend.tier_name)
 
         self._preview_session: Optional[PreviewSession] = None
@@ -87,10 +124,11 @@ class EditPreviewManager(QObject):
         self._base_pixmap: Optional[QPixmap] = None
         self._current_preview_pixmap: Optional[QPixmap] = None
         self._current_adjustments: dict[str, float | bool] = {}
+        self._color_stats: ColorStats | None = None
 
         self._thread_pool = QThreadPool.globalInstance()
         self._preview_job_id = 0
-        self._active_preview_workers: set[_PreviewWorker] = set()
+        self._active_preview_workers: set[PreviewRenderWorker] = set()
         self._pending_session_disposals: list[PreviewSession] = []
 
         self._preview_update_timer = QTimer(self)
@@ -154,6 +192,15 @@ class EditPreviewManager(QObject):
         self._base_pixmap = base_pixmap if not base_pixmap.isNull() else None
         self._current_preview_pixmap = self._base_pixmap
         self._current_adjustments = dict(adjustments)
+        try:
+            self._color_stats = compute_color_statistics(prepared)
+        except Exception:
+            # Defensive: computing color statistics can touch low-level image
+            # buffers and may fail for malformed or exotic image formats. Log
+            # the error and fall back to a safe default so the edit flow remains
+            # usable.
+            _LOGGER.exception("Failed to compute color statistics for preview image; using defaults")
+            self._color_stats = None
 
         if previous_session is not None:
             self._queue_session_for_disposal(previous_session)
@@ -181,6 +228,7 @@ class EditPreviewManager(QObject):
         self._base_pixmap = None
         self._current_preview_pixmap = None
         self._current_adjustments.clear()
+        self._color_stats = None
 
     def cancel_pending_updates(self) -> None:
         """Stop timers and invalidate in-flight previews without tearing down the session."""
@@ -202,6 +250,18 @@ class EditPreviewManager(QObject):
         self._preview_update_timer.stop()
         self._preview_update_timer.start()
 
+    # ------------------------------------------------------------------
+    def resolve_adjustments(self, session_values: Mapping[str, float | bool]) -> dict[str, float]:
+        """Return the shader-friendly adjustment mapping derived from *session_values*.
+
+        The edit controller uses this helper to update the OpenGL viewer immediately after
+        sliders change.  Reusing the preview manager's resolver guarantees that the GPU path
+        applies the same Photos-compatible colour math as the CPU preview renderer.  Keeping the
+        two surfaces perfectly in sync avoids duplicating transformation logic across modules.
+        """
+
+        return resolve_adjustment_mapping(session_values, stats=self._color_stats)
+
     def get_base_image_pixmap(self) -> Optional[QPixmap]:
         """Return the unadjusted pixmap currently backing the preview surface."""
 
@@ -216,6 +276,27 @@ class EditPreviewManager(QObject):
         """Expose the QImage currently used as the base render target."""
 
         return self._base_image
+
+    def generate_scaled_neutral_preview(self, target_size: QSize) -> QImage:
+        """Render a neutral GPU-scaled preview suitable for sidebar statistics.
+
+        The helper delegates to :class:`GLImageViewer` so the scaling happens
+        entirely on the GPU using the exact shader and sampling pipeline that is
+        employed for onscreen rendering.  The returned image is always
+        ``Format_ARGB32`` to ensure the sidebar worker can compute colour
+        statistics without incurring additional conversions.
+        """
+
+        if self._viewer is None:
+            _LOGGER.warning("generate_scaled_neutral_preview: viewer was not initialised")
+            return QImage()
+
+        neutral_adjustments = resolve_adjustment_mapping({}, stats=self._color_stats)
+        try:
+            return self._viewer.render_offscreen_image(target_size, neutral_adjustments)
+        except Exception:
+            _LOGGER.exception("generate_scaled_neutral_preview: GPU render failed")
+            return QImage()
 
     # ------------------------------------------------------------------
     # Internal helpers mirrored from the legacy controller implementation
@@ -280,64 +361,32 @@ class EditPreviewManager(QObject):
         self._preview_job_id += 1
         job_id = self._preview_job_id
 
-        if self._preview_backend.supports_realtime:
-            try:
-                final_adjustments = self._resolve_final_adjustments(self._current_adjustments)
-                image = self._preview_backend.render(
-                    self._preview_session,
-                    final_adjustments,
-                )
-            except Exception:
-                image = QImage()
-            self._on_preview_ready(image, job_id)
-            return
+        final_adjustments = resolve_adjustment_mapping(
+            self._current_adjustments,
+            stats=self._color_stats,
+        )
 
-        signals = _PreviewSignals()
-        signals.finished.connect(self._on_preview_ready)
-
-        final_adjustments = self._resolve_final_adjustments(self._current_adjustments)
-
-        worker = _PreviewWorker(
+        worker = PreviewRenderWorker(
             self._preview_backend,
             self._preview_session,
             final_adjustments,
             job_id,
-            signals,
         )
         self._active_preview_workers.add(worker)
+
+        worker.signals.finished.connect(self._on_preview_ready)
 
         def _handle_worker_finished(_image: QImage, _finished_job: int, *, worker_ref=worker) -> None:
             self._active_preview_workers.discard(worker_ref)
             self._dispose_retired_sessions()
 
-        signals.finished.connect(_handle_worker_finished)
+        worker.signals.finished.connect(_handle_worker_finished)
         self._thread_pool.start(worker)
 
-    def _resolve_final_adjustments(
-        self,
-        session_values: Mapping[str, float | bool],
-    ) -> dict[str, float]:
-        """Blend the Light master slider, options and toggle into renderable values."""
+    def color_stats(self) -> ColorStats | None:
+        """Expose the most recent colour statistics for reuse in the GL path."""
 
-        resolved: dict[str, float] = {}
-        overrides: dict[str, float] = {}
-        master_value = float(session_values.get("Light_Master", 0.0))
-        light_enabled = bool(session_values.get("Light_Enabled", True))
-
-        for key, value in session_values.items():
-            if key in ("Light_Master", "Light_Enabled"):
-                continue
-            if key in LIGHT_KEYS:
-                overrides[key] = float(value)
-            else:
-                resolved[key] = float(value)
-
-        if light_enabled:
-            resolved.update(resolve_light_vector(master_value, overrides, mode="delta"))
-        else:
-            resolved.update({key: 0.0 for key in LIGHT_KEYS})
-
-        return resolved
+        return self._color_stats
 
     def _on_preview_ready(self, image: QImage, job_id: int) -> None:
         """Update the preview if the emitted job matches the latest request."""

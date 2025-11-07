@@ -8,6 +8,7 @@ from typing import Dict, Iterable, Mapping
 from PySide6.QtCore import QObject, Signal
 
 from ....core.light_resolver import LIGHT_KEYS
+from ....core.color_resolver import COLOR_KEYS, COLOR_RANGES, ColorStats
 
 
 class EditSession(QObject):
@@ -25,14 +26,27 @@ class EditSession(QObject):
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._values: "OrderedDict[str, float | bool]" = OrderedDict()
+        self._ranges: dict[str, tuple[float, float]] = {}
+        self._color_stats: ColorStats | None = None
         # The master slider value feeds the resolver that generates the derived light adjustments.
         self._values["Light_Master"] = 0.0
+        self._ranges["Light_Master"] = (-1.0, 1.0)
         # ``Light_Enabled`` toggles whether the resolved adjustments should be applied.  Storing the
         # state alongside the numeric adjustments keeps the session serialisable through
         # :meth:`values` without coordinating multiple containers.
         self._values["Light_Enabled"] = True
+        self._ranges["Light_Enabled"] = (-1.0, 1.0)
         for key in LIGHT_KEYS:
             self._values[key] = 0.0
+            self._ranges[key] = (-1.0, 1.0)
+
+        self._values["Color_Master"] = 0.0
+        self._ranges["Color_Master"] = (-1.0, 1.0)
+        self._values["Color_Enabled"] = True
+        self._ranges["Color_Enabled"] = (-1.0, 1.0)
+        for key in COLOR_KEYS:
+            self._values[key] = 0.0
+            self._ranges[key] = (-1.0, 1.0)
 
     # ------------------------------------------------------------------
     # Accessors
@@ -59,7 +73,8 @@ class EditSession(QObject):
             if normalised is current:
                 return
         else:
-            normalised = max(-1.0, min(1.0, float(value)))
+            minimum, maximum = self._ranges.get(key, (-1.0, 1.0))
+            normalised = max(minimum, min(maximum, float(value)))
             if abs(normalised - float(current)) < 1e-4:
                 return
         self._values[key] = normalised
@@ -79,7 +94,8 @@ class EditSession(QObject):
                 if normalised is current:
                     continue
             else:
-                normalised = max(-1.0, min(1.0, float(value)))
+                minimum, maximum = self._ranges.get(key, (-1.0, 1.0))
+                normalised = max(minimum, min(maximum, float(value)))
                 if abs(normalised - float(current)) < 1e-4:
                     continue
             self._values[key] = normalised
@@ -97,10 +113,24 @@ class EditSession(QObject):
         defaults: dict[str, float | bool] = {
             "Light_Master": 0.0,
             "Light_Enabled": True,
+            "Color_Master": 0.0,
+            "Color_Enabled": True,
         }
         defaults.update({key: 0.0 for key in LIGHT_KEYS})
+        defaults.update({key: 0.0 for key in COLOR_KEYS})
         self.set_values(defaults, emit_individual=True)
         self.resetPerformed.emit()
+
+    # ------------------------------------------------------------------
+    def set_color_stats(self, stats: ColorStats | None) -> None:
+        """Persist *stats* for use by Color adjustment resolvers."""
+
+        self._color_stats = stats
+
+    def color_stats(self) -> ColorStats | None:
+        """Return the most recently assigned :class:`ColorStats` instance."""
+
+        return self._color_stats
 
     # ------------------------------------------------------------------
     # Convenience helpers used by tests and controllers

@@ -146,12 +146,14 @@ class _OpenGlPreviewBackend(PreviewBackend):
         # initialiser.  Surfacing the error keeps the log output actionable.
         from PySide6.QtGui import QOffscreenSurface
         from PySide6.QtGui import QOpenGLContext, QSurfaceFormat
-        from PySide6.QtOpenGL import QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram
+        from PySide6.QtOpenGL import QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram, QOpenGLVersionProfile
 
         super().__init__()
 
         self._context: QOpenGLContext = QOpenGLContext()
         format_hint = QSurfaceFormat()
+        format_hint.setVersion(3, 3)
+        format_hint.setProfile(QSurfaceFormat.CoreProfile)
         format_hint.setRenderableType(QSurfaceFormat.RenderableType.OpenGL)
         self._context.setFormat(format_hint)
         if not self._context.create():
@@ -166,7 +168,11 @@ class _OpenGlPreviewBackend(PreviewBackend):
         if not self._context.makeCurrent(self._surface):
             raise RuntimeError("Failed to make OpenGL context current")
 
-        functions = self._context.functions()
+        profile = QOpenGLVersionProfile()
+        profile.setVersion(3, 3)
+        functions = self._context.versionFunctions(profile)
+        if not functions:
+            raise RuntimeError("Failed to retrieve OpenGL 3.3 functions")
         functions.initializeOpenGLFunctions()
         self._gl = functions
 
@@ -239,64 +245,60 @@ class _OpenGlPreviewBackend(PreviewBackend):
     @staticmethod
     def _vertex_shader_source() -> str:
         """Return the GLSL source code for the fullscreen quad vertex shader."""
-
-        return (
-            "#version 120\n"
-            "attribute vec2 a_position;\n"
-            "attribute vec2 a_texcoord;\n"
-            "varying vec2 v_texcoord;\n"
-            "void main() {\n"
-            "    gl_Position = vec4(a_position, 0.0, 1.0);\n"
-            "    v_texcoord = a_texcoord;\n"
-            "}\n"
-        )
+        return """
+#version 330 core
+layout (location = 0) in vec2 a_position;
+layout (location = 1) in vec2 a_texcoord;
+out vec2 v_texcoord;
+void main() {
+    gl_Position = vec4(a_position, 0.0, 1.0);
+    v_texcoord = a_texcoord;
+}
+"""
 
     @staticmethod
     def _fragment_shader_source() -> str:
         """Return the GLSL source code mirroring ``_apply_channel_adjustments``."""
-
-        return (
-            "#version 120\n"
-            "uniform sampler2D uSourceTexture;\n"
-            "uniform float uExposureTerm;\n"
-            "uniform float uBrightnessTerm;\n"
-            "uniform float uBrillianceStrength;\n"
-            "uniform float uHighlights;\n"
-            "uniform float uShadows;\n"
-            "uniform float uContrastFactor;\n"
-            "uniform float uBlackPoint;\n"
-            "varying vec2 v_texcoord;\n"
-            "float clamp01(float value) {\n"
-            "    return clamp(value, 0.0, 1.0);\n"
-            "}\n"
-            "float apply_channel(float value) {\n"
-            "    float adjusted = value + uExposureTerm + uBrightnessTerm;\n"
-            "    float mid_distance = value - 0.5;\n"
-            "    float spread = (mid_distance * 2.0);\n"
-            "    adjusted += uBrillianceStrength * (1.0 - (spread * spread));\n"
-            "    if (adjusted > 0.65) {\n"
-            "        float ratio = (adjusted - 0.65) / 0.35;\n"
-            "        adjusted += uHighlights * ratio;\n"
-            "    } else if (adjusted < 0.35) {\n"
-            "        float ratio = (0.35 - adjusted) / 0.35;\n"
-            "        adjusted += uShadows * ratio;\n"
-            "    }\n"
-            "    adjusted = (adjusted - 0.5) * uContrastFactor + 0.5;\n"
-            "    if (uBlackPoint > 0.0) {\n"
-            "        adjusted -= uBlackPoint * (1.0 - adjusted);\n"
-            "    } else if (uBlackPoint < 0.0) {\n"
-            "        adjusted -= uBlackPoint * adjusted;\n"
-            "    }\n"
-            "    return clamp01(adjusted);\n"
-            "}\n"
-            "void main() {\n"
-            "    vec4 tex_color = texture2D(uSourceTexture, v_texcoord);\n"
-            "    tex_color.r = apply_channel(tex_color.r);\n"
-            "    tex_color.g = apply_channel(tex_color.g);\n"
-            "    tex_color.b = apply_channel(tex_color.b);\n"
-            "    gl_FragColor = tex_color;\n"
-            "}\n"
-        )
+        return """
+#version 330 core
+out vec4 FragColor;
+in vec2 v_texcoord;
+uniform sampler2D uSourceTexture;
+uniform float uExposureTerm;
+uniform float uBrightnessTerm;
+uniform float uBrillianceStrength;
+uniform float uHighlights;
+uniform float uShadows;
+uniform float uContrastFactor;
+uniform float uBlackPoint;
+float apply_channel(float value) {
+    float adjusted = value + uExposureTerm + uBrightnessTerm;
+    float mid_distance = value - 0.5;
+    float spread = (mid_distance * 2.0);
+    adjusted += uBrillianceStrength * (1.0 - (spread * spread));
+    if (adjusted > 0.65) {
+        float ratio = (adjusted - 0.65) / 0.35;
+        adjusted += uHighlights * ratio;
+    } else if (adjusted < 0.35) {
+        float ratio = (0.35 - adjusted) / 0.35;
+        adjusted += uShadows * ratio;
+    }
+    adjusted = (adjusted - 0.5) * uContrastFactor + 0.5;
+    if (uBlackPoint > 0.0) {
+        adjusted -= uBlackPoint * (1.0 - adjusted);
+    } else if (uBlackPoint < 0.0) {
+        adjusted -= uBlackPoint * adjusted;
+    }
+    return clamp(adjusted, 0.0, 1.0);
+}
+void main() {
+    vec4 tex_color = texture(uSourceTexture, v_texcoord);
+    tex_color.r = apply_channel(tex_color.r);
+    tex_color.g = apply_channel(tex_color.g);
+    tex_color.b = apply_channel(tex_color.b);
+    FragColor = tex_color;
+}
+"""
 
     @classmethod
     def is_available(cls) -> bool:
@@ -311,6 +313,8 @@ class _OpenGlPreviewBackend(PreviewBackend):
         try:
             context = QOpenGLContext()
             format_hint = QSurfaceFormat()
+            format_hint.setVersion(3, 3)
+            format_hint.setProfile(QSurfaceFormat.CoreProfile)
             format_hint.setRenderableType(QSurfaceFormat.RenderableType.OpenGL)
             context.setFormat(format_hint)
             if not context.create():
@@ -325,11 +329,6 @@ class _OpenGlPreviewBackend(PreviewBackend):
             if not context.makeCurrent(surface):
                 return False
 
-            # Allocate a trivial texture to confirm that the driver issues a
-            # usable identifier.  Some Windows configurations report success
-            # when creating the context yet fail during the first real texture
-            # upload, so probing here avoids triggering runtime errors inside
-            # the edit preview pipeline.
             functions = context.functions()
             texture_ids = (ctypes.c_uint * 1)()
             functions.glGenTextures(1, texture_ids)
@@ -373,14 +372,20 @@ class _OpenGlPreviewBackend(PreviewBackend):
         width = converted.width()
         height = converted.height()
 
-        texture_id = self._generate_texture()
-        self._upload_texture(texture_id, converted)
+        # Upload pixels using a Qt-managed FBO + QPainter.  This avoids
+        # low-level glTexImage2D uploads and common cross-context/driver
+        # problems with raw pointer uploads.  The upload returns a texture
+        # id owned by Qt; keep a reference to the FBO so Qt doesn't free it
+        # while we still sample from the texture.
+        texture_id, upload_fbo = self._upload_texture(0, converted)
 
+        # Destination framebuffer (separate from the upload FBO) to render
+        # into. The upload_fbo keeps ownership of the source texture.
         framebuffer = QOpenGLFramebufferObject(width, height)
 
         self._context.doneCurrent()
 
-        return _OpenGlPreviewSession(width, height, texture_id, framebuffer)
+        return _OpenGlPreviewSession(width, height, texture_id, framebuffer, texture_owned=False)
 
     def _generate_texture(self) -> int:
         """Create and return a new OpenGL texture identifier."""
@@ -389,41 +394,44 @@ class _OpenGlPreviewBackend(PreviewBackend):
         self._gl.glGenTextures(1, texture_ids)
         return int(texture_ids[0])
 
-    def _upload_texture(self, texture_id: int, image: QImage) -> None:
-        """Upload *image* data to the GPU texture identified by *texture_id*."""
+    def _upload_texture(self, texture_id: int, image: QImage) -> tuple[int, "QOpenGLFramebufferObject"]:
+        """Upload *image* into a Qt-managed FBO using QPainter and return
+        the texture id and the FBO instance.
 
-        if texture_id == 0:
-            raise RuntimeError("Invalid OpenGL texture identifier")
+        This approach delegates pixel conversion/upload to Qt which is more
+        robust across platforms and avoids manual glTexImage2D calls.
+        """
 
-        # ``bits()`` returns a sip.voidptr.  Requesting the full buffer size
-        # ensures Qt detaches the underlying storage so the upload observes a
-        # stable snapshot of the pixels even if the caller modifies the source
-        # image later on.
-        buffer = image.bits()
-        buffer.setsize(image.sizeInBytes())
+        # Ensure the GL context is current for FBO creation and QPainter use
+        if not self._make_current():
+            raise RuntimeError("OpenGL context must be current for texture upload")
 
-        gl = self._gl
-        gl.glBindTexture(gl.GL_TEXTURE_2D, texture_id)
-        gl.glPixelStorei(gl.GL_UNPACK_ALIGNMENT, 1)
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
-        gl.glTexImage2D(
-            gl.GL_TEXTURE_2D,
-            0,
-            gl.GL_RGBA,
-            image.width(),
-            image.height(),
-            0,
-            gl.GL_RGBA,
-            gl.GL_UNSIGNED_BYTE,
-            buffer,
-        )
-        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+        from PySide6.QtOpenGL import QOpenGLFramebufferObject
+        from PySide6.QtGui import QPainter
+
+        # Create a temporary FBO and draw the QImage into it using QPainter.
+        upload_fbo = QOpenGLFramebufferObject(image.width(), image.height())
+        painter = QPainter(upload_fbo)
+        try:
+            # Draw the image at origin; QPainter handles format/row-order
+            # differences reliably across platforms.
+            painter.drawImage(0, 0, image)
+        finally:
+            painter.end()
+
+        tex = int(upload_fbo.texture())
+
+        # Keep a reference so Qt doesn't free the underlying texture while
+        # we still reference it. Store on the backend to allow cleanup later.
+        if not hasattr(self, '_temp_upload_fbos'):
+            self._temp_upload_fbos = []
+        self._temp_upload_fbos.append(upload_fbo)
+
+        return tex, upload_fbo
 
     def render(self, session: PreviewSession, adjustments: Mapping[str, float]) -> QImage:
         from PySide6.QtGui import QImage as QtImage
+        from typing import cast
 
         gl_session = cast(_OpenGlPreviewSession, session)
         if gl_session.width == 0 or gl_session.height == 0:
@@ -508,9 +516,13 @@ class _OpenGlPreviewBackend(PreviewBackend):
             return
 
         if self._make_current():
-            if gl_session.texture_id != 0:
-                texture_ids = (ctypes.c_uint * 1)(gl_session.texture_id)
-                self._gl.glDeleteTextures(1, texture_ids)
+            # Only delete textures that we explicitly created via glGenTextures
+            if getattr(gl_session, 'texture_owned', True) and gl_session.texture_id != 0:
+                try:
+                    texture_ids = (ctypes.c_uint * 1)(gl_session.texture_id)
+                    self._gl.glDeleteTextures(1, texture_ids)
+                except Exception:
+                    pass
                 gl_session.texture_id = 0
             framebuffer = gl_session.framebuffer
             if framebuffer is not None:
@@ -535,6 +547,10 @@ class _OpenGlPreviewSession(PreviewSession):
     height: int
     texture_id: int
     framebuffer: "QOpenGLFramebufferObject | None"
+    # Whether the texture id was created by glGenTextures (True) or comes
+    # from a Qt-managed FBO (False). Only owned textures should be explicitly
+    # deleted via glDeleteTextures.
+    texture_owned: bool = True
 
     def dispose(self) -> None:  # pragma: no cover - real cleanup happens in backend
         self.framebuffer = None

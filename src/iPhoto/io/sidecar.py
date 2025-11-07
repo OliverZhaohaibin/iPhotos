@@ -7,6 +7,7 @@ from typing import Dict, Mapping
 import xml.etree.ElementTree as ET
 
 from ..core.light_resolver import LIGHT_KEYS, resolve_light_vector
+from ..core.color_resolver import COLOR_KEYS, ColorResolver, ColorStats
 
 _SIDE_CAR_ROOT = "iPhotoAdjustments"
 _LIGHT_NODE = "Light"
@@ -66,6 +67,26 @@ def load_adjustments(asset_path: Path) -> Dict[str, float | bool]:
             result[key] = float(element.text.strip())
         except ValueError:
             continue
+    color_master = light_node.find("Color_Master")
+    if color_master is not None and color_master.text is not None:
+        try:
+            result["Color_Master"] = float(color_master.text.strip())
+        except ValueError:
+            result["Color_Master"] = 0.0
+    color_enabled = light_node.find("Color_Enabled")
+    if color_enabled is not None and color_enabled.text is not None:
+        text = color_enabled.text.strip().lower()
+        result["Color_Enabled"] = text in {"1", "true", "yes", "on"}
+    else:
+        result["Color_Enabled"] = True
+    for key in COLOR_KEYS:
+        element = light_node.find(key)
+        if element is None or element.text is None:
+            continue
+        try:
+            result[key] = float(element.text.strip())
+        except ValueError:
+            continue
     return result
 
 
@@ -91,6 +112,19 @@ def save_adjustments(asset_path: Path, adjustments: Mapping[str, float | bool]) 
         child = ET.SubElement(light, key)
         child.text = f"{value:.2f}"
 
+    color_master = ET.SubElement(light, "Color_Master")
+    color_master_value = float(adjustments.get("Color_Master", 0.0))
+    color_master.text = f"{color_master_value:.2f}"
+
+    color_enabled = ET.SubElement(light, "Color_Enabled")
+    color_enabled_value = bool(adjustments.get("Color_Enabled", True))
+    color_enabled.text = "true" if color_enabled_value else "false"
+
+    for key in COLOR_KEYS:
+        value = float(adjustments.get(key, 0.0))
+        child = ET.SubElement(light, key)
+        child.text = f"{value:.2f}"
+
     tmp_path = sidecar_path.with_suffix(sidecar_path.suffix + ".tmp")
     tree = ET.ElementTree(root)
     tree.write(tmp_path, encoding="utf-8", xml_declaration=True)
@@ -105,6 +139,8 @@ def save_adjustments(asset_path: Path, adjustments: Mapping[str, float | bool]) 
 
 def resolve_render_adjustments(
     adjustments: Mapping[str, float | bool] | None,
+    *,
+    color_stats: ColorStats | None = None,
 ) -> Dict[str, float]:
     """Return Light adjustments suitable for rendering pipelines.
 
@@ -127,6 +163,7 @@ def resolve_render_adjustments(
 
     resolved: Dict[str, float] = {}
     overrides: Dict[str, float] = {}
+    color_overrides: Dict[str, float] = {}
     for key, value in adjustments.items():
         if key in ("Light_Master", "Light_Enabled"):
             continue
@@ -138,8 +175,32 @@ def resolve_render_adjustments(
             continue
         if key in LIGHT_KEYS:
             overrides[key] = numeric_value
+        elif key in COLOR_KEYS:
+            color_overrides[key] = numeric_value
         else:
             resolved[key] = numeric_value
+
+    if light_enabled:
+        resolved.update(resolve_light_vector(master_value, overrides, mode="delta"))
+    else:
+        resolved.update({key: 0.0 for key in LIGHT_KEYS})
+    stats = color_stats or ColorStats()
+    color_master = float(adjustments.get("Color_Master", 0.0))
+    color_enabled = bool(adjustments.get("Color_Enabled", True))
+    if color_enabled:
+        color_values = ColorResolver.resolve_color_vector(
+            color_master,
+            color_overrides,
+            stats=stats,
+            mode="delta",
+        )
+    else:
+        color_values = {key: 0.0 for key in COLOR_KEYS}
+    gain_r, gain_g, gain_b = stats.white_balance_gain
+    resolved.update(color_values)
+    resolved["Color_Gain_R"] = gain_r
+    resolved["Color_Gain_G"] = gain_g
+    resolved["Color_Gain_B"] = gain_b
 
     if not light_enabled:
         return resolved

@@ -10,9 +10,9 @@ from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QStackedWidget, QWidget
 
 from ...utils import image_loader
-from ....core.image_filters import apply_adjustments
+from ....core.color_resolver import compute_color_statistics
 from ....io import sidecar
-from ..widgets.image_viewer import ImageViewer
+from ..widgets.gl_image_viewer import GLImageViewer
 from ..widgets.live_badge import LiveBadge
 from ..widgets.video_area import VideoArea
 
@@ -20,7 +20,7 @@ from ..widgets.video_area import VideoArea
 class _AdjustedImageSignals(QObject):
     """Relay worker completion events back to the GUI thread."""
 
-    completed = Signal(Path, QImage)
+    completed = Signal(Path, QImage, dict)
     """Emitted when the adjusted image finished loading successfully."""
 
     failed = Signal(Path, str)
@@ -47,13 +47,6 @@ class _AdjustedImageWorker(QRunnable):
         """Perform the expensive image work outside the GUI thread."""
 
         try:
-            raw_adjustments = sidecar.load_adjustments(self._source)
-            adjustments = sidecar.resolve_render_adjustments(raw_adjustments)
-        except Exception as exc:  # pragma: no cover - filesystem errors are rare
-            self._signals.failed.emit(self._source, str(exc))
-            return
-
-        try:
             # Requesting ``None`` as the target size forces ``QImageReader`` to
             # decode the full-resolution frame.  The detail view later scales
             # the resulting pixmap to fit the viewport while maintaining the
@@ -67,14 +60,21 @@ class _AdjustedImageWorker(QRunnable):
             self._signals.failed.emit(self._source, "Image decoder returned an empty frame")
             return
 
-        if adjustments:
-            try:
-                image = apply_adjustments(image, adjustments)
-            except Exception as exc:  # pragma: no cover - defensive safeguard
-                self._signals.failed.emit(self._source, str(exc))
-                return
+        try:
+            raw_adjustments = sidecar.load_adjustments(self._source)
+            stats = compute_color_statistics(image) if raw_adjustments else None
+            adjustments = sidecar.resolve_render_adjustments(
+                raw_adjustments,
+                color_stats=stats,
+            )
+        except Exception as exc:  # pragma: no cover - filesystem errors are rare
+            self._signals.failed.emit(self._source, str(exc))
+            return
 
-        self._signals.completed.emit(self._source, image)
+        # Pass the raw image and adjustments to the main thread. The GL viewer
+        # Pass the raw image and adjustments to the main thread. The GL viewer
+        # will apply the adjustments on the GPU.
+        self._signals.completed.emit(self._source, image, adjustments or {})
 
 
 class PlayerViewController(QObject):
@@ -89,7 +89,7 @@ class PlayerViewController(QObject):
     def __init__(
         self,
         player_stack: QStackedWidget,
-        image_viewer: ImageViewer,
+        image_viewer: GLImageViewer,
         video_area: VideoArea,
         placeholder: QWidget,
         live_badge: LiveBadge,
@@ -103,6 +103,7 @@ class PlayerViewController(QObject):
         self._video_area = video_area
         self._placeholder = placeholder
         self._live_badge = live_badge
+        self._image_viewer_index = player_stack.indexOf(image_viewer)
         self._image_viewer.replayRequested.connect(self.liveReplayRequested)
         self._pool = QThreadPool.globalInstance()
         self._active_workers: Set[_AdjustedImageWorker] = set()
@@ -113,86 +114,88 @@ class PlayerViewController(QObject):
     # ------------------------------------------------------------------
     def show_placeholder(self) -> None:
         """Display the placeholder widget and clear any previous image."""
-
         self._video_area.hide_controls(animate=False)
         self.hide_live_badge()
         if self._player_stack.currentWidget() is not self._placeholder:
             self._player_stack.setCurrentWidget(self._placeholder)
         if not self._player_stack.isVisible():
             self._player_stack.show()
-        self._image_viewer.clear()
+        # 不再上传“空图像”，而是显式清空纹理/图像
+        self._image_viewer.set_image(None, {})
 
     def show_image_surface(self) -> None:
         """Reveal the still-image viewer surface."""
 
+        # Hide lingering transport controls from the video surface so the
+        # still viewer never inherits a faded overlay background.
         self._video_area.hide_controls(animate=False)
         if self._player_stack.currentWidget() is not self._image_viewer:
-            self._player_stack.setCurrentWidget(self._image_viewer)
+            if self._player_stack.indexOf(self._image_viewer) != -1:
+                self._player_stack.setCurrentWidget(self._image_viewer)
         if not self._player_stack.isVisible():
             self._player_stack.show()
+        # Request an immediate update so the GL widget draws the latest frame as
+        # soon as Qt processes the next paint cycle, mirroring the responsiveness
+        # of the legacy QLabel-based viewer.
+        self._image_viewer.update()
 
     def show_video_surface(self, *, interactive: bool) -> None:
-        """Reveal the video surface, toggling playback controls as needed."""
+        """Switch the stacked widget to the video surface.
+
+        Parameters
+        ----------
+        interactive:
+            ``True`` enables the floating playback controls (used for regular
+            videos). ``False`` keeps the controls hidden so Live Photos can play
+            unobstructed while still allowing the badge to trigger replays.
+        """
+
+        self._video_area.set_controls_enabled(interactive)
+        if interactive:
+            # Present the controls immediately so keyboard users see the
+            # transport state without having to move the pointer.
+            self._video_area.show_controls(animate=False)
+        else:
+            self._video_area.hide_controls(animate=False)
 
         if self._player_stack.currentWidget() is not self._video_area:
             self._player_stack.setCurrentWidget(self._video_area)
         if not self._player_stack.isVisible():
             self._player_stack.show()
-        self._video_area.set_controls_enabled(interactive)
-        if interactive:
-            self._video_area.show_controls(animate=False)
-        else:
-            self._video_area.hide_controls(animate=False)
+
+        # Hand focus to the graphics view so space/arrow shortcuts continue to
+        # target the media surface, matching the ergonomics of the legacy
+        # QWidget-based implementation.
+        self._video_area.video_view().setFocus()
 
     # ------------------------------------------------------------------
     # Content helpers
     # ------------------------------------------------------------------
     def display_image(self, source: Path, *, placeholder: Optional[QPixmap] = None) -> bool:
-        """Begin loading ``source`` asynchronously, returning scheduling success.
-
-        Parameters
-        ----------
-        source:
-            The asset that should appear in the detail viewer.
-        placeholder:
-            An optional pixmap that is displayed immediately while the worker
-            recalculates the full-resolution image.  Supplying a placeholder is
-            especially useful when returning from the edit view because it
-            preserves the user's last preview instead of flashing a blank frame.
-        """
-
+        """Begin loading ``source`` asynchronously, returning scheduling success."""
         self._loading_source = source
-        if placeholder is None or placeholder.isNull():
-            # Without a placeholder we fall back to the traditional behaviour of
-            # clearing stale content so the worker paints a fresh frame.
-            self._image_viewer.clear()
-        else:
-            # Reusing the provided pixmap keeps the surface populated while the
-            # asynchronous load runs, eliminating distracting flashes to the
-            # placeholder panel.
-            self._image_viewer.set_pixmap(placeholder)
+
+        # 1) 先切到 GL 视图，保证有有效的 GL 上下文
         self.show_image_surface()
 
-        signals = _AdjustedImageSignals()
+        # 2) 若有占位图，先显示；否则仅清空，不上传空图像
+        if placeholder is not None and not placeholder.isNull():
+            self._image_viewer.set_placeholder(placeholder)
+        else:
+            self._image_viewer.set_image(None, {})
 
+        signals = _AdjustedImageSignals()
         worker = _AdjustedImageWorker(source, signals)
         self._active_workers.add(worker)
 
         signals.completed.connect(self._on_adjusted_image_ready)
         signals.failed.connect(self._on_adjusted_image_failed)
 
-        def _finalize_on_completion(img_source: Path, img: QImage) -> None:
-            """Release worker resources once the frame arrives."""
-
+        def _finalize_on_completion(img_source: Path, img: QImage, adjustments: dict) -> None:
             self._release_worker(worker)
-            # ``deleteLater`` queues destruction on the GUI thread, ensuring the
-            # worker never dereferences a signal object that has already been
-            # freed when it posts the completion event.
             signals.deleteLater()
 
         def _finalize_on_failure(img_source: Path, message: str) -> None:
-            """Release worker resources after a terminal failure."""
-
             self._release_worker(worker)
             signals.deleteLater()
 
@@ -201,7 +204,7 @@ class PlayerViewController(QObject):
 
         try:
             self._pool.start(worker)
-        except RuntimeError as exc:  # pragma: no cover - thread pool exhaustion is rare
+        except RuntimeError as exc:  # 线程池满极少见
             self._release_worker(worker)
             self._loading_source = None
             self.imageLoadingFailed.emit(source, str(exc))
@@ -210,8 +213,8 @@ class PlayerViewController(QObject):
 
     def clear_image(self) -> None:
         """Remove any pixmap currently shown in the image viewer."""
-
-        self._image_viewer.clear()
+        # 清空而非传空图像，避免一帧“空绘制/空上传”
+        self._image_viewer.set_image(None, {})
 
     # ------------------------------------------------------------------
     # Live badge helpers
@@ -256,7 +259,7 @@ class PlayerViewController(QObject):
         self._video_area.note_activity()
 
     @property
-    def image_viewer(self) -> ImageViewer:
+    def image_viewer(self) -> GLImageViewer:
         """Expose the image viewer for read-only integrations."""
 
         return self._image_viewer
@@ -270,35 +273,28 @@ class PlayerViewController(QObject):
     # ------------------------------------------------------------------
     # Worker callbacks
     # ------------------------------------------------------------------
-    def _on_adjusted_image_ready(self, source: Path, image: QImage) -> None:
+    def _on_adjusted_image_ready(self, source: Path, image: QImage, adjustments: dict) -> None:
         """Render *image* when the matching worker completes successfully."""
-
         if self._loading_source != source:
             return
 
         if image.isNull():
             if self._loading_source == source:
                 self._loading_source = None
-            self._image_viewer.clear()
-            self.imageLoadingFailed.emit(
-                source,
-                "Image decoder returned an empty frame",
-            )
+            self._image_viewer.set_image(None, {})
+            self.imageLoadingFailed.emit(source, "Image decoder returned an empty frame")
             return
 
-        pixmap = QPixmap.fromImage(image)
-        if pixmap.isNull():
-            if self._loading_source == source:
-                self._loading_source = None
-            self._image_viewer.clear()
-            self.imageLoadingFailed.emit(
-                source,
-                "Failed to convert image to pixmap",
-            )
-            return
-
-        self._image_viewer.set_pixmap(pixmap)
+        # 先确保 GL 视图当前可见（上下文已就绪），再喂像素并强制一帧
         self.show_image_surface()
+        self._image_viewer.set_image(
+            image,
+            adjustments,
+            image_source=source,
+            reset_view=True,
+        )
+        self._image_viewer.update()
+
         if self._loading_source == source:
             self._loading_source = None
 
@@ -310,7 +306,7 @@ class PlayerViewController(QObject):
 
         if self._loading_source == source:
             self._loading_source = None
-        self._image_viewer.clear()
+        self._image_viewer.set_image(None)
         self.imageLoadingFailed.emit(source, message)
 
     def _release_worker(self, worker: _AdjustedImageWorker) -> None:

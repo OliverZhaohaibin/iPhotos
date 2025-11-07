@@ -25,6 +25,7 @@ from ..ui_main_window import ChromeStatusBar
 from ..widgets.asset_grid import AssetGrid
 from ..widgets.info_panel import InfoPanel
 from ..widgets.player_bar import PlayerBar
+from ..widgets.gl_image_viewer import GLImageViewer
 from .header_controller import HeaderController
 from .player_view_controller import PlayerViewController
 from .view_controller import ViewController
@@ -162,6 +163,12 @@ class DetailUIController(QObject):
         self._player_bar.setEnabled(True)
         self._view_controller.show_detail_view()
         self._filmstrip_view.doItemsLayout()
+
+        index = self._model.index(current_row, 0)
+        if index.isValid() and bool(index.data(Roles.IS_IMAGE)):
+            self.show_zoom_controls()
+        else:
+            self.hide_zoom_controls()
 
     def update_favorite_button(
         self, row: int, *, is_featured: Optional[bool] = None

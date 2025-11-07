@@ -40,7 +40,6 @@ class ViewControllerManager(QObject):
             ui.view_stack,
             ui.gallery_page,
             ui.detail_page,
-            ui.edit_page,
             map_page=ui.map_page,
             parent=window,
         )
@@ -81,6 +80,7 @@ class ViewControllerManager(QObject):
             window,
             navigation=navigation,
             detail_ui_controller=self._detail_ui,
+            settings=context.settings,
         )
         self._map_controller = LocationMapController(
             context.library,

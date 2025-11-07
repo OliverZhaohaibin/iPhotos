@@ -114,7 +114,6 @@ class PlaybackStateManager(QObject):
         self._active_live_still = None
         self._media.stop()
         self._detail_ui.hide_live_badge()
-        self._detail_ui.set_live_replay_enabled(False)
         self._detail_ui.show_detail_view()
         self._detail_ui.show_zoom_controls()
         self._detail_ui.reset_player_bar()
@@ -223,8 +222,6 @@ class PlaybackStateManager(QObject):
         if self._state not in {PlayerState.SHOWING_LIVE_STILL, PlayerState.PLAYING_LIVE_MOTION}:
             return
         if not self._detail_ui.player_view.is_live_badge_visible():
-            return
-        if not self._detail_ui.player_view.is_showing_image():
             return
         motion_source = self._active_live_motion or self._playlist.current_source()
         if motion_source is None:

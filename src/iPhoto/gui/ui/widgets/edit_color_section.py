@@ -1,4 +1,4 @@
-"""Light adjustment section used inside the edit sidebar."""
+"""Color adjustment section used inside the edit sidebar."""
 
 from __future__ import annotations
 
@@ -6,9 +6,8 @@ import logging
 from functools import partial
 from typing import Dict, Optional
 
-
 from PySide6.QtCore import QThreadPool, Signal, Slot, Qt
-from PySide6.QtGui import QMouseEvent
+from PySide6.QtGui import QImage, QMouseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -18,9 +17,11 @@ from PySide6.QtWidgets import (
 )
 
 from ..palette import Edit_SIDEBAR_SUB_FONT
-from ....core.light_resolver import LIGHT_KEYS, _clamp, resolve_light_vector
+from ....core.color_resolver import COLOR_KEYS, COLOR_RANGES, ColorResolver, ColorStats
+from ....core.color_resolver import compute_color_statistics
+from ....core.image_filters import apply_adjustments
 from ..models.edit_session import EditSession
-from .collapsible_section import CollapsibleSection, CollapsibleSubSection
+from .collapsible_section import CollapsibleSection
 from .edit_strip import BWSlider
 from .thumbnail_strip_slider import ThumbnailStripSlider
 from ..tasks.thumbnail_generator_worker import ThumbnailGeneratorWorker
@@ -29,13 +30,14 @@ from ..tasks.thumbnail_generator_worker import ThumbnailGeneratorWorker
 _LOGGER = logging.getLogger(__name__)
 
 
-class EditLightSection(QWidget):
-    """Container widget hosting the "Light" adjustment sliders."""
+class EditColorSection(QWidget):
+    """Container widget hosting the "Color" adjustment sliders."""
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._session: Optional[EditSession] = None
         self._rows: Dict[str, _SliderRow] = {}
+        self._color_stats: ColorStats = ColorStats()
         self._thread_pool = QThreadPool.globalInstance()
         self._active_thumbnail_workers: list[ThumbnailGeneratorWorker] = []
 
@@ -50,12 +52,11 @@ class EditLightSection(QWidget):
             maximum=1.0,
             initial=0.0,
         )
+        self.master_slider.set_preview_generator(self._generate_master_preview)
         self.master_slider.valueChanged.connect(self._handle_master_slider_changed)
         self.master_slider.clickedWhenDisabled.connect(self._handle_disabled_slider_click)
         layout.addWidget(self.master_slider)
 
-        # Use a frameless ``QFrame`` so the collapsible section displays plain sliders
-        # without inheriting the decorative border and title provided by ``QGroupBox``.
         options_container = QFrame(self)
         options_container.setFrameShape(QFrame.Shape.NoFrame)
         options_container.setFrameShadow(QFrame.Shadow.Plain)
@@ -64,26 +65,24 @@ class EditLightSection(QWidget):
         options_layout.setSpacing(1)
 
         labels = [
-            ("Brilliance", "Brilliance"),
-            ("Exposure", "Exposure"),
-            ("Highlights", "Highlights"),
-            ("Shadows", "Shadows"),
-            ("Brightness", "Brightness"),
-            ("Contrast", "Contrast"),
-            ("Black Point", "BlackPoint"),
+            ("Saturation", "Saturation"),
+            ("Vibrance", "Vibrance"),
+            ("Cast", "Cast"),
         ]
         for label_text, key in labels:
-            row = _SliderRow(key, label_text, parent=options_container)
+            minimum, maximum = COLOR_RANGES[key]
+            row = _SliderRow(key, label_text, minimum, maximum, parent=options_container)
             row.uiValueChanged.connect(self._handle_sub_slider_changed)
             row.clickedWhenDisabled.connect(self._handle_disabled_slider_click)
             options_layout.addWidget(row)
             self._rows[key] = row
 
-        self.options_section = CollapsibleSubSection(
+        self.options_section = CollapsibleSection(
             "Options",
             "slider.horizontal.3.svg",
             options_container,
             self,
+            title_font=Edit_SIDEBAR_SUB_FONT
         )
         self.options_section.set_expanded(False)
         layout.addWidget(self.options_section)
@@ -106,6 +105,9 @@ class EditLightSection(QWidget):
         if session is not None:
             session.valueChanged.connect(self._on_session_value_changed)
             session.resetPerformed.connect(self._on_session_reset)
+            stats = session.color_stats()
+            if stats is not None:
+                self._color_stats = stats
             self.refresh_from_session()
         else:
             self._disable_rows()
@@ -120,9 +122,9 @@ class EditLightSection(QWidget):
             self.master_slider.setEnabled(False)
             self.master_slider.update_from_value(0.0)
             return
-        master_value = float(self._session.value("Light_Master"))
+        master_value = float(self._session.value("Color_Master"))
         self.master_slider.update_from_value(master_value)
-        enabled = bool(self._session.value("Light_Enabled"))
+        enabled = bool(self._session.value("Color_Enabled"))
         self.master_slider.setEnabled(enabled)
         self._apply_enabled_state(enabled)
         self._update_all_sub_sliders_ui()
@@ -136,16 +138,16 @@ class EditLightSection(QWidget):
 
     # ------------------------------------------------------------------
     def _on_session_value_changed(self, key: str, value: float | bool) -> None:
-        if key == "Light_Enabled":
+        if key == "Color_Enabled":
             self._apply_enabled_state(bool(value))
             return
 
-        if key == "Light_Master":
+        if key == "Color_Master":
             self.master_slider.update_from_value(float(value))
             self._update_all_sub_sliders_ui()
             return
 
-        if key in LIGHT_KEYS:
+        if key in COLOR_KEYS:
             self._update_all_sub_sliders_ui()
 
     def _on_session_reset(self) -> None:
@@ -154,7 +156,7 @@ class EditLightSection(QWidget):
     def _handle_master_slider_changed(self, new_value: float) -> None:
         if self._session is None:
             return
-        self._session.set_value("Light_Master", float(new_value))
+        self._session.set_value("Color_Master", float(new_value))
 
     @Slot(str, float)
     def _handle_sub_slider_changed(self, key: str, new_ui_value: float) -> None:
@@ -163,32 +165,31 @@ class EditLightSection(QWidget):
         if self._session is None:
             return
 
-        master_value = float(self._session.value("Light_Master"))
-        base_values = resolve_light_vector(master_value, None)
+        master_value = float(self._session.value("Color_Master"))
+        base_values = ColorResolver.distribute_master(master_value, self._color_stats)
         base_value = float(base_values.get(key, 0.0))
 
-        # The UI shows ``base + delta`` so we recover the delta component before persisting it.
-        delta_value = _clamp(new_ui_value - base_value)
+        delta_value = _clamp(new_ui_value - base_value, -1.0, 1.0)
         self._session.set_value(key, delta_value)
 
     def _update_all_sub_sliders_ui(self) -> None:
-        """Recompute and display the final Light values for every fine-tuning slider."""
+        """Recompute and display the final Color values for every fine-tuning slider."""
 
         if self._session is None:
             return
 
-        master_value = float(self._session.value("Light_Master"))
-        base_values = resolve_light_vector(master_value, None)
+        master_value = float(self._session.value("Color_Master"))
+        base_values = ColorResolver.distribute_master(master_value, self._color_stats)
 
-        for key in LIGHT_KEYS:
+        for key in COLOR_KEYS:
             row = self._rows.get(key)
             if row is None:
                 continue
 
             base_value = float(base_values.get(key, 0.0))
             delta_value = float(self._session.value(key))
-            # Combine the resolved base with the stored delta to display the true applied value.
-            final_value = _clamp(base_value + delta_value)
+            minimum, maximum = COLOR_RANGES[key]
+            final_value = _clamp(base_value + delta_value, minimum, maximum)
 
             row.update_from_value(final_value)
 
@@ -197,21 +198,29 @@ class EditLightSection(QWidget):
         for row in self._rows.values():
             row.setEnabled(enabled)
 
-    def set_preview_image(self, image) -> None:
-        """Forward *image* to the master slider so it can refresh thumbnails."""
+    def set_preview_image(
+        self,
+        image,
+        *,
+        color_stats: ColorStats | None = None,
+    ) -> None:
+        """Forward *image* to the master slider and refresh cached statistics."""
 
+        if color_stats is not None:
+            self._color_stats = color_stats
+            if self._session is not None:
+                self._session.set_color_stats(color_stats)
+        elif image is not None:
+            stats = compute_color_statistics(image)
+            self._color_stats = stats
+            if self._session is not None:
+                self._session.set_color_stats(stats)
         self.master_slider.setImage(image)
         self._start_master_thumbnail_generation()
 
-    @Slot()
-    def _handle_disabled_slider_click(self) -> None:
-        """Re-enables the Light adjustments if a disabled slider is clicked."""
-        if self._session is not None and not self._session.value("Light_Enabled"):
-            self._session.set_value("Light_Enabled", True)
-
     # ------------------------------------------------------------------
     def _start_master_thumbnail_generation(self) -> None:
-        """Launch a background task that fills the master slider thumbnails."""
+        """Launch a background worker to populate the Color slider thumbnails."""
 
         image = self.master_slider.base_image()
         if image is None:
@@ -238,21 +247,46 @@ class EditLightSection(QWidget):
 
     @Slot(int, str)
     def _on_thumbnail_error(self, worker: ThumbnailGeneratorWorker, generation_id: int, message: str) -> None:
-        """Log thumbnail generation failures while keeping the worker alive."""
+        """Record worker errors to aid diagnosing preview generation issues."""
 
-        del generation_id  # The slider ignores stale generations automatically.
+        del generation_id
         if worker in self._active_thumbnail_workers:
-            _LOGGER.error("Light thumbnail generation failed: %s", message)
+            _LOGGER.error("Color thumbnail generation failed: %s", message)
 
     @Slot(int)
     def _on_thumbnail_finished(self, worker: ThumbnailGeneratorWorker, generation_id: int) -> None:
-        """Release references to completed workers so they can be garbage collected."""
+        """Drop finished workers so repeated loads do not leak references."""
 
         del generation_id
         try:
             self._active_thumbnail_workers.remove(worker)
         except ValueError:
             pass
+
+    @Slot()
+    def _handle_disabled_slider_click(self) -> None:
+        """Re-enables the Color adjustments if a disabled slider is clicked."""
+
+        if self._session is not None and not self._session.value("Color_Enabled"):
+            self._session.set_value("Color_Enabled", True)
+
+    def _generate_master_preview(self, image: QImage, value: float) -> QImage:
+        """Return a preview frame illustrating the Color master slider effect."""
+
+        stats = compute_color_statistics(image)
+        resolved = ColorResolver.resolve_color_vector(value, None, stats=stats)
+        gain_r, gain_g, gain_b = stats.white_balance_gain
+        adjustments = {
+            "Light_Enabled": False,
+            "Color_Enabled": True,
+            "Saturation": resolved.get("Saturation", 0.0),
+            "Vibrance": resolved.get("Vibrance", 0.0),
+            "Cast": resolved.get("Cast", 0.0),
+            "Color_Gain_R": gain_r,
+            "Color_Gain_G": gain_g,
+            "Color_Gain_B": gain_b,
+        }
+        return apply_adjustments(image, adjustments, color_stats=stats)
 
 
 class _SliderRow(QFrame):
@@ -263,7 +297,14 @@ class _SliderRow(QFrame):
 
     clickedWhenDisabled = Signal()
 
-    def __init__(self, key: str, label: str, parent: Optional[QWidget] = None) -> None:
+    def __init__(
+        self,
+        key: str,
+        label: str,
+        minimum: float,
+        maximum: float,
+        parent: Optional[QWidget] = None,
+    ) -> None:
         super().__init__(parent)
         self._key = key
         self._session: Optional[EditSession] = None
@@ -273,7 +314,7 @@ class _SliderRow(QFrame):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self.slider = BWSlider(label, self, minimum=-1.0, maximum=1.0, initial=0.0)
+        self.slider = BWSlider(label, self, minimum=minimum, maximum=maximum, initial=0.0)
         layout.addWidget(self.slider)
         self.slider.valueChanged.connect(self._handle_slider_changed)
 
@@ -285,18 +326,19 @@ class _SliderRow(QFrame):
 
     def setEnabled(self, enabled: bool) -> None:  # type: ignore[override]
         """Keep the row enabled to capture clicks, but disable the visual slider."""
+
         super().setEnabled(True)
         self.slider.setEnabled(enabled)
         self._opacity_effect.setOpacity(1.0 if enabled else 0.5)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
         """Handle clicks when the slider is disabled to re-enable it."""
+
         if event.button() == Qt.MouseButton.LeftButton:
             if (
                 not self.slider.isEnabled()
                 and self.slider.geometry().contains(event.position().toPoint())
             ):
-                
                 self.clickedWhenDisabled.emit()
 
                 slider_event = QMouseEvent(
@@ -324,3 +366,12 @@ class _SliderRow(QFrame):
         """Relay the updated slider value while tagging it with the adjustment *key*."""
 
         self.uiValueChanged.emit(self._key, float(new_value))
+
+
+def _clamp(value: float, minimum: float, maximum: float) -> float:
+    if value < minimum:
+        return minimum
+    if value > maximum:
+        return maximum
+    return value
+

@@ -22,12 +22,12 @@ from .widgets import (
     ChromeStatusBar,
     CustomTitleBar,
     DetailPageWidget,
-    EditPageWidget,
     GalleryPageWidget,
     MainHeaderWidget,
     PhotoMapView,
     PreviewWindow,
 )
+from .widgets.gl_image_viewer import GLImageViewer
 
 
 class Ui_MainWindow(object):
@@ -115,7 +115,8 @@ class Ui_MainWindow(object):
         self.gallery_page = GalleryPageWidget()
         self.grid_view = self.gallery_page.grid_view
 
-        self.detail_page = DetailPageWidget(MainWindow)
+        shared_image_viewer = GLImageViewer()
+        self.detail_page = DetailPageWidget(MainWindow, image_viewer=shared_image_viewer)
         self.back_button = self.detail_page.back_button
         self.info_button = self.detail_page.info_button
         self.share_button = self.detail_page.share_button
@@ -137,7 +138,7 @@ class Ui_MainWindow(object):
         self.detail_header_separator = self.detail_page.detail_header_separator
         self.player_stack = self.detail_page.player_stack
         self.player_placeholder = self.detail_page.player_placeholder
-        self.image_viewer = self.detail_page.image_viewer
+        self.image_viewer = shared_image_viewer
         self.video_area = self.detail_page.video_area
         self.player_bar = self.detail_page.player_bar
         self.filmstrip_view = self.detail_page.filmstrip_view
@@ -145,20 +146,19 @@ class Ui_MainWindow(object):
         self.badge_host = self.detail_page.badge_host
         self.player_container = self.detail_page.player_container
 
-        self.edit_page = EditPageWidget(MainWindow)
-        self.edit_mode_group = self.edit_page.edit_mode_group
-        self.edit_adjust_action = self.edit_page.edit_adjust_action
-        self.edit_crop_action = self.edit_page.edit_crop_action
-        self.edit_compare_button = self.edit_page.edit_compare_button
-        self.edit_reset_button = self.edit_page.edit_reset_button
-        self.edit_done_button = self.edit_page.edit_done_button
-        self.edit_image_viewer = self.edit_page.edit_image_viewer
-        self.edit_sidebar = self.edit_page.edit_sidebar
-        self.edit_mode_control = self.edit_page.edit_mode_control
-        self.edit_header_container = self.edit_page.edit_header_container
-        self.edit_zoom_host = self.edit_page.edit_zoom_host
-        self.edit_zoom_host_layout = self.edit_page.edit_zoom_host_layout
-        self.edit_right_controls_layout = self.edit_page.edit_right_controls_layout
+        self.edit_mode_group = self.detail_page.edit_mode_group
+        self.edit_adjust_action = self.detail_page.edit_adjust_action
+        self.edit_crop_action = self.detail_page.edit_crop_action
+        self.edit_compare_button = self.detail_page.edit_compare_button
+        self.edit_reset_button = self.detail_page.edit_reset_button
+        self.edit_done_button = self.detail_page.edit_done_button
+        self.edit_image_viewer = self.image_viewer
+        self.edit_sidebar = self.detail_page.edit_sidebar
+        self.edit_mode_control = self.detail_page.edit_mode_control
+        self.edit_header_container = self.detail_page.edit_header_container
+        self.edit_zoom_host = self.detail_page.edit_zoom_host
+        self.edit_zoom_host_layout = self.detail_page.edit_zoom_host_layout
+        self.edit_right_controls_layout = self.detail_page.edit_right_controls_layout
 
         right_panel = QWidget()
         right_panel.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -182,7 +182,6 @@ class Ui_MainWindow(object):
         self.view_stack.addWidget(self.gallery_page)
         self.view_stack.addWidget(self.map_page)
         self.view_stack.addWidget(self.detail_page)
-        self.view_stack.addWidget(self.edit_page)
         self.view_stack.setCurrentWidget(self.gallery_page)
         right_layout.addWidget(self.view_stack)
 
