@@ -16,6 +16,7 @@ uniform float uVibrance;
 uniform float uColorCast;
 uniform vec3  uGain;
 uniform vec4  uBWParams;
+uniform bool  uBWEnabled;
 uniform float uTime;
 uniform vec2  uViewSize;
 uniform vec2  uTexSize;
@@ -171,6 +172,9 @@ void main() {
                         uHighlights, uShadows, contrast_factor, uBlackPoint);
 
     c = apply_color_transform(c, uSaturation, uVibrance, uColorCast, uGain);
-    c = apply_bw(c, uv);
+
+    if (uBWEnabled) {
+        c = apply_bw(c, uv);
+    }
     FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
 }

@@ -93,6 +93,12 @@ def resolve_adjustment_mapping(
     # Preserve the dedicated Black & White parameters so the GPU and CPU pipelines share the
     # updated shader-compatible values.
     bw_enabled = bool(session_values.get("BW_Enabled", False))
+    # The shader receives a dedicated toggle so it can entirely skip the costly
+    # monochrome branch when the effect is disabled.  Expressing the boolean as
+    # a float keeps the adjustment dictionary homogeneous for downstream code
+    # that expects numeric uniform values.
+    resolved["BWEnabled"] = 1.0 if bw_enabled else 0.0
+
     if bw_enabled:
         resolved["BWIntensity"] = float(session_values.get("BW_Intensity", 0.5))
         resolved["BWNeutrals"] = float(session_values.get("BW_Neutrals", 0.0))
