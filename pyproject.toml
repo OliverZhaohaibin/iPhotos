@@ -22,6 +22,8 @@ dependencies = [
   "opencv-python-headless>=4.10",
   "reverse-geocoder>=1.5.1",
   "pyexiftool>=0.5.5",
+  "tqdm>=4",
+  "numpy>=2.3.4",
 ]
 
 [project.optional-dependencies]
