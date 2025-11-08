@@ -17,6 +17,25 @@ BW_KEYS = (
     "BW_Grain",
 )
 
+BW_DEFAULTS = {
+    "BW_Master": 0.5,
+    "BW_Intensity": 0.5,
+    "BW_Neutrals": 0.0,
+    "BW_Tone": 0.0,
+    "BW_Grain": 0.0,
+}
+
+_BW_RANGE_KEYS = {"BW_Master", "BW_Intensity", "BW_Neutrals", "BW_Tone"}
+
+
+def _normalise_bw_value(key: str, value: float) -> float:
+    """Return *value* mapped to the modern ``[0, 1]`` range for B&W controls."""
+
+    numeric = float(value)
+    if key in _BW_RANGE_KEYS and (numeric < 0.0 or numeric > 1.0):
+        numeric = (numeric + 1.0) * 0.5
+    return max(0.0, min(1.0, numeric))
+
 _SIDE_CAR_ROOT = "iPhotoAdjustments"
 _LIGHT_NODE = "Light"
 _VERSION_ATTR = "version"
@@ -100,7 +119,7 @@ def load_adjustments(asset_path: Path) -> Dict[str, float | bool]:
         text = bw_enabled.text.strip().lower()
         result["BW_Enabled"] = text in {"1", "true", "yes", "on"}
     else:
-        result["BW_Enabled"] = True
+        result["BW_Enabled"] = False
 
     for key in BW_KEYS:
         element = light_node.find(key)
@@ -150,11 +169,11 @@ def save_adjustments(asset_path: Path, adjustments: Mapping[str, float | bool]) 
         child.text = f"{value:.2f}"
 
     bw_enabled = ET.SubElement(light, "BW_Enabled")
-    bw_enabled_value = bool(adjustments.get("BW_Enabled", True))
+    bw_enabled_value = bool(adjustments.get("BW_Enabled", False))
     bw_enabled.text = "true" if bw_enabled_value else "false"
 
     for key in BW_KEYS:
-        value = float(adjustments.get(key, 0.0))
+        value = _normalise_bw_value(key, float(adjustments.get(key, BW_DEFAULTS.get(key, 0.0))))
         child = ET.SubElement(light, key)
         child.text = f"{value:.2f}"
 
@@ -238,14 +257,14 @@ def resolve_render_adjustments(
     resolved["Color_Gain_G"] = gain_g
     resolved["Color_Gain_B"] = gain_b
 
-    bw_enabled = bool(adjustments.get("BW_Enabled", True))
+    bw_enabled = bool(adjustments.get("BW_Enabled", False))
     if bw_enabled:
-        resolved["BWIntensity"] = float(adjustments.get("BW_Intensity", 0.0))
-        resolved["BWNeutrals"] = float(adjustments.get("BW_Neutrals", 0.0))
-        resolved["BWTone"] = float(adjustments.get("BW_Tone", 0.0))
-        resolved["BWGrain"] = float(adjustments.get("BW_Grain", 0.0))
+        resolved["BWIntensity"] = _normalise_bw_value("BW_Intensity", float(adjustments.get("BW_Intensity", 0.5)))
+        resolved["BWNeutrals"] = _normalise_bw_value("BW_Neutrals", float(adjustments.get("BW_Neutrals", 0.0)))
+        resolved["BWTone"] = _normalise_bw_value("BW_Tone", float(adjustments.get("BW_Tone", 0.0)))
+        resolved["BWGrain"] = _normalise_bw_value("BW_Grain", float(adjustments.get("BW_Grain", 0.0)))
     else:
-        resolved["BWIntensity"] = 0.0
+        resolved["BWIntensity"] = 0.5
         resolved["BWNeutrals"] = 0.0
         resolved["BWTone"] = 0.0
         resolved["BWGrain"] = 0.0

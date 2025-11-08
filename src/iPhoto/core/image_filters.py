@@ -14,6 +14,19 @@ from .color_resolver import ColorStats, compute_color_statistics, _clamp
 _PILLOW_SUPPORT = load_pillow()
 
 
+def _normalise_bw_param(value: float) -> float:
+    """Return *value* mapped from legacy ``[-1, 1]`` to ``[0, 1]`` when needed."""
+
+    numeric = float(value)
+    if numeric < 0.0 or numeric > 1.0:
+        numeric = (numeric + 1.0) * 0.5
+    if numeric < 0.0:
+        return 0.0
+    if numeric > 1.0:
+        return 1.0
+    return numeric
+
+
 # ``LIGHT_KEYS`` is re-exported from :mod:`iPhoto.core.light_resolver` so the constant lives in a
 # single module.  The editing session, preview resolver, and sidecar IO layer all depend on the
 # shared ordering when iterating over adjustment values, therefore duplicating the tuple here would
@@ -82,12 +95,12 @@ def apply_adjustments(
         or "Color_Gain_B" in adjustments
     )
 
-    bw_enabled = bool(adjustments.get("BW_Enabled", adjustments.get("BWEnabled", True)))
-    bw_intensity = float(adjustments.get("BW_Intensity", adjustments.get("BWIntensity", 0.0)))
-    bw_neutrals = float(adjustments.get("BW_Neutrals", adjustments.get("BWNeutrals", 0.0)))
-    bw_tone = float(adjustments.get("BW_Tone", adjustments.get("BWTone", 0.0)))
-    bw_grain = float(adjustments.get("BW_Grain", adjustments.get("BWGrain", 0.0)))
-    apply_bw = bw_enabled and (abs(bw_intensity) > 1e-6 or abs(bw_grain) > 1e-6)
+    bw_enabled = bool(adjustments.get("BW_Enabled", adjustments.get("BWEnabled", False)))
+    bw_intensity = _normalise_bw_param(adjustments.get("BW_Intensity", adjustments.get("BWIntensity", 0.5)))
+    bw_neutrals = _normalise_bw_param(adjustments.get("BW_Neutrals", adjustments.get("BWNeutrals", 0.0)))
+    bw_tone = _normalise_bw_param(adjustments.get("BW_Tone", adjustments.get("BWTone", 0.0)))
+    bw_grain = _normalise_bw_param(adjustments.get("BW_Grain", adjustments.get("BWGrain", 0.0)))
+    apply_bw = bw_enabled
 
     if all(
         abs(value) < 1e-6
@@ -627,9 +640,6 @@ def _apply_bw_only(
 
     if image.isNull():
         return
-    if abs(intensity) <= 1e-6 and abs(grain) <= 1e-6:
-        # Mirror the shader's early exit so neutral parameter values do not waste cycles.
-        return
 
     width = image.width()
     height = image.height()
@@ -655,7 +665,7 @@ def _apply_bw_only(
             b = view[pixel_offset] / 255.0
             g = view[pixel_offset + 1] / 255.0
             r = view[pixel_offset + 2] / 255.0
-            noise = 0.0
+            noise = 0.5
             if abs(grain) > 1e-6:
                 noise = _grain_noise(x, y, width, height)
             r, g, b = _apply_bw_channels(
@@ -690,7 +700,7 @@ def _apply_bw_using_qcolor(
             r = colour.redF()
             g = colour.greenF()
             b = colour.blueF()
-            noise = 0.0
+            noise = 0.5
             if abs(grain) > 1e-6:
                 noise = _grain_noise(x, y, width, height)
             r, g, b = _apply_bw_channels(
@@ -718,51 +728,65 @@ def _apply_bw_channels(
 ) -> tuple[float, float, float]:
     """Return the transformed RGB triple for the Black & White effect."""
 
-    # Clamp user supplied parameters to the shader's expected ranges so the preview mirrors
-    # the GPU output even when sidecar files contain out-of-bounds values.
     intensity = _clamp01(intensity)
-    neutrals_amount = _clamp01(abs(neutrals))
-    tone_amount = _clamp01(abs(tone))
-    grain_amount = _clamp01(grain)
-    noise = max(-1.0, min(1.0, noise))
+    neutrals = _clamp01(neutrals)
+    tone = _clamp01(tone)
+    grain = _clamp01(grain)
+    noise = _clamp01(noise)
 
-    original = (r, g, b)
-    luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    luma = _clamp(0.2126 * r + 0.7152 * g + 0.0722 * b, 0.0, 1.0)
 
-    bw_r = _mix(original[0], luma, intensity)
-    bw_g = _mix(original[1], luma, intensity)
-    bw_b = _mix(original[2], luma, intensity)
+    soft_base = _clamp(pow(luma, 0.82), 0.0, 1.0)
+    soft_curve = _contrast_tone_curve(soft_base, 0.0)
+    g_soft = (soft_curve + soft_base) * 0.5
+    g_neutral = luma
+    g_rich = _contrast_tone_curve(_clamp(pow(luma, 1.0 / 1.22), 0.0, 1.0), 0.35)
 
-    if neutrals >= 0.0 and neutrals_amount > 1e-6:
-        bw_r = _mix(bw_r, original[0], neutrals_amount)
-        bw_g = _mix(bw_g, original[1], neutrals_amount)
-        bw_b = _mix(bw_b, original[2], neutrals_amount)
+    if intensity >= 0.5:
+        blend = (intensity - 0.5) / 0.5
+        gray = _mix(g_neutral, g_rich, blend)
+    else:
+        blend = (0.5 - intensity) / 0.5
+        gray = _mix(g_soft, g_neutral, blend)
 
-    if tone_amount > 1e-6:
-        t = luma * 2.0 - 1.0
-        tm = (t + tone * (1.0 - abs(t))) * 0.5 + 0.5
-        tm = _clamp01(tm)
-        bw_r = _mix(bw_r, tm, tone_amount)
-        bw_g = _mix(bw_g, tm, tone_amount)
-        bw_b = _mix(bw_b, tm, tone_amount)
+    gray = _gamma_neutral(gray, neutrals)
+    gray = _contrast_tone_curve(gray, tone)
 
-    if grain_amount > 1e-6:
-        scale = 1.0 + noise * 0.2
-        grain_r = bw_r * scale
-        grain_g = bw_g * scale
-        grain_b = bw_b * scale
-        bw_r = _mix(bw_r, grain_r, grain_amount)
-        bw_g = _mix(bw_g, grain_g, grain_amount)
-        bw_b = _mix(bw_b, grain_b, grain_amount)
+    if grain > 1e-6:
+        gray += (noise - 0.5) * 0.2 * grain
 
-    return _clamp01(bw_r), _clamp01(bw_g), _clamp01(bw_b)
+    clamped = _clamp01(gray)
+    return clamped, clamped, clamped
+
+
+def _gamma_neutral(value: float, neutrals: float) -> float:
+    """Return the neutral gamma adjustment matching the shader logic."""
+
+    neutrals = _clamp01(neutrals)
+    n = 0.6 * (neutrals - 0.5)
+    gamma = math.pow(2.0, -n * 2.0)
+    return _clamp(math.pow(_clamp(value, 0.0, 1.0), gamma), 0.0, 1.0)
+
+
+def _contrast_tone_curve(value: float, tone: float) -> float:
+    """Return the sigmoid tone adjustment used by ``BW_final.py``."""
+
+    tone = _clamp01(tone)
+    t = tone - 0.5
+    factor = _mix(1.0, 2.2, t * 2.0) if t >= 0.0 else _mix(1.0, 0.6, -t * 2.0)
+    x = _clamp(value, 0.0, 1.0)
+    eps = 1e-6
+    pos = _clamp(x, eps, 1.0 - eps)
+    logit = math.log(pos / max(eps, 1.0 - pos))
+    y = 1.0 / (1.0 + math.exp(-logit * factor))
+    return _clamp(y, 0.0, 1.0)
 
 
 def _grain_noise(x: int, y: int, width: int, height: int) -> float:
-    """Return a deterministic pseudo random noise value in ``[-1.0, 1.0]`` for grain."""
+    """Return a deterministic pseudo random noise value in ``[0.0, 1.0]`` for grain."""
 
     if width <= 0 or height <= 0:
-        return 0.0
+        return 0.5
     u = float(x) / float(max(width - 1, 1))
     v = float(y) / float(max(height - 1, 1))
     # Mirror the shader's ``rand`` function using a sine-based hash so the grain pattern stays
@@ -770,7 +794,7 @@ def _grain_noise(x: int, y: int, width: int, height: int) -> float:
     seed = u * 12.9898 + v * 78.233
     noise = math.sin(seed) * 43758.5453
     fraction = noise - math.floor(noise)
-    return fraction * 2.0 - 1.0
+    return _clamp01(fraction)
 
 
 def _mix(a: float, b: float, t: float) -> float:

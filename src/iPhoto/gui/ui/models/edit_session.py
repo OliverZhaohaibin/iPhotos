@@ -10,6 +10,16 @@ from PySide6.QtCore import QObject, Signal
 from ....core.light_resolver import LIGHT_KEYS
 from ....core.color_resolver import COLOR_KEYS, COLOR_RANGES, ColorStats
 
+_BW_RANGE_KEYS = {"BW_Master", "BW_Intensity", "BW_Neutrals", "BW_Tone"}
+
+
+def _coerce_bw_range(key: str, value: float) -> float:
+    """Map legacy ``[-1, 1]`` values into the new ``[0, 1]`` range."""
+
+    if key in _BW_RANGE_KEYS and (value < 0.0 or value > 1.0):
+        return (float(value) + 1.0) * 0.5
+    return float(value)
+
 
 class EditSession(QObject):
     """Hold the adjustment values for the active editing session."""
@@ -48,22 +58,21 @@ class EditSession(QObject):
             self._values[key] = 0.0
             self._ranges[key] = (-1.0, 1.0)
 
-        # ``BW_*`` parameters drive the GPU-only black & white pass.  Intensity now mirrors the
-        # shader/master range and accepts signed values in ``[-1.0, 1.0]`` while grain remains
-        # clamped to ``[0.0, 1.0]``.  ``BW_Master`` stores the aggregate slider position so the UI
-        # can reproduce the derived parameters after a round-trip through the sidecar.  ``BW_Enabled``
-        # mirrors the Light/Color toggles so the UI can disable the effect without discarding the
-        # user tuned slider values.
-        self._values["BW_Master"] = 0.0
-        self._ranges["BW_Master"] = (-1.0, 1.0)
-        self._values["BW_Enabled"] = True
+        # ``BW_*`` parameters drive the GPU-only black & white pass.  The updated effect mirrors the
+        # Photos-compatible shader that operates in the ``[0.0, 1.0]`` domain, so the persisted state
+        # and all UI controls adopt the same bounds.  ``BW_Master`` stores the aggregate slider
+        # position, while ``BW_Enabled`` mirrors the Light/Color toggles so the user can disable the
+        # conversion without losing their tuned values.
+        self._values["BW_Master"] = 0.5
+        self._ranges["BW_Master"] = (0.0, 1.0)
+        self._values["BW_Enabled"] = False
         self._ranges["BW_Enabled"] = (0.0, 1.0)
-        self._values["BW_Intensity"] = 0.0
-        self._ranges["BW_Intensity"] = (-1.0, 1.0)
+        self._values["BW_Intensity"] = 0.5
+        self._ranges["BW_Intensity"] = (0.0, 1.0)
         self._values["BW_Neutrals"] = 0.0
-        self._ranges["BW_Neutrals"] = (-1.0, 1.0)
+        self._ranges["BW_Neutrals"] = (0.0, 1.0)
         self._values["BW_Tone"] = 0.0
-        self._ranges["BW_Tone"] = (-1.0, 1.0)
+        self._ranges["BW_Tone"] = (0.0, 1.0)
         self._values["BW_Grain"] = 0.0
         self._ranges["BW_Grain"] = (0.0, 1.0)
 
@@ -93,7 +102,8 @@ class EditSession(QObject):
                 return
         else:
             minimum, maximum = self._ranges.get(key, (-1.0, 1.0))
-            normalised = max(minimum, min(maximum, float(value)))
+            numeric = _coerce_bw_range(key, float(value))
+            normalised = max(minimum, min(maximum, numeric))
             if abs(normalised - float(current)) < 1e-4:
                 return
         self._values[key] = normalised
@@ -114,7 +124,8 @@ class EditSession(QObject):
                     continue
             else:
                 minimum, maximum = self._ranges.get(key, (-1.0, 1.0))
-                normalised = max(minimum, min(maximum, float(value)))
+                numeric = _coerce_bw_range(key, float(value))
+                normalised = max(minimum, min(maximum, numeric))
                 if abs(normalised - float(current)) < 1e-4:
                     continue
             self._values[key] = normalised
@@ -138,9 +149,9 @@ class EditSession(QObject):
         defaults.update({key: 0.0 for key in LIGHT_KEYS})
         defaults.update({key: 0.0 for key in COLOR_KEYS})
         defaults.update({
-            "BW_Master": 0.0,
-            "BW_Enabled": True,
-            "BW_Intensity": 0.0,
+            "BW_Master": 0.5,
+            "BW_Enabled": False,
+            "BW_Intensity": 0.5,
             "BW_Neutrals": 0.0,
             "BW_Tone": 0.0,
             "BW_Grain": 0.0,

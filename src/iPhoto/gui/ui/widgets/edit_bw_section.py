@@ -7,8 +7,9 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Dict, Optional
 
-from PySide6.QtCore import QThreadPool, Signal, Slot
-from PySide6.QtWidgets import QFrame, QVBoxLayout, QWidget
+from PySide6.QtCore import QThreadPool, Qt, Signal, Slot
+from PySide6.QtGui import QMouseEvent
+from PySide6.QtWidgets import QApplication, QFrame, QGraphicsOpacityEffect, QVBoxLayout, QWidget
 
 from ....core.bw_resolver import BWParams, apply_bw_preview, params_from_master
 from ..models.edit_session import EditSession
@@ -26,6 +27,7 @@ class _SliderSpec:
     key: str
     minimum: float
     maximum: float
+    initial: float
 
 
 class EditBWSection(QWidget):
@@ -44,6 +46,8 @@ class EditBWSection(QWidget):
         super().__init__(parent)
         self._session: Optional[EditSession] = None
         self._sliders: Dict[str, BWSlider] = {}
+        self._rows: Dict[str, _SliderRow] = {}
+        self._slider_specs: Dict[str, _SliderSpec] = {}
         self._thread_pool = QThreadPool.globalInstance()
         self._active_thumbnail_workers: list[ThumbnailGeneratorWorker] = []
         self._updating_ui = False
@@ -58,7 +62,7 @@ class EditBWSection(QWidget):
             self,
             minimum=0.0,
             maximum=1.0,
-            initial=0.0,
+            initial=0.5,
         )
         self.master_slider.set_preview_generator(self._generate_master_preview)
         self.master_slider.valueChanged.connect(self._handle_master_slider_changed)
@@ -75,17 +79,21 @@ class EditBWSection(QWidget):
         options_layout.setSpacing(6)
 
         specs = [
-            _SliderSpec("Intensity", "BW_Intensity", -1.0, 1.0),
-            _SliderSpec("Neutrals", "BW_Neutrals", -1.0, 1.0),
-            _SliderSpec("Tone", "BW_Tone", -1.0, 1.0),
-            _SliderSpec("Grain", "BW_Grain", 0.0, 1.0),
+            _SliderSpec("Intensity", "BW_Intensity", 0.0, 1.0, 0.5),
+            _SliderSpec("Neutrals", "BW_Neutrals", 0.0, 1.0, 0.0),
+            _SliderSpec("Tone", "BW_Tone", 0.0, 1.0, 0.0),
+            _SliderSpec("Grain", "BW_Grain", 0.0, 1.0, 0.0),
         ]
         for spec in specs:
-            slider = BWSlider(spec.label, self, minimum=spec.minimum, maximum=spec.maximum, initial=0.0)
+            row = _SliderRow(spec, self)
+            slider = row.slider
             slider.valueChanged.connect(partial(self._handle_slider_changed, spec.key))
             slider.valueCommitted.connect(partial(self._handle_slider_committed, spec.key))
-            options_layout.addWidget(slider)
+            row.clickedWhenDisabled.connect(self._handle_disabled_slider_click)
+            options_layout.addWidget(row)
             self._sliders[spec.key] = slider
+            self._rows[spec.key] = row
+            self._slider_specs[spec.key] = spec
 
         self.options_section = CollapsibleSubSection(
             "Options",
@@ -123,7 +131,7 @@ class EditBWSection(QWidget):
         else:
             self._reset_slider_values()
             self._apply_enabled_state(False)
-            self.master_slider.update_from_value(0.0)
+            self.master_slider.update_from_value(0.5)
             self.options_section.set_expanded(False)
 
     def refresh_from_session(self) -> None:
@@ -132,7 +140,7 @@ class EditBWSection(QWidget):
         if self._session is None:
             self._reset_slider_values()
             self._apply_enabled_state(False)
-            self.master_slider.update_from_value(0.0)
+            self.master_slider.update_from_value(0.5)
             self.options_section.set_expanded(False)
             return
 
@@ -144,9 +152,7 @@ class EditBWSection(QWidget):
         try:
             self._apply_enabled_state(enabled)
             self.master_slider.setEnabled(enabled)
-            self.master_slider.update_from_value(master_value if enabled else 0.0)
-            for key, slider in self._sliders.items():
-                slider.setEnabled(enabled)
+            self.master_slider.update_from_value(master_value if enabled else 0.5)
             self._apply_params_to_sliders(params)
         finally:
             self._updating_ui = False
@@ -161,15 +167,17 @@ class EditBWSection(QWidget):
     def _reset_slider_values(self) -> None:
         self._updating_ui = True
         try:
-            for slider in self._sliders.values():
-                slider.setValue(0.0, emit=False)
+            for key, slider in self._sliders.items():
+                spec = self._slider_specs.get(key)
+                initial = spec.initial if spec is not None else 0.0
+                slider.setValue(initial, emit=False)
         finally:
             self._updating_ui = False
 
     def _apply_enabled_state(self, enabled: bool) -> None:
         self.master_slider.setEnabled(enabled)
-        for slider in self._sliders.values():
-            slider.setEnabled(enabled)
+        for row in self._rows.values():
+            row.setEnabled(enabled)
         if not enabled:
             self.options_section.set_expanded(False)
 
@@ -254,15 +262,15 @@ class EditBWSection(QWidget):
         self._updating_ui = True
         try:
             self.master_slider.blockSignals(True)
-            self.master_slider.setValue(0.0)
+            self.master_slider.setValue(0.5)
             self.master_slider.blockSignals(False)
         finally:
             self._updating_ui = False
-        params = self._gather_slider_params(master_override=0.0)
+        params = self._gather_slider_params(master_override=0.5)
         self.paramsPreviewed.emit(params)
 
     def _handle_slider_committed(self, key: str, value: float) -> None:
-        params = self._gather_slider_params(master_override=0.0)
+        params = self._gather_slider_params(master_override=0.5)
         self.paramsCommitted.emit(params)
         self.adjustmentChanged.emit(key, value)
 
@@ -307,5 +315,59 @@ class EditBWSection(QWidget):
     def _generate_master_preview(self, image, value: float):
         params = params_from_master(value, grain=self._sliders["BW_Grain"].value())
         return apply_bw_preview(image, params)
+
+class _SliderRow(QFrame):
+    """Mirror the light/color slider row behaviour for the B&W panel."""
+
+    clickedWhenDisabled = Signal()
+    """Emitted when the user clicks the slider while it is disabled."""
+
+    def __init__(self, spec: _SliderSpec, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.slider = BWSlider(
+            spec.label,
+            self,
+            minimum=spec.minimum,
+            maximum=spec.maximum,
+            initial=spec.initial,
+        )
+        layout.addWidget(self.slider)
+
+        self._opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self._opacity_effect)
+
+    def setEnabled(self, enabled: bool) -> None:  # type: ignore[override]
+        """Keep the wrapper enabled so we can detect activation clicks."""
+
+        super().setEnabled(True)
+        self.slider.setEnabled(enabled)
+        self._opacity_effect.setOpacity(1.0 if enabled else 0.5)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
+        """Forward left clicks to the slider even while disabled."""
+
+        if event.button() == Qt.MouseButton.LeftButton:
+            local_point = event.position().toPoint()
+            if not self.slider.isEnabled() and self.slider.geometry().contains(local_point):
+                self.clickedWhenDisabled.emit()
+                forwarded = QMouseEvent(
+                    event.type(),
+                    self.slider.mapFrom(self, local_point),
+                    event.globalPosition(),
+                    event.button(),
+                    event.buttons(),
+                    event.modifiers(),
+                )
+                QApplication.sendEvent(self.slider, forwarded)
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
 
 __all__ = ["EditBWSection"]
