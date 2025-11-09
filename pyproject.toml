@@ -13,7 +13,7 @@ dependencies = [
   "typer>=0.12",
   "rich>=13",
   "jsonschema>=4",
-  "PySide6>=6.6",
+  "PySide6>=6.9.3",
   "Pillow>=10",
   "pillow-heif>=0.16",
   "imagehash>=4",
@@ -24,6 +24,7 @@ dependencies = [
   "pyexiftool>=0.5.5",
   "numpy>=2.3.4",
   "numba>=0.60",
+  "PyOpenGL",
 ]
 
 [project.optional-dependencies]
