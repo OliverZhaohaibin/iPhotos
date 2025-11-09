@@ -13,7 +13,7 @@ dependencies = [
   "typer>=0.12",
   "rich>=13",
   "jsonschema>=4",
-  "PySide6>=6.6",
+  "PySide6>=6.9.3",
   "Pillow>=10",
   "pillow-heif>=0.16",
   "imagehash>=4",
@@ -22,6 +22,7 @@ dependencies = [
   "opencv-python-headless>=4.10",
   "reverse-geocoder>=1.5.1",
   "pyexiftool>=0.5.5",
+  "PyOpenGL",
 ]
 
 [project.optional-dependencies]
