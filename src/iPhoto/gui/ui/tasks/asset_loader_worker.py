@@ -184,6 +184,13 @@ def _build_entry(
         "content_id": row.get("content_id"),
         "frame_rate": row.get("frame_rate"),
         "codec": row.get("codec"),
+        # Include the original location for trashed assets so restore flows can
+        # display accurate targeting information and round-trip the metadata.
+        "original_rel_path": row.get("original_rel_path"),
+        # Record the originating album identifier and the asset's relative path
+        # inside that album so restores remain resilient to folder renames.
+        "original_album_id": row.get("original_album_id"),
+        "original_album_subpath": row.get("original_album_subpath"),
     }
     return entry
 

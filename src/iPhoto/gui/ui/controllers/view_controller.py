@@ -15,6 +15,9 @@ class ViewController(QObject):
     detailViewShown = Signal()
     """Signal emitted after the detail view becomes the active page."""
 
+    editViewShown = Signal()
+    """Signal emitted after the edit view becomes the active page."""
+
     def __init__(
         self,
         view_stack: QStackedWidget,
@@ -31,6 +34,7 @@ class ViewController(QObject):
         self._detail_page = detail_page
         self._map_page = map_page
         self._active_gallery_page = gallery_page
+        self._edit_mode_active = False
 
     def show_gallery_view(self) -> None:
         """Switch to the gallery view and notify listeners."""
@@ -39,6 +43,7 @@ class ViewController(QObject):
         if target is not None:
             if self._view_stack.currentWidget() is not target:
                 self._view_stack.setCurrentWidget(target)
+        self._edit_mode_active = False
         self.galleryViewShown.emit()
 
     def show_detail_view(self) -> None:
@@ -47,7 +52,17 @@ class ViewController(QObject):
         if self._detail_page is not None:
             if self._view_stack.currentWidget() is not self._detail_page:
                 self._view_stack.setCurrentWidget(self._detail_page)
+        self._edit_mode_active = False
         self.detailViewShown.emit()
+
+    def show_edit_view(self) -> None:
+        """Switch to the edit view and notify listeners."""
+
+        if self._detail_page is not None:
+            if self._view_stack.currentWidget() is not self._detail_page:
+                self._view_stack.setCurrentWidget(self._detail_page)
+        self._edit_mode_active = True
+        self.editViewShown.emit()
 
     def show_map_view(self) -> None:
         """Switch to the map page and treat it as the active gallery view."""
@@ -57,6 +72,7 @@ class ViewController(QObject):
         self._active_gallery_page = self._map_page
         if self._view_stack.currentWidget() is not self._map_page:
             self._view_stack.setCurrentWidget(self._map_page)
+        self._edit_mode_active = False
         self.galleryViewShown.emit()
 
     def restore_default_gallery(self) -> None:
@@ -72,3 +88,8 @@ class ViewController(QObject):
         # The guard keeps the helper safe to call in those scenarios while still
         # advertising whether the detail UI is presently active when it exists.
         return self._detail_page is not None and self._view_stack.currentWidget() is self._detail_page
+
+    def is_edit_view_active(self) -> bool:
+        """Return ``True`` when the edit page is the current widget."""
+
+        return self._edit_mode_active

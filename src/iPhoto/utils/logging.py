@@ -21,3 +21,5 @@ def get_logger() -> logging.Logger:
             _LOGGER.addHandler(handler)
         _LOGGER.setLevel(logging.INFO)
     return _LOGGER
+
+logger = get_logger()

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QMessageBox, QWidget
 
 # Allow both ``iPhoto.gui`` and legacy ``iPhotos.src.iPhoto.gui`` import paths.
 try:  # pragma: no cover - depends on runtime packaging
@@ -56,3 +56,20 @@ class DialogController:
             title="Bind Basic Library",
         )
         self.bind_library_dialog()
+
+    def prompt_restore_to_root(self, filename: str) -> bool:
+        """Ask whether *filename* should be restored to the library root."""
+
+        message = (
+            "The original album for '{name}' could not be found or its original "
+            "location could not be determined. Do you want to restore this file "
+            "to the main 'Basic Library' folder instead?"
+        ).format(name=filename)
+        choice = QMessageBox.question(
+            self._parent,
+            "Restore Failed",
+            message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        return choice == QMessageBox.StandardButton.Yes

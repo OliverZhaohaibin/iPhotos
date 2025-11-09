@@ -18,7 +18,7 @@ from .share_controller import ShareController
 from .shortcut_controller import ShortcutController
 
 if TYPE_CHECKING:  # pragma: no cover - import used for typing only
-    from ...appctx import AppContext
+    from ....appctx import AppContext
     from ...facade import AppFacade
     from ..main_window import MainWindow
     from ..window_manager import FramelessWindowManager

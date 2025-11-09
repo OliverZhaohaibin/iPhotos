@@ -8,10 +8,13 @@ from .drag_drop_controller import DragDropController
 from .header_controller import HeaderController
 from .interaction_manager import InteractionManager
 from .main_controller import MainController
+from .edit_theme_manager import EditThemeManager
 from .navigation_controller import NavigationController
 from .playback_controller import PlaybackController
 from .playback_state_manager import PlaybackStateManager
 from .player_view_controller import PlayerViewController
+from .edit_controller import EditController
+from .edit_view_transition import EditViewTransitionManager
 from .preference_controller import PreferenceController
 from .preview_controller import PreviewController
 from .selection_controller import SelectionController
@@ -30,10 +33,13 @@ __all__ = [
     "HeaderController",
     "InteractionManager",
     "MainController",
+    "EditThemeManager",
     "NavigationController",
     "PlaybackController",
     "PlaybackStateManager",
     "PlayerViewController",
+    "EditController",
+    "EditViewTransitionManager",
     "PreferenceController",
     "PreviewController",
     "SelectionController",

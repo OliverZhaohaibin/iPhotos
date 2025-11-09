@@ -10,15 +10,17 @@ from ..widgets import InfoPanel
 from .detail_ui_controller import DetailUIController
 from .header_controller import HeaderController
 from .map_view_controller import LocationMapController
+from .edit_controller import EditController
 from .player_view_controller import PlayerViewController
 from .view_controller import ViewController
 
 if TYPE_CHECKING:  # pragma: no cover - import used for typing only
-    from ...appctx import AppContext
+    from ....appctx import AppContext
     from ..main_window import MainWindow
     from ..ui_main_window import Ui_MainWindow
     from ...facade import AppFacade
     from .data_manager import DataManager
+    from .navigation_controller import NavigationController
 
 
 class ViewControllerManager(QObject):
@@ -29,6 +31,7 @@ class ViewControllerManager(QObject):
         window: "MainWindow",
         context: AppContext,
         data_manager: "DataManager",
+        navigation: "NavigationController" | None = None,
     ) -> None:
         super().__init__(window)
         ui: Ui_MainWindow = window.ui
@@ -58,6 +61,7 @@ class ViewControllerManager(QObject):
             self._view_controller,
             self._header,
             ui.favorite_button,
+            ui.edit_button,
             ui.info_button,
             self._info_panel,
             ui.zoom_widget,
@@ -66,6 +70,17 @@ class ViewControllerManager(QObject):
             ui.zoom_out_button,
             ui.status_bar,
             window,
+        )
+        self._edit_controller = EditController(
+            ui,
+            self._view_controller,
+            self._player_view,
+            data_manager.playlist(),
+            data_manager.asset_model(),
+            window,
+            navigation=navigation,
+            detail_ui_controller=self._detail_ui,
+            settings=context.settings,
         )
         self._map_controller = LocationMapController(
             context.library,
@@ -91,6 +106,9 @@ class ViewControllerManager(QObject):
 
     def map_controller(self) -> LocationMapController:
         return self._map_controller
+
+    def edit_controller(self) -> EditController:
+        return self._edit_controller
 
     # ------------------------------------------------------------------
     # Convenience wrappers

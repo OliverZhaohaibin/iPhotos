@@ -137,6 +137,17 @@ class MediaController(QObject):
 
         self._player.stop()
 
+    def unload(self) -> None:
+        """Stop playback and clear the current source to release file handles."""
+
+        # ``QMediaPlayer`` keeps the source file open until it is explicitly
+        # replaced.  Clearing the source ensures that the operating system
+        # releases any active file handles before the next asset loads.
+        self._player.stop()
+        self._player.setSource(QUrl())
+        self._release_memory_buffer()
+        self._current_source = None
+
     def toggle(self) -> None:
         """Toggle between play and pause states."""
 

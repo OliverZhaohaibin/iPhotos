@@ -55,6 +55,9 @@ class PlaybackStateManager(QObject):
         self._original_mute_state = False
         self._active_live_motion: Optional[Path] = None
         self._active_live_still: Optional[Path] = None
+        self._detail_ui.player_view.imageLoadingFailed.connect(
+            self._on_image_loading_failed
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -111,7 +114,6 @@ class PlaybackStateManager(QObject):
         self._active_live_still = None
         self._media.stop()
         self._detail_ui.hide_live_badge()
-        self._detail_ui.set_live_replay_enabled(False)
         self._detail_ui.show_detail_view()
         self._detail_ui.show_zoom_controls()
         self._detail_ui.reset_player_bar()
@@ -199,14 +201,27 @@ class PlaybackStateManager(QObject):
         if not self.is_live_context():
             self._original_mute_state = bool(muted)
 
+    # ------------------------------------------------------------------
+    # Worker callbacks
+    # ------------------------------------------------------------------
+    def _on_image_loading_failed(self, source: Path, message: str) -> None:
+        """Handle asynchronous image loading failures gracefully."""
+
+        current = self._playlist.current_source()
+        if current is None or current != source:
+            return
+
+        self._detail_ui.show_status_message(f"Unable to display {source.name}")
+        self._dialog.show_error(f"Could not load {source}: {message}")
+        self._detail_ui.show_placeholder()
+        self._set_state(PlayerState.IDLE)
+
     def replay_live_photo(self) -> None:
         """Replay the motion clip for the currently displayed Live Photo."""
 
         if self._state not in {PlayerState.SHOWING_LIVE_STILL, PlayerState.PLAYING_LIVE_MOTION}:
             return
         if not self._detail_ui.player_view.is_live_badge_visible():
-            return
-        if not self._detail_ui.player_view.is_showing_image():
             return
         motion_source = self._active_live_motion or self._playlist.current_source()
         if motion_source is None:

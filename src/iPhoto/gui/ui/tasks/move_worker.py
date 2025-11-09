@@ -235,6 +235,8 @@ class MoveWorker(QRunnable):
                     source_lookup[target_key] = original
 
             annotated_rows: List[Dict[str, object]] = []
+            library_root_key = self._normalised_string(self._library_root)
+            album_uuid_cache: Dict[str, Optional[str]] = {}
             for row in new_rows:
                 rel_value = row.get("rel") if isinstance(row, dict) else None
                 if not isinstance(rel_value, str):
@@ -247,15 +249,50 @@ class MoveWorker(QRunnable):
                     annotated_rows.append(row)
                     continue
                 original_relative = self._library_relative(original_path)
-                if original_relative is None:
-                    annotated_rows.append(row)
-                    continue
-                # Persist the original library-relative location so restore operations can
-                # return the asset to its previous album. The value is relative to the
-                # Basic Library root which keeps the reference stable even when album
-                # directories are renamed after the deletion.
+                original_album_id: Optional[str] = None
+                original_album_subpath: Optional[str] = None
+                if library_root_key is not None:
+                    album_root = self._discover_album_root(
+                        original_path.parent, library_root_key
+                    )
+                else:
+                    album_root = None
+                if album_root is not None:
+                    album_key = self._normalised_string(album_root)
+                    if album_key is not None:
+                        cached_uuid = album_uuid_cache.get(album_key, ...)
+                        if cached_uuid is ...:
+                            try:
+                                manifest = backend.Album.open(album_root)
+                            except IPhotoError:
+                                album_uuid_cache[album_key] = None
+                            else:
+                                manifest_id = manifest.manifest.get("id")
+                                if isinstance(manifest_id, str) and manifest_id:
+                                    album_uuid_cache[album_key] = manifest_id
+                                else:
+                                    album_uuid_cache[album_key] = None
+                            cached_uuid = album_uuid_cache.get(album_key)
+                        if isinstance(cached_uuid, str) and cached_uuid:
+                            original_album_id = cached_uuid
+                    try:
+                        relative_to_album = original_path.relative_to(album_root)
+                    except ValueError:
+                        try:
+                            relative_to_album = original_path.resolve().relative_to(
+                                album_root
+                            )
+                        except (OSError, ValueError):
+                            relative_to_album = None
+                    if relative_to_album is not None:
+                        original_album_subpath = relative_to_album.as_posix()
+                # Persist the original metadata so restore operations can recover the
+                # asset's previous context even when albums are renamed or reorganised.
                 enriched = dict(row)
-                enriched["original_rel_path"] = original_relative
+                if original_relative is not None:
+                    enriched["original_rel_path"] = original_relative
+                enriched["original_album_id"] = original_album_id
+                enriched["original_album_subpath"] = original_album_subpath
                 annotated_rows.append(enriched)
             new_rows = annotated_rows
         store.append_rows(new_rows)

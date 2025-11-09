@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtGui import QColor, QPalette, QFont
 from PySide6.QtWidgets import QWidget
 
 # --- Sidebar colour palette -------------------------------------------------
@@ -52,6 +52,14 @@ SIDEBAR_TREE_STYLESHEET = (
 SIDEBAR_LAYOUT_MARGIN = (12, 12, 12, 12)
 SIDEBAR_LAYOUT_SPACING = 8
 
+# ---Edit Sidebar metrics --------------------------------------------------------
+Edit_SIDEBAR_FONT = QFont()
+Edit_SIDEBAR_FONT.setPointSize(10)
+Edit_SIDEBAR_FONT.setWeight(QFont.Weight.Bold)
+
+Edit_SIDEBAR_SUB_FONT = QFont()
+Edit_SIDEBAR_SUB_FONT.setPointSize(8)
+Edit_SIDEBAR_SUB_FONT.setWeight(QFont.Weight.Medium)
 
 def viewer_surface_color(widget: QWidget) -> str:
     """Return the name of the palette-derived viewer surface colour.

@@ -1,6 +1,6 @@
-<svg width="53.1953125" height="59.8125" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="equal colored ring">
+<svg width="59.8125" height="59.8125" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="equal colored ring">
   <defs>
-    <circle id="ring" cx="30" cy="30" r="24" fill="none" stroke-width="6" stroke-linecap="butt"/>
+    <circle id="ring" cx="30" cy="30" r="24" fill="none" stroke-width="10" stroke-linecap="butt"/>
   </defs>
 
   <g transform="rotate(-90 30 30)">

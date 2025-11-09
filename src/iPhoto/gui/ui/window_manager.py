@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Iterable, Iterator, TYPE_CHECKING, cast
 
-from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QTimer
+from PySide6.QtCore import Property, QEvent, QObject, QPoint, Qt, QTimer
 from PySide6.QtGui import (
     QColor,
     QMouseEvent,
@@ -31,6 +31,7 @@ if TYPE_CHECKING:  # pragma: no cover - used only for type checking
     from PySide6.QtGui import QResizeEvent
 
     from .controllers.main_controller import MainController
+    from .controllers.edit_controller import EditController
 
 
 # ``PLAYBACK_RESUME_DELAY_MS`` mirrors the behaviour found in the original
@@ -65,6 +66,14 @@ class RoundedWindowShell(QWidget):
 
     # ------------------------------------------------------------------
     # Public API used by ``FramelessWindowManager``
+    def _get_override_color(self) -> QColor:
+        """Return the colour currently used when painting the rounded shell."""
+
+        # ``QPropertyAnimation`` requires a getter when driving a ``Property``
+        # on PySide.  Returning the active override keeps the animation in sync
+        # with whatever value :meth:`set_override_color` most recently applied.
+        return self._override_color or self.palette().color(QPalette.ColorRole.Window)
+
     def set_corner_radius(self, radius: int) -> None:
         """Update the corner radius and repaint if it changed."""
 
@@ -86,6 +95,11 @@ class RoundedWindowShell(QWidget):
             return
         self._override_color = color
         self.update()
+
+    # Expose a Qt property so controllers can animate the background colour
+    # without reaching into private attributes.  The setter already triggers a
+    # repaint, so the animation simply drives the property and the shell reacts.
+    overrideColor = Property(QColor, _get_override_color, set_override_color)
 
     # ------------------------------------------------------------------
     # QWidget overrides
@@ -269,6 +283,18 @@ class FramelessWindowManager(QObject):
     def toggle_fullscreen(self) -> None:
         """Toggle the immersive full screen mode."""
 
+        edit_controller = self._edit_controller()
+        if (
+            edit_controller is not None
+            and self._controller is not None
+            and self._controller.is_edit_view_active()
+        ):
+            if edit_controller.is_in_fullscreen():
+                edit_controller.exit_fullscreen_preview()
+            else:
+                edit_controller.enter_fullscreen_preview()
+            return
+
         if self._immersive_active:
             self.exit_fullscreen()
         else:
@@ -276,6 +302,15 @@ class FramelessWindowManager(QObject):
 
     def enter_fullscreen(self) -> None:
         """Expand the window into an immersive, chrome-free full screen mode."""
+
+        edit_controller = self._edit_controller()
+        if (
+            edit_controller is not None
+            and self._controller is not None
+            and self._controller.is_edit_view_active()
+        ):
+            edit_controller.enter_fullscreen_preview()
+            return
 
         if self._immersive_active:
             return
@@ -312,6 +347,11 @@ class FramelessWindowManager(QObject):
 
     def exit_fullscreen(self) -> None:
         """Restore the normal window chrome and previously visible widgets."""
+
+        edit_controller = self._edit_controller()
+        if edit_controller is not None and edit_controller.is_in_fullscreen():
+            edit_controller.exit_fullscreen_preview()
+            return
 
         if not self._immersive_active:
             return
@@ -353,6 +393,16 @@ class FramelessWindowManager(QObject):
         """Return ``True`` when the window is in immersive full screen mode."""
 
         return self._immersive_active
+
+    def _edit_controller(self) -> "EditController | None":
+        """Return the edit controller if the main controller exposes one."""
+
+        if self._controller is None:
+            return None
+        accessor = getattr(self._controller, "edit_controller", None)
+        if callable(accessor):
+            return accessor()
+        return None
 
     # ------------------------------------------------------------------
     # QObject overrides
@@ -408,6 +458,7 @@ class FramelessWindowManager(QObject):
         self._ui.minimize_button.clicked.connect(self._window.showMinimized)
         self._ui.close_button.clicked.connect(self._window.close)
         self._ui.fullscreen_button.clicked.connect(self.toggle_fullscreen)
+        self._ui.image_viewer.fullscreenToggleRequested.connect(self.toggle_fullscreen)
         self._ui.image_viewer.fullscreenExitRequested.connect(self.exit_fullscreen)
         self._ui.video_area.fullscreenExitRequested.connect(self.exit_fullscreen)
 
@@ -522,11 +573,10 @@ class FramelessWindowManager(QObject):
     def _build_immersive_targets(self) -> tuple[QWidget, ...]:
         candidates: tuple[QWidget | None, ...] = (
             self.menuBar(),
+            self._ui.menu_bar_container,
             self._ui.status_bar,
-            self._ui.main_toolbar,
             self._ui.sidebar,
             self._ui.window_chrome,
-            self._ui.album_header,
             self._ui.detail_chrome_container,
             self._ui.filmstrip_view,
         )

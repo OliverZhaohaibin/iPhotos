@@ -42,10 +42,19 @@ class ImageViewer(QWidget):
         self._pixmap: Optional[QPixmap] = None
         self._label = QLabel(self)
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Use a ``Fixed`` size policy along both axes so the scroll area honours
+        # whichever explicit dimensions we assign to the label.  Allowing Qt to
+        # treat the widget as resizable encourages it to stretch the pixmap to
+        # fill the viewport, which distorts photos whose aspect ratio differs
+        # from the window.
         self._label.setSizePolicy(
-            QSizePolicy.Policy.Ignored,
-            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Fixed,
         )
+        # ``scaledContents`` defaults to ``False`` but we set it explicitly to
+        # document the intent that the pixmap should never be stretched to cover
+        # the widget's rectangle.
+        self._label.setScaledContents(False)
 
         self._scroll_area = QScrollArea(self)
         self._scroll_area.setWidgetResizable(False)
@@ -60,6 +69,7 @@ class ImageViewer(QWidget):
         # value that might drift from the active theme.
         surface_color = viewer_surface_color(self)
         self._default_surface_color = surface_color
+        self._surface_override: str | None = None
         self._scroll_area.setStyleSheet(
             f"background-color: {surface_color}; border: none;"
         )
@@ -68,6 +78,22 @@ class ImageViewer(QWidget):
         )
         self._scroll_area.setWidget(self._label)
         self._scroll_area.viewport().installEventFilter(self)
+
+        # ``_loading_overlay`` presents a translucent message while expensive
+        # background work (such as decoding or tone-mapping a large image) is
+        # in flight.  Painting it as a child widget keeps the implementation
+        # simple and avoids introducing additional layout containers around the
+        # scroll area while still covering the entire viewer surface.
+        self._loading_overlay = QLabel("Loading…", self)
+        self._loading_overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._loading_overlay.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents,
+            True,
+        )
+        self._loading_overlay.setStyleSheet(
+            "background-color: rgba(0, 0, 0, 128); color: white; font-size: 18px;"
+        )
+        self._loading_overlay.hide()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -93,22 +119,31 @@ class ImageViewer(QWidget):
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+    def set_surface_color_override(self, colour: str | None) -> None:
+        """Override the viewer backdrop with *colour* or restore the default."""
+
+        self._surface_override = colour
+        target = colour if colour is not None else self._default_surface_color
+        stylesheet = f"background-color: {target}; border: none;"
+        self._scroll_area.setStyleSheet(stylesheet)
+        self._scroll_area.viewport().setStyleSheet(stylesheet)
+        self.setStyleSheet(f"background-color: {target};")
+
     def set_immersive_background(self, immersive: bool) -> None:
         """Toggle a pure black backdrop used when immersive mode is active."""
 
-        colour = "#000000" if immersive else self._default_surface_color
-        stylesheet = f"background-color: {colour}; border: none;"
-        self._scroll_area.setStyleSheet(stylesheet)
-        self._scroll_area.viewport().setStyleSheet(stylesheet)
-        self.setStyleSheet(f"background-color: {colour};")
+        self.set_surface_color_override("#000000" if immersive else None)
 
     def set_pixmap(self, pixmap: Optional[QPixmap]) -> None:
         """Display *pixmap* and update the scaled rendering."""
 
+        self._loading_overlay.hide()
         self._pixmap = pixmap
         if self._pixmap is None or self._pixmap.isNull():
             self._label.clear()
-            self._label.setMinimumSize(0, 0)
+            # Collapse the label to a zero-sized footprint so the scroll area
+            # does not retain stale minimum dimensions from the previous image.
+            self._label.setFixedSize(0, 0)
             self._base_size = None
             # Notify observers that the zoom factor has reset along with the pixmap
             # content so UI controls (such as sliders) stay in sync with the cleared
@@ -138,15 +173,40 @@ class ImageViewer(QWidget):
         QTimer.singleShot(0, self._render_pixmap)
         self.zoomChanged.emit(self._zoom_factor)
 
+    def pixmap(self) -> Optional[QPixmap]:
+        """Return a defensive copy of the currently rendered pixmap.
+
+        The edit controller reuses the preview image when leaving the edit view
+        so the detail view can display the final adjustments immediately.  A
+        copy keeps that hand-off safe even if the caller clears the viewer while
+        the pixmap is still referenced elsewhere.
+        """
+
+        if self._pixmap is None or self._pixmap.isNull():
+            return None
+        return QPixmap(self._pixmap)
+
     def clear(self) -> None:
         """Remove any currently displayed image."""
 
         self._pixmap = None
         self._label.clear()
-        self._label.setMinimumSize(0, 0)
+        # Reset the label to an empty frame to avoid inherited geometry forcing
+        # subsequent renders to occupy an incorrect aspect ratio.
+        self._label.setFixedSize(0, 0)
         self._base_size = None
         self._zoom_factor = 1.0
         self.zoomChanged.emit(self._zoom_factor)
+        self._loading_overlay.hide()
+
+    def set_loading(self, loading: bool) -> None:
+        """Toggle the inline loading indicator on the viewer surface."""
+
+        if loading:
+            self._loading_overlay.setGeometry(self.rect())
+            self._loading_overlay.show()
+            return
+        self._loading_overlay.hide()
 
     def set_wheel_action(self, action: str) -> None:
         """Control how the viewer reacts to wheel gestures.
@@ -161,6 +221,13 @@ class ImageViewer(QWidget):
         """
 
         self._wheel_action = "zoom" if action == "zoom" else "navigate"
+
+    def resizeEvent(self, event: QEvent) -> None:  # type: ignore[override]
+        """Ensure the loading overlay always covers the full viewer area."""
+
+        super().resizeEvent(event)
+        if self._loading_overlay.isVisible():
+            self._loading_overlay.setGeometry(self.rect())
 
     def set_live_replay_enabled(self, enabled: bool) -> None:
         """Allow emitting replay requests when the still frame is shown."""
@@ -346,7 +413,7 @@ class ImageViewer(QWidget):
     ) -> None:
         if self._pixmap is None or self._pixmap.isNull():
             self._label.clear()
-            self._label.setMinimumSize(0, 0)
+            self._label.setFixedSize(0, 0)
             self._base_size = None
             return
 
@@ -357,7 +424,7 @@ class ImageViewer(QWidget):
         pix_size = self._pixmap.size()
         if pix_size.isEmpty():
             self._label.clear()
-            self._label.setMinimumSize(0, 0)
+            self._label.setFixedSize(0, 0)
             self._base_size = None
             return
 
@@ -381,8 +448,10 @@ class ImageViewer(QWidget):
             Qt.TransformationMode.SmoothTransformation,
         )
         self._label.setPixmap(scaled)
-        self._label.resize(scaled.size())
-        self._label.setMinimumSize(scaled.size())
+        # Match the label's geometry exactly to the scaled pixmap so Qt does
+        # not perform any additional scaling when laying the widget out inside
+        # the scroll area.
+        self._label.setFixedSize(scaled.size())
 
         h_bar = self._scroll_area.horizontalScrollBar()
         v_bar = self._scroll_area.verticalScrollBar()
