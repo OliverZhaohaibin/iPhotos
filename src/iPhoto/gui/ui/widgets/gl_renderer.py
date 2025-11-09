@@ -112,6 +112,7 @@ class GLRenderer:
                 "uTexSize",
                 "uScale",
                 "uPan",
+                "uUVRect",
             ):
                 self._uniform_locations[name] = program.uniformLocation(name)
         finally:
@@ -221,6 +222,7 @@ class GLRenderer:
         pan: QPointF,
         adjustments: Mapping[str, float],
         time_value: float | None = None,
+        uv_rect: tuple[float, float, float, float] | None = None,
     ) -> None:
         """Draw the textured triangle covering the current viewport."""
 
@@ -286,6 +288,8 @@ class GLRenderer:
                 float(max(1, self._texture_height)),
             )
             self._set_uniform2f("uPan", float(pan.x()), float(pan.y()))
+            rect = uv_rect or (0.0, 0.0, 1.0, 1.0)
+            self._set_uniform4f("uUVRect", float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3]))
 
             gf.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
         finally:

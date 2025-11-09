@@ -17,6 +17,20 @@ BW_KEYS = (
     "BW_Grain",
 )
 
+CROP_KEYS = (
+    "Crop_U0",
+    "Crop_V0",
+    "Crop_U1",
+    "Crop_V1",
+)
+
+CROP_DEFAULTS = {
+    "Crop_U0": 0.0,
+    "Crop_V0": 0.0,
+    "Crop_U1": 1.0,
+    "Crop_V1": 1.0,
+}
+
 BW_DEFAULTS = {
     "BW_Master": 0.5,
     "BW_Intensity": 0.5,
@@ -130,6 +144,16 @@ def load_adjustments(asset_path: Path) -> Dict[str, float | bool]:
         except ValueError:
             continue
 
+    for key in CROP_KEYS:
+        element = light_node.find(key)
+        if element is None or element.text is None:
+            continue
+        try:
+            numeric = float(element.text.strip())
+        except ValueError:
+            continue
+        result[key] = max(0.0, min(1.0, numeric))
+
     return result
 
 
@@ -176,6 +200,13 @@ def save_adjustments(asset_path: Path, adjustments: Mapping[str, float | bool]) 
         value = _normalise_bw_value(key, float(adjustments.get(key, BW_DEFAULTS.get(key, 0.0))))
         child = ET.SubElement(light, key)
         child.text = f"{value:.2f}"
+
+    for key in CROP_KEYS:
+        default = CROP_DEFAULTS[key]
+        value = float(adjustments.get(key, default))
+        value = max(0.0, min(1.0, value))
+        child = ET.SubElement(light, key)
+        child.text = f"{value:.6f}"
 
     tmp_path = sidecar_path.with_suffix(sidecar_path.suffix + ".tmp")
     tree = ET.ElementTree(root)
@@ -230,6 +261,8 @@ def resolve_render_adjustments(
         elif key in COLOR_KEYS:
             color_overrides[key] = numeric_value
         elif key == "BW_Master":
+            continue
+        elif key in CROP_KEYS:
             continue
         else:
             resolved[key] = numeric_value

@@ -22,6 +22,7 @@ uniform vec2  uViewSize;
 uniform vec2  uTexSize;
 uniform float uScale;
 uniform vec2  uPan;
+uniform vec4  uUVRect;
 
 float clamp01(float x) { return clamp(x, 0.0, 1.0); }
 
@@ -154,9 +155,15 @@ void main() {
         discard;
     }
 
-    uv.y = 1.0 - uv.y;
+    vec2 rectMin = vec2(min(uUVRect.x, uUVRect.z), min(uUVRect.y, uUVRect.w));
+    vec2 rectMax = vec2(max(uUVRect.x, uUVRect.z), max(uUVRect.y, uUVRect.w));
+    vec2 uvCropped = vec2(
+        mix(rectMin.x, rectMax.x, clamp(uv.x, 0.0, 1.0)),
+        mix(rectMin.y, rectMax.y, clamp(uv.y, 0.0, 1.0))
+    );
+    uvCropped.y = 1.0 - uvCropped.y;
 
-    vec4 texel = texture(uTex, uv);
+    vec4 texel = texture(uTex, uvCropped);
     vec3 c = texel.rgb;
 
     float exposure_term    = uExposure   * 1.5;
