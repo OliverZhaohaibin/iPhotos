@@ -106,6 +106,7 @@ class GLRenderer:
                 "uColorCast",
                 "uGain",
                 "uBWParams",
+                "uBWEnabled",
                 "uTime",
                 "uViewSize",
                 "uTexSize",
@@ -269,6 +270,11 @@ class GLRenderer:
                 adjustment_value("BWTone"),
                 adjustment_value("BWGrain"),
             )
+            bw_enabled_value = adjustments.get("BW_Enabled", adjustments.get("BWEnabled", 0.0))
+            # GLSL represents boolean uniforms as integers, therefore ``glUniform1i``
+            # is used to communicate the toggle state without introducing another
+            # helper that mirrors the existing ``_set_uniform1i`` wrapper.
+            self._set_uniform1i("uBWEnabled", 1 if bool(bw_enabled_value) else 0)
             if time_value is not None:
                 self._set_uniform1f("uTime", time_value)
 

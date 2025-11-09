@@ -16,6 +16,7 @@ uniform float uVibrance;
 uniform float uColorCast;
 uniform vec3  uGain;
 uniform vec4  uBWParams;
+uniform bool  uBWEnabled;
 uniform float uTime;
 uniform vec2  uViewSize;
 uniform vec2  uTexSize;
@@ -23,6 +24,11 @@ uniform float uScale;
 uniform vec2  uPan;
 
 float clamp01(float x) { return clamp(x, 0.0, 1.0); }
+
+float luminance(vec3 color) {
+    // Use Rec. 709 coefficients to match the CPU preview pipeline.
+    return dot(color, vec3(0.2126, 0.7152, 0.0722));
+}
 
 float apply_channel(float value,
                     float exposure,
@@ -74,47 +80,62 @@ vec3 apply_color_transform(vec3 rgb,
     return clamp(vec3(luma) + chroma, 0.0, 1.0);
 }
 
-float rand(vec2 n) {
-    return fract(sin(dot(n, vec2(12.9898, 4.1414))) * 43758.5453);
+float gamma_neutral_signed(float gray, float neutral_adjust) {
+    // Positive values brighten neutrals, negative values darken them.
+    float magnitude = 0.6 * abs(neutral_adjust);
+    float gamma = (neutral_adjust >= 0.0) ? pow(2.0, -magnitude) : pow(2.0, magnitude);
+    return pow(clamp(gray, 0.0, 1.0), gamma);
+}
+
+float contrast_tone_signed(float gray, float tone_adjust) {
+    // Apply an S-curve controlled by the tone adjustment.
+    float x = clamp(gray, 0.0, 1.0);
+    float epsilon = 1e-6;
+    float logit = log(clamp(x, epsilon, 1.0 - epsilon) / clamp(1.0 - x, epsilon, 1.0 - epsilon));
+    float k = (tone_adjust >= 0.0) ? mix(1.0, 2.2, tone_adjust) : mix(1.0, 0.6, -tone_adjust);
+    float y = 1.0 / (1.0 + exp(-logit * k));
+    return clamp(y, 0.0, 1.0);
+}
+
+float grain_noise(vec2 uv, float grain_amount) {
+    // Match the CPU preview noise so thumbnails and the live view stay consistent.
+    if (grain_amount <= 0.0) {
+        return 0.0;
+    }
+    float noise = fract(sin(dot(uv, vec2(12.9898, 78.233))) * 43758.5453);
+    return (noise - 0.5) * 0.2 * grain_amount;
 }
 
 vec3 apply_bw(vec3 color, vec2 uv) {
-    float intensity = clamp(uBWParams.x, 0.0, 1.0);
+    float intensity = clamp(uBWParams.x, -1.0, 1.0);
     float neutrals = clamp(uBWParams.y, -1.0, 1.0);
     float tone = clamp(uBWParams.z, -1.0, 1.0);
     float grain = clamp(uBWParams.w, 0.0, 1.0);
 
-    if (intensity <= 0.0 && grain <= 0.0) {
+    if (abs(intensity) <= 1e-4 && abs(neutrals) <= 1e-4 && abs(tone) <= 1e-4 && grain <= 0.0) {
         return color;
     }
 
-    const vec3 C_LUMA = vec3(0.2126, 0.7152, 0.0722);
-    float luma = dot(color, C_LUMA);
-    vec3 bw = mix(color, vec3(luma), intensity);
+    float g0 = luminance(color);
 
-    if (abs(neutrals) > 1e-4) {
-        vec3 neutral_mix = mix(bw, color, abs(neutrals));
-        if (neutrals > 0.0) {
-            bw = neutral_mix;
-        } else {
-            // Negative neutrals deepen the monochrome mix while preserving highlights.
-            bw = mix(neutral_mix, bw, 0.5);
-        }
+    // Anchors that define the soft, neutral, and rich looks driven by the master slider.
+    float g_soft = pow(g0, 0.85);
+    float g_neutral = g0;
+    float g_rich = contrast_tone_signed(g0, 0.35);
+
+    float gray;
+    if (intensity >= 0.0) {
+        gray = mix(g_neutral, g_rich, intensity);
+    } else {
+        gray = mix(g_soft, g_neutral, intensity + 1.0);
     }
 
-    if (abs(tone) > 1e-4) {
-        float centred = luma * 2.0 - 1.0;
-        float tone_mix = (centred + tone * (1.0 - abs(centred))) * 0.5 + 0.5;
-        bw = mix(bw, vec3(tone_mix), abs(tone));
-    }
+    gray = gamma_neutral_signed(gray, neutrals);
+    gray = contrast_tone_signed(gray, tone);
+    gray += grain_noise(uv * uTexSize, grain);
+    gray = clamp(gray, 0.0, 1.0);
 
-    if (grain > 0.0) {
-        vec2 grain_seed = uv + vec2(uTime, uTime * 0.37);
-        float noise = rand(grain_seed) * 2.0 - 1.0;
-        bw = mix(bw, clamp(bw * (1.0 + noise * 0.2), 0.0, 1.0), grain);
-    }
-
-    return bw;
+    return vec3(gray);
 }
 
 void main() {
@@ -151,6 +172,9 @@ void main() {
                         uHighlights, uShadows, contrast_factor, uBlackPoint);
 
     c = apply_color_transform(c, uSaturation, uVibrance, uColorCast, uGain);
-    c = apply_bw(c, uv);
+
+    if (uBWEnabled) {
+        c = apply_bw(c, uv);
+    }
     FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
 }

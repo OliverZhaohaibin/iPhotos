@@ -5,6 +5,9 @@ from __future__ import annotations
 import math
 from typing import Mapping, Sequence
 
+import numpy as np
+from numba import jit
+
 from PySide6.QtGui import QImage, QColor
 
 from ..utils.deps import load_pillow
@@ -12,6 +15,19 @@ from .light_resolver import LIGHT_KEYS
 from .color_resolver import ColorStats, compute_color_statistics, _clamp
 
 _PILLOW_SUPPORT = load_pillow()
+
+
+def _normalise_bw_param(value: float) -> float:
+    """Return *value* mapped from legacy ``[-1, 1]`` to ``[0, 1]`` when needed."""
+
+    numeric = float(value)
+    if numeric < 0.0 or numeric > 1.0:
+        numeric = (numeric + 1.0) * 0.5
+    if numeric < 0.0:
+        return 0.0
+    if numeric > 1.0:
+        return 1.0
+    return numeric
 
 
 # ``LIGHT_KEYS`` is re-exported from :mod:`iPhoto.core.light_resolver` so the constant lives in a
@@ -82,12 +98,15 @@ def apply_adjustments(
         or "Color_Gain_B" in adjustments
     )
 
-    bw_enabled = bool(adjustments.get("BW_Enabled", adjustments.get("BWEnabled", True)))
-    bw_intensity = float(adjustments.get("BW_Intensity", adjustments.get("BWIntensity", 0.0)))
-    bw_neutrals = float(adjustments.get("BW_Neutrals", adjustments.get("BWNeutrals", 0.0)))
-    bw_tone = float(adjustments.get("BW_Tone", adjustments.get("BWTone", 0.0)))
-    bw_grain = float(adjustments.get("BW_Grain", adjustments.get("BWGrain", 0.0)))
-    apply_bw = bw_enabled and (abs(bw_intensity) > 1e-6 or abs(bw_grain) > 1e-6)
+    bw_flag = adjustments.get("BW_Enabled")
+    if bw_flag is None:
+        bw_flag = adjustments.get("BWEnabled")
+    bw_enabled = bool(bw_flag)
+    bw_intensity = _normalise_bw_param(adjustments.get("BW_Intensity", adjustments.get("BWIntensity", 0.5)))
+    bw_neutrals = _normalise_bw_param(adjustments.get("BW_Neutrals", adjustments.get("BWNeutrals", 0.0)))
+    bw_tone = _normalise_bw_param(adjustments.get("BW_Tone", adjustments.get("BWTone", 0.0)))
+    bw_grain = _normalise_bw_param(adjustments.get("BW_Grain", adjustments.get("BWGrain", 0.0)))
+    apply_bw = bw_enabled
 
     if all(
         abs(value) < 1e-6
@@ -139,7 +158,7 @@ def apply_adjustments(
 
     transformed = _apply_adjustments_with_lut(result, lut)
     if transformed is not None:
-        _apply_color_adjustments_inplace(
+        _apply_color_adjustments_inplace_qimage(
             transformed,
             saturation,
             vibrance,
@@ -171,7 +190,7 @@ def apply_adjustments(
         gain_r, gain_g, gain_b = color_stats.white_balance_gain
 
     try:
-        _apply_adjustments_fast(
+        _apply_adjustments_fast_qimage(
             result,
             width,
             height,
@@ -310,7 +329,7 @@ def _apply_adjustments_with_lut(image: QImage, lut: Sequence[int]) -> QImage | N
         return None
 
 
-def _apply_adjustments_fast(
+def _apply_adjustments_fast_qimage(
     image: QImage,
     width: int,
     height: int,
@@ -334,33 +353,89 @@ def _apply_adjustments_fast(
     bw_tone: float,
     bw_grain: float,
 ) -> None:
-    """Mutate ``image`` in-place using direct pixel buffer access.
-
-    The helper keeps the tight loop isolated so :func:`apply_adjustments` can
-    fall back to a slower implementation when the buffer is not writable.
-    """
+    """Mutate ``image`` in-place using the JIT-compiled adjustment kernel."""
 
     view, buffer_guard = _resolve_pixel_buffer(image)
-
-    # Keep an explicit reference to the guard so the Qt wrapper that exposes
-    # the pixel buffer stays alive for the duration of the processing loop.
     buffer_handle = buffer_guard
     _ = buffer_handle
 
     if getattr(view, "readonly", False):
         raise BufferError("QImage pixel buffer is read-only")
 
+    if width <= 0 or height <= 0:
+        return
+
+    expected_size = bytes_per_line * height
+    buffer = np.frombuffer(view, dtype=np.uint8, count=expected_size)
+    if buffer.size < expected_size:
+        raise BufferError("QImage pixel buffer is smaller than expected")
+
     apply_color = abs(saturation) > 1e-6 or abs(vibrance) > 1e-6 or cast > 1e-6
-    apply_bw_effect = apply_bw
+
+    _apply_adjustments_fast(
+        buffer,
+        width,
+        height,
+        bytes_per_line,
+        exposure_term,
+        brightness_term,
+        brilliance_strength,
+        highlights,
+        shadows,
+        contrast_factor,
+        black_point,
+        saturation,
+        vibrance,
+        cast,
+        gain_r,
+        gain_g,
+        gain_b,
+        apply_color,
+        apply_bw,
+        bw_intensity,
+        bw_neutrals,
+        bw_tone,
+        bw_grain,
+    )
+
+
+@jit(nopython=True, cache=True)
+def _apply_adjustments_fast(
+    buffer: np.ndarray,
+    width: int,
+    height: int,
+    bytes_per_line: int,
+    exposure_term: float,
+    brightness_term: float,
+    brilliance_strength: float,
+    highlights: float,
+    shadows: float,
+    contrast_factor: float,
+    black_point: float,
+    saturation: float,
+    vibrance: float,
+    cast: float,
+    gain_r: float,
+    gain_g: float,
+    gain_b: float,
+    apply_color: bool,
+    apply_bw: bool,
+    bw_intensity: float,
+    bw_neutrals: float,
+    bw_tone: float,
+    bw_grain: float,
+) -> None:
+    if width <= 0 or height <= 0:
+        return
 
     for y in range(height):
         row_offset = y * bytes_per_line
         for x in range(width):
             pixel_offset = row_offset + x * 4
 
-            b = view[pixel_offset] / 255.0
-            g = view[pixel_offset + 1] / 255.0
-            r = view[pixel_offset + 2] / 255.0
+            b = buffer[pixel_offset] / 255.0
+            g = buffer[pixel_offset + 1] / 255.0
+            r = buffer[pixel_offset + 2] / 255.0
 
             r = _apply_channel_adjustments(
                 r,
@@ -406,7 +481,7 @@ def _apply_adjustments_fast(
                     gain_b,
                 )
 
-            if apply_bw_effect:
+            if apply_bw:
                 noise = 0.0
                 if abs(bw_grain) > 1e-6:
                     noise = _grain_noise(x, y, width, height)
@@ -421,12 +496,9 @@ def _apply_adjustments_fast(
                     noise,
                 )
 
-            view[pixel_offset] = _float_to_uint8(b)
-            view[pixel_offset + 1] = _float_to_uint8(g)
-            view[pixel_offset + 2] = _float_to_uint8(r)
-            # The alpha channel (``pixel_offset + 3``) is intentionally left
-            # untouched so transparent assets retain their original opacity.
-
+            buffer[pixel_offset] = _float_to_uint8(b)
+            buffer[pixel_offset + 1] = _float_to_uint8(g)
+            buffer[pixel_offset + 2] = _float_to_uint8(r)
 
 def _apply_adjustments_fallback(
     image: QImage,
@@ -528,7 +600,7 @@ def _apply_adjustments_fallback(
             image.setPixelColor(x, y, QColor.fromRgbF(r, g, b, colour.alphaF()))
 
 
-def _apply_color_adjustments_inplace(
+def _apply_color_adjustments_inplace_qimage(
     image: QImage,
     saturation: float,
     vibrance: float,
@@ -539,6 +611,7 @@ def _apply_color_adjustments_inplace(
 ) -> None:
     if image.isNull():
         return
+
     apply_color = abs(saturation) > 1e-6 or abs(vibrance) > 1e-6 or cast > 1e-6
     if not apply_color:
         return
@@ -554,13 +627,55 @@ def _apply_color_adjustments_inplace(
     height = image.height()
     bytes_per_line = image.bytesPerLine()
 
+    if width <= 0 or height <= 0:
+        return
+
+    expected_size = bytes_per_line * height
+    buffer = np.frombuffer(view, dtype=np.uint8, count=expected_size)
+    if buffer.size < expected_size:
+        raise BufferError("QImage pixel buffer is smaller than expected")
+
+    _apply_color_adjustments_inplace(
+        buffer,
+        width,
+        height,
+        bytes_per_line,
+        saturation,
+        vibrance,
+        cast,
+        gain_r,
+        gain_g,
+        gain_b,
+    )
+
+
+@jit(nopython=True, cache=True)
+def _apply_color_adjustments_inplace(
+    buffer: np.ndarray,
+    width: int,
+    height: int,
+    bytes_per_line: int,
+    saturation: float,
+    vibrance: float,
+    cast: float,
+    gain_r: float,
+    gain_g: float,
+    gain_b: float,
+) -> None:
+    if width <= 0 or height <= 0:
+        return
+
+    apply_color = abs(saturation) > 1e-6 or abs(vibrance) > 1e-6 or cast > 1e-6
+    if not apply_color:
+        return
+
     for y in range(height):
         row_offset = y * bytes_per_line
         for x in range(width):
             pixel_offset = row_offset + x * 4
-            b = view[pixel_offset] / 255.0
-            g = view[pixel_offset + 1] / 255.0
-            r = view[pixel_offset + 2] / 255.0
+            b = buffer[pixel_offset] / 255.0
+            g = buffer[pixel_offset + 1] / 255.0
+            r = buffer[pixel_offset + 2] / 255.0
 
             r, g, b = _apply_color_transform(
                 r,
@@ -574,11 +689,12 @@ def _apply_color_adjustments_inplace(
                 gain_b,
             )
 
-            view[pixel_offset] = _float_to_uint8(b)
-            view[pixel_offset + 1] = _float_to_uint8(g)
-            view[pixel_offset + 2] = _float_to_uint8(r)
+            buffer[pixel_offset] = _float_to_uint8(b)
+            buffer[pixel_offset + 1] = _float_to_uint8(g)
+            buffer[pixel_offset + 2] = _float_to_uint8(r)
 
 
+@jit(nopython=True, inline="always")
 def _apply_color_transform(
     r: float,
     g: float,
@@ -616,6 +732,156 @@ def _apply_color_transform(
     return r, g, b
 
 
+def _bw_unsigned_to_signed(value: float) -> float:
+    """Return *value* remapped from ``[0, 1]`` into the signed ``[-1, 1]`` domain."""
+
+    numeric = float(value)
+    return float(max(-1.0, min(1.0, numeric * 2.0 - 1.0)))
+
+
+def _np_mix(a: np.ndarray, b: np.ndarray, t: float) -> np.ndarray:
+    """Vectorised equivalent of GLSL's ``mix`` helper."""
+
+    return a * (1.0 - t) + b * t
+
+
+def _np_gamma_neutral_signed(gray: np.ndarray, neutral_adjust: float) -> np.ndarray:
+    """Apply the signed neutral gamma curve used by the shader to ``gray``."""
+
+    neutral = float(max(-1.0, min(1.0, neutral_adjust)))
+    magnitude = 0.6 * abs(neutral)
+    gamma = math.pow(2.0, -magnitude) if neutral >= 0.0 else math.pow(2.0, magnitude)
+    clamped = np.clip(gray, 0.0, 1.0).astype(np.float32, copy=False)
+    np.power(clamped, gamma, out=clamped)
+    return np.clip(clamped, 0.0, 1.0)
+
+
+def _np_contrast_tone_signed(gray: np.ndarray, tone_adjust: float) -> np.ndarray:
+    """Apply the signed logistic tone curve to ``gray``."""
+
+    tone_value = float(max(-1.0, min(1.0, tone_adjust)))
+    if tone_value >= 0.0:
+        k = 1.0 + (2.2 - 1.0) * tone_value
+    else:
+        k = 1.0 + (0.6 - 1.0) * -tone_value
+
+    x = np.clip(gray, 0.0, 1.0).astype(np.float32, copy=False)
+    epsilon = 1e-6
+    clamped = np.clip(x, epsilon, 1.0 - epsilon)
+    logit = np.log(clamped / np.clip(1.0 - clamped, epsilon, 1.0))
+    result = 1.0 / (1.0 + np.exp(-logit * k))
+    return np.clip(result.astype(np.float32, copy=False), 0.0, 1.0)
+
+
+def _generate_grain_field(width: int, height: int) -> np.ndarray:
+    """Return a deterministic ``height`` × ``width`` pseudo-random field."""
+
+    if width <= 0 or height <= 0:
+        return np.zeros((max(1, height), max(1, width)), dtype=np.float32)
+
+    x = np.arange(width, dtype=np.float32)
+    y = np.arange(height, dtype=np.float32)
+    if width > 1:
+        u = x / float(width - 1)
+    else:
+        u = np.zeros_like(x)
+    if height > 1:
+        v = y / float(height - 1)
+    else:
+        v = np.zeros_like(y)
+
+    seed = u[None, :] * np.float32(12.9898) + v[:, None] * np.float32(78.233)
+    noise = np.sin(seed).astype(np.float32, copy=False) * np.float32(43758.5453)
+    fraction = noise - np.floor(noise)
+    return np.clip(fraction.astype(np.float32), 0.0, 1.0)
+
+
+def _apply_bw_vectorized(
+    image: QImage,
+    intensity: float,
+    neutrals: float,
+    tone: float,
+    grain: float,
+) -> bool:
+    """Attempt to apply the Black & White effect using a fully vectorised path."""
+
+    width = image.width()
+    height = image.height()
+    bytes_per_line = image.bytesPerLine()
+
+    if width <= 0 or height <= 0:
+        return True
+
+    try:
+        view, guard = _resolve_pixel_buffer(image)
+    except (BufferError, RuntimeError, TypeError):
+        return False
+
+    if getattr(view, "readonly", False):
+        return False
+
+    buffer_guard = guard
+    # Holding a reference to ``guard`` keeps the Qt wrapper that owns the raw pixel
+    # buffer alive while NumPy operates on the exported memoryview.
+    _ = buffer_guard
+
+    buffer = np.frombuffer(view, dtype=np.uint8, count=bytes_per_line * height)
+    try:
+        surface = buffer.reshape((height, bytes_per_line))
+    except ValueError:
+        return False
+
+    rgb_region = surface[:, : width * 4].reshape((height, width, 4))
+
+    bgr = rgb_region[..., :3].astype(np.float32, copy=False)
+    rgb = bgr[:, :, ::-1] / np.float32(255.0)
+
+    intensity_signed = _bw_unsigned_to_signed(intensity)
+    neutrals_signed = _bw_unsigned_to_signed(neutrals)
+    tone_signed = _bw_unsigned_to_signed(tone)
+    grain_amount = float(max(0.0, min(1.0, grain)))
+
+    if (
+        abs(intensity_signed) <= 1e-6
+        and abs(neutrals_signed) <= 1e-6
+        and abs(tone_signed) <= 1e-6
+        and grain_amount <= 1e-6
+    ):
+        return True
+
+    luma = (
+        rgb[:, :, 0] * 0.2126
+        + rgb[:, :, 1] * 0.7152
+        + rgb[:, :, 2] * 0.0722
+    ).astype(np.float32)
+
+    luma_clamped = np.clip(luma, 0.0, 1.0).astype(np.float32, copy=False)
+    g_soft = np.power(luma_clamped, 0.85).astype(np.float32, copy=False)
+    g_neutral = luma
+    g_rich = _np_contrast_tone_signed(luma, 0.35)
+
+    if intensity_signed >= 0.0:
+        gray = _np_mix(g_neutral, g_rich, intensity_signed)
+    else:
+        gray = _np_mix(g_soft, g_neutral, intensity_signed + 1.0)
+
+    gray = _np_gamma_neutral_signed(gray, neutrals_signed)
+    gray = _np_contrast_tone_signed(gray, tone_signed)
+
+    if grain_amount > 1e-6:
+        noise = _generate_grain_field(width, height)
+        gray = gray + (noise - 0.5) * 0.2 * grain_amount
+
+    gray = np.clip(gray, 0.0, 1.0).astype(np.float32, copy=False)
+    gray_bytes = np.rint(gray * np.float32(255.0)).astype(np.uint8)
+
+    rgb_region[..., 0] = gray_bytes
+    rgb_region[..., 1] = gray_bytes
+    rgb_region[..., 2] = gray_bytes
+
+    return True
+
+
 def _apply_bw_only(
     image: QImage,
     intensity: float,
@@ -627,50 +893,14 @@ def _apply_bw_only(
 
     if image.isNull():
         return
-    if abs(intensity) <= 1e-6 and abs(grain) <= 1e-6:
-        # Mirror the shader's early exit so neutral parameter values do not waste cycles.
+
+    if _apply_bw_vectorized(image, intensity, neutrals, tone, grain):
         return
 
-    width = image.width()
-    height = image.height()
-    bytes_per_line = image.bytesPerLine()
-
-    try:
-        view, guard = _resolve_pixel_buffer(image)
-    except (BufferError, RuntimeError, TypeError):
-        view = None
-        guard = None
-
-    if view is None or getattr(view, "readonly", False):
-        _apply_bw_using_qcolor(image, intensity, neutrals, tone, grain)
-        return
-
-    buffer_guard = guard
-    _ = buffer_guard
-
-    for y in range(height):
-        row_offset = y * bytes_per_line
-        for x in range(width):
-            pixel_offset = row_offset + x * 4
-            b = view[pixel_offset] / 255.0
-            g = view[pixel_offset + 1] / 255.0
-            r = view[pixel_offset + 2] / 255.0
-            noise = 0.0
-            if abs(grain) > 1e-6:
-                noise = _grain_noise(x, y, width, height)
-            r, g, b = _apply_bw_channels(
-                r,
-                g,
-                b,
-                intensity,
-                neutrals,
-                tone,
-                grain,
-                noise,
-            )
-            view[pixel_offset] = _float_to_uint8(b)
-            view[pixel_offset + 1] = _float_to_uint8(g)
-            view[pixel_offset + 2] = _float_to_uint8(r)
+    # Some Qt bindings still expose read-only pixel buffers; in that scenario we
+    # fall back to the dependable (albeit slower) QColor implementation so the
+    # feature continues to work on every supported platform.
+    _apply_bw_using_qcolor(image, intensity, neutrals, tone, grain)
 
 
 def _apply_bw_using_qcolor(
@@ -690,7 +920,7 @@ def _apply_bw_using_qcolor(
             r = colour.redF()
             g = colour.greenF()
             b = colour.blueF()
-            noise = 0.0
+            noise = 0.5
             if abs(grain) > 1e-6:
                 noise = _grain_noise(x, y, width, height)
             r, g, b = _apply_bw_channels(
@@ -706,6 +936,7 @@ def _apply_bw_using_qcolor(
             image.setPixelColor(x, y, QColor.fromRgbF(r, g, b, colour.alphaF()))
 
 
+@jit(nopython=True, inline="always")
 def _apply_bw_channels(
     r: float,
     g: float,
@@ -718,51 +949,68 @@ def _apply_bw_channels(
 ) -> tuple[float, float, float]:
     """Return the transformed RGB triple for the Black & White effect."""
 
-    # Clamp user supplied parameters to the shader's expected ranges so the preview mirrors
-    # the GPU output even when sidecar files contain out-of-bounds values.
     intensity = _clamp01(intensity)
-    neutrals_amount = _clamp01(abs(neutrals))
-    tone_amount = _clamp01(abs(tone))
-    grain_amount = _clamp01(grain)
-    noise = max(-1.0, min(1.0, noise))
+    neutrals = _clamp01(neutrals)
+    tone = _clamp01(tone)
+    grain = _clamp01(grain)
+    noise = _clamp01(noise)
 
-    original = (r, g, b)
-    luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    luma = _clamp(0.2126 * r + 0.7152 * g + 0.0722 * b, 0.0, 1.0)
 
-    bw_r = _mix(original[0], luma, intensity)
-    bw_g = _mix(original[1], luma, intensity)
-    bw_b = _mix(original[2], luma, intensity)
+    soft_base = _clamp(pow(luma, 0.82), 0.0, 1.0)
+    soft_curve = _contrast_tone_curve(soft_base, 0.0)
+    g_soft = (soft_curve + soft_base) * 0.5
+    g_neutral = luma
+    g_rich = _contrast_tone_curve(_clamp(pow(luma, 1.0 / 1.22), 0.0, 1.0), 0.35)
 
-    if neutrals >= 0.0 and neutrals_amount > 1e-6:
-        bw_r = _mix(bw_r, original[0], neutrals_amount)
-        bw_g = _mix(bw_g, original[1], neutrals_amount)
-        bw_b = _mix(bw_b, original[2], neutrals_amount)
+    if intensity >= 0.5:
+        blend = (intensity - 0.5) / 0.5
+        gray = _mix(g_neutral, g_rich, blend)
+    else:
+        blend = (0.5 - intensity) / 0.5
+        gray = _mix(g_soft, g_neutral, blend)
 
-    if tone_amount > 1e-6:
-        t = luma * 2.0 - 1.0
-        tm = (t + tone * (1.0 - abs(t))) * 0.5 + 0.5
-        tm = _clamp01(tm)
-        bw_r = _mix(bw_r, tm, tone_amount)
-        bw_g = _mix(bw_g, tm, tone_amount)
-        bw_b = _mix(bw_b, tm, tone_amount)
+    gray = _gamma_neutral(gray, neutrals)
+    gray = _contrast_tone_curve(gray, tone)
 
-    if grain_amount > 1e-6:
-        scale = 1.0 + noise * 0.2
-        grain_r = bw_r * scale
-        grain_g = bw_g * scale
-        grain_b = bw_b * scale
-        bw_r = _mix(bw_r, grain_r, grain_amount)
-        bw_g = _mix(bw_g, grain_g, grain_amount)
-        bw_b = _mix(bw_b, grain_b, grain_amount)
+    if grain > 1e-6:
+        gray += (noise - 0.5) * 0.2 * grain
 
-    return _clamp01(bw_r), _clamp01(bw_g), _clamp01(bw_b)
+    clamped = _clamp01(gray)
+    return clamped, clamped, clamped
 
 
+@jit(nopython=True, inline="always")
+def _gamma_neutral(value: float, neutrals: float) -> float:
+    """Return the neutral gamma adjustment matching the shader logic."""
+
+    neutrals = _clamp01(neutrals)
+    n = 0.6 * (neutrals - 0.5)
+    gamma = math.pow(2.0, -n * 2.0)
+    return _clamp(math.pow(_clamp(value, 0.0, 1.0), gamma), 0.0, 1.0)
+
+
+@jit(nopython=True, inline="always")
+def _contrast_tone_curve(value: float, tone: float) -> float:
+    """Return the sigmoid tone adjustment used by ``BW_final.py``."""
+
+    tone = _clamp01(tone)
+    t = tone - 0.5
+    factor = _mix(1.0, 2.2, t * 2.0) if t >= 0.0 else _mix(1.0, 0.6, -t * 2.0)
+    x = _clamp(value, 0.0, 1.0)
+    eps = 1e-6
+    pos = _clamp(x, eps, 1.0 - eps)
+    logit = math.log(pos / max(eps, 1.0 - pos))
+    y = 1.0 / (1.0 + math.exp(-logit * factor))
+    return _clamp(y, 0.0, 1.0)
+
+
+@jit(nopython=True, inline="always")
 def _grain_noise(x: int, y: int, width: int, height: int) -> float:
-    """Return a deterministic pseudo random noise value in ``[-1.0, 1.0]`` for grain."""
+    """Return a deterministic pseudo random noise value in ``[0.0, 1.0]`` for grain."""
 
     if width <= 0 or height <= 0:
-        return 0.0
+        return 0.5
     u = float(x) / float(max(width - 1, 1))
     v = float(y) / float(max(height - 1, 1))
     # Mirror the shader's ``rand`` function using a sine-based hash so the grain pattern stays
@@ -770,16 +1018,13 @@ def _grain_noise(x: int, y: int, width: int, height: int) -> float:
     seed = u * 12.9898 + v * 78.233
     noise = math.sin(seed) * 43758.5453
     fraction = noise - math.floor(noise)
-    return fraction * 2.0 - 1.0
+    return _clamp01(fraction)
 
 
+@jit(nopython=True, inline="always")
 def _mix(a: float, b: float, t: float) -> float:
     t = _clamp01(t)
     return a * (1.0 - t) + b * t
-
-
-def _clamp01(value: float) -> float:
-    return max(0.0, min(1.0, float(value)))
 
 
 def _resolve_pixel_buffer(image: QImage) -> tuple[memoryview, object]:
@@ -846,6 +1091,7 @@ def _resolve_pixel_buffer(image: QImage) -> tuple[memoryview, object]:
     return view, guard
 
 
+@jit(nopython=True, inline="always")
 def _apply_channel_adjustments(
     value: float,
     exposure: float,
@@ -888,6 +1134,7 @@ def _apply_channel_adjustments(
     return _clamp01(adjusted)
 
 
+@jit(nopython=True, inline="always")
 def _clamp01(value: float) -> float:
     """Clamp *value* to the inclusive ``[0.0, 1.0]`` range."""
 
@@ -898,6 +1145,7 @@ def _clamp01(value: float) -> float:
     return value
 
 
+@jit(nopython=True, inline="always")
 def _float_to_uint8(value: float) -> int:
     """Convert *value* from ``[0.0, 1.0]`` to an 8-bit channel value."""
 
