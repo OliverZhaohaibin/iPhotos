@@ -465,6 +465,7 @@ class EditController(QObject):
         """Return to the standard detail view, optionally animating the transition."""
 
         self._preview_manager.cancel_pending_updates()
+        self._ui.edit_image_viewer.set_crop_mode(False)
         if self._is_loading_edit_image:
             self._is_loading_edit_image = False
             self._ui.edit_image_viewer.set_loading(False)
@@ -773,10 +774,12 @@ class EditController(QObject):
             self._ui.edit_adjust_action.setChecked(True)
             self._ui.edit_crop_action.setChecked(False)
             self._ui.edit_sidebar.set_mode("adjust")
+            self._ui.edit_image_viewer.set_crop_mode(False)
         else:
             self._ui.edit_adjust_action.setChecked(False)
             self._ui.edit_crop_action.setChecked(True)
             self._ui.edit_sidebar.set_mode("crop")
+            self._ui.edit_image_viewer.set_crop_mode(True)
         index = 0 if mode == "adjust" else 1
         self._ui.edit_mode_control.setCurrentIndex(index, animate=not from_top_bar)
 
