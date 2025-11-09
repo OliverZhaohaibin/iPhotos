@@ -76,6 +76,18 @@ class EditSession(QObject):
         self._values["BW_Grain"] = 0.0
         self._ranges["BW_Grain"] = (0.0, 1.0)
 
+        # ``Crop_*`` coordinates persist the normalised UV rectangle representing the visible
+        # portion of the asset.  Persisting the bounds alongside the other adjustment sliders keeps
+        # the session serialisable without having to special-case the crop workflow.
+        self._values["Crop_U0"] = 0.0
+        self._values["Crop_V0"] = 0.0
+        self._values["Crop_U1"] = 1.0
+        self._values["Crop_V1"] = 1.0
+        self._ranges["Crop_U0"] = (0.0, 1.0)
+        self._ranges["Crop_V0"] = (0.0, 1.0)
+        self._ranges["Crop_U1"] = (0.0, 1.0)
+        self._ranges["Crop_V1"] = (0.0, 1.0)
+
     # ------------------------------------------------------------------
     # Accessors
     def value(self, key: str) -> float | bool:
@@ -156,6 +168,12 @@ class EditSession(QObject):
             "BW_Tone": 0.0,
             "BW_Grain": 0.0,
         })
+        defaults.update({
+            "Crop_U0": 0.0,
+            "Crop_V0": 0.0,
+            "Crop_U1": 1.0,
+            "Crop_V1": 1.0,
+        })
         self.set_values(defaults, emit_individual=True)
         self.resetPerformed.emit()
 
@@ -181,3 +199,30 @@ class EditSession(QObject):
         """Yield the adjustment keys in their canonical order."""
 
         return self._values.items()
+
+    # ------------------------------------------------------------------
+    # Crop helpers
+    def set_crop_uv(self, uv: tuple[float, float, float, float]) -> None:
+        """Store the normalised crop rectangle expressed as ``(u0, v0, u1, v1)``."""
+
+        try:
+            u0, v0, u1, v1 = uv
+        except (TypeError, ValueError):
+            return
+        updates = {
+            "Crop_U0": float(u0),
+            "Crop_V0": float(v0),
+            "Crop_U1": float(u1),
+            "Crop_V1": float(v1),
+        }
+        self.set_values(updates, emit_individual=True)
+
+    def get_crop_uv(self) -> tuple[float, float, float, float]:
+        """Return the persisted crop rectangle as ``(u0, v0, u1, v1)``."""
+
+        return (
+            float(self._values.get("Crop_U0", 0.0)),
+            float(self._values.get("Crop_V0", 0.0)),
+            float(self._values.get("Crop_U1", 1.0)),
+            float(self._values.get("Crop_V1", 1.0)),
+        )

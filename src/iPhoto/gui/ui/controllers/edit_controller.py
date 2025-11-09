@@ -100,6 +100,7 @@ class EditController(QObject):
         self._is_loading_edit_image = False
 
         self._preview_manager = EditPreviewManager(self._ui.edit_image_viewer, self)
+        self._ui.edit_image_viewer.cropRectChanged.connect(self._handle_crop_changed)
         self._ui.edit_sidebar.bwParamsPreviewed.connect(self._handle_bw_previewed)
         self._ui.edit_sidebar.bwParamsCommitted.connect(self._handle_bw_committed)
 
@@ -200,6 +201,19 @@ class EditController(QObject):
         slider.blockSignals(True)
         slider.setValue(slider_value)
         slider.blockSignals(False)
+
+    @Slot(tuple)
+    def _handle_crop_changed(self, uv: tuple) -> None:
+        """Persist crop rectangle updates reported by the GL image viewer."""
+
+        session = self._session
+        if session is None:
+            return
+        try:
+            u0, v0, u1, v1 = uv
+        except (TypeError, ValueError):
+            return
+        session.set_crop_uv((float(u0), float(v0), float(u1), float(v1)))
 
     # ------------------------------------------------------------------
     def begin_edit(self) -> None:
@@ -372,11 +386,13 @@ class EditController(QObject):
         # while still refreshing the uniforms.
         resolved_adjustments = self._resolve_session_adjustments()
         self._active_adjustments = resolved_adjustments
+        initial_uv = session.get_crop_uv()
         self._ui.edit_image_viewer.set_image(
             image,
             resolved_adjustments,
             image_source=path,
             reset_view=False,
+            display_uv=initial_uv,
         )
         self._skip_next_preview_frame = False
         if self._compare_active:

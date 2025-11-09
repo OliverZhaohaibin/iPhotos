@@ -54,6 +54,7 @@ class GLImageViewer(QOpenGLWidget):
     # Signals（保持与旧版一致）
     replayRequested = Signal()
     zoomChanged = Signal(float)
+    cropRectChanged = Signal(tuple)
     nextItemRequested = Signal()
     prevItemRequested = Signal()
     fullscreenExitRequested = Signal()
@@ -135,6 +136,7 @@ class GLImageViewer(QOpenGLWidget):
         *,
         image_source: Optional[object] = None,
         reset_view: bool = True,
+        display_uv: tuple[float, float, float, float] | None = None,
     ) -> None:
         """Display *image* together with optional colour *adjustments*.
 
@@ -153,6 +155,10 @@ class GLImageViewer(QOpenGLWidget):
             ``True`` preserves the historic behaviour of resetting the zoom and
             pan state.  Passing ``False`` keeps the current transform so edit
             mode can reuse the detail view framing without a visible jump.
+        display_uv:
+            Optional normalised ``(u0, v0, u1, v1)`` rectangle to apply before
+            painting.  When omitted the previous UV window is preserved unless
+            *reset_view* forces the default framing.
         """
 
         previous_source = getattr(self, "_current_image_source", None)
@@ -212,6 +218,8 @@ class GLImageViewer(QOpenGLWidget):
             # exposes.  ``reset_view`` lets callers preserve the zoom when the
             # user toggles between detail and edit modes.
             self.reset_zoom()
+        if self._crop_overlay_active:
+            self._update_crop_overlay_bounds(reset_selection=overlay_reset)
     def set_placeholder(self, pixmap) -> None:
         """Display *pixmap* without changing the tracked image source."""
 
