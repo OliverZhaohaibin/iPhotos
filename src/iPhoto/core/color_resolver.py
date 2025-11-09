@@ -7,6 +7,9 @@ from typing import Any, Mapping, MutableMapping
 
 import math
 
+import numpy as np
+from numba import jit
+
 from PySide6.QtCore import Qt
 
 try:  # pragma: no cover - availability depends on runtime environment
@@ -202,70 +205,69 @@ def compute_color_statistics(image: QImage, *, max_sample_size: int = 1024) -> C
 
     view = memoryview(buffer)
 
-    hist = [0] * 64
-    count = 0
-    highlight_count = 0
-    dark_count = 0
-    skin_count = 0
-    sum_saturation = 0.0
-    sum_lin_r = 0.0
-    sum_lin_g = 0.0
-    sum_lin_b = 0.0
+    if width <= 0 or height <= 0:
+        return ColorStats()
 
-    for y in range(height):
-        row_offset = y * bytes_per_line
-        for x in range(width):
-            offset = row_offset + x * 4
-            b = view[offset] / 255.0
-            g = view[offset + 1] / 255.0
-            r = view[offset + 2] / 255.0
+    buffer_array = np.frombuffer(view, dtype=np.uint8, count=bytes_per_line * height)
+    try:
+        surface = buffer_array.reshape((height, bytes_per_line))
+    except ValueError:
+        return ColorStats()
+    pixel_region = surface[:, : width * 4].reshape((height, width, 4))
 
-            max_c = max(r, g, b)
-            min_c = min(r, g, b)
-            delta = max_c - min_c
-            saturation = 0.0 if max_c <= 0.0 else delta / (max_c + 1e-8)
-            value = max_c
+    bgr = pixel_region[..., :3].astype(np.float32, copy=False) / np.float32(255.0)
+    b = bgr[..., 0]
+    g = bgr[..., 1]
+    r = bgr[..., 2]
 
-            hue = 0.0
-            if delta > 1e-8:
-                if max_c == r:
-                    hue = ((g - b) / delta) % 6.0
-                elif max_c == g:
-                    hue = ((b - r) / delta) + 2.0
-                else:
-                    hue = ((r - g) / delta) + 4.0
-            hue_deg = (hue / 6.0) * 360.0
+    max_c = np.maximum(np.maximum(r, g), b)
+    min_c = np.minimum(np.minimum(r, g), b)
+    delta = max_c - min_c
+    saturation = np.where(max_c <= 0.0, 0.0, delta / (max_c + 1e-8))
+    value = max_c
 
-            if value > 0.90:
-                highlight_count += 1
-            if value < 0.05:
-                dark_count += 1
-            if 10.0 < hue_deg < 50.0 and 0.1 < saturation < 0.6:
-                skin_count += 1
+    delta_safe = np.where(delta > 1e-8, delta, 1.0)
+    hue = np.zeros_like(max_c)
+    mask = delta > 1e-8
+    mask_r = mask & (r == max_c)
+    mask_g = mask & (g == max_c)
+    mask_b = mask & (b == max_c)
 
-            sum_saturation += saturation
-            bin_index = min(63, int(saturation * 64.0))
-            hist[bin_index] += 1
+    hue = np.where(mask_r, np.mod((g - b) / delta_safe, 6.0), hue)
+    hue = np.where(mask_g, ((b - r) / delta_safe) + 2.0, hue)
+    hue = np.where(mask_b, ((r - g) / delta_safe) + 4.0, hue)
+    hue_deg = (hue / 6.0) * 360.0
 
-            lin_r, lin_g, lin_b = _srgb_to_linear(r), _srgb_to_linear(g), _srgb_to_linear(b)
-            sum_lin_r += lin_r
-            sum_lin_g += lin_g
-            sum_lin_b += lin_b
+    highlight_count = int(np.count_nonzero(value > 0.90))
+    dark_count = int(np.count_nonzero(value < 0.05))
+    skin_mask = (hue_deg > 10.0) & (hue_deg < 50.0) & (saturation > 0.1) & (saturation < 0.6)
+    skin_count = int(np.count_nonzero(skin_mask))
 
-            count += 1
+    sum_saturation = float(np.sum(saturation, dtype=np.float64))
+
+    bin_indices = np.clip((saturation * 64.0).astype(np.int64), 0, 63)
+    hist = np.bincount(bin_indices.ravel(), minlength=64)
+
+    lin_r = _srgb_to_linear(r)
+    lin_g = _srgb_to_linear(g)
+    lin_b = _srgb_to_linear(b)
+
+    sum_lin_r = float(np.sum(lin_r, dtype=np.float64))
+    sum_lin_g = float(np.sum(lin_g, dtype=np.float64))
+    sum_lin_b = float(np.sum(lin_b, dtype=np.float64))
+
+    count = width * height
 
     if count == 0:
         return ColorStats()
 
     mean_saturation = sum_saturation / count
-    cumulative = 0
+    cumulative = np.cumsum(hist)
     median_target = count // 2
-    median_saturation = 0.0
-    for index, bin_count in enumerate(hist):
-        cumulative += bin_count
-        if cumulative >= median_target:
-            median_saturation = (index + 0.5) / 64.0
-            break
+    median_index = int(np.searchsorted(cumulative, median_target, side="left"))
+    if median_index >= hist.size:
+        median_index = hist.size - 1
+    median_saturation = (median_index + 0.5) / 64.0
 
     highlight_ratio = highlight_count / count
     dark_ratio = dark_count / count
@@ -308,6 +310,7 @@ def _smoothstep(edge0: float, edge1: float, x: float) -> float:
     return t * t * (3.0 - 2.0 * t)
 
 
+@jit(nopython=True, inline="always")
 def _clamp(value: float, minimum: float, maximum: float) -> float:
     if value < minimum:
         return minimum
@@ -316,10 +319,22 @@ def _clamp(value: float, minimum: float, maximum: float) -> float:
     return value
 
 
-def _srgb_to_linear(channel: float) -> float:
-    if channel <= 0.04045:
-        return channel / 12.92
-    return pow((channel + 0.055) / 1.055, 2.4)
+def _srgb_to_linear(channel: float | np.ndarray) -> float | np.ndarray:
+    """Return *channel* converted from sRGB to linear space."""
+
+    if np.isscalar(channel):
+        channel_float = float(channel)
+        if channel_float <= 0.04045:
+            return channel_float / 12.92
+        return pow((channel_float + 0.055) / 1.055, 2.4)
+
+    array = np.asarray(channel, dtype=np.float32)
+    linear = np.where(
+        array <= 0.04045,
+        array / 12.92,
+        np.power((array + 0.055) / 1.055, 2.4, dtype=np.float32),
+    )
+    return linear
 
 
 __all__ = [
