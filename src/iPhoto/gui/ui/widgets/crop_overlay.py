@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
@@ -12,9 +12,10 @@ from PySide6.QtWidgets import QWidget
 
 @dataclass
 class _DragState:
+    # Added missing mode attribute used by mouse event handlers.
     mode: Optional[str] = None
-    start_pos: QPointF = QPointF()
-    start_rect: QRectF = QRectF()
+    start_pos: QPointF = field(default_factory=QPointF)
+    start_rect: QRectF = field(default_factory=QRectF)
 
 
 class CropOverlay(QWidget):
@@ -102,12 +103,12 @@ class CropOverlay(QWidget):
         self.grabMouse()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
-        if self._drag_state.mode is None:
+        if getattr(self._drag_state, "mode", None) is None:
             self.update()
             return
         delta = event.position() - self._drag_state.start_pos
         rect = QRectF(self._drag_state.start_rect)
-        mode = self._drag_state.mode
+        mode = self._drag_state.mode  # type: ignore[attr-defined]
         if mode == "move":
             rect.translate(delta)
         elif mode == "l":
@@ -137,7 +138,7 @@ class CropOverlay(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
-        if event.button() == Qt.MouseButton.LeftButton and self._drag_state.mode is not None:
+        if event.button() == Qt.MouseButton.LeftButton and getattr(self._drag_state, "mode", None) is not None:
             self.releaseMouse()
             rect = self.selection_rect()
             self._drag_state = _DragState()
@@ -164,29 +165,30 @@ class CropOverlay(QWidget):
         painter.setPen(guide_pen)
         one_third_w = selection.width() / 3.0
         one_third_h = selection.height() / 3.0
+        # Cast to int to satisfy stub expectations for drawLine overload.
         painter.drawLine(
-            selection.left() + one_third_w,
-            selection.top(),
-            selection.left() + one_third_w,
-            selection.bottom(),
+            int(selection.left() + one_third_w),
+            int(selection.top()),
+            int(selection.left() + one_third_w),
+            int(selection.bottom()),
         )
         painter.drawLine(
-            selection.left() + 2 * one_third_w,
-            selection.top(),
-            selection.left() + 2 * one_third_w,
-            selection.bottom(),
+            int(selection.left() + 2 * one_third_w),
+            int(selection.top()),
+            int(selection.left() + 2 * one_third_w),
+            int(selection.bottom()),
         )
         painter.drawLine(
-            selection.left(),
-            selection.top() + one_third_h,
-            selection.right(),
-            selection.top() + one_third_h,
+            int(selection.left()),
+            int(selection.top() + one_third_h),
+            int(selection.right()),
+            int(selection.top() + one_third_h),
         )
         painter.drawLine(
-            selection.left(),
-            selection.top() + 2 * one_third_h,
-            selection.right(),
-            selection.top() + 2 * one_third_h,
+            int(selection.left()),
+            int(selection.top() + 2 * one_third_h),
+            int(selection.right()),
+            int(selection.top() + 2 * one_third_h),
         )
 
         painter.setPen(Qt.PenStyle.NoPen)
@@ -199,7 +201,7 @@ class CropOverlay(QWidget):
             selection.bottomLeft(),
             selection.bottomRight(),
         ):
-            painter.drawRect(QRectF(point - QPointF(half, half), QSize(handle, handle)))
+            painter.drawRect(QRectF(point - QPointF(half, half), QSize(int(handle), int(handle))))
 
         painter.end()
 
@@ -212,19 +214,19 @@ class CropOverlay(QWidget):
         corners = {
             "tl": QRectF(
                 rect.topLeft() - QPointF(handle, handle),
-                QSize(handle * 2.0, handle * 2.0),
+                QSize(int(handle * 2.0), int(handle * 2.0)),
             ),
             "tr": QRectF(
                 rect.topRight() - QPointF(handle, handle),
-                QSize(handle * 2.0, handle * 2.0),
+                QSize(int(handle * 2.0), int(handle * 2.0)),
             ),
             "bl": QRectF(
                 rect.bottomLeft() - QPointF(handle, handle),
-                QSize(handle * 2.0, handle * 2.0),
+                QSize(int(handle * 2.0), int(handle * 2.0)),
             ),
             "br": QRectF(
                 rect.bottomRight() - QPointF(handle, handle),
-                QSize(handle * 2.0, handle * 2.0),
+                QSize(int(handle * 2.0), int(handle * 2.0)),
             ),
         }
         for key, area in corners.items():
@@ -272,4 +274,3 @@ class CropOverlay(QWidget):
         rect.setRight(max(rect.left() + min_w, min(rect.right(), bounds.right())))
         rect.setBottom(max(rect.top() + min_h, min(rect.bottom(), bounds.bottom())))
         return rect
-
