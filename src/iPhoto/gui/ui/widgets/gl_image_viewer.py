@@ -165,22 +165,17 @@ class GLImageViewer(QOpenGLWidget):
         reuse_existing_texture = image_source is not None and image_source == previous_source
         source_changed = image_source != previous_source
         should_reset_view = reset_view or source_changed
-        target_uv = display_uv if display_uv is not None else (
-            (0.0, 0.0, 1.0, 1.0) if should_reset_view else None
-        )
-        overlay_reset = should_reset_view or display_uv is not None
 
         if reuse_existing_texture and image is not None and not image.isNull():
             # Skip the heavy texture re-upload when the caller explicitly
             # reports that the source asset is unchanged.  Only the adjustment
             # uniforms need to be refreshed in this scenario.
             self.set_adjustments(adjustments)
-            if target_uv is not None:
-                self._set_display_uv(*target_uv)
             if should_reset_view:
+                self._set_display_uv(0.0, 0.0, 1.0, 1.0)
                 self.reset_zoom()
-            if self._crop_overlay_active:
-                self._update_crop_overlay_bounds(reset_selection=overlay_reset)
+                if self._crop_overlay_active:
+                    self._update_crop_overlay_bounds(reset_selection=True)
             return
 
         self._current_image_source = image_source
@@ -189,8 +184,8 @@ class GLImageViewer(QOpenGLWidget):
         self._loading_overlay.hide()
         self._time_base = time.monotonic()
 
-        if target_uv is not None:
-            self._set_display_uv(*target_uv)
+        if should_reset_view:
+            self._set_display_uv(0.0, 0.0, 1.0, 1.0)
 
         if image is None or image.isNull():
             self._current_image_source = None
@@ -208,6 +203,9 @@ class GLImageViewer(QOpenGLWidget):
                         renderer.delete_texture()
                     finally:
                         self.doneCurrent()
+
+        if self._crop_overlay_active:
+            self._update_crop_overlay_bounds(reset_selection=should_reset_view)
 
         if self._crop_mode_requested and not self._crop_overlay_active:
             self.set_crop_mode(True)
@@ -735,7 +733,6 @@ class GLImageViewer(QOpenGLWidget):
         if normalised == self._display_uv:
             return
         self._display_uv = normalised
-        self.cropRectChanged.emit(self._display_uv)
         self.update()
 
     @staticmethod

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
@@ -13,8 +13,8 @@ from PySide6.QtWidgets import QWidget
 @dataclass
 class _DragState:
     mode: Optional[str] = None
-    start_pos: QPointF = field(default_factory=QPointF)
-    start_rect: QRectF = field(default_factory=QRectF)
+    start_pos: QPointF = QPointF()
+    start_rect: QRectF = QRectF()
 
 
 class CropOverlay(QWidget):
