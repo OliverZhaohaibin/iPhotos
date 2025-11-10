@@ -63,6 +63,10 @@ class ViewTransformController:
     def get_pan_pixels(self) -> QPointF:
         return QPointF(self._pan_px)
 
+    def get_zoom_limits(self) -> tuple[float, float]:
+        """Return the current zoom limits (min, max)."""
+        return (self._min_zoom, self._max_zoom)
+
     def set_zoom_limits(self, minimum: float, maximum: float) -> None:
         """Clamp the interactive zoom range."""
 

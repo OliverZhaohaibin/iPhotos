@@ -702,7 +702,12 @@ class GLImageViewer(QOpenGLWidget):
         )
 
     def _handle_crop_overlay_finished(self, rect01: QRectF) -> None:
-        """On release: compute pending UV (for real crop) + uniform zoom for UX."""
+        """On release: save pending UV (real crop), then uniform zoom to fill bounds.
+
+        - Keep user's selection shape (don't overwrite it visually).
+        - Zoom uniformly so the selection fills the visible container.
+        - Avoid stretch: we never modify UV here; only zoom/pan change.
+        """
         if not self._crop_overlay_active:
             return
 
@@ -710,12 +715,12 @@ class GLImageViewer(QOpenGLWidget):
         if contain_rect.width() <= 0.0 or contain_rect.height() <= 0.0:
             return
 
-        # 1) Convert user's released selection to UV, save as pending (don't apply immediately)
+        # 1) Record this selection's UV (commit on exit/Done click)
         candidate_uv = self._overlay_rect01_to_uv(rect01)
         if candidate_uv is not None:
             self._pending_crop_uv = candidate_uv
 
-        # 2) Do the expected "visual zoom" - only uniform scaling, no UV change
+        # 2) Calculate uniform scale needed to fill frame (min rule)
         clipped = rect01.intersected(contain_rect) if not rect01.isEmpty() else contain_rect
         if clipped.isEmpty():
             clipped = contain_rect
@@ -729,24 +734,35 @@ class GLImageViewer(QOpenGLWidget):
         current_zoom = self._transform_controller.get_zoom_factor()
         target_zoom = current_zoom * scale_mult
 
+        # --- Key: temporarily raise zoom limit to ensure any aspect ratio can fill ---
+        try:
+            zmin, zmax = self._transform_controller.get_zoom_limits()
+            if target_zoom > zmax + 1e-6:
+                # Add margin to avoid floating point edge cases
+                self._transform_controller.set_zoom_limits(zmin, target_zoom * 1.05)
+        except Exception:
+            # Old version without get_zoom_limits, zoom may be limited by original max
+            pass
+
+        # 3) Zoom uniformly with selection center as anchor (no UV change, no stretch)
         vw = float(max(1, self.width()))
         vh = float(max(1, self.height()))
         anchor = QPointF(float(clipped.center().x()) * vw, float(clipped.center().y()) * vh)
-
         self._transform_controller.set_zoom(target_zoom, anchor=anchor)
 
+        # 4) If selection already near center, use translation to center it (not stretch)
         dx = abs(clipped.center().x() - contain_rect.center().x())
         dy = abs(clipped.center().y() - contain_rect.center().y())
         if dx < 0.02 and dy < 0.02 and hasattr(self._transform_controller, "center_on_screen_point"):
             self._transform_controller.center_on_screen_point(anchor)
 
-        # 3) Visually can fill frame to container, but this won't affect saved pending UV
+        # 5) Only update bounds, don't reset selection to full frame (preserve user's aspect ratio)
         if self._crop_overlay is not None:
             self._crop_overlay.set_bounds_rect(contain_rect)
-            self._crop_overlay.set_selection_rect(contain_rect)
+            # Don't call set_selection_rect(contain_rect) - keep user's selection
             self._crop_overlay.update()
 
-        # Note: don't call _set_display_uv, don't reset_zoom, real crop happens in commit_crop()
+        # Note: don't call _set_display_uv, don't reset_zoom; real crop in commit_crop()
 
     def _set_display_uv(self, u0: float, v0: float, u1: float, v1: float) -> None:
         normalised = self._normalise_uv_rect(u0, v0, u1, v1)
