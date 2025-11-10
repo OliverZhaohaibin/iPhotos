@@ -696,74 +696,55 @@ class GLImageViewer(QOpenGLWidget):
         )
 
     def _handle_crop_overlay_finished(self, rect01: QRectF) -> None:
+        """Finalize crop: make the selected region the new UV window and fit it."""
         if not self._crop_overlay_active:
             return
+
         contain_rect = self._calculate_overlay_rect_for_current_uv()
         if contain_rect.width() <= 0.0 or contain_rect.height() <= 0.0:
             return
 
+        # Clamp selection to containment
         clipped = rect01.intersected(contain_rect)
         if clipped.isEmpty():
             clipped = contain_rect
 
-        contain_width = max(1e-6, contain_rect.width())
-        contain_height = max(1e-6, contain_rect.height())
-        rel_left = (clipped.left() - contain_rect.left()) / contain_width
-        rel_right = (clipped.right() - contain_rect.left()) / contain_width
-        rel_top = (clipped.top() - contain_rect.top()) / contain_height
-        rel_bottom = (clipped.bottom() - contain_rect.top()) / contain_height
+        contain_w = max(1e-6, contain_rect.width())
+        contain_h = max(1e-6, contain_rect.height())
+        rel_left = (clipped.left() - contain_rect.left()) / contain_w
+        rel_right = (clipped.right() - contain_rect.left()) / contain_w
+        rel_top = (clipped.top() - contain_rect.top()) / contain_h
+        rel_bottom = (clipped.bottom() - contain_rect.top()) / contain_h
 
+        # Normalise
         rel_left = max(0.0, min(1.0, rel_left))
         rel_right = max(0.0, min(1.0, rel_right))
         rel_top = max(0.0, min(1.0, rel_top))
         rel_bottom = max(0.0, min(1.0, rel_bottom))
 
+        # Current UV
         u0, v0, u1, v1 = self._display_uv
         du = u1 - u0
         dv = v1 - v0
         if abs(du) <= 1e-9 or abs(dv) <= 1e-9:
             return
 
+        # New UV (overlay uses top-left origin; GL V is bottom-left)
         new_u0 = u0 + rel_left * du
         new_u1 = u0 + rel_right * du
-        rel_bottom_bl = 1.0 - rel_bottom
-        rel_top_bl = 1.0 - rel_top
-        new_v0 = v0 + rel_bottom_bl * dv
-        new_v1 = v0 + rel_top_bl * dv
+        new_v0 = v0 + (1.0 - rel_bottom) * dv
+        new_v1 = v0 + (1.0 - rel_top) * dv
 
-        # Store old UV range to calculate zoom adjustment
-        old_du = du
-        old_dv = dv
-        
-        # Update the display UV to the cropped region
+        # Apply cropped UV
         self._set_display_uv(new_u0, new_v0, new_u1, new_v1)
-        
-        # Reset zoom first to fit-to-view
+
+        # Fit to view (zoom==1 baseline) and center
         self._transform_controller.reset_zoom()
-        
-        # Explicitly center the view to avoid any pan-related stretching
-        self._transform_controller.center_view()
-        
-        # Calculate optimal zoom to fill view with cropped region
-        # The cropped region is smaller, so we need to zoom in proportionally
-        new_du = new_u1 - new_u0
-        new_dv = new_v1 - new_v0
-        
-        if abs(new_du) > 1e-9 and abs(new_dv) > 1e-9:
-            # Calculate zoom factor based on how much smaller the new region is
-            zoom_factor_u = old_du / new_du if new_du > 0 else 1.0
-            zoom_factor_v = old_dv / new_dv if new_dv > 0 else 1.0
-            # Use the smaller zoom factor to ensure the entire crop fits in view (aspect ratio fit)
-            optimal_zoom = min(zoom_factor_u, zoom_factor_v)
-            # Apply the zoom from the centered position
-            center = self.viewport_center()
-            self._transform_controller.set_zoom(optimal_zoom, anchor=center)
-            # Re-center after zoom to ensure perfect centering
+        if hasattr(self._transform_controller, "center_view"):
             self._transform_controller.center_view()
-        
-        # Update overlay bounds to match the new zoomed state
-        # Keep selection in sync with new bounds (don't expand to full bounds)
-        self._update_crop_overlay_bounds(reset_selection=False)
+
+        # Overlay now represents whole new image; reset selection
+        self._update_crop_overlay_bounds(reset_selection=True)
 
     def _set_display_uv(self, u0: float, v0: float, u1: float, v1: float) -> None:
         normalised = self._normalise_uv_rect(u0, v0, u1, v1)
