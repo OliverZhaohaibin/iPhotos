@@ -738,9 +738,11 @@ class GLImageViewer(QOpenGLWidget):
         # Update the display UV to the cropped region
         self._set_display_uv(new_u0, new_v0, new_u1, new_v1)
         
-        # Reset zoom and pan first to establish a clean baseline
-        # This ensures the cropped region is centered before we scale it
+        # Reset zoom first to fit-to-view
         self._transform_controller.reset_zoom()
+        
+        # Explicitly center the view to avoid any pan-related stretching
+        self._transform_controller.center_view()
         
         # Calculate optimal zoom to fill view with cropped region
         # The cropped region is smaller, so we need to zoom in proportionally
@@ -753,13 +755,15 @@ class GLImageViewer(QOpenGLWidget):
             zoom_factor_v = old_dv / new_dv if new_dv > 0 else 1.0
             # Use the smaller zoom factor to ensure the entire crop fits in view (aspect ratio fit)
             optimal_zoom = min(zoom_factor_u, zoom_factor_v)
-            # Apply the zoom - since pan is reset to (0,0), the zoom will be centered
+            # Apply the zoom from the centered position
             center = self.viewport_center()
             self._transform_controller.set_zoom(optimal_zoom, anchor=center)
+            # Re-center after zoom to ensure perfect centering
+            self._transform_controller.center_view()
         
         # Update overlay bounds to match the new zoomed state
-        # The crop box should now tightly surround the entire visible image
-        self._update_crop_overlay_bounds(reset_selection=True)
+        # Keep selection in sync with new bounds (don't expand to full bounds)
+        self._update_crop_overlay_bounds(reset_selection=False)
 
     def _set_display_uv(self, u0: float, v0: float, u1: float, v1: float) -> None:
         normalised = self._normalise_uv_rect(u0, v0, u1, v1)

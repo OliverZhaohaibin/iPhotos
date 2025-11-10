@@ -125,6 +125,15 @@ class ViewTransformController:
         self._on_zoom_changed(self._zoom_factor)
         return changed
 
+    def set_pan_pixels(self, pan: QPointF) -> None:
+        """Directly set pan in view pixels (origin at viewport center)."""
+        self._pan_px = QPointF(float(pan.x()), float(pan.y()))
+        self._viewer.update()
+
+    def center_view(self) -> None:
+        """Center content in the viewport by zeroing the pan."""
+        self.set_pan_pixels(QPointF(0.0, 0.0))
+
     # ------------------------------------------------------------------
     # Event handlers
     # ------------------------------------------------------------------
