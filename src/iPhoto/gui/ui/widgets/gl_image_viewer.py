@@ -755,8 +755,9 @@ class GLImageViewer(QOpenGLWidget):
         else:
             self._transform_controller.reset_zoom()
         
-        # Exit crop mode after applying the crop - the cropped region is now the new "full image"
-        self.set_crop_mode(False)
+        # Update overlay bounds to match the new zoomed state
+        # The crop box should now tightly surround the entire visible image
+        self._update_crop_overlay_bounds(reset_selection=True)
 
     def _set_display_uv(self, u0: float, v0: float, u1: float, v1: float) -> None:
         normalised = self._normalise_uv_rect(u0, v0, u1, v1)
