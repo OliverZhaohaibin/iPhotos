@@ -134,6 +134,23 @@ class ViewTransformController:
         """Center content in the viewport by zeroing the pan."""
         self.set_pan_pixels(QPointF(0.0, 0.0))
 
+    def center_on_screen_point(self, point: QPointF) -> None:
+        """
+        Translate (pan) so that the given *screen* point moves to the view center.
+        The math matches set_zoom's coordinate convention (bottom-left origin).
+        """
+        dpr = self._viewer.devicePixelRatioF()
+        view_w = float(self._viewer.width()) * dpr
+        view_h = float(self._viewer.height()) * dpr
+
+        # screen (Qt top-left) -> bottom-left origin
+        anchor_bl = QPointF(point.x() * dpr, view_h - point.y() * dpr)
+        view_center = QPointF(view_w / 2.0, view_h / 2.0)
+
+        # Δpan = - current_anchor_vector
+        anchor_vector = anchor_bl - view_center
+        self.set_pan_pixels(self._pan_px - anchor_vector)
+
     # ------------------------------------------------------------------
     # Event handlers
     # ------------------------------------------------------------------
