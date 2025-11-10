@@ -112,6 +112,7 @@ class GLImageViewer(QOpenGLWidget):
         self._transform_controller.reset_zoom()
 
         self._display_uv: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 1.0)
+        self._pending_crop_uv: Optional[tuple[float, float, float, float]] = None
         self._crop_overlay = CropOverlay(self)
         self._crop_overlay.hide()
         self._crop_overlay.crop_finished.connect(self._handle_crop_overlay_finished)
@@ -326,6 +327,11 @@ class GLImageViewer(QOpenGLWidget):
             self._crop_overlay.raise_()
             self._update_crop_overlay_bounds(reset_selection=True)
         else:
+            # Exit crop mode: commit pending UV to actually apply the crop
+            try:
+                self.commit_crop()
+            except Exception:
+                pass
             self._crop_overlay.hide()
 
     def is_crop_mode_active(self) -> bool:
@@ -696,13 +702,7 @@ class GLImageViewer(QOpenGLWidget):
         )
 
     def _handle_crop_overlay_finished(self, rect01: QRectF) -> None:
-        """Auto-zoom on release (no UV change), optionally re-center by translation.
-
-        - Keep the currently displayed UV window unchanged (do NOT crop here).
-        - Uniformly scale so that the released selection grows to the containing box.
-        - If the selection is already near the center, translate (pan) to center
-          instead of "stretching to match".
-        """
+        """On release: compute pending UV (for real crop) + uniform zoom for UX."""
         if not self._crop_overlay_active:
             return
 
@@ -710,54 +710,43 @@ class GLImageViewer(QOpenGLWidget):
         if contain_rect.width() <= 0.0 or contain_rect.height() <= 0.0:
             return
 
-        # Clamp selection into the valid (letterboxed) area
-        clipped = rect01.intersected(contain_rect)
+        # 1) Convert user's released selection to UV, save as pending (don't apply immediately)
+        candidate_uv = self._overlay_rect01_to_uv(rect01)
+        if candidate_uv is not None:
+            self._pending_crop_uv = candidate_uv
+
+        # 2) Do the expected "visual zoom" - only uniform scaling, no UV change
+        clipped = rect01.intersected(contain_rect) if not rect01.isEmpty() else contain_rect
         if clipped.isEmpty():
             clipped = contain_rect
 
-        # --- 1) Calculate uniform scale multiplier (selection → fill container) ---
         sel_w = max(1e-6, float(clipped.width()))
         sel_h = max(1e-6, float(clipped.height()))
         box_w = max(1e-6, float(contain_rect.width()))
         box_h = max(1e-6, float(contain_rect.height()))
         scale_mult = min(box_w / sel_w, box_h / sel_h)
 
-        # Current interactive zoom
         current_zoom = self._transform_controller.get_zoom_factor()
         target_zoom = current_zoom * scale_mult
 
-        # Zoom anchor: take the final selection center (screen coordinates)
-        view_w = float(max(1, self.width()))
-        view_h = float(max(1, self.height()))
-        anchor = QPointF(
-            float(clipped.center().x()) * view_w,
-            float(clipped.center().y()) * view_h,
-        )
+        vw = float(max(1, self.width()))
+        vh = float(max(1, self.height()))
+        anchor = QPointF(float(clipped.center().x()) * vw, float(clipped.center().y()) * vh)
 
-        # --- 2) Apply uniform zoom with selection center as anchor (no UV change) ---
-        # This way the image and selection grow together, selection content stays unchanged,
-        # no "stretch to match" illusion
         self._transform_controller.set_zoom(target_zoom, anchor=anchor)
 
-        # --- 3) If selection near center, translate to center (not by stretching) ---
-        # 2% tolerance; adjust as needed
         dx = abs(clipped.center().x() - contain_rect.center().x())
         dy = abs(clipped.center().y() - contain_rect.center().y())
-        if dx < 0.02 and dy < 0.02:
-            # Only use translation to move anchor to center
-            if hasattr(self._transform_controller, "center_on_screen_point"):
-                self._transform_controller.center_on_screen_point(anchor)
+        if dx < 0.02 and dy < 0.02 and hasattr(self._transform_controller, "center_on_screen_point"):
+            self._transform_controller.center_on_screen_point(anchor)
 
-        # --- 4) Update overlay: let frame grow with content to avoid illusion ---
-        overlay = self._crop_overlay
-        if overlay is not None:
-            # Final frame fills visible container, showing user "frame and content scale together"
-            overlay.set_bounds_rect(contain_rect)   # Keep bounds
-            overlay.set_selection_rect(contain_rect)
-            overlay.update()
+        # 3) Visually can fill frame to container, but this won't affect saved pending UV
+        if self._crop_overlay is not None:
+            self._crop_overlay.set_bounds_rect(contain_rect)
+            self._crop_overlay.set_selection_rect(contain_rect)
+            self._crop_overlay.update()
 
-        # Key point: do NOT call self._set_display_uv(...), do NOT reset_zoom(),
-        # UV stays unchanged, only interactive zoom/pan changed.
+        # Note: don't call _set_display_uv, don't reset_zoom, real crop happens in commit_crop()
 
     def _set_display_uv(self, u0: float, v0: float, u1: float, v1: float) -> None:
         normalised = self._normalise_uv_rect(u0, v0, u1, v1)
@@ -780,3 +769,48 @@ class GLImageViewer(QOpenGLWidget):
         if abs(v_max - v_min) <= 1e-6:
             v_max = min(1.0, max(0.0, v_min + 1e-6))
         return (u_min, v_min, u_max, v_max)
+
+    def _overlay_rect01_to_uv(
+        self, sel01: QRectF
+    ) -> Optional[tuple[float, float, float, float]]:
+        """Map overlay selection (0..1, top-left origin) to UV coords based on current display_uv."""
+        contain = self._calculate_overlay_rect_for_current_uv()
+        if contain.isEmpty():
+            return None
+        # Clip user selection to visible container
+        clipped = sel01.intersected(contain)
+        if clipped.isEmpty():
+            return None
+
+        # Normalize to container interior [0,1] (top-left origin)
+        cx, cy, cw, ch = contain.left(), contain.top(), contain.width(), contain.height()
+        lx0 = (clipped.left() - cx) / max(1e-6, cw)
+        lx1 = (clipped.right() - cx) / max(1e-6, cw)
+        ly0 = (clipped.top() - cy) / max(1e-6, ch)
+        ly1 = (clipped.bottom() - cy) / max(1e-6, ch)
+
+        # Current UV (note: _normalise_uv_rect ensures sorted order)
+        u0, v0, u1, v1 = self._display_uv
+        u_min, v_min, u_max, v_max = self._normalise_uv_rect(u0, v0, u1, v1)
+        du, dv = (u_max - u_min), (v_max - v_min)
+
+        # Composite mapping: horizontal same direction, vertical needs flip
+        # because overlay is "top-to-bottom increases" while texture V is usually "bottom-to-top increases"
+        new_u0 = u_min + lx0 * du
+        new_u1 = u_min + lx1 * du
+        new_v0 = v_min + (1.0 - ly1) * dv
+        new_v1 = v_min + (1.0 - ly0) * dv
+
+        return self._normalise_uv_rect(new_u0, new_v0, new_u1, new_v1)
+
+    def commit_crop(self) -> bool:
+        """Commit pending crop UV and reset to fit-to-view baseline."""
+        if not self._pending_crop_uv:
+            return False
+        u0, v0, u1, v1 = self._pending_crop_uv
+        self._pending_crop_uv = None
+        self._set_display_uv(u0, v0, u1, v1)  # triggers cropRectChanged
+        self.reset_zoom()  # make new crop fit canvas
+        if self._crop_overlay_active:
+            self._update_crop_overlay_bounds(reset_selection=True)
+        return True
