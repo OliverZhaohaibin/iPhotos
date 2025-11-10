@@ -171,8 +171,11 @@ class GLImageViewer(QOpenGLWidget):
             # reports that the source asset is unchanged.  Only the adjustment
             # uniforms need to be refreshed in this scenario.
             self.set_adjustments(adjustments)
-            if should_reset_view:
+            if display_uv is not None:
+                self._set_display_uv(*display_uv)
+            elif should_reset_view:
                 self._set_display_uv(0.0, 0.0, 1.0, 1.0)
+            if should_reset_view:
                 self.reset_zoom()
                 if self._crop_overlay_active:
                     self._update_crop_overlay_bounds(reset_selection=True)
@@ -184,7 +187,9 @@ class GLImageViewer(QOpenGLWidget):
         self._loading_overlay.hide()
         self._time_base = time.monotonic()
 
-        if should_reset_view:
+        if display_uv is not None:
+            self._set_display_uv(*display_uv)
+        elif should_reset_view:
             self._set_display_uv(0.0, 0.0, 1.0, 1.0)
 
         if image is None or image.isNull():
@@ -218,8 +223,10 @@ class GLImageViewer(QOpenGLWidget):
             # exposes.  ``reset_view`` lets callers preserve the zoom when the
             # user toggles between detail and edit modes.
             self.reset_zoom()
-        if self._crop_overlay_active:
-            self._update_crop_overlay_bounds(reset_selection=overlay_reset)
+            if self._crop_overlay_active:
+                self._update_crop_overlay_bounds(reset_selection=True)
+        elif self._crop_overlay_active:
+            self._update_crop_overlay_bounds(reset_selection=False)
     def set_placeholder(self, pixmap) -> None:
         """Display *pixmap* without changing the tracked image source."""
 
@@ -733,6 +740,7 @@ class GLImageViewer(QOpenGLWidget):
         if normalised == self._display_uv:
             return
         self._display_uv = normalised
+        self.cropRectChanged.emit(self._display_uv)
         self.update()
 
     @staticmethod
