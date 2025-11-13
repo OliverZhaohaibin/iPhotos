@@ -76,6 +76,18 @@ class EditSession(QObject):
         self._values["BW_Grain"] = 0.0
         self._ranges["BW_Grain"] = (0.0, 1.0)
 
+        # Cropping parameters are stored in normalised image space so the
+        # session can persist non-destructive crop boxes alongside colour
+        # adjustments.  ``Crop_*`` values are clamped to ``[0.0, 1.0]``.
+        self._values["Crop_CX"] = 0.5
+        self._ranges["Crop_CX"] = (0.0, 1.0)
+        self._values["Crop_CY"] = 0.5
+        self._ranges["Crop_CY"] = (0.0, 1.0)
+        self._values["Crop_W"] = 1.0
+        self._ranges["Crop_W"] = (0.0, 1.0)
+        self._values["Crop_H"] = 1.0
+        self._ranges["Crop_H"] = (0.0, 1.0)
+
     # ------------------------------------------------------------------
     # Accessors
     def value(self, key: str) -> float | bool:
@@ -156,6 +168,14 @@ class EditSession(QObject):
             "BW_Tone": 0.0,
             "BW_Grain": 0.0,
         })
+        defaults.update(
+            {
+                "Crop_CX": 0.5,
+                "Crop_CY": 0.5,
+                "Crop_W": 1.0,
+                "Crop_H": 1.0,
+            }
+        )
         self.set_values(defaults, emit_individual=True)
         self.resetPerformed.emit()
 
