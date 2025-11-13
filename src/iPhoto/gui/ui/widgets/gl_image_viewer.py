@@ -1072,51 +1072,48 @@ class GLImageViewer(QOpenGLWidget):
             self.setCursor(cursor_for_handle(handle))
             return
 
-        delta = pos - self._crop_last_pos
+        previous_pos = QPointF(self._crop_last_pos)
+        delta_view = pos - previous_pos
         self._crop_last_pos = QPointF(pos)
         self._crop_faded_out = False
-        dpr = self.devicePixelRatioF()
-        scale = self._effective_scale()
-        if scale <= 1e-6:
-            return
 
-        image_delta = QPointF(delta.x() * dpr / scale, delta.y() * dpr / scale)
-        tex_size = self._renderer.texture_size()
         if self._crop_drag_handle == CropHandle.INSIDE:
-            # Dragging inside the crop box is interpreted as "grabbing" the image
-            # itself.  To reproduce the behaviour from ``demo/crop_final.py`` the
-            # crop window must move opposite to the pointer while the image
-            # content follows the cursor.  ``image_delta`` expresses the pointer
-            # motion in texture pixels, therefore the crop rectangle translates by
-            # ``-image_delta`` whereas the viewer re-centres on the updated crop
-            # centre.  Re-centring is done after clamping so the texture never
-            # exposes black bars inside the crop overlay.
-            inverse_delta = QPointF(-image_delta.x(), -image_delta.y())
-            self._crop_state.translate_pixels(inverse_delta, tex_size)
+            # Convert the pointer delta to texture-space coordinates so the
+            # image can track the cursor exactly like ``demo/crop_final.py``.
+            # ``_viewport_to_image`` reports positions in image pixels with the
+            # conventional top-left origin, therefore subtracting the previous
+            # position from the current position yields the motion that the
+            # content must follow.  The image centre is translated by the
+            # inverse vector, mimicking the "grab image" interaction without
+            # ever moving the crop rectangle itself.
+            previous_image = self._viewport_to_image(previous_pos)
+            current_image = self._viewport_to_image(pos)
+            translation = QPointF(
+                previous_image.x() - current_image.x(),
+                previous_image.y() - current_image.y(),
+            )
 
-            actual_scale = self._effective_scale()
-            crop_center = self._crop_state.center_pixels(*tex_size)
-            clamped_center = self._clamp_image_center_to_crop(crop_center, actual_scale)
-
-            if (
-                abs(clamped_center.x() - crop_center.x()) > 1e-4
-                or abs(clamped_center.y() - crop_center.y()) > 1e-4
-            ):
-                # When the pan clamp nudges the image back we mirror the delta to
-                # the crop rectangle so the overlay remains aligned with the
-                # visible content.
-                correction = QPointF(
-                    clamped_center.x() - crop_center.x(),
-                    clamped_center.y() - crop_center.y(),
+            if abs(translation.x()) > 1e-6 or abs(translation.y()) > 1e-6:
+                centre = self._image_center_pixels()
+                new_centre = QPointF(
+                    centre.x() + translation.x(),
+                    centre.y() + translation.y(),
                 )
-                self._crop_state.translate_pixels(correction, tex_size)
-                crop_center = self._crop_state.center_pixels(*tex_size)
-
-            self._set_image_center_pixels(crop_center, scale=actual_scale)
-            self._emit_crop_changed()
+                actual_scale = self._effective_scale()
+                clamped_centre = self._clamp_image_center_to_crop(new_centre, actual_scale)
+                self._set_image_center_pixels(clamped_centre, scale=actual_scale)
         else:
+            scale = self._effective_scale()
+            if scale <= 1e-6:
+                return
+            dpr = self.devicePixelRatioF()
+            image_delta = QPointF(
+                delta_view.x() * dpr / scale,
+                delta_view.y() * dpr / scale,
+            )
+            tex_size = self._renderer.texture_size()
             self._crop_state.drag_edge_pixels(self._crop_drag_handle, image_delta, tex_size)
-            self._auto_shrink_on_drag(delta)
+            self._auto_shrink_on_drag(delta_view)
             self._emit_crop_changed()
 
         self._restart_crop_idle()
@@ -1176,8 +1173,48 @@ class GLImageViewer(QOpenGLWidget):
             self._stop_crop_animation()
             self._crop_faded_out = False
             self._stop_crop_idle()
-            self._transform_controller.handle_wheel(event)
+            if not self._renderer or not self._renderer.has_texture():
+                return
+
+            angle = event.angleDelta().y()
+            if angle == 0:
+                self._restart_crop_idle()
+                return
+
+            tex_w, tex_h = self._renderer.texture_size()
+            vw, vh = self._view_dimensions_device_px()
+            base_scale = compute_fit_to_view_scale((tex_w, tex_h), vw, vh)
+            if base_scale <= 1e-6:
+                return
+
+            # Apply the wheel gesture in the same spirit as ``demo/crop_final.py``:
+            # zoom the image content around the pointer while the crop overlay
+            # remains stationary.  The dynamic minimum prevents shrinking the
+            # texture below the crop rectangle, avoiding any black bars inside
+            # the frame.
+            crop_rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
+            crop_width = max(1.0, crop_rect["right"] - crop_rect["left"])
+            crop_height = max(1.0, crop_rect["bottom"] - crop_rect["top"])
+            min_zoom_for_crop = max(
+                crop_width / max(1.0, float(tex_w)),
+                crop_height / max(1.0, float(tex_h)),
+            ) / max(base_scale, 1e-6)
+
+            current_zoom = self._transform_controller.get_zoom_factor()
+            factor = math.pow(1.0015, angle)
+            min_zoom = max(self._transform_controller.minimum_zoom(), min_zoom_for_crop)
+            max_zoom = self._transform_controller.maximum_zoom()
+            new_zoom = max(min_zoom, min(max_zoom, current_zoom * factor))
+
+            anchor = event.position()
+            self._transform_controller.set_zoom(new_zoom, anchor=anchor)
+
+            actual_scale = self._effective_scale()
+            centre = self._image_center_pixels()
+            clamped_centre = self._clamp_image_center_to_crop(centre, actual_scale)
+            self._set_image_center_pixels(clamped_centre, scale=actual_scale)
             self._restart_crop_idle()
+            event.accept()
             return
         self._transform_controller.handle_wheel(event)
 
