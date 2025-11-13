@@ -780,17 +780,32 @@ class GLImageViewer(QOpenGLWidget):
         crop_rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
 
         # Compute the admissible centre range by demanding that every edge of the
-        # viewport (centre ± half_view_*) remains inside the crop bounds.  When
-        # zoomed out so far that the viewport is wider than the crop we collapse
-        # the interval to the crop's midpoint to keep the behaviour stable.
-        min_center_x = crop_rect["left"] + half_view_w
-        max_center_x = crop_rect["right"] - half_view_w
+        # viewport (centre ± half_view_*) remains outside-or-on the crop limits,
+        # i.e. the zoomed viewport must fully cover the crop rectangle.  This
+        # mirrors ``demo/crop_final.py`` where the camera offset is clamped so the
+        # crop never peeks beyond the view.  Because the crop is expressed in a
+        # top-left origin space we reason in the same coordinates to avoid any
+        # extra axis flips.
+        #
+        # Horizontal bounds: the viewport's right edge (centre.x + half_view_w)
+        # has to sit to the right of the crop's right edge.  Therefore the
+        # minimum admissible centre is ``crop_rect["right"] - half_view_w``.
+        min_center_x = crop_rect["right"] - half_view_w
+        # Conversely the viewport's left edge (centre.x - half_view_w) must lie to
+        # the left of the crop's left edge, giving ``crop_rect["left"] +
+        # half_view_w`` as the maximum admissible centre.
+        max_center_x = crop_rect["left"] + half_view_w
         if min_center_x > max_center_x:
             midpoint_x = 0.5 * (crop_rect["left"] + crop_rect["right"])
             min_center_x = max_center_x = midpoint_x
 
-        min_center_y = crop_rect["top"] + half_view_h
-        max_center_y = crop_rect["bottom"] - half_view_h
+        # Vertical bounds follow the same reasoning.  The viewport's bottom edge
+        # (centre.y + half_view_h) must remain below the crop's bottom edge which
+        # yields the minimum admissible centre.
+        min_center_y = crop_rect["bottom"] - half_view_h
+        # The viewport's top edge (centre.y - half_view_h) must sit above the
+        # crop's top edge, supplying the maximum admissible centre.
+        max_center_y = crop_rect["top"] + half_view_h
         if min_center_y > max_center_y:
             midpoint_y = 0.5 * (crop_rect["top"] + crop_rect["bottom"])
             min_center_y = max_center_y = midpoint_y
