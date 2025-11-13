@@ -1083,10 +1083,36 @@ class GLImageViewer(QOpenGLWidget):
         image_delta = QPointF(delta.x() * dpr / scale, delta.y() * dpr / scale)
         tex_size = self._renderer.texture_size()
         if self._crop_drag_handle == CropHandle.INSIDE:
-            self._crop_state.translate_pixels(image_delta, tex_size)
-            new_center = self._image_center_pixels() + image_delta
-            clamped = self._clamp_image_center_to_crop(new_center, self._effective_scale())
-            self._set_image_center_pixels(clamped)
+            # Dragging inside the crop box is interpreted as "grabbing" the image
+            # itself.  To reproduce the behaviour from ``demo/crop_final.py`` the
+            # crop window must move opposite to the pointer while the image
+            # content follows the cursor.  ``image_delta`` expresses the pointer
+            # motion in texture pixels, therefore the crop rectangle translates by
+            # ``-image_delta`` whereas the viewer re-centres on the updated crop
+            # centre.  Re-centring is done after clamping so the texture never
+            # exposes black bars inside the crop overlay.
+            inverse_delta = QPointF(-image_delta.x(), -image_delta.y())
+            self._crop_state.translate_pixels(inverse_delta, tex_size)
+
+            actual_scale = self._effective_scale()
+            crop_center = self._crop_state.center_pixels(*tex_size)
+            clamped_center = self._clamp_image_center_to_crop(crop_center, actual_scale)
+
+            if (
+                abs(clamped_center.x() - crop_center.x()) > 1e-4
+                or abs(clamped_center.y() - crop_center.y()) > 1e-4
+            ):
+                # When the pan clamp nudges the image back we mirror the delta to
+                # the crop rectangle so the overlay remains aligned with the
+                # visible content.
+                correction = QPointF(
+                    clamped_center.x() - crop_center.x(),
+                    clamped_center.y() - crop_center.y(),
+                )
+                self._crop_state.translate_pixels(correction, tex_size)
+                crop_center = self._crop_state.center_pixels(*tex_size)
+
+            self._set_image_center_pixels(crop_center, scale=actual_scale)
             self._emit_crop_changed()
         else:
             self._crop_state.drag_edge_pixels(self._crop_drag_handle, image_delta, tex_size)
