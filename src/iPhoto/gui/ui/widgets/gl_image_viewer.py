@@ -760,50 +760,44 @@ class GLImageViewer(QOpenGLWidget):
     def _clamp_image_center_to_crop(self, center: QPointF, scale: float) -> QPointF:
         """Return *center* limited so the crop box always sees valid pixels.
 
-        The previous implementation derived the bounds from the viewport size,
-        effectively forcing the entire window to remain within the texture.
-        That restriction prevented panning the image inside a small crop box
-        because the widget would clamp long before the crop region reached the
-        real image borders.  The new logic mirrors the behaviour of
-        ``demo/crop_final.py``: it only cares about the crop rectangle itself,
-        meaning we may move the image freely until the crop edges coincide with
-        the underlying texture boundary.
+        The permissible range is derived from the portion of the texture that
+        must remain visible *inside the crop overlay*.  Unlike the legacy
+        implementation—which forced the whole viewport to stay within the
+        texture—this formulation mirrors ``demo/crop_final.py`` and allows the
+        image to travel freely until a crop edge would reveal empty space.  The
+        calculation works in image-space pixels and therefore plays nicely with
+        the normalised crop state without introducing additional coordinate
+        transforms.
 
-        The helper works in image-space pixels which keeps the maths simple:
-        ``crop_rect`` is already reported in that coordinate system and the
-        proposed *center* value is expressed in the same units.  We derive the
-        amount of usable padding on each side of the crop box (how much texture
-        remains to the left/right/top/bottom) and use those margins to compute
-        how far the image centre may travel.  The scale factor is accepted for
-        API compatibility even though the clamping ultimately depends on the
-        image-space geometry only.
+        ``scale`` represents the number of device pixels per image pixel.  It
+        tells us how many texture pixels are required to fill the viewport and
+        consequently how far the image centre may move before the crop would
+        overrun the actual texture boundaries.
         """
 
-        del scale  # The calculation is purely image-space; keep signature stable.
-
-        if not self._renderer or not self._renderer.has_texture():
+        if (
+            not self._renderer
+            or not self._renderer.has_texture()
+            or scale <= 1e-9
+        ):
             return center
 
         tex_w, tex_h = self._renderer.texture_size()
-        crop_rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
+        vw, vh = self._view_dimensions_device_px()
 
+        half_view_w = (float(vw) / float(scale)) * 0.5
+        half_view_h = (float(vh) / float(scale)) * 0.5
+
+        crop_rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
         crop_left = float(crop_rect["left"])
         crop_top = float(crop_rect["top"])
         crop_right = float(crop_rect["right"])
         crop_bottom = float(crop_rect["bottom"])
 
-        crop_center_x = (crop_left + crop_right) * 0.5
-        crop_center_y = (crop_top + crop_bottom) * 0.5
-
-        left_margin = max(0.0, crop_left)
-        right_margin = max(0.0, float(tex_w) - crop_right)
-        top_margin = max(0.0, crop_top)
-        bottom_margin = max(0.0, float(tex_h) - crop_bottom)
-
-        min_center_x = crop_center_x - right_margin
-        max_center_x = crop_center_x + left_margin
-        min_center_y = crop_center_y - bottom_margin
-        max_center_y = crop_center_y + top_margin
+        min_center_x = crop_right - half_view_w
+        max_center_x = crop_left + half_view_w
+        min_center_y = crop_bottom - half_view_h
+        max_center_y = crop_top + half_view_h
 
         min_center_x = max(0.0, min_center_x)
         max_center_x = min(float(tex_w), max_center_x)
@@ -811,13 +805,15 @@ class GLImageViewer(QOpenGLWidget):
         max_center_y = min(float(tex_h), max_center_y)
 
         if min_center_x > max_center_x:
-            middle_x = max(0.0, min(float(tex_w), crop_center_x))
-            min_center_x = middle_x
-            max_center_x = middle_x
+            crop_centre_x = (crop_left + crop_right) * 0.5
+            clamped = max(0.0, min(float(tex_w), crop_centre_x))
+            min_center_x = clamped
+            max_center_x = clamped
         if min_center_y > max_center_y:
-            middle_y = max(0.0, min(float(tex_h), crop_center_y))
-            min_center_y = middle_y
-            max_center_y = middle_y
+            crop_centre_y = (crop_top + crop_bottom) * 0.5
+            clamped = max(0.0, min(float(tex_h), crop_centre_y))
+            min_center_y = clamped
+            max_center_y = clamped
 
         clamped_x = max(min_center_x, min(max_center_x, float(center.x())))
         clamped_y = max(min_center_y, min(max_center_y, float(center.y())))
@@ -1181,28 +1177,32 @@ class GLImageViewer(QOpenGLWidget):
 
             if abs(translation.x()) > 1e-6 or abs(translation.y()) > 1e-6:
                 centre = self._image_center_pixels()
-                new_centre = QPointF(
-                    centre.x() + translation.x(),
-                    centre.y() + translation.y(),
-                )
                 actual_scale = self._effective_scale()
-                clamped_centre = self._clamp_image_center_to_crop(new_centre, actual_scale)
+                clamped_centre = self._clamp_image_center_to_crop(
+                    QPointF(centre.x() + translation.x(), centre.y() + translation.y()),
+                    actual_scale,
+                )
 
-                # The clamp may reduce the requested translation to prevent
-                # exposing empty space around the crop.  We therefore compute
-                # the *effective* motion that will be applied to the image
-                # centre and mirror that delta onto the crop state.  Doing so
-                # keeps the overlay fixed on screen while still updating the
-                # crop rectangle to reference the newly revealed image area.
                 effective_delta = QPointF(
                     clamped_centre.x() - centre.x(),
                     clamped_centre.y() - centre.y(),
                 )
                 if abs(effective_delta.x()) > 1e-6 or abs(effective_delta.y()) > 1e-6:
                     if self._renderer and self._renderer.has_texture():
-                        tex_size = self._renderer.texture_size()
-                        self._crop_state.translate_pixels(effective_delta, tex_size)
-                        self._emit_crop_changed()
+                        tex_w, tex_h = self._renderer.texture_size()
+                        before_center = self._crop_state.center_pixels(tex_w, tex_h)
+                        # ``translate_pixels`` performs normalised arithmetic and
+                        # clamps internally; measuring before/after lets us skip
+                        # the expensive ``cropChanged`` emission when the crop
+                        # rectangle is already touching an edge and cannot
+                        # follow the pointer any further.
+                        self._crop_state.translate_pixels(effective_delta, (tex_w, tex_h))
+                        after_center = self._crop_state.center_pixels(tex_w, tex_h)
+                        if (
+                            abs(after_center.x() - before_center.x()) > 1e-6
+                            or abs(after_center.y() - before_center.y()) > 1e-6
+                        ):
+                            self._emit_crop_changed()
                 self._set_image_center_pixels(clamped_centre, scale=actual_scale)
         else:
             scale = self._effective_scale()
