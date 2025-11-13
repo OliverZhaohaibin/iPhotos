@@ -127,3 +127,105 @@
 * `lexi report`：输出相册统计与异常
 
 ---
+
+## 11. OpenGL 开发规范
+
+### 1. 涉及文件清单
+
+目前工程中涉及 OpenGL 直接调用或 GL 上下文管理的文件如下：
+
+* **核心图像查看器 (Pure GL)**
+
+  * `src/iPhoto/gui/ui/widgets/gl_image_viewer.py`（Widget 宿主与事件处理）
+  * `src/iPhoto/gui/ui/widgets/gl_renderer.py`（GL 渲染指令封装）
+  * `src/iPhoto/gui/ui/widgets/gl_image_viewer.vert`（Vertex Shader）
+  * `src/iPhoto/gui/ui/widgets/gl_image_viewer.frag`（Fragment Shader）
+
+* **地图组件 (GL Backed)**
+
+  * `maps/map_widget/map_gl_widget.py`（继承自 `QOpenGLWidget`，但主要使用 `QPainter` 混合绘制）
+
+---
+
+### 2. GL 版本标准
+
+* **OpenGL 版本**：**3.3 Core Profile**
+* **GLSL 版本**：`#version 330 core`
+* **Qt 接口**：必须使用 `QOpenGLFunctions_3_3_Core` 调用 API，禁止使用固定管线指令。
+* **Surface Format**
+
+```python
+fmt = QSurfaceFormat()
+fmt.setVersion(3, 3)
+fmt.setProfile(QSurfaceFormat.CoreProfile)
+```
+
+---
+
+### 3. Context 开发规范
+
+#### ✔ 架构分离
+
+* **Widget 层 (`GLImageViewer`)**
+
+  * 负责事件处理（鼠标、键盘、滚轮、Resize）
+  * 管理生命周期（`initializeGL / resizeGL / paintGL`）
+  * 保证在资源创建/销毁前调用 `makeCurrent()` / `doneCurrent()`
+
+* **Renderer 层 (`GLRenderer`)**
+
+  * 持有所有 GL 资源（Program / VAO / Buffer / Texture）
+  * 不依赖 Qt Widget，只负责“发 GL 指令”
+  * 禁止在构造函数中创建 GL 资源（必须在 Context 激活后再做）
+
+#### ✔ 资源生命周期
+
+* **创建**
+
+  * 必须在 `initializeGL()` 内执行
+  * 或由 Widget 在 `makeCurrent()` 后显式调用 `renderer.initialize()`
+
+* **销毁**
+
+  * 必须在 Context 活跃时删除纹理/VAO/program（Python GC 不可靠）
+  * 需要一个显式的 `shutdown()` 或 `destroy_resources()` 方法
+
+* **上下文安全**
+
+  * 所有涉及 GL 的函数都必须“假定有可能 Context 尚未创建”
+  * 若 Context 不存在：跳过绘制并打印 warning（不能崩溃）
+
+* **防御性编程**
+
+  * 每个渲染入口前都应检查资源是否初始化：
+    `if self._program is None: return`
+
+---
+
+### 4. 坐标系与 Y 轴统一说明
+
+#### ✔ 原则：**逻辑层使用 Top-Left，渲染层在 Shader 中统一 Flip**
+
+* **UI 逻辑坐标系（Python侧）**
+
+  * 原点为左上角 `(0, 0)`
+  * Y 轴向下
+  * 所有 Crop / Pan / Zoom 操作都在此坐标系下运行
+  * `CropBoxState` 存储归一化坐标（0~1）也遵循此体系
+
+* **纹理上传**
+
+  * `QImage` 原始数据直接上传
+  * **禁止在 CPU 端做 `mirrored()`**（避免额外遍历 & 复制）
+
+* **Shader 中处理 Flip（统一）**
+
+```glsl
+// gl_image_viewer.frag
+uv.y = 1.0 - uv.y;
+```
+
+这样可确保 GPU 显示的方向与 UI 逻辑坐标一致，不会因为 Qt / OpenGL 的 Y 轴差异引起“倒置 / 上下颠倒 / 拖动反向”等问题。
+
+---
+
