@@ -790,35 +790,75 @@ class GLImageViewer(QOpenGLWidget):
         # Horizontal bounds: the viewport's right edge (centre.x + half_view_w)
         # has to sit to the right of the crop's right edge.  Therefore the
         # minimum admissible centre is ``crop_rect["right"] - half_view_w``.
-        min_center_x = crop_rect["right"] - half_view_w
-        # Conversely the viewport's left edge (centre.x - half_view_w) must lie to
-        # the left of the crop's left edge, giving ``crop_rect["left"] +
-        # half_view_w`` as the maximum admissible centre.
-        max_center_x = crop_rect["left"] + half_view_w
-        if min_center_x > max_center_x:
-            midpoint_x = 0.5 * (crop_rect["left"] + crop_rect["right"])
-            min_center_x = max_center_x = midpoint_x
+        def _clamp_axis(
+            value: float,
+            crop_min: float,
+            crop_max: float,
+            half_view: float,
+            texture_extent: float,
+        ) -> float:
+            """Clamp a single axis so the viewport covers the crop rectangle.
 
-        # Vertical bounds follow the same reasoning.  The viewport's bottom edge
-        # (centre.y + half_view_h) must remain below the crop's bottom edge which
-        # yields the minimum admissible centre.
-        min_center_y = crop_rect["bottom"] - half_view_h
-        # The viewport's top edge (centre.y - half_view_h) must sit above the
-        # crop's top edge, supplying the maximum admissible centre.
-        max_center_y = crop_rect["top"] + half_view_h
-        if min_center_y > max_center_y:
-            midpoint_y = 0.5 * (crop_rect["top"] + crop_rect["bottom"])
-            min_center_y = max_center_y = midpoint_y
+            The helper mirrors ``demo/crop_final.py`` but folds in two extra edge
+            cases that the production widget has to cope with:
 
-        # Finally clip against the texture edges so the viewport never wanders
-        # outside the image when the crop happens to coincide with the borders.
-        min_center_x = max(min_center_x, half_view_w)
-        max_center_x = min(max_center_x, tex_w - half_view_w)
-        min_center_y = max(min_center_y, half_view_h)
-        max_center_y = min(max_center_y, tex_h - half_view_h)
+            * When the zoomed viewport becomes narrower than the crop rectangle
+              (``2 * half_view < crop_max - crop_min``) there exists no centre
+              that satisfies the "cover" constraints.  In that scenario we fall
+              back to the crop centre so that subsequent logic does not snap the
+              image to one of the crop edges.
+            * When the zoomed viewport is wider than the entire image (which can
+              happen if the window is resized while highly zoomed out) the
+              admissible range from the texture bounds collapses.  We collapse
+              both ends to the image midpoint to avoid any oscillation.
 
-        clamped_x = max(min_center_x, min(max_center_x, center.x()))
-        clamped_y = max(min_center_y, min(max_center_y, center.y()))
+            The final interval intersection is projected back onto the incoming
+            value so the function behaves like a traditional clamp when the
+            constraints are compatible.
+            """
+
+            # Bounds enforced by the image itself.  ``image_min``/``image_max``
+            # describe where the viewport centre can live before exposing black
+            # bars.
+            image_min = half_view
+            image_max = texture_extent - half_view
+            if image_min > image_max:
+                midpoint = texture_extent * 0.5
+                image_min = image_max = midpoint
+
+            # Bounds enforced by the crop coverage requirement.  The viewport
+            # must extend at least as far left/right (or top/bottom) as the crop
+            # rectangle.
+            coverage_min = crop_max - half_view
+            coverage_max = crop_min + half_view
+            if coverage_min > coverage_max:
+                midpoint = 0.5 * (crop_min + crop_max)
+                coverage_min = coverage_max = midpoint
+
+            lower = max(coverage_min, image_min)
+            upper = min(coverage_max, image_max)
+            if lower > upper:
+                midpoint = 0.5 * (lower + upper)
+                # Clamp once more against the image bounds so that the fallback
+                # value never requests a pan beyond the texture limits.
+                lower = upper = min(max(midpoint, min(image_min, image_max)), max(image_min, image_max))
+
+            return min(max(value, lower), upper)
+
+        clamped_x = _clamp_axis(
+            center.x(),
+            crop_rect["left"],
+            crop_rect["right"],
+            half_view_w,
+            float(tex_w),
+        )
+        clamped_y = _clamp_axis(
+            center.y(),
+            crop_rect["top"],
+            crop_rect["bottom"],
+            half_view_h,
+            float(tex_h),
+        )
         return QPointF(clamped_x, clamped_y)
 
     def _crop_center_viewport_point(self) -> QPointF:
