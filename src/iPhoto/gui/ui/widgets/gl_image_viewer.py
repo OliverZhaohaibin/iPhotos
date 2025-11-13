@@ -689,6 +689,41 @@ class GLImageViewer(QOpenGLWidget):
         vh = max(1.0, float(self.height()) * dpr)
         return vw, vh
 
+    def _screen_to_world(self, screen_pt: QPointF) -> QPointF:
+        """Map a Qt screen coordinate to the GL view's centre-origin space.
+
+        Qt reports positions in logical pixels with the origin at the top-left and
+        a downward pointing Y axis.  The renderer however reasons about vectors in
+        device pixels where the origin lives at the viewport centre and the Y axis
+        grows upwards.  This helper performs the origin shift, the device pixel
+        conversion and the Y flip so every caller receives a world-space vector
+        that matches what the shader expects.
+        """
+
+        dpr = self.devicePixelRatioF()
+        vw, vh = self._view_dimensions_device_px()
+        sx = float(screen_pt.x()) * dpr
+        sy = float(screen_pt.y()) * dpr
+        world_x = sx - (vw * 0.5)
+        world_y = (vh * 0.5) - sy
+        return QPointF(world_x, world_y)
+
+    def _world_to_screen(self, world_vec: QPointF) -> QPointF:
+        """Convert a GL centre-origin vector into a Qt screen coordinate.
+
+        The inverse of :meth:`_screen_to_world`: a world vector expressed in
+        pixels relative to the viewport centre (Y up) is translated back into the
+        top-left origin, Y-down coordinate system that Qt painting routines use.
+        The return value is expressed in logical pixels to remain consistent with
+        Qt's high-DPI handling.
+        """
+
+        dpr = self.devicePixelRatioF()
+        vw, vh = self._view_dimensions_device_px()
+        sx = float(world_vec.x()) + (vw * 0.5)
+        sy = (vh * 0.5) - float(world_vec.y())
+        return QPointF(sx / dpr, sy / dpr)
+
     def _effective_scale(self) -> float:
         if not self._renderer or not self._renderer.has_texture():
             return 1.0
@@ -704,7 +739,10 @@ class GLImageViewer(QOpenGLWidget):
         scale = self._effective_scale()
         pan = self._transform_controller.get_pan_pixels()
         centre_x = (tex_w / 2.0) - (pan.x() / scale)
-        centre_y = (tex_h / 2.0) - (pan.y() / scale)
+        # ``pan.y`` grows upwards in world space, therefore the corresponding
+        # image coordinate moves towards the bottom (larger Y values) in the
+        # conventional top-left origin texture space.
+        centre_y = (tex_h / 2.0) + (pan.y() / scale)
         return QPointF(centre_x, centre_y)
 
     def _set_image_center_pixels(self, center: QPointF, *, scale: float | None = None) -> None:
@@ -714,7 +752,9 @@ class GLImageViewer(QOpenGLWidget):
         scale_value = scale if scale is not None else self._effective_scale()
         delta_x = center.x() - (tex_w / 2.0)
         delta_y = center.y() - (tex_h / 2.0)
-        pan = QPointF(-delta_x * scale_value, -delta_y * scale_value)
+        # ``delta_y`` measures how far the requested centre sits below the image
+        # mid-line; in world space that translates to a positive upward pan.
+        pan = QPointF(-delta_x * scale_value, delta_y * scale_value)
         self._transform_controller.set_pan_pixels(pan)
 
     def _clamp_image_center_to_crop(self, center: QPointF, scale: float) -> QPointF:
@@ -743,36 +783,33 @@ class GLImageViewer(QOpenGLWidget):
     def _image_to_viewport(self, x: float, y: float) -> QPointF:
         if not self._renderer or not self._renderer.has_texture():
             return QPointF()
-        vw, vh = self._view_dimensions_device_px()
         scale = self._effective_scale()
         pan = self._transform_controller.get_pan_pixels()
         tex_w, tex_h = self._renderer.texture_size()
         tex_vector_x = x - (tex_w / 2.0)
         tex_vector_y = y - (tex_h / 2.0)
-        view_vector_x = tex_vector_x * scale + pan.x()
-        view_vector_y = tex_vector_y * scale + pan.y()
-        view_centre_x = vw * 0.5
-        view_centre_y = vh * 0.5
-        frag_x = view_vector_x + view_centre_x
-        frag_y = view_vector_y + view_centre_y
-        dpr = self.devicePixelRatioF()
-        return QPointF(frag_x / dpr, frag_y / dpr)
+        world_vector = QPointF(
+            tex_vector_x * scale + pan.x(),
+            -(tex_vector_y * scale) + pan.y(),
+        )
+        # ``world_vector`` is now expressed in the GL-friendly centre-origin
+        # space, so the last step is to convert it back to Qt's screen space for
+        # hit testing and overlay rendering.
+        return self._world_to_screen(world_vector)
 
     def _viewport_to_image(self, point: QPointF) -> QPointF:
         if not self._renderer or not self._renderer.has_texture():
             return QPointF()
-        dpr = self.devicePixelRatioF()
-        vw, vh = self._view_dimensions_device_px()
         pan = self._transform_controller.get_pan_pixels()
         scale = self._effective_scale()
-        view_centre = QPointF(vw * 0.5, vh * 0.5)
-        frag = QPointF(point.x() * dpr, point.y() * dpr)
-        view_vector = frag - view_centre
-        tex_vector_x = (view_vector.x() - pan.x()) / scale
-        tex_vector_y = (view_vector.y() - pan.y()) / scale
+        world_vec = self._screen_to_world(point)
+        tex_vector_x = (world_vec.x() - pan.x()) / scale
+        tex_vector_y = (world_vec.y() - pan.y()) / scale
         tex_w, tex_h = self._renderer.texture_size()
         tex_x = tex_w / 2.0 + tex_vector_x
-        tex_y = tex_h / 2.0 + tex_vector_y
+        # Convert the world-space Y (upwards positive) back into image space
+        # where increasing values travel down the texture.
+        tex_y = tex_h / 2.0 - tex_vector_y
         return QPointF(tex_x, tex_y)
 
     def _current_crop_rect_pixels(self) -> Optional[dict[str, float]]:
