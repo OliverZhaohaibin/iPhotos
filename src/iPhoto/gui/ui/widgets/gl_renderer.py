@@ -23,6 +23,7 @@ from PySide6.QtOpenGL import (
     QOpenGLVertexArrayObject,
 )
 from OpenGL import GL as gl
+from shiboken6.Shiboken import VoidPtr
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -391,7 +392,7 @@ class GLRenderer:
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, int(self._overlay_vbo))
             gl.glBufferData(gl.GL_ARRAY_BUFFER, vertices.nbytes, vertices, gl.GL_DYNAMIC_DRAW)
             gf.glEnableVertexAttribArray(0)
-            gf.glVertexAttribPointer(0, 2, gl.GL_FLOAT, False, 0, None)
+            gf.glVertexAttribPointer(0, 2, gl.GL_FLOAT, False, 0, VoidPtr(0))
             gf.glDrawArrays(mode, 0, int(vertices.size // 2))
             gf.glDisableVertexAttribArray(0)
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
