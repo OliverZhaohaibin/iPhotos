@@ -758,19 +758,69 @@ class GLImageViewer(QOpenGLWidget):
         self._transform_controller.set_pan_pixels(pan)
 
     def _clamp_image_center_to_crop(self, center: QPointF, scale: float) -> QPointF:
+        """Return *center* limited so the crop box always sees valid pixels.
+
+        The previous implementation derived the bounds from the viewport size,
+        effectively forcing the entire window to remain within the texture.
+        That restriction prevented panning the image inside a small crop box
+        because the widget would clamp long before the crop region reached the
+        real image borders.  The new logic mirrors the behaviour of
+        ``demo/crop_final.py``: it only cares about the crop rectangle itself,
+        meaning we may move the image freely until the crop edges coincide with
+        the underlying texture boundary.
+
+        The helper works in image-space pixels which keeps the maths simple:
+        ``crop_rect`` is already reported in that coordinate system and the
+        proposed *center* value is expressed in the same units.  We derive the
+        amount of usable padding on each side of the crop box (how much texture
+        remains to the left/right/top/bottom) and use those margins to compute
+        how far the image centre may travel.  The scale factor is accepted for
+        API compatibility even though the clamping ultimately depends on the
+        image-space geometry only.
+        """
+
+        del scale  # The calculation is purely image-space; keep signature stable.
+
         if not self._renderer or not self._renderer.has_texture():
             return center
+
         tex_w, tex_h = self._renderer.texture_size()
-        vw, vh = self._view_dimensions_device_px()
-        half_view_w = (vw / scale) * 0.5
-        half_view_h = (vh / scale) * 0.5
         crop_rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
-        min_center_x = max(crop_rect["right"] - half_view_w, half_view_w)
-        max_center_x = min(crop_rect["left"] + half_view_w, tex_w - half_view_w)
-        min_center_y = max(crop_rect["bottom"] - half_view_h, half_view_h)
-        max_center_y = min(crop_rect["top"] + half_view_h, tex_h - half_view_h)
-        clamped_x = max(min_center_x, min(max_center_x, center.x()))
-        clamped_y = max(min_center_y, min(max_center_y, center.y()))
+
+        crop_left = float(crop_rect["left"])
+        crop_top = float(crop_rect["top"])
+        crop_right = float(crop_rect["right"])
+        crop_bottom = float(crop_rect["bottom"])
+
+        crop_center_x = (crop_left + crop_right) * 0.5
+        crop_center_y = (crop_top + crop_bottom) * 0.5
+
+        left_margin = max(0.0, crop_left)
+        right_margin = max(0.0, float(tex_w) - crop_right)
+        top_margin = max(0.0, crop_top)
+        bottom_margin = max(0.0, float(tex_h) - crop_bottom)
+
+        min_center_x = crop_center_x - right_margin
+        max_center_x = crop_center_x + left_margin
+        min_center_y = crop_center_y - bottom_margin
+        max_center_y = crop_center_y + top_margin
+
+        min_center_x = max(0.0, min_center_x)
+        max_center_x = min(float(tex_w), max_center_x)
+        min_center_y = max(0.0, min_center_y)
+        max_center_y = min(float(tex_h), max_center_y)
+
+        if min_center_x > max_center_x:
+            middle_x = max(0.0, min(float(tex_w), crop_center_x))
+            min_center_x = middle_x
+            max_center_x = middle_x
+        if min_center_y > max_center_y:
+            middle_y = max(0.0, min(float(tex_h), crop_center_y))
+            min_center_y = middle_y
+            max_center_y = middle_y
+
+        clamped_x = max(min_center_x, min(max_center_x, float(center.x())))
+        clamped_y = max(min_center_y, min(max_center_y, float(center.y())))
         return QPointF(clamped_x, clamped_y)
 
     def _crop_center_viewport_point(self) -> QPointF:
@@ -1217,6 +1267,12 @@ class GLImageViewer(QOpenGLWidget):
             if angle == 0:
                 self._restart_crop_idle()
                 return
+
+            # Guard against devices that emit unusually large wheel deltas.  The
+            # exponential zoom curve is tuned for step values in the ±120 range,
+            # therefore restricting the raw delta avoids sudden jumps while
+            # still allowing high-resolution wheels to feel responsive.
+            angle = max(-480, min(480, angle))
 
             tex_w, tex_h = self._renderer.texture_size()
             vw, vh = self._view_dimensions_device_px()
