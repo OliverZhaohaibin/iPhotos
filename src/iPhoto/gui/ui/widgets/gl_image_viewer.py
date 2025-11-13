@@ -1171,8 +1171,7 @@ class GLImageViewer(QOpenGLWidget):
             # conventional top-left origin, therefore subtracting the previous
             # position from the current position yields the motion that the
             # content must follow.  The image centre is translated by the
-            # inverse vector, mimicking the "grab image" interaction without
-            # ever moving the crop rectangle itself.
+            # inverse vector, mimicking the "grab image" interaction.
             previous_image = self._viewport_to_image(previous_pos)
             current_image = self._viewport_to_image(pos)
             translation = QPointF(
@@ -1188,6 +1187,22 @@ class GLImageViewer(QOpenGLWidget):
                 )
                 actual_scale = self._effective_scale()
                 clamped_centre = self._clamp_image_center_to_crop(new_centre, actual_scale)
+
+                # The clamp may reduce the requested translation to prevent
+                # exposing empty space around the crop.  We therefore compute
+                # the *effective* motion that will be applied to the image
+                # centre and mirror that delta onto the crop state.  Doing so
+                # keeps the overlay fixed on screen while still updating the
+                # crop rectangle to reference the newly revealed image area.
+                effective_delta = QPointF(
+                    clamped_centre.x() - centre.x(),
+                    clamped_centre.y() - centre.y(),
+                )
+                if abs(effective_delta.x()) > 1e-6 or abs(effective_delta.y()) > 1e-6:
+                    if self._renderer and self._renderer.has_texture():
+                        tex_size = self._renderer.texture_size()
+                        self._crop_state.translate_pixels(effective_delta, tex_size)
+                        self._emit_crop_changed()
                 self._set_image_center_pixels(clamped_centre, scale=actual_scale)
         else:
             scale = self._effective_scale()
