@@ -758,17 +758,50 @@ class GLImageViewer(QOpenGLWidget):
         self._transform_controller.set_pan_pixels(pan)
 
     def _clamp_image_center_to_crop(self, center: QPointF, scale: float) -> QPointF:
+        """Clamp the image centre so the viewport continues covering the crop box.
+
+        The crop rectangle is described in image pixel coordinates (origin in the
+        top-left, *y* growing downward).  The view transform, on the other hand,
+        pans within a GL style world space where the origin sits in the centre and
+        *y* grows upwards.  By reasoning entirely in texture-space pixel units we
+        avoid further conversions and can express the same constraints as the
+        demo's ``_clamp_offset_to_cover_crop`` helper: ensure each edge of the
+        zoomed viewport stays inside the crop rectangle before projecting the
+        final centre back to world space.
+        """
+
         if not self._renderer or not self._renderer.has_texture():
             return center
+
         tex_w, tex_h = self._renderer.texture_size()
         vw, vh = self._view_dimensions_device_px()
         half_view_w = (vw / scale) * 0.5
         half_view_h = (vh / scale) * 0.5
         crop_rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
-        min_center_x = max(crop_rect["right"] - half_view_w, half_view_w)
-        max_center_x = min(crop_rect["left"] + half_view_w, tex_w - half_view_w)
-        min_center_y = max(crop_rect["bottom"] - half_view_h, half_view_h)
-        max_center_y = min(crop_rect["top"] + half_view_h, tex_h - half_view_h)
+
+        # Compute the admissible centre range by demanding that every edge of the
+        # viewport (centre ± half_view_*) remains inside the crop bounds.  When
+        # zoomed out so far that the viewport is wider than the crop we collapse
+        # the interval to the crop's midpoint to keep the behaviour stable.
+        min_center_x = crop_rect["left"] + half_view_w
+        max_center_x = crop_rect["right"] - half_view_w
+        if min_center_x > max_center_x:
+            midpoint_x = 0.5 * (crop_rect["left"] + crop_rect["right"])
+            min_center_x = max_center_x = midpoint_x
+
+        min_center_y = crop_rect["top"] + half_view_h
+        max_center_y = crop_rect["bottom"] - half_view_h
+        if min_center_y > max_center_y:
+            midpoint_y = 0.5 * (crop_rect["top"] + crop_rect["bottom"])
+            min_center_y = max_center_y = midpoint_y
+
+        # Finally clip against the texture edges so the viewport never wanders
+        # outside the image when the crop happens to coincide with the borders.
+        min_center_x = max(min_center_x, half_view_w)
+        max_center_x = min(max_center_x, tex_w - half_view_w)
+        min_center_y = max(min_center_y, half_view_h)
+        max_center_y = min(max_center_y, tex_h - half_view_h)
+
         clamped_x = max(min_center_x, min(max_center_x, center.x()))
         clamped_y = max(min_center_y, min(max_center_y, center.y()))
         return QPointF(clamped_x, clamped_y)
