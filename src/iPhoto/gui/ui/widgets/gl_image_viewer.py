@@ -739,10 +739,11 @@ class GLImageViewer(QOpenGLWidget):
         scale = self._effective_scale()
         pan = self._transform_controller.get_pan_pixels()
         centre_x = (tex_w / 2.0) - (pan.x() / scale)
-        # ``pan.y`` grows upwards in world space, therefore the corresponding
-        # image coordinate moves towards the bottom (larger Y values) in the
-        # conventional top-left origin texture space.
-        centre_y = (tex_h / 2.0) + (pan.y() / scale)
+        # ``pan.y`` grows upwards in world space, meaning the texture shifts up
+        # relative to the viewport.  In image space (top-left origin, *y* down)
+        # that manifests as the centre coordinate moving towards the top, hence
+        # the subtraction here.
+        centre_y = (tex_h / 2.0) - (pan.y() / scale)
         return QPointF(centre_x, centre_y)
 
     def _set_image_center_pixels(self, center: QPointF, *, scale: float | None = None) -> None:
@@ -753,8 +754,10 @@ class GLImageViewer(QOpenGLWidget):
         delta_x = center.x() - (tex_w / 2.0)
         delta_y = center.y() - (tex_h / 2.0)
         # ``delta_y`` measures how far the requested centre sits below the image
-        # mid-line; in world space that translates to a positive upward pan.
-        pan = QPointF(-delta_x * scale_value, delta_y * scale_value)
+        # mid-line.  Bringing the camera to that point requires panning in the
+        # opposite (upwards-positive) world-space direction, hence the negative
+        # sign.
+        pan = QPointF(-delta_x * scale_value, -delta_y * scale_value)
         self._transform_controller.set_pan_pixels(pan)
 
     def _clamp_image_center_to_crop(self, center: QPointF, scale: float) -> QPointF:
@@ -1157,6 +1160,16 @@ class GLImageViewer(QOpenGLWidget):
     def _handle_crop_mouse_move(self, event: QMouseEvent) -> None:
         if not self._renderer or not self._renderer.has_texture():
             return
+
+        # Mirroring the reference demo, any pointer motion should cancel the
+        # idle auto-fit animation and immediately re-show the overlay so
+        # subsequent gestures manipulate the current camera state without being
+        # overridden by in-flight transitions.
+        if self._crop_faded_out:
+            self._crop_faded_out = False
+            self.update()
+        self._stop_crop_animation()
+
         pos = event.position()
         if not self._crop_dragging:
             handle = self._crop_hit_test(pos)
@@ -1172,16 +1185,15 @@ class GLImageViewer(QOpenGLWidget):
             # Convert the pointer delta to texture-space coordinates so the
             # image can track the cursor exactly like ``demo/crop_final.py``.
             # ``_viewport_to_image`` reports positions in image pixels with the
-            # conventional top-left origin, therefore subtracting the previous
-            # position from the current position yields the motion that the
-            # content must follow.  The image centre is translated by the
-            # inverse vector, mimicking the "grab image" interaction without
-            # ever moving the crop rectangle itself.
+            # conventional top-left origin; taking ``current - previous`` yields
+            # the displacement the texture should follow in that space.  The
+            # image centre moves by the same offset so the user effectively
+            # drags the content under a fixed crop rectangle.
             previous_image = self._viewport_to_image(previous_pos)
             current_image = self._viewport_to_image(pos)
             translation = QPointF(
-                previous_image.x() - current_image.x(),
-                previous_image.y() - current_image.y(),
+                current_image.x() - previous_image.x(),
+                current_image.y() - previous_image.y(),
             )
 
             if abs(translation.x()) > 1e-6 or abs(translation.y()) > 1e-6:
