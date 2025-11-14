@@ -1023,6 +1023,14 @@ class GLImageViewer(QOpenGLWidget):
         scale = self._effective_scale()
         pan = self._transform_controller.get_pan_pixels()
         
+        # ⭐️ In crop mode, include the image transform
+        if self._crop_mode:
+            scale = scale * self._crop_img_scale
+            pan = QPointF(
+                pan.x() + self._crop_img_offset.x(),
+                pan.y() - self._crop_img_offset.y()
+            )
+        
         tex_w, tex_h = self._renderer.texture_size()
         tex_vector_x = x - (tex_w / 2.0)
         tex_vector_y = y - (tex_h / 2.0)
