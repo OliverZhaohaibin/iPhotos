@@ -156,21 +156,43 @@ class CropBoxState:
         min_w = max(self.min_width, 1.0 / max(1.0, float(iw)))
         min_h = max(self.min_height, 1.0 / max(1.0, float(ih)))
 
+        # Update edges incrementally like demo/crop_final.py to avoid order-dependency issues
+        # Each edge update keeps the opposite edge fixed and recalculates center and size
         if handle in (CropHandle.LEFT, CropHandle.TOP_LEFT, CropHandle.BOTTOM_LEFT):
-            left = min(max(0.0, left + dx), right - min_w)
+            new_left = left + dx
+            new_left = min(new_left, right - min_w)
+            new_left = max(new_left, 0.0)
+            # Keep right fixed, recalculate width and cx
+            self.width = right - new_left
+            self.cx = new_left + self.width * 0.5
+            left = new_left  # Update left for potential subsequent edge updates
+            
         if handle in (CropHandle.RIGHT, CropHandle.TOP_RIGHT, CropHandle.BOTTOM_RIGHT):
-            right = max(min(1.0, right + dx), left + min_w)
-        if handle in (CropHandle.TOP, CropHandle.TOP_LEFT, CropHandle.TOP_RIGHT):
-            top = min(max(0.0, top + dy), bottom - min_h)
+            new_right = right + dx
+            new_right = max(new_right, left + min_w)
+            new_right = min(new_right, 1.0)
+            # Keep left fixed, recalculate width and cx
+            self.width = new_right - left
+            self.cx = left + self.width * 0.5
+            right = new_right  # Update right for potential subsequent edge updates
+            
         if handle in (CropHandle.BOTTOM, CropHandle.BOTTOM_LEFT, CropHandle.BOTTOM_RIGHT):
-            bottom = max(min(1.0, bottom + dy), top + min_h)
-
-        width = max(min_w, min(1.0, right - left))
-        height = max(min_h, min(1.0, bottom - top))
-        self.width = width
-        self.height = height
-        self.cx = left + width * 0.5
-        self.cy = top + height * 0.5
+            new_bottom = bottom + dy
+            new_bottom = max(new_bottom, top + min_h)
+            new_bottom = min(new_bottom, 1.0)
+            # Keep top fixed, recalculate height and cy
+            self.height = new_bottom - top
+            self.cy = top + self.height * 0.5
+            bottom = new_bottom  # Update bottom for potential subsequent edge updates
+            
+        if handle in (CropHandle.TOP, CropHandle.TOP_LEFT, CropHandle.TOP_RIGHT):
+            new_top = top + dy
+            new_top = min(new_top, bottom - min_h)
+            new_top = max(new_top, 0.0)
+            # Keep bottom fixed, recalculate height and cy
+            self.height = bottom - new_top
+            self.cy = new_top + self.height * 0.5
+            
         self.clamp()
 
     def clamp(self) -> None:
