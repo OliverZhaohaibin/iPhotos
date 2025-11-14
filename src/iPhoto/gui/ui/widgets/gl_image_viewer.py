@@ -1018,8 +1018,9 @@ class GLImageViewer(QOpenGLWidget):
             
         pan = self._transform_controller.get_pan_pixels()
         
-        # In crop mode, add crop_img_offset to pan
-        if self._crop_mode:
+        # IMPORTANT: Only add crop_img_offset when NOT using base_scale_only
+        # The crop box should stay fixed, only the image underneath moves
+        if self._crop_mode and not use_base_scale_only:
             pan = QPointF(
                 pan.x() + self._crop_img_offset.x(),
                 pan.y() - self._crop_img_offset.y(),  # Y inverted
