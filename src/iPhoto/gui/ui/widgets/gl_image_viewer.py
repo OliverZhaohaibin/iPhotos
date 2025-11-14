@@ -1412,7 +1412,7 @@ class GLImageViewer(QOpenGLWidget):
             clamped_offset = self._clamp_crop_img_offset(tentative_offset, self._crop_img_scale)
             self._crop_img_offset = clamped_offset
         else:
-            scale = self._effective_scale()
+            scale = self._effective_scale() * self._crop_img_scale
             if scale <= 1e-6:
                 return
             dpr = self.devicePixelRatioF()
