@@ -872,19 +872,25 @@ class GLImageViewer(QOpenGLWidget):
         clamped_y = max(min_center_y, min(max_center_y, float(center.y())))
         return QPointF(clamped_x, clamped_y)
 
-    def _clamp_crop_img_offset(self, offset: QPointF) -> QPointF:
+    def _clamp_crop_img_offset(self, offset: QPointF, img_scale: float) -> QPointF:
         """Clamp image offset to prevent crop from showing outside image bounds.
         
         Following demo/crop_final.py's _clamp_offset_to_cover_crop logic.
         The offset is in device pixels, similar to demo's world-space offset.
+        
+        Args:
+            offset: The tentative image offset in device pixels
+            img_scale: The image scale factor (corresponding to demo's img_scale parameter)
         """
         if not self._renderer or not self._renderer.has_texture():
             return offset
             
         tex_w, tex_h = self._renderer.texture_size()
         
-        # ⭐️ Must use the final combined scale
-        scale = self._effective_scale() * self._crop_img_scale
+        # ⭐️ Combine view scale with the provided image scale
+        # (following demo where scale parameter is img_scale)
+        view_scale = self._effective_scale()
+        scale = view_scale * img_scale
         
         if scale <= 1e-9:
             return offset
@@ -1364,7 +1370,7 @@ class GLImageViewer(QOpenGLWidget):
 
         # 5. Clamp to ensure no black bars
         new_offset_y_down = QPointF(new_offset_world.x(), -new_offset_world.y())
-        clamped_offset = self._clamp_crop_img_offset(new_offset_y_down)
+        clamped_offset = self._clamp_crop_img_offset(new_offset_y_down, new_img_scale)
 
         self._crop_img_scale = new_img_scale
         self._crop_img_offset = clamped_offset
@@ -1448,7 +1454,7 @@ class GLImageViewer(QOpenGLWidget):
             
             # Clamp to prevent crop showing black bars
             # This is equivalent to demo's _clamp_offset_to_cover_crop
-            clamped_offset = self._clamp_crop_img_offset(tentative_offset)
+            clamped_offset = self._clamp_crop_img_offset(tentative_offset, self._crop_img_scale)
             self._crop_img_offset = clamped_offset
             
             # Crop state (normalized coords) doesn't change!
@@ -1604,7 +1610,7 @@ class GLImageViewer(QOpenGLWidget):
             
             # Convert back to Y-down and apply constraints
             new_offset_y_down = QPointF(new_offset_world.x(), -new_offset_world.y())
-            self._crop_img_offset = self._clamp_crop_img_offset(new_offset_y_down)
+            self._crop_img_offset = self._clamp_crop_img_offset(new_offset_y_down, new_img_scale)
 
             self.update()
             self._restart_crop_idle()
