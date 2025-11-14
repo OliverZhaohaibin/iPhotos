@@ -1214,27 +1214,29 @@ class GLImageViewer(QOpenGLWidget):
         if not self._renderer or not self._renderer.has_texture():
             return
         vw, vh = self._view_dimensions_device_px()
-        crop_rect = self._current_crop_rect_pixels()
-        if crop_rect is None:
+        crop_rect_screen = self._current_crop_rect_pixels()  # Screen pixels
+        if crop_rect_screen is None:
             return
         threshold = self._crop_edge_threshold
         delta_x = delta.x()
         delta_y = delta.y()
 
-        # Convert delta to image space (texture pixels)
-        dpr = self.devicePixelRatioF()
-        current_scale = self._effective_scale()
-        if current_scale <= 1e-6:
-            return
-        # image_delta is in texture pixel space (Y-down)
-        image_delta = QPointF(delta_x * dpr / current_scale, delta_y * dpr / current_scale)
-        # world_delta is in world space (Y-up, like demo), where Y-axis is flipped
-        world_delta_x = image_delta.x()
-        world_delta_y = -image_delta.y()  # Flip Y: texture down = world up
+        # ⭐️ Must use the final combined scale
+        current_view_scale = self._effective_scale()
+        current_img_scale = self._crop_img_scale
+        current_total_scale = current_view_scale * current_img_scale
 
-        # Calculate pressure and d_offset following demo/crop_final.py logic
+        if current_total_scale <= 1e-6:
+            return
+            
+        dpr = self.devicePixelRatioF()
+        # Mouse delta converted to "world" delta (Y-up)
+        # This mimics demo's d_world = self.cam.screen_vec_to_world_vec(dpx)
+        world_delta_x = delta_x * dpr
+        world_delta_y = -delta_y * dpr  # Qt Y-down -> World Y-up
+
         pressure = 0.0
-        d_offset_x = 0.0
+        d_offset_x = 0.0  # Expected image pan (Y-up)
         d_offset_y = 0.0
 
         # Left edge pushing out (delta_x < 0): move right (+x) to bring left content
@@ -1242,11 +1244,10 @@ class GLImageViewer(QOpenGLWidget):
             self._crop_drag_handle in (CropHandle.LEFT, CropHandle.TOP_LEFT, CropHandle.BOTTOM_LEFT)
             and delta_x < 0.0
         ):
-            left_margin = crop_rect["left"]
+            left_margin = crop_rect_screen["left"]
             if left_margin < threshold:
                 p = (threshold - left_margin) / threshold
                 pressure = max(pressure, p)
-                # Use max to ensure positive offset (move right)
                 d_offset_x = max(d_offset_x, world_delta_x * -p)
 
         # Right edge pushing out (delta_x > 0): move left (-x) to bring right content
@@ -1254,11 +1255,10 @@ class GLImageViewer(QOpenGLWidget):
             self._crop_drag_handle in (CropHandle.RIGHT, CropHandle.TOP_RIGHT, CropHandle.BOTTOM_RIGHT)
             and delta_x > 0.0
         ):
-            right_margin = vw - crop_rect["right"]
+            right_margin = vw - crop_rect_screen["right"]
             if right_margin < threshold:
                 p = (threshold - right_margin) / threshold
                 pressure = max(pressure, p)
-                # Use min to ensure negative offset (move left)
                 d_offset_x = min(d_offset_x, world_delta_x * -p)
 
         # Top edge pushing out (delta_y < 0): move down (-y in world) to bring top content
@@ -1266,11 +1266,10 @@ class GLImageViewer(QOpenGLWidget):
             self._crop_drag_handle in (CropHandle.TOP, CropHandle.TOP_LEFT, CropHandle.TOP_RIGHT)
             and delta_y < 0.0
         ):
-            top_margin = crop_rect["top"]
+            top_margin = crop_rect_screen["top"]
             if top_margin < threshold:
                 p = (threshold - top_margin) / threshold
                 pressure = max(pressure, p)
-                # Use min to ensure negative offset (move down in world space)
                 d_offset_y = min(d_offset_y, world_delta_y * -p)
 
         # Bottom edge pushing out (delta_y > 0): move up (+y in world) to bring bottom content
@@ -1278,52 +1277,95 @@ class GLImageViewer(QOpenGLWidget):
             self._crop_drag_handle in (CropHandle.BOTTOM, CropHandle.BOTTOM_LEFT, CropHandle.BOTTOM_RIGHT)
             and delta_y > 0.0
         ):
-            bottom_margin = vh - crop_rect["bottom"]
+            bottom_margin = vh - crop_rect_screen["bottom"]
             if bottom_margin < threshold:
                 p = (threshold - bottom_margin) / threshold
                 pressure = max(pressure, p)
-                # Use max to ensure positive offset (move up in world space)
                 d_offset_y = max(d_offset_y, world_delta_y * -p)
 
         if pressure <= 0.0:
             return
 
-        # Ease the pressure for smooth feel
         eased_pressure = ease_in_quad(min(1.0, pressure))
 
-        # 1. Scale down around crop center (like demo)
-        tex_size = self._renderer.texture_size()
-        vw_float, vh_float = float(vw), float(vh)
-        base_scale = compute_fit_to_view_scale(tex_size, vw_float, vh_float)
+        # 1. Calculate new scale
+        tex_w, tex_h = self._renderer.texture_size()
+        crop_px = self._crop_state.to_pixel_rect(tex_w, tex_h)
+        crop_w_px = max(1.0, crop_px["right"] - crop_px["left"])
+        crop_h_px = max(1.0, crop_px["bottom"] - crop_px["top"])
         
-        # During auto-shrink, don't go below the fit-to-window scale (base_scale)
-        # This ensures the image always fills the window nicely
-        min_scale = max(base_scale, base_scale * self._transform_controller.minimum_zoom())
-        max_scale = base_scale * self._transform_controller.maximum_zoom()
+        # Minimum image scale factor
+        min_img_scale = max(
+            crop_w_px / max(1.0, float(tex_w)),
+            crop_h_px / max(1.0, float(tex_h)),
+        )
+
+        min_allowed_img_scale = max(
+            min_img_scale,
+            self._transform_controller.minimum_zoom()  # (reuse limit)
+        )
+        max_allowed_img_scale = self._transform_controller.maximum_zoom()
         
-        k_max = 0.05  # Maximum shrink ratio per event
+        k_max = 0.05
         factor = 1.0 - k_max * eased_pressure
-        new_scale = max(min_scale, min(max_scale, current_scale * factor))
         
-        # Scale around crop center
-        anchor = self._crop_center_viewport_point()
-        self._transform_controller.set_zoom(new_scale / max(base_scale, 1e-6), anchor=anchor)
+        new_img_scale = max(
+            min_allowed_img_scale,
+            min(max_allowed_img_scale, self._crop_img_scale * factor)
+        )
+        
+        s = new_img_scale / max(1e-12, self._crop_img_scale)
 
-        # 2. Apply pan_gain and translate the view (NOT the crop)
-        # Key insight: In demo, both img_offset and crop move by same world offset,
-        # maintaining their relative position. In our system, crop is in normalized
-        # coords relative to image, so it should NOT move. Only the view/pan moves.
+        # 2. Scale around crop center (image pan)
+        # Get crop center in image pixels (Y-down)
+        crop_center_img_px = self._crop_state.center_pixels(tex_w, tex_h)
+        
+        # Convert to viewport (logical pixels)
+        anchor_viewport = self._image_to_viewport(
+            crop_center_img_px.x(),
+            crop_center_img_px.y()
+        )
+        
+        # Convert to device pixels, Y-up, center origin
+        anchor_world_dev_px = QPointF(
+            anchor_viewport.x() * dpr - vw * 0.5,
+            vh * 0.5 - anchor_viewport.y() * dpr
+        )
+        
+        # Old image pan (device pixels, Y-up)
+        old_offset_world = QPointF(self._crop_img_offset.x(), -self._crop_img_offset.y())
+
+        # Scale around anchor
+        new_offset_world = anchor_world_dev_px + (old_offset_world - anchor_world_dev_px) * s
+
+        # 3. Add "anti-pressure direction" pan
         pan_gain = 0.75 + 0.25 * eased_pressure
-        # d_offset is in world space (Y-up), convert back to texture space (Y-down) for application
-        final_d_offset = QPointF(d_offset_x * pan_gain, -d_offset_y * pan_gain)
+        # final_d_offset is demo's d_offset (world coordinates)
+        final_d_offset = QPointF(d_offset_x * pan_gain, d_offset_y * pan_gain)
 
-        if abs(final_d_offset.x()) > 1e-4 or abs(final_d_offset.y()) > 1e-4:
-            # Move the image center (pan the view)
-            # Crop stays in same normalized position relative to image
-            new_center = self._image_center_pixels() + final_d_offset
-            actual_scale = self._effective_scale()
-            clamped = self._clamp_image_center_to_crop(new_center, actual_scale)
-            self._set_image_center_pixels(clamped, scale=actual_scale)
+        new_offset_world = new_offset_world + final_d_offset
+
+        # 4. Core: Crop box moves synchronously (in image pixels)
+        # demo: self.crop.rect.cx += final_d_offset.x
+        # We need to convert device pixel pan to image pixel pan
+        
+        # ⭐️ Combined scale (without img_scale, for view->world conversion)
+        img_px_per_dev_px = 1.0 / max(1e-9, current_view_scale)
+        
+        # Convert final_d_offset (Y-up, dev-px) to image pixels (Y-down, img-px)
+        delta_img_px = QPointF(
+            final_d_offset.x() * img_px_per_dev_px,
+            -final_d_offset.y() * img_px_per_dev_px  # Y-up -> Y-down
+        )
+        self._crop_state.translate_pixels(delta_img_px, (tex_w, tex_h))
+        self._emit_crop_changed()
+
+        # 5. Clamp to ensure no black bars
+        new_offset_y_down = QPointF(new_offset_world.x(), -new_offset_world.y())
+        clamped_offset = self._clamp_crop_img_offset(new_offset_y_down)
+
+        self._crop_img_scale = new_img_scale
+        self._crop_img_offset = clamped_offset
 
     def _emit_crop_changed(self) -> None:
         state = self._crop_state
