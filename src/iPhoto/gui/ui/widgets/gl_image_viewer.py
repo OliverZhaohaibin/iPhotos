@@ -1349,8 +1349,8 @@ class GLImageViewer(QOpenGLWidget):
         # demo: self.crop.rect.cx += final_d_offset.x
         # We need to convert device pixel pan to image pixel pan
         
-        # ⭐️ Combined scale (without img_scale, for view->world conversion)
-        img_px_per_dev_px = 1.0 / max(1e-9, current_view_scale)
+        # ⭐️ Use total combined scale (view_scale * img_scale) for correct conversion
+        img_px_per_dev_px = 1.0 / max(1e-9, current_total_scale)
         
         # Convert final_d_offset (Y-up, dev-px) to image pixels (Y-down, img-px)
         delta_img_px = QPointF(
