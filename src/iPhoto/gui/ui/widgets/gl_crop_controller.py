@@ -30,14 +30,7 @@ class CropInteractionController:
         viewer: QOpenGLWidget,
         *,
         texture_size_provider: Callable[[], tuple[int, int]],
-        view_dimensions_provider: Callable[[], tuple[float, float]],
-        effective_scale_provider: Callable[[], float],
-        image_center_provider: Callable[[], QPointF],
-        set_image_center: Callable[[QPointF, float], None],
         clamp_image_center_to_crop: Callable[[QPointF, float], QPointF],
-        image_to_viewport: Callable[[float, float], QPointF],
-        viewport_to_image: Callable[[QPointF], QPointF],
-        screen_to_world: Callable[[QPointF], QPointF],
         transform_controller,  # ViewTransformController
         on_crop_changed: Callable[[float, float, float, float], None],
     ) -> None:
@@ -49,37 +42,16 @@ class CropInteractionController:
             The parent QOpenGLWidget for cursor management and updates.
         texture_size_provider:
             Callable that returns (width, height) of the current texture.
-        view_dimensions_provider:
-            Callable that returns (width, height) of the viewport in device pixels.
-        effective_scale_provider:
-            Callable that returns the current effective rendering scale.
-        image_center_provider:
-            Callable that returns the current image center in pixels.
-        set_image_center:
-            Callable to set the image center, signature: (center, scale).
         clamp_image_center_to_crop:
             Callable to clamp image center to crop bounds.
-        image_to_viewport:
-            Callable to convert image coordinates to viewport.
-        viewport_to_image:
-            Callable to convert viewport coordinates to image.
-        screen_to_world:
-            Callable to convert screen coordinates to world space.
         transform_controller:
-            ViewTransformController instance for zoom/pan control.
+            ViewTransformController instance for zoom/pan and coordinate transforms.
         on_crop_changed:
             Callback when crop values change, signature: (cx, cy, width, height).
         """
         self._viewer = viewer
         self._texture_size_provider = texture_size_provider
-        self._view_dimensions_provider = view_dimensions_provider
-        self._effective_scale_provider = effective_scale_provider
-        self._image_center_provider = image_center_provider
-        self._set_image_center = set_image_center
         self._clamp_image_center_to_crop = clamp_image_center_to_crop
-        self._image_to_viewport = image_to_viewport
-        self._viewport_to_image = viewport_to_image
-        self._screen_to_world = screen_to_world
         self._transform_controller = transform_controller
         self._on_crop_changed = on_crop_changed
 
@@ -143,8 +115,8 @@ class CropInteractionController:
         if tex_w <= 0 or tex_h <= 0:
             return None
         rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
-        top_left = self._image_to_viewport(rect["left"], rect["top"])
-        bottom_right = self._image_to_viewport(rect["right"], rect["bottom"])
+        top_left = self._transform_controller.convert_image_to_viewport(rect["left"], rect["top"])
+        bottom_right = self._transform_controller.convert_image_to_viewport(rect["right"], rect["bottom"])
         dpr = self._viewer.devicePixelRatioF()
         return {
             "left": top_left.x() * dpr,
@@ -210,8 +182,8 @@ class CropInteractionController:
         if handle == CropHandle.INSIDE:
             # Cache viewport anchor points for inside dragging
             rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
-            top_left = self._image_to_viewport(rect["left"], rect["top"])
-            bottom_right = self._image_to_viewport(rect["right"], rect["bottom"])
+            top_left = self._transform_controller.convert_image_to_viewport(rect["left"], rect["top"])
+            bottom_right = self._transform_controller.convert_image_to_viewport(rect["right"], rect["bottom"])
             self._crop_drag_anchor_viewport = (QPointF(top_left), QPointF(bottom_right))
             self._viewer.setCursor(Qt.CursorShape.ClosedHandCursor)
         else:
@@ -239,7 +211,7 @@ class CropInteractionController:
 
         if self._crop_drag_handle == CropHandle.INSIDE:
             # Dragging inside: move the view, not the crop
-            view_scale = self._effective_scale_provider()
+            view_scale = self._transform_controller.get_effective_scale()
             if view_scale <= 1e-6:
                 return
 
@@ -261,7 +233,7 @@ class CropInteractionController:
             self._crop_img_offset = clamped_offset
         else:
             # Dragging edge/corner: resize the crop
-            scale = self._effective_scale_provider() * self._crop_img_scale
+            scale = self._transform_controller.get_effective_scale() * self._crop_img_scale
             if scale <= 1e-6:
                 return
             dpr = self._viewer.devicePixelRatioF()
@@ -317,7 +289,7 @@ class CropInteractionController:
             event.accept()
             return
 
-        view_scale = self._effective_scale_provider()
+        view_scale = self._transform_controller.get_effective_scale()
         if view_scale <= 1e-6:
             self._restart_crop_idle()
             event.accept()
@@ -369,7 +341,7 @@ class CropInteractionController:
             return
 
         center = self._crop_state.center_pixels(tex_w, tex_h)
-        scale = self._effective_scale_provider()
+        scale = self._transform_controller.get_effective_scale()
         clamped_center = self._clamp_image_center_to_crop(center, scale)
         self._set_image_center(clamped_center, scale)
 
@@ -439,7 +411,7 @@ class CropInteractionController:
                 self._viewer.height() / 2
             )
         center = self._crop_state.center_pixels(tex_w, tex_h)
-        return self._image_to_viewport(center.x(), center.y())
+        return self._transform_controller.convert_image_to_viewport(center.x(), center.y())
 
     @staticmethod
     def _distance_to_segment(point: QPointF, start: QPointF, end: QPointF) -> float:
@@ -464,10 +436,10 @@ class CropInteractionController:
             return CropHandle.NONE
 
         rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
-        top_left = self._image_to_viewport(rect["left"], rect["top"])
-        top_right = self._image_to_viewport(rect["right"], rect["top"])
-        bottom_right = self._image_to_viewport(rect["right"], rect["bottom"])
-        bottom_left = self._image_to_viewport(rect["left"], rect["bottom"])
+        top_left = self._transform_controller.convert_image_to_viewport(rect["left"], rect["top"])
+        top_right = self._transform_controller.convert_image_to_viewport(rect["right"], rect["top"])
+        bottom_right = self._transform_controller.convert_image_to_viewport(rect["right"], rect["bottom"])
+        bottom_left = self._transform_controller.convert_image_to_viewport(rect["left"], rect["bottom"])
 
         # Check corners first
         corners = [
@@ -533,7 +505,7 @@ class CropInteractionController:
 
         self._crop_anim_active = True
         self._crop_anim_start_time = time.monotonic()
-        self._crop_anim_start_scale = self._effective_scale_provider()
+        self._crop_anim_start_scale = self._transform_controller.get_effective_scale()
         self._crop_anim_target_scale = target_scale
         self._crop_anim_start_center = self._image_center_provider()
         self._crop_anim_target_center = target_center
@@ -577,14 +549,14 @@ class CropInteractionController:
         if tex_w <= 0 or tex_h <= 0:
             return
 
-        vw, vh = self._view_dimensions_provider()
+        vw, vh = self._transform_controller._get_view_dimensions_device_px()
         tex_size = (tex_w, tex_h)
         base_scale = compute_fit_to_view_scale(tex_size, vw, vh)
         min_zoom = self._transform_controller.minimum_zoom()
         max_zoom = self._transform_controller.maximum_zoom()
         zoom_factor = max(min_zoom, min(max_zoom, scale / max(base_scale, 1e-6)))
         self._transform_controller.set_zoom_factor_direct(zoom_factor)
-        actual_scale = self._effective_scale_provider()
+        actual_scale = self._transform_controller.get_effective_scale()
         clamped_center = self._clamp_image_center_to_crop(centre, actual_scale)
         self._set_image_center(clamped_center, actual_scale)
 
@@ -592,9 +564,9 @@ class CropInteractionController:
         """Calculate the target scale for crop fade-out animation."""
         tex_w, tex_h = self._texture_size_provider()
         if tex_w <= 0 or tex_h <= 0:
-            return self._effective_scale_provider()
+            return self._transform_controller.get_effective_scale()
 
-        vw, vh = self._view_dimensions_provider()
+        vw, vh = self._transform_controller._get_view_dimensions_device_px()
         crop_rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
         crop_width = max(1.0, crop_rect["right"] - crop_rect["left"])
         crop_height = max(1.0, crop_rect["bottom"] - crop_rect["top"])
@@ -615,7 +587,7 @@ class CropInteractionController:
         if tex_w <= 0 or tex_h <= 0:
             return
 
-        vw, vh = self._view_dimensions_provider()
+        vw, vh = self._transform_controller._get_view_dimensions_device_px()
         crop_rect = self.current_crop_rect_pixels()
         if crop_rect is None:
             return
@@ -626,7 +598,7 @@ class CropInteractionController:
 
         # Convert delta to image space
         dpr = self._viewer.devicePixelRatioF()
-        current_scale = self._effective_scale_provider()
+        current_scale = self._transform_controller.get_effective_scale()
         if current_scale <= 1e-6:
             return
 
@@ -713,7 +685,7 @@ class CropInteractionController:
 
         if abs(final_d_offset.x()) > 1e-4 or abs(final_d_offset.y()) > 1e-4:
             new_center = self._image_center_provider() + final_d_offset
-            actual_scale = self._effective_scale_provider()
+            actual_scale = self._transform_controller.get_effective_scale()
             clamped = self._clamp_image_center_to_crop(new_center, actual_scale)
             self._set_image_center(clamped, actual_scale)
 

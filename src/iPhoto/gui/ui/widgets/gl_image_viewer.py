@@ -114,14 +114,7 @@ class GLImageViewer(QOpenGLWidget):
         self._crop_controller = CropInteractionController(
             self,
             texture_size_provider=self._texture_dimensions,
-            view_dimensions_provider=self._view_dimensions_device_px,
-            effective_scale_provider=self._effective_scale,
-            image_center_provider=self._image_center_pixels,
-            set_image_center=self._set_image_center_pixels_internal,
             clamp_image_center_to_crop=self._clamp_image_center_to_crop,
-            image_to_viewport=self._image_to_viewport,
-            viewport_to_image=self._viewport_to_image,
-            screen_to_world=self._screen_to_world,
             transform_controller=self._transform_controller,
             on_crop_changed=self.cropChanged.emit,
         )
