@@ -135,6 +135,8 @@ class GLRenderer:
                 "uTexSize",
                 "uScale",
                 "uPan",
+                "uImgScale",
+                "uImgOffset",
             ):
                 self._uniform_locations[name] = program.uniformLocation(name)
         finally:
