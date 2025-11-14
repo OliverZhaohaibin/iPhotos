@@ -39,6 +39,7 @@ from .gl_crop_utils import (
     ease_in_quad,
     ease_out_cubic,
 )
+from .gl_crop_controller import CropInteractionController
 from .gl_renderer import GLRenderer
 from .view_transform_controller import (
     ViewTransformController,
@@ -119,38 +120,21 @@ class GLImageViewer(QOpenGLWidget):
         )
         self._transform_controller.reset_zoom()
 
-        # Crop interaction state -------------------------------------------------
-        self._crop_mode: bool = False
-        self._crop_state = CropBoxState()
-        self._crop_drag_handle: CropHandle = CropHandle.NONE
-        self._crop_dragging: bool = False
-        self._crop_last_pos = QPointF()
-        self._crop_hit_padding: float = 12.0
-        self._crop_edge_threshold: float = 48.0
-        
-        # Following demo/crop_final.py architecture:
-        # During crop mode, maintain an image-space transform that is independent
-        # from the camera/view transform.  The offset lives in texture pixel space
-        # with the origin at the image centre and the Y axis pointing upwards to
-        # match the shader's world coordinates.
-        self._crop_img_offset = QPointF(0.0, 0.0)
-        self._crop_img_scale: float = 1.0
-        self._img_scale_clamp: tuple[float, float] = (0.02, 40.0)
-        
-        self._crop_idle_timer = QTimer(self)
-        self._crop_idle_timer.setInterval(1000)
-        self._crop_idle_timer.timeout.connect(self._on_crop_idle_timeout)
-        self._crop_anim_timer = QTimer(self)
-        self._crop_anim_timer.setInterval(16)
-        self._crop_anim_timer.timeout.connect(self._on_crop_anim_tick)
-        self._crop_anim_active: bool = False
-        self._crop_anim_start_time: float = 0.0
-        self._crop_anim_duration: float = 0.3
-        self._crop_anim_start_scale: float = 1.0
-        self._crop_anim_target_scale: float = 1.0
-        self._crop_anim_start_center = QPointF()
-        self._crop_anim_target_center = QPointF()
-        self._crop_faded_out: bool = False
+        # Crop interaction controller
+        self._crop_controller = CropInteractionController(
+            self,
+            texture_size_provider=self._texture_dimensions,
+            view_dimensions_provider=self._view_dimensions_device_px,
+            effective_scale_provider=self._effective_scale,
+            image_center_provider=self._image_center_pixels,
+            set_image_center=self._set_image_center_pixels_internal,
+            clamp_image_center_to_crop=self._clamp_image_center_to_crop,
+            image_to_viewport=self._image_to_viewport,
+            viewport_to_image=self._viewport_to_image,
+            screen_to_world=self._screen_to_world,
+            transform_controller=self._transform_controller,
+            on_crop_changed=self.cropChanged.emit,
+        )
 
     # --------------------------- Public API ---------------------------
 
@@ -509,9 +493,8 @@ class GLImageViewer(QOpenGLWidget):
         view_pan = self._transform_controller.get_pan_pixels()
         img_scale = 1.0
         img_offset = QPointF(0.0, 0.0)
-        if self._crop_mode:
-            img_scale = self._crop_img_scale
-            img_offset = QPointF(self._crop_img_offset)
+        if self._crop_controller.is_active():
+            img_offset, img_scale = self._crop_controller.get_crop_model_transform()
 
         self._renderer.render(
             view_width=float(vw),
@@ -524,69 +507,25 @@ class GLImageViewer(QOpenGLWidget):
             img_offset=img_offset,
         )
 
-        if self._crop_mode:
-            crop_rect = self._current_crop_rect_pixels()
+        if self._crop_controller.is_active():
+            crop_rect = self._crop_controller.current_crop_rect_pixels()
             if crop_rect is not None:
                 self._renderer.draw_crop_overlay(
                     view_width=float(vw),
                     view_height=float(vh),
                     crop_rect=crop_rect,
-                    faded=self._crop_faded_out,
+                    faded=self._crop_controller.is_faded_out(),
                 )
 
     # --------------------------- Crop helpers ---------------------------
 
     def setCropMode(self, enabled: bool, values: Optional[Mapping[str, float]] = None) -> None:
-        if enabled == self._crop_mode:
-            if enabled and values is not None:
-                self._apply_crop_values(values)
-            return
-
-        self._crop_mode = bool(enabled)
-        if not self._crop_mode:
-            self._stop_crop_animation()
-            self._crop_idle_timer.stop()
-            self._crop_drag_handle = CropHandle.NONE
-            self._crop_dragging = False
-            self._crop_faded_out = False
-            self._reset_crop_model_transform()
-            self.unsetCursor()
-            self.update()
-            return
-
-        # Reset the image model transform when entering crop mode so the
-        # automatic fit animation starts from a clean state.
-        self._reset_crop_model_transform()
-        self._apply_crop_values(values)
-        self._crop_faded_out = False
-        self._crop_drag_handle = CropHandle.NONE
-        self._crop_dragging = False
-        self._stop_crop_animation()
-        self._restart_crop_idle()
-        self.update()
+        self._crop_controller.set_active(enabled, values)
 
     def crop_values(self) -> dict[str, float]:
-        return self._crop_state.as_mapping()
+        return self._crop_controller.get_crop_values()
 
-    def _reset_crop_model_transform(self) -> None:
-        """Return the crop-specific model transform to its neutral state."""
-
-        self._crop_img_offset = QPointF(0.0, 0.0)
-        self._crop_img_scale = 1.0
-
-    def _apply_crop_values(self, values: Optional[Mapping[str, float]]) -> None:
-        if values:
-            self._crop_state.set_from_mapping(values)
-        else:
-            self._crop_state.set_full()
-        if not self._renderer or not self._renderer.has_texture():
-            return
-        center = self._crop_state.center_pixels(*self._renderer.texture_size())
-        scale = self._effective_scale()
-        clamped_center = self._clamp_image_center_to_crop(center, scale)
-        self._set_image_center_pixels(clamped_center, scale=scale)
-
-    def _view_dimensions_device_px(self) -> tuple[float, float]:
+    # --------------------------- Coordinate transformations ---------------------------
         dpr = self.devicePixelRatioF()
         vw = max(1.0, float(self.width()) * dpr)
         vh = max(1.0, float(self.height()) * dpr)
@@ -629,6 +568,14 @@ class GLImageViewer(QOpenGLWidget):
         scale_value = scale if scale is not None else self._effective_scale()
         self._transform_controller.set_image_center_pixels(
             center, self._renderer.texture_size(), scale_value
+        )
+
+    def _set_image_center_pixels_internal(self, center: QPointF, scale: float) -> None:
+        """Internal helper for the crop controller to set image center."""
+        if not self._renderer or not self._renderer.has_texture():
+            return
+        self._transform_controller.set_image_center_pixels(
+            center, self._renderer.texture_size(), scale
         )
 
     def _clamp_image_center_to_crop(self, center: QPointF, scale: float) -> QPointF:
@@ -693,574 +640,11 @@ class GLImageViewer(QOpenGLWidget):
         clamped_y = max(min_center_y, min(max_center_y, float(center.y())))
         return QPointF(clamped_x, clamped_y)
 
-    def _clamp_crop_img_offset(self, offset: QPointF, scale: float) -> QPointF:
-        """Clamp the model transform so the crop never exposes empty pixels."""
-
-        if not self._renderer or not self._renderer.has_texture():
-            return offset
-
-        tex_w, tex_h = self._renderer.texture_size()
-        if tex_w <= 0 or tex_h <= 0:
-            return offset
-        if scale <= 1e-9:
-            return offset
-
-        crop_rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
-        crop_left = float(crop_rect["left"])
-        crop_top = float(crop_rect["top"])
-        crop_right = float(crop_rect["right"])
-        crop_bottom = float(crop_rect["bottom"])
-
-        crop_center_x = (crop_left + crop_right) * 0.5
-        crop_center_y = (crop_top + crop_bottom) * 0.5
-        crop_width = max(1.0, crop_right - crop_left)
-        crop_height = max(1.0, crop_bottom - crop_top)
-
-        # Convert the normalised crop rectangle into the world-space coordinate
-        # system used by the shader: origin at the texture centre, X right, Y up.
-        crop_center_world_x = crop_center_x - (tex_w * 0.5)
-        crop_center_world_y = (tex_h * 0.5) - crop_center_y
-        half_crop_w = crop_width * 0.5
-        half_crop_h = crop_height * 0.5
-
-        crop_left_world = crop_center_world_x - half_crop_w
-        crop_right_world = crop_center_world_x + half_crop_w
-        crop_bottom_world = crop_center_world_y - half_crop_h
-        crop_top_world = crop_center_world_y + half_crop_h
-
-        half_image_w = (tex_w * scale) * 0.5
-        half_image_h = (tex_h * scale) * 0.5
-
-        min_offset_x = crop_right_world - half_image_w
-        max_offset_x = crop_left_world + half_image_w
-        min_offset_y = crop_top_world - half_image_h
-        max_offset_y = crop_bottom_world + half_image_h
-
-        clamped_x = max(min_offset_x, min(max_offset_x, float(offset.x())))
-        clamped_y = max(min_offset_y, min(max_offset_y, float(offset.y())))
-        return QPointF(clamped_x, clamped_y)
-
-    def _dynamic_min_scale_for_crop(self) -> float:
-        """Return the minimum model scale that keeps the crop fully covered."""
-
-        if not self._renderer or not self._renderer.has_texture():
-            return 0.0
-
-        tex_w, tex_h = self._renderer.texture_size()
-        if tex_w <= 0 or tex_h <= 0:
-            return 0.0
-
-        crop_rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
-        crop_width = max(1.0, float(crop_rect["right"] - crop_rect["left"]))
-        crop_height = max(1.0, float(crop_rect["bottom"] - crop_rect["top"]))
-
-        width_ratio = crop_width / max(1.0, float(tex_w))
-        height_ratio = crop_height / max(1.0, float(tex_h))
-        return max(width_ratio, height_ratio)
-
-    def _update_crop_state_from_drag_anchor(self) -> bool:
-        """Reproject the cached crop anchor to image space and update the state.
-
-        When the user drags inside the crop we keep the overlay frozen in
-        viewport coordinates.  This helper converts the stored viewport points
-        back into texture pixels using the *current* pan/zoom configuration and
-        rewrites :attr:`_crop_state` accordingly.  The function returns ``True``
-        when the normalised crop rectangle actually changes—callers can then
-        emit ``cropChanged`` without worrying about redundant signals.
-        """
-
-        if (
-            self._crop_drag_anchor_viewport is None
-            or not self._renderer
-            or not self._renderer.has_texture()
-        ):
-            return False
-
-        tex_w, tex_h = self._renderer.texture_size()
-        if tex_w <= 0 or tex_h <= 0:
-            return False
-
-        top_left_vp, bottom_right_vp = self._crop_drag_anchor_viewport
-        top_left_img = self._viewport_to_image(top_left_vp)
-        bottom_right_img = self._viewport_to_image(bottom_right_vp)
-
-        raw_left = min(top_left_img.x(), bottom_right_img.x())
-        raw_right = max(top_left_img.x(), bottom_right_img.x())
-        raw_top = min(top_left_img.y(), bottom_right_img.y())
-        raw_bottom = max(top_left_img.y(), bottom_right_img.y())
-
-        tex_w_f = float(tex_w)
-        tex_h_f = float(tex_h)
-
-        min_width_px = self._crop_state.min_width * tex_w_f
-        min_height_px = self._crop_state.min_height * tex_h_f
-
-        width_px = max(min_width_px, raw_right - raw_left)
-        height_px = max(min_height_px, raw_bottom - raw_top)
-
-        width_px = min(width_px, tex_w_f)
-        height_px = min(height_px, tex_h_f)
-
-        half_w = width_px * 0.5
-        half_h = height_px * 0.5
-
-        center_x = (raw_left + raw_right) * 0.5
-        center_y = (raw_top + raw_bottom) * 0.5
-
-        center_x = max(half_w, min(tex_w_f - half_w, center_x))
-        center_y = max(half_h, min(tex_h_f - half_h, center_y))
-
-        before = (
-            float(self._crop_state.cx),
-            float(self._crop_state.cy),
-            float(self._crop_state.width),
-            float(self._crop_state.height),
-        )
-
-        if tex_w_f <= 1e-6 or tex_h_f <= 1e-6:
-            return False
-
-        self._crop_state.cx = center_x / tex_w_f
-        self._crop_state.cy = center_y / tex_h_f
-        self._crop_state.width = max(
-            self._crop_state.min_width,
-            min(1.0, width_px / tex_w_f),
-        )
-        self._crop_state.height = max(
-            self._crop_state.min_height,
-            min(1.0, height_px / tex_h_f),
-        )
-        self._crop_state.clamp()
-
-        after = (
-            float(self._crop_state.cx),
-            float(self._crop_state.cy),
-            float(self._crop_state.width),
-            float(self._crop_state.height),
-        )
-
-        return any(abs(a - b) > 1e-6 for a, b in zip(before, after))
-
-    def _crop_center_viewport_point(self) -> QPointF:
-        if not self._renderer or not self._renderer.has_texture():
-            return self.viewport_center()
-        tex_w, tex_h = self._renderer.texture_size()
-        center = self._crop_state.center_pixels(tex_w, tex_h)
-        return self._image_to_viewport(center.x(), center.y())
-
-    def _image_to_viewport(self, x: float, y: float) -> QPointF:
-        if not self._renderer or not self._renderer.has_texture():
-            return QPointF()
-        scale = self._effective_scale()
-        dpr = self.devicePixelRatioF()
-        return self._transform_controller.image_to_viewport(
-            x, y,
-            self._renderer.texture_size(),
-            scale,
-            float(self.width()),
-            float(self.height()),
-            dpr,
-        )
-
-    def _viewport_to_image(self, point: QPointF) -> QPointF:
-        if not self._renderer or not self._renderer.has_texture():
-            return QPointF()
-        scale = self._effective_scale()
-        dpr = self.devicePixelRatioF()
-        return self._transform_controller.viewport_to_image(
-            point,
-            self._renderer.texture_size(),
-            scale,
-            float(self.width()),
-            float(self.height()),
-            dpr,
-        )
-
-    def _current_crop_rect_pixels(self) -> Optional[dict[str, float]]:
-        if not self._renderer or not self._renderer.has_texture():
-            return None
-        tex_w, tex_h = self._renderer.texture_size()
-        rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
-        top_left = self._image_to_viewport(rect["left"], rect["top"])
-        bottom_right = self._image_to_viewport(rect["right"], rect["bottom"])
-        dpr = self.devicePixelRatioF()
-        return {
-            "left": top_left.x() * dpr,
-            "top": top_left.y() * dpr,
-            "right": bottom_right.x() * dpr,
-            "bottom": bottom_right.y() * dpr,
-        }
-
-    @staticmethod
-    def _distance_to_segment(point: QPointF, start: QPointF, end: QPointF) -> float:
-        px, py = point.x(), point.y()
-        ax, ay = start.x(), start.y()
-        bx, by = end.x(), end.y()
-        vx = bx - ax
-        vy = by - ay
-        if abs(vx) < 1e-6 and abs(vy) < 1e-6:
-            return math.hypot(px - ax, py - ay)
-        t = ((px - ax) * vx + (py - ay) * vy) / (vx * vx + vy * vy)
-        t = max(0.0, min(1.0, t))
-        qx = ax + t * vx
-        qy = ay + t * vy
-        return math.hypot(px - qx, py - qy)
-
-    def _crop_hit_test(self, point: QPointF) -> CropHandle:
-        if not self._renderer or not self._renderer.has_texture():
-            return CropHandle.NONE
-        tex_w, tex_h = self._renderer.texture_size()
-        rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
-        top_left = self._image_to_viewport(rect["left"], rect["top"])
-        top_right = self._image_to_viewport(rect["right"], rect["top"])
-        bottom_right = self._image_to_viewport(rect["right"], rect["bottom"])
-        bottom_left = self._image_to_viewport(rect["left"], rect["bottom"])
-
-        corners = [
-            (CropHandle.TOP_LEFT, top_left),
-            (CropHandle.TOP_RIGHT, top_right),
-            (CropHandle.BOTTOM_RIGHT, bottom_right),
-            (CropHandle.BOTTOM_LEFT, bottom_left),
-        ]
-        for handle, corner in corners:
-            if math.hypot(point.x() - corner.x(), point.y() - corner.y()) <= self._crop_hit_padding:
-                return handle
-
-        edges = [
-            (CropHandle.TOP, top_left, top_right),
-            (CropHandle.RIGHT, top_right, bottom_right),
-            (CropHandle.BOTTOM, bottom_left, bottom_right),
-            (CropHandle.LEFT, top_left, bottom_left),
-        ]
-        for handle, start, end in edges:
-            if self._distance_to_segment(point, start, end) <= self._crop_hit_padding:
-                return handle
-
-        left = min(top_left.x(), bottom_left.x())
-        right = max(top_right.x(), bottom_right.x())
-        top = min(top_left.y(), top_right.y())
-        bottom = max(bottom_left.y(), bottom_right.y())
-        if left <= point.x() <= right and top <= point.y() <= bottom:
-            return CropHandle.INSIDE
-        return CropHandle.NONE
-
-    def _restart_crop_idle(self) -> None:
-        if self._crop_mode:
-            self._crop_idle_timer.start()
-
-    def _stop_crop_idle(self) -> None:
-        self._crop_idle_timer.stop()
-
-    def _stop_crop_animation(self) -> None:
-        if self._crop_anim_active:
-            self._crop_anim_active = False
-            self._crop_anim_timer.stop()
-
-    def _on_crop_idle_timeout(self) -> None:
-        self._crop_idle_timer.stop()
-        self._start_crop_animation()
-
-    def _start_crop_animation(self) -> None:
-        if not self._crop_mode or not self._renderer or not self._renderer.has_texture():
-            return
-        target_scale = self._target_scale_for_crop()
-        tex_w, tex_h = self._renderer.texture_size()
-        target_center = self._crop_state.center_pixels(tex_w, tex_h)
-        target_center = self._clamp_image_center_to_crop(target_center, target_scale)
-        self._crop_anim_active = True
-        self._crop_anim_start_time = time.monotonic()
-        self._crop_anim_start_scale = self._effective_scale()
-        self._crop_anim_target_scale = target_scale
-        self._crop_anim_start_center = self._image_center_pixels()
-        self._crop_anim_target_center = target_center
-        self._crop_anim_timer.start()
-        self._crop_faded_out = False
-
-    def _on_crop_anim_tick(self) -> None:
-        if not self._crop_anim_active:
-            self._crop_anim_timer.stop()
-            return
-        elapsed = time.monotonic() - self._crop_anim_start_time
-        if elapsed >= self._crop_anim_duration:
-            scale = self._crop_anim_target_scale
-            centre = self._crop_anim_target_center
-            self._apply_crop_animation_state(scale, centre)
-            self._crop_anim_active = False
-            self._crop_anim_timer.stop()
-            self._crop_faded_out = True
-            self.update()
-            return
-        progress = max(0.0, min(1.0, elapsed / self._crop_anim_duration))
-        eased = ease_out_cubic(progress)
-        scale = self._crop_anim_start_scale + (
-            (self._crop_anim_target_scale - self._crop_anim_start_scale) * eased
-        )
-        centre_x = self._crop_anim_start_center.x() + (
-            (self._crop_anim_target_center.x() - self._crop_anim_start_center.x()) * eased
-        )
-        centre_y = self._crop_anim_start_center.y() + (
-            (self._crop_anim_target_center.y() - self._crop_anim_start_center.y()) * eased
-        )
-        self._apply_crop_animation_state(scale, QPointF(centre_x, centre_y))
-        self.update()
-
-    def _apply_crop_animation_state(self, scale: float, centre: QPointF) -> None:
-        if not self._renderer or not self._renderer.has_texture():
-            return
-        vw, vh = self._view_dimensions_device_px()
-        tex_size = self._renderer.texture_size()
-        base_scale = compute_fit_to_view_scale(tex_size, vw, vh)
-        min_zoom = self._transform_controller.minimum_zoom()
-        max_zoom = self._transform_controller.maximum_zoom()
-        zoom_factor = max(min_zoom, min(max_zoom, scale / max(base_scale, 1e-6)))
-        self._transform_controller.set_zoom_factor_direct(zoom_factor)
-        actual_scale = self._effective_scale()
-        clamped_center = self._clamp_image_center_to_crop(centre, actual_scale)
-        self._set_image_center_pixels(clamped_center, scale=actual_scale)
-
-    def _target_scale_for_crop(self) -> float:
-        if not self._renderer or not self._renderer.has_texture():
-            return self._effective_scale()
-        tex_w, tex_h = self._renderer.texture_size()
-        vw, vh = self._view_dimensions_device_px()
-        crop_rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
-        crop_width = max(1.0, crop_rect["right"] - crop_rect["left"])
-        crop_height = max(1.0, crop_rect["bottom"] - crop_rect["top"])
-        padding = 20.0 * self.devicePixelRatioF()
-        available_w = max(1.0, vw - padding * 2.0)
-        available_h = max(1.0, vh - padding * 2.0)
-        scale_w = available_w / crop_width
-        scale_h = available_h / crop_height
-        target_scale = min(scale_w, scale_h)
-        base_scale = compute_fit_to_view_scale((tex_w, tex_h), vw, vh)
-        min_scale = base_scale * self._transform_controller.minimum_zoom()
-        max_scale = base_scale * self._transform_controller.maximum_zoom()
-        return max(min_scale, min(max_scale, target_scale))
-
-    def _auto_shrink_on_drag(self, delta: QPointF) -> None:
-        """
-        Port from demo/crop_final.py: Auto zoom-out while pushing edges.
-        When crop edge is pushed against viewport edge, scale down and pan
-        in the opposite direction to bring in more content.
-        """
-        if not self._renderer or not self._renderer.has_texture():
-            return
-        vw, vh = self._view_dimensions_device_px()
-        crop_rect = self._current_crop_rect_pixels()
-        if crop_rect is None:
-            return
-        threshold = self._crop_edge_threshold
-        delta_x = delta.x()
-        delta_y = delta.y()
-
-        # Convert delta to image space (texture pixels)
-        dpr = self.devicePixelRatioF()
-        current_scale = self._effective_scale()
-        if current_scale <= 1e-6:
-            return
-        # image_delta is in texture pixel space (Y-down)
-        image_delta = QPointF(delta_x * dpr / current_scale, delta_y * dpr / current_scale)
-        # world_delta is in world space (Y-up, like demo), where Y-axis is flipped
-        world_delta_x = image_delta.x()
-        world_delta_y = -image_delta.y()  # Flip Y: texture down = world up
-
-        # Calculate pressure and d_offset following demo/crop_final.py logic
-        pressure = 0.0
-        d_offset_x = 0.0
-        d_offset_y = 0.0
-
-        # Left edge pushing out (delta_x < 0): move right (+x) to bring left content
-        if (
-            self._crop_drag_handle in (CropHandle.LEFT, CropHandle.TOP_LEFT, CropHandle.BOTTOM_LEFT)
-            and delta_x < 0.0
-        ):
-            left_margin = crop_rect["left"]
-            if left_margin < threshold:
-                p = (threshold - left_margin) / threshold
-                pressure = max(pressure, p)
-                # Use max to ensure positive offset (move right)
-                d_offset_x = max(d_offset_x, world_delta_x * -p)
-
-        # Right edge pushing out (delta_x > 0): move left (-x) to bring right content
-        if (
-            self._crop_drag_handle in (CropHandle.RIGHT, CropHandle.TOP_RIGHT, CropHandle.BOTTOM_RIGHT)
-            and delta_x > 0.0
-        ):
-            right_margin = vw - crop_rect["right"]
-            if right_margin < threshold:
-                p = (threshold - right_margin) / threshold
-                pressure = max(pressure, p)
-                # Use min to ensure negative offset (move left)
-                d_offset_x = min(d_offset_x, world_delta_x * -p)
-
-        # Top edge pushing out (delta_y < 0): move down (-y in world) to bring top content
-        if (
-            self._crop_drag_handle in (CropHandle.TOP, CropHandle.TOP_LEFT, CropHandle.TOP_RIGHT)
-            and delta_y < 0.0
-        ):
-            top_margin = crop_rect["top"]
-            if top_margin < threshold:
-                p = (threshold - top_margin) / threshold
-                pressure = max(pressure, p)
-                # Use min to ensure negative offset (move down in world space)
-                d_offset_y = min(d_offset_y, world_delta_y * -p)
-
-        # Bottom edge pushing out (delta_y > 0): move up (+y in world) to bring bottom content
-        if (
-            self._crop_drag_handle in (CropHandle.BOTTOM, CropHandle.BOTTOM_LEFT, CropHandle.BOTTOM_RIGHT)
-            and delta_y > 0.0
-        ):
-            bottom_margin = vh - crop_rect["bottom"]
-            if bottom_margin < threshold:
-                p = (threshold - bottom_margin) / threshold
-                pressure = max(pressure, p)
-                # Use max to ensure positive offset (move up in world space)
-                d_offset_y = max(d_offset_y, world_delta_y * -p)
-
-        if pressure <= 0.0:
-            return
-
-        # Ease the pressure for smooth feel
-        eased_pressure = ease_in_quad(min(1.0, pressure))
-
-        # 1. Scale down around crop center (like demo)
-        tex_size = self._renderer.texture_size()
-        vw_float, vh_float = float(vw), float(vh)
-        base_scale = compute_fit_to_view_scale(tex_size, vw_float, vh_float)
-        
-        # During auto-shrink, don't go below the fit-to-window scale (base_scale)
-        # This ensures the image always fills the window nicely
-        min_scale = max(base_scale, base_scale * self._transform_controller.minimum_zoom())
-        max_scale = base_scale * self._transform_controller.maximum_zoom()
-        
-        k_max = 0.05  # Maximum shrink ratio per event
-        factor = 1.0 - k_max * eased_pressure
-        new_scale = max(min_scale, min(max_scale, current_scale * factor))
-        
-        # Scale around crop center
-        anchor = self._crop_center_viewport_point()
-        self._transform_controller.set_zoom(new_scale / max(base_scale, 1e-6), anchor=anchor)
-
-        # 2. Apply pan_gain and translate the view (NOT the crop)
-        # Key insight: In demo, both img_offset and crop move by same world offset,
-        # maintaining their relative position. In our system, crop is in normalized
-        # coords relative to image, so it should NOT move. Only the view/pan moves.
-        pan_gain = 0.75 + 0.25 * eased_pressure
-        # d_offset is in world space (Y-up), convert back to texture space (Y-down) for application
-        final_d_offset = QPointF(d_offset_x * pan_gain, -d_offset_y * pan_gain)
-
-        if abs(final_d_offset.x()) > 1e-4 or abs(final_d_offset.y()) > 1e-4:
-            # Move the image center (pan the view)
-            # Crop stays in same normalized position relative to image
-            new_center = self._image_center_pixels() + final_d_offset
-            actual_scale = self._effective_scale()
-            clamped = self._clamp_image_center_to_crop(new_center, actual_scale)
-            self._set_image_center_pixels(clamped, scale=actual_scale)
-
-    def _emit_crop_changed(self) -> None:
-        state = self._crop_state
-        self.cropChanged.emit(float(state.cx), float(state.cy), float(state.width), float(state.height))
-
-    def _handle_crop_mouse_press(self, event: QMouseEvent) -> None:
-        if not self._renderer or not self._renderer.has_texture():
-            return
-        self._stop_crop_animation()
-        self._stop_crop_idle()
-        self._crop_faded_out = False
-        pos = event.position()
-        handle = self._crop_hit_test(pos)
-        if handle == CropHandle.NONE:
-            self._crop_drag_handle = CropHandle.NONE
-            self._crop_dragging = False
-            self.setCursor(Qt.CursorShape.ArrowCursor)
-            return
-        self._crop_drag_handle = handle
-        self._crop_dragging = True
-        self._crop_last_pos = QPointF(pos)
-        if handle == CropHandle.INSIDE:
-            if self._renderer and self._renderer.has_texture():
-                tex_w, tex_h = self._renderer.texture_size()
-                rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
-                top_left = self._image_to_viewport(rect["left"], rect["top"])
-                bottom_right = self._image_to_viewport(rect["right"], rect["bottom"])
-                # Cache the logical viewport points rather than device pixels so the anchor
-                # survives DPI changes and matches the coordinate space used by
-                # ``QMouseEvent.position``.
-                self._crop_drag_anchor_viewport = (QPointF(top_left), QPointF(bottom_right))
-            else:
-                self._crop_drag_anchor_viewport = None
-            self.setCursor(Qt.CursorShape.ClosedHandCursor)
-        else:
-            self._crop_drag_anchor_viewport = None
-            self.setCursor(cursor_for_handle(handle))
-        event.accept()
-
-    def _handle_crop_mouse_move(self, event: QMouseEvent) -> None:
-        if not self._renderer or not self._renderer.has_texture():
-            return
-        pos = event.position()
-        if not self._crop_dragging:
-            handle = self._crop_hit_test(pos)
-            self.setCursor(cursor_for_handle(handle))
-            return
-
-        previous_pos = QPointF(self._crop_last_pos)
-        delta_view = pos - previous_pos
-        self._crop_last_pos = QPointF(pos)
-        self._crop_faded_out = False
-
-        if self._crop_drag_handle == CropHandle.INSIDE:
-            view_scale = self._effective_scale()
-            if view_scale <= 1e-6:
-                return
-
-            dpr = self.devicePixelRatioF()
-            delta_device_x = float(delta_view.x()) * dpr
-            delta_device_y = float(delta_view.y()) * dpr
-
-            delta_world = QPointF(
-                delta_device_x / view_scale,
-                -delta_device_y / view_scale,
-            )
-
-            tentative_offset = QPointF(
-                self._crop_img_offset.x() + delta_world.x(),
-                self._crop_img_offset.y() + delta_world.y(),
-            )
-
-            clamped_offset = self._clamp_crop_img_offset(tentative_offset, self._crop_img_scale)
-            self._crop_img_offset = clamped_offset
-        else:
-            scale = self._effective_scale() * self._crop_img_scale
-            if scale <= 1e-6:
-                return
-            dpr = self.devicePixelRatioF()
-            image_delta = QPointF(
-                delta_view.x() * dpr / scale,
-                delta_view.y() * dpr / scale,
-            )
-            tex_size = self._renderer.texture_size()
-            self._crop_state.drag_edge_pixels(self._crop_drag_handle, image_delta, tex_size)
-            self._auto_shrink_on_drag(delta_view)
-            self._emit_crop_changed()
-
-        self._restart_crop_idle()
-        self.update()
-
-    def _handle_crop_mouse_release(self, event: QMouseEvent) -> None:
-        del event  # unused
-        self._crop_dragging = False
-        self._crop_drag_handle = CropHandle.NONE
-        self.unsetCursor()
-        self._crop_drag_anchor_viewport = None
-        self._restart_crop_idle()
-
-
     # --------------------------- Events ---------------------------
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        if self._crop_mode and event.button() == Qt.LeftButton:
-            self._handle_crop_mouse_press(event)
+        if self._crop_controller.is_active() and event.button() == Qt.LeftButton:
+            self._crop_controller.handle_mouse_press(event)
             return
         if event.button() == Qt.LeftButton:
             if self._live_replay_enabled:
@@ -1270,16 +654,16 @@ class GLImageViewer(QOpenGLWidget):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
-        if self._crop_mode:
-            self._handle_crop_mouse_move(event)
+        if self._crop_controller.is_active():
+            self._crop_controller.handle_mouse_move(event)
             return
         if not self._live_replay_enabled:
             self._transform_controller.handle_mouse_move(event)
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        if self._crop_mode and event.button() == Qt.LeftButton:
-            self._handle_crop_mouse_release(event)
+        if self._crop_controller.is_active() and event.button() == Qt.LeftButton:
+            self._crop_controller.handle_mouse_release(event)
             return
         if not self._live_replay_enabled:
             self._transform_controller.handle_mouse_release(event)
@@ -1298,68 +682,8 @@ class GLImageViewer(QOpenGLWidget):
         super().mouseDoubleClickEvent(event)
 
     def wheelEvent(self, event: QWheelEvent) -> None:
-        if self._crop_mode:
-            self._stop_crop_animation()
-            self._crop_faded_out = False
-            self._stop_crop_idle()
-            if not self._renderer or not self._renderer.has_texture():
-                return
-
-            angle = event.angleDelta().y()
-            if angle == 0:
-                self._restart_crop_idle()
-                return
-
-            # Guard against devices that emit unusually large wheel deltas.  The
-            # exponential zoom curve is tuned for step values in the ±120 range,
-            # therefore restricting the raw delta avoids sudden jumps while
-            # still allowing high-resolution wheels to feel responsive.
-            angle = max(-480, min(480, angle))
-
-            factor = math.pow(1.0015, angle)
-            dynamic_min = self._dynamic_min_scale_for_crop()
-            min_allowed = max(self._img_scale_clamp[0], dynamic_min)
-            max_allowed = self._img_scale_clamp[1]
-
-            new_scale_raw = self._crop_img_scale * factor
-            new_scale = max(min_allowed, min(max_allowed, new_scale_raw))
-
-            if abs(new_scale - self._crop_img_scale) <= 1e-6:
-                self._restart_crop_idle()
-                event.accept()
-                return
-
-            view_scale = self._effective_scale()
-            if view_scale <= 1e-6:
-                self._restart_crop_idle()
-                event.accept()
-                return
-
-            world_point = self._screen_to_world(event.position())
-            view_pan = self._transform_controller.get_pan_pixels()
-            screen_vector = QPointF(
-                world_point.x() - view_pan.x(),
-                world_point.y() - view_pan.y(),
-            )
-
-            anchor_world = QPointF(
-                screen_vector.x() / view_scale,
-                screen_vector.y() / view_scale,
-            )
-
-            scale_ratio = new_scale / max(self._crop_img_scale, 1e-6)
-            new_offset = QPointF(
-                anchor_world.x() + (self._crop_img_offset.x() - anchor_world.x()) * scale_ratio,
-                anchor_world.y() + (self._crop_img_offset.y() - anchor_world.y()) * scale_ratio,
-            )
-
-            new_offset = self._clamp_crop_img_offset(new_offset, new_scale)
-
-            self._crop_img_scale = new_scale
-            self._crop_img_offset = new_offset
-            self.update()
-            self._restart_crop_idle()
-            event.accept()
+        if self._crop_controller.is_active():
+            self._crop_controller.handle_wheel(event)
             return
         self._transform_controller.handle_wheel(event)
 
