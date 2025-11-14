@@ -1492,10 +1492,11 @@ class GLImageViewer(QOpenGLWidget):
             crop_rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
             crop_width = max(1.0, crop_rect["right"] - crop_rect["left"])
             crop_height = max(1.0, crop_rect["bottom"] - crop_rect["top"])
+            # Fixed: Remove incorrect base_scale division to match demo/crop_final.py
             min_zoom_for_crop = max(
                 crop_width / max(1.0, float(tex_w)),
                 crop_height / max(1.0, float(tex_h)),
-            ) / max(base_scale, 1e-6)
+            )
 
             current_zoom = self._transform_controller.get_zoom_factor()
             factor = math.pow(1.0015, angle)
