@@ -845,11 +845,19 @@ class GLImageViewer(QOpenGLWidget):
         We need to clamp the total offset (pan + crop_img_offset), then extract
         the crop_img_offset component.
         """
+        scale = self._effective_scale()
+        return self._clamp_crop_img_offset_with_scale(offset, scale)
+    
+    def _clamp_crop_img_offset_with_scale(self, offset: QPointF, scale: float) -> QPointF:
+        """Clamp image offset with explicit scale parameter.
+        
+        This version allows passing a specific scale value, useful when the zoom
+        is being changed and we need to clamp using the new scale before it's applied.
+        """
         if not self._renderer or not self._renderer.has_texture():
             return offset
             
         tex_w, tex_h = self._renderer.texture_size()
-        scale = self._effective_scale()
         if scale <= 1e-9:
             return offset
         
@@ -1535,11 +1543,15 @@ class GLImageViewer(QOpenGLWidget):
             new_crop_offset_x = new_total_offset_x - current_pan.x()
             new_crop_offset_y = -(new_total_offset_y - current_pan.y())
             
+            # Clamp the offset BEFORE updating zoom (use old scale for consistency)
+            # We'll pass the new scale to clamping since that's what will be active
+            self._crop_img_offset = self._clamp_crop_img_offset_with_scale(
+                QPointF(new_crop_offset_x, new_crop_offset_y),
+                new_scale
+            )
+            
             # Update zoom factor directly (without moving pan)
             self._transform_controller.set_zoom_factor_direct(new_zoom)
-            
-            # Clamp the offset (demo line 709)
-            self._crop_img_offset = self._clamp_crop_img_offset(QPointF(new_crop_offset_x, new_crop_offset_y))
             
             self._restart_crop_idle()
             self.update()
