@@ -1335,8 +1335,10 @@ class GLImageViewer(QOpenGLWidget):
         # Old image pan (device pixels, Y-up)
         old_offset_world = QPointF(self._crop_img_offset.x(), -self._crop_img_offset.y())
 
-        # Scale around anchor
-        new_offset_world = anchor_world_dev_px + (old_offset_world - anchor_world_dev_px) * s
+        # Scale around anchor (using the same logic as wheelEvent)
+        anchor_world = anchor_world_dev_px  # Use the crop center as the anchor
+        vec_to_old_offset = old_offset_world - anchor_world
+        new_offset_world = anchor_world + vec_to_old_offset * s
 
         # 3. Add "anti-pressure direction" pan
         pan_gain = 0.75 + 0.25 * eased_pressure
