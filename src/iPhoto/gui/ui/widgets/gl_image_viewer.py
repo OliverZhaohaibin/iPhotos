@@ -1381,7 +1381,8 @@ class GLImageViewer(QOpenGLWidget):
 
         # Bottom edge pushing out (delta_y > 0): move up (+y in world) to bring bottom content
         if (
-            self._crop_drag_handle in (CropHandle.BOTTOM, CropHandle.BOTTOM_LEFT, CropHandle.BOTTOM_RIGHT)
+            self._crop_drag_handle
+            in (CropHandle.BOTTOM, CropHandle.BOTTOM_LEFT, CropHandle.BOTTOM_RIGHT)
             and delta_y > 0.0
         ):
             bottom_margin = vh - crop_rect["bottom"]
@@ -1433,7 +1434,9 @@ class GLImageViewer(QOpenGLWidget):
 
     def _emit_crop_changed(self) -> None:
         state = self._crop_state
-        self.cropChanged.emit(float(state.cx), float(state.cy), float(state.width), float(state.height))
+        self.cropChanged.emit(
+            float(state.cx), float(state.cy), float(state.width), float(state.height)
+        )
 
     def _handle_crop_mouse_press(self, event: QMouseEvent) -> None:
         if not self._renderer or not self._renderer.has_texture():
