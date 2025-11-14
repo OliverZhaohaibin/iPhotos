@@ -1604,6 +1604,7 @@ class GLImageViewer(QOpenGLWidget):
             new_offset_y_down = QPointF(new_offset_world.x(), -new_offset_world.y())
             self._crop_img_offset = self._clamp_crop_img_offset(new_offset_y_down)
 
+            self.update()
             self._restart_crop_idle()
             event.accept()
             return
