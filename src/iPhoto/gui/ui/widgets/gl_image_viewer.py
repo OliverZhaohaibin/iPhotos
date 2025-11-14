@@ -841,10 +841,9 @@ class GLImageViewer(QOpenGLWidget):
         """Clamp image offset to prevent crop from showing outside image bounds.
         
         Following demo/crop_final.py's _clamp_offset_to_cover_crop logic.
-        The offset is in device pixels (Qt convention: Y-down), similar to demo's world-space offset.
-        
-        The goal: ensure the crop box (which is in normalized image coords) stays fully
-        within the image bounds when rendered on screen.
+        The offset parameter is crop_img_offset in Qt convention (Y-down).
+        We need to clamp the total offset (pan + crop_img_offset), then extract
+        the crop_img_offset component.
         """
         if not self._renderer or not self._renderer.has_texture():
             return offset
@@ -853,55 +852,50 @@ class GLImageViewer(QOpenGLWidget):
         scale = self._effective_scale()
         if scale <= 1e-9:
             return offset
-            
-        # Get pan from controller (OpenGL convention: Y-up)
+        
+        # Get current pan (OpenGL convention: Y-up)
         current_pan = self._transform_controller.get_pan_pixels()
         
         # Calculate total offset in OpenGL convention
-        # offset parameter is in Qt convention (Y-down), convert to OpenGL (Y-up)
+        # offset is in Qt convention (Y-down), convert to OpenGL (Y-up)
         total_offset_x = current_pan.x() + offset.x()
-        total_offset_y = current_pan.y() - offset.y()  # Convert Y
+        total_offset_y = current_pan.y() - offset.y()
         
         # Get crop bounds in image pixels (top-left origin, Y-down)
         crop_rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
         crop_left = float(crop_rect["left"])
-        crop_top = float(crop_rect["top"])
+        crop_top = float(crop_rect["top"]) 
         crop_right = float(crop_rect["right"])
         crop_bottom = float(crop_rect["bottom"])
-        
-        # Convert crop bounds to device pixels relative to image center (OpenGL convention: Y-up)
-        # In image space: origin at top-left, Y-down
-        # In device space: origin at image center, Y-up
-        # Image pixel (x, y) -> device pixel: ((x - tex_w/2) * scale, -(y - tex_h/2) * scale)
-        crop_left_dev = (crop_left - tex_w/2) * scale
-        crop_right_dev = (crop_right - tex_w/2) * scale
-        crop_top_dev = -(crop_top - tex_h/2) * scale    # Note: negate for Y-up
-        crop_bottom_dev = -(crop_bottom - tex_h/2) * scale
-        
-        # In OpenGL Y-up: top has larger Y than bottom
-        # So crop_top_dev > crop_bottom_dev
-        if crop_top_dev < crop_bottom_dev:
-            crop_top_dev, crop_bottom_dev = crop_bottom_dev, crop_top_dev
         
         # Half-dimensions of scaled image in device pixels
         hw = (tex_w * scale) * 0.5
         hh = (tex_h * scale) * 0.5
         
-        # Apply demo's clamping logic in OpenGL space (Y-up)
-        # Image edges relative to image center at origin:
-        # - left: -hw, right: +hw
-        # - bottom: -hh, top: +hh
-        # 
-        # For image to cover crop box:
-        # - Image left edge (offset.x - hw) <= crop left edge (crop_left_dev)
-        # - Image right edge (offset.x + hw) >= crop right edge (crop_right_dev)
+        # Convert crop bounds to device pixels relative to image center
+        # In image space: origin at top-left, Y-down
+        # In device space (OpenGL): origin at center, Y-up
+        # Image pixel (x, y) -> device: ((x - tex_w/2) * scale, -(y - tex_h/2) * scale)
+        crop_left_dev = (crop_left - tex_w/2) * scale
+        crop_right_dev = (crop_right - tex_w/2) * scale
+        crop_top_dev = -(crop_top - tex_h/2) * scale    # Negate for Y-up
+        crop_bottom_dev = -(crop_bottom - tex_h/2) * scale
+        
+        # In OpenGL Y-up: top has larger Y than bottom
+        if crop_top_dev < crop_bottom_dev:
+            crop_top_dev, crop_bottom_dev = crop_bottom_dev, crop_top_dev
+        
+        # Calculate limits (demo logic)
+        # For image to cover crop: image_edge must reach beyond crop_edge
+        # Image left at: offset.x - hw, must be <= crop_left_dev
+        # Image right at: offset.x + hw, must be >= crop_right_dev
         # Therefore: crop_right_dev - hw <= offset.x <= crop_left_dev + hw
         min_ox = crop_right_dev - hw
         max_ox = crop_left_dev + hw
         min_oy = crop_bottom_dev - hh
         max_oy = crop_top_dev + hh
         
-        # Clamp total offset
+        # Clamp total offset in OpenGL space
         clamped_total_x = max(min_ox, min(max_ox, total_offset_x))
         clamped_total_y = max(min_oy, min(max_oy, total_offset_y))
         
@@ -1007,19 +1001,12 @@ class GLImageViewer(QOpenGLWidget):
             return QPointF()
         scale = self._effective_scale()
         pan = self._transform_controller.get_pan_pixels()
-        # In crop mode, include crop_img_offset to match rendering
-        if self._crop_mode:
-            effective_pan_x = pan.x() + self._crop_img_offset.x()
-            effective_pan_y = pan.y() - self._crop_img_offset.y()
-        else:
-            effective_pan_x = pan.x()
-            effective_pan_y = pan.y()
         tex_w, tex_h = self._renderer.texture_size()
         tex_vector_x = x - (tex_w / 2.0)
         tex_vector_y = y - (tex_h / 2.0)
         world_vector = QPointF(
-            tex_vector_x * scale + effective_pan_x,
-            -(tex_vector_y * scale) + effective_pan_y,
+            tex_vector_x * scale + pan.x(),
+            -(tex_vector_y * scale) + pan.y(),
         )
         # ``world_vector`` is now expressed in the GL-friendly centre-origin
         # space, so the last step is to convert it back to Qt's screen space for
@@ -1030,17 +1017,10 @@ class GLImageViewer(QOpenGLWidget):
         if not self._renderer or not self._renderer.has_texture():
             return QPointF()
         pan = self._transform_controller.get_pan_pixels()
-        # In crop mode, include crop_img_offset to match rendering
-        if self._crop_mode:
-            effective_pan_x = pan.x() + self._crop_img_offset.x()
-            effective_pan_y = pan.y() - self._crop_img_offset.y()
-        else:
-            effective_pan_x = pan.x()
-            effective_pan_y = pan.y()
         scale = self._effective_scale()
         world_vec = self._screen_to_world(point)
-        tex_vector_x = (world_vec.x() - effective_pan_x) / scale
-        tex_vector_y = (world_vec.y() - effective_pan_y) / scale
+        tex_vector_x = (world_vec.x() - pan.x()) / scale
+        tex_vector_y = (world_vec.y() - pan.y()) / scale
         tex_w, tex_h = self._renderer.texture_size()
         tex_x = tex_w / 2.0 + tex_vector_x
         # Convert the world-space Y (upwards positive) back into image space
@@ -1506,18 +1486,17 @@ class GLImageViewer(QOpenGLWidget):
             if base_scale <= 1e-6:
                 return
 
-            # Following demo/crop_final.py wheelEvent logic (lines 687-713):
-            # 1. Keep the view (camera/pan) FIXED - don't move it!
-            # 2. Scale the image directly (via zoom factor)
-            # 3. Adjust crop_img_offset to maintain anchor point
-            # 4. Clamp offset to prevent black bars
+            # Following demo/crop_final.py wheelEvent (lines 687-713):
+            # The key: scale the image around the mouse anchor while keeping the 
+            # crop box stationary. In the demo, img_scale and img_offset change,
+            # but camera stays fixed. Here, we change zoom_factor and crop_img_offset,
+            # while keeping pan fixed.
             
-            # Calculate zoom factor like before but apply it differently
             crop_rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
             crop_width = max(1.0, crop_rect["right"] - crop_rect["left"])
             crop_height = max(1.0, crop_rect["bottom"] - crop_rect["top"])
             
-            # Dynamic minimum scale to cover crop (like demo's _dynamic_min_scale_to_cover_crop)
+            # Dynamic minimum to prevent black bars (demo line 696)
             dyn_min_scale = max(crop_width / max(1.0, float(tex_w)),
                                crop_height / max(1.0, float(tex_h)))
             min_zoom_for_crop = dyn_min_scale / max(base_scale, 1e-6)
@@ -1528,44 +1507,39 @@ class GLImageViewer(QOpenGLWidget):
             max_zoom = self._transform_controller.maximum_zoom()
             new_zoom = max(min_zoom, min(max_zoom, current_zoom * factor))
             
-            # Calculate current and new scales
+            # Calculate actual scales (demo: img_scale)
             current_scale = max(base_scale * current_zoom, 1e-6)
             new_scale = max(base_scale * new_zoom, 1e-6)
-            
-            # Get mouse position in device pixels (anchor point)
-            dpr = self.devicePixelRatioF()
-            anchor_screen_x = event.position().x() * dpr
-            anchor_screen_y = event.position().y() * dpr
-            
-            # Convert anchor to world space (center-origin, Y-up)
-            # This matches demo's self.cam.screen_to_world(ev.position().x(), ev.position().y())
-            anchor_world_x = anchor_screen_x - (vw * 0.5)
-            anchor_world_y = (vh * 0.5) - anchor_screen_y
-            
-            # Scale around the anchor point (like demo lines 703-709)
-            # The formula: new_offset = anchor + (old_offset - anchor) * scale_ratio
             scale_ratio = new_scale / max(1e-12, current_scale)
             
-            # Current offset in world space (combining pan and crop_img_offset)
-            # Note: crop_img_offset is already in device pixels
+            # Get anchor in world space (demo line 703)
+            dpr = self.devicePixelRatioF()
+            anchor_x_dev = event.position().x() * dpr
+            anchor_y_dev = event.position().y() * dpr
+            # Convert to center-origin, Y-up (OpenGL convention)
+            anchor_world_x = anchor_x_dev - (vw * 0.5)
+            anchor_world_y = (vh * 0.5) - anchor_y_dev
+            
+            # Current total offset in world space (demo: img_offset)
+            # pan is in OpenGL convention, crop_img_offset is in Qt convention
             current_pan = self._transform_controller.get_pan_pixels()
-            current_offset_x = current_pan.x() + self._crop_img_offset.x()
-            current_offset_y = current_pan.y() - self._crop_img_offset.y()  # Y inverted
+            total_offset_x = current_pan.x() + self._crop_img_offset.x()
+            total_offset_y = current_pan.y() - self._crop_img_offset.y()
             
-            # Apply scaling around anchor (world space calculation)
-            new_offset_x = anchor_world_x + (current_offset_x - anchor_world_x) * scale_ratio
-            new_offset_y = anchor_world_y + (current_offset_y - anchor_world_y) * scale_ratio
+            # Apply scaling around anchor (demo lines 704-708)
+            new_total_offset_x = anchor_world_x + (total_offset_x - anchor_world_x) * scale_ratio
+            new_total_offset_y = anchor_world_y + (total_offset_y - anchor_world_y) * scale_ratio
             
-            # Extract the new crop_img_offset (keeping pan fixed)
-            new_crop_offset_x = new_offset_x - current_pan.x()
-            new_crop_offset_y = -(new_offset_y - current_pan.y())  # Y inverted back
-            new_crop_offset = QPointF(new_crop_offset_x, new_crop_offset_y)
+            # Extract new crop_img_offset (keeping pan fixed)
+            # Convert from OpenGL to Qt convention for Y
+            new_crop_offset_x = new_total_offset_x - current_pan.x()
+            new_crop_offset_y = -(new_total_offset_y - current_pan.y())
             
-            # Clamp to prevent black bars (like demo's _clamp_offset_to_cover_crop)
-            # Update zoom first so _clamp_crop_img_offset uses correct scale
+            # Update zoom factor directly (without moving pan)
             self._transform_controller.set_zoom_factor_direct(new_zoom)
-            clamped_offset = self._clamp_crop_img_offset(new_crop_offset)
-            self._crop_img_offset = clamped_offset
+            
+            # Clamp the offset (demo line 709)
+            self._crop_img_offset = self._clamp_crop_img_offset(QPointF(new_crop_offset_x, new_crop_offset_y))
             
             self._restart_crop_idle()
             self.update()
