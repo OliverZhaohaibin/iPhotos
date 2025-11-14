@@ -22,6 +22,9 @@ uniform vec2  uViewSize;
 uniform vec2  uTexSize;
 uniform float uScale;
 uniform vec2  uPan;
+// Model transformation (for crop mode)
+uniform float uImgScale;
+uniform vec2  uImgOffset;
 
 float clamp01(float x) { return clamp(x, 0.0, 1.0); }
 
@@ -146,8 +149,17 @@ void main() {
     vec2 fragPx = vec2(gl_FragCoord.x - 0.5, gl_FragCoord.y - 0.5);
     vec2 viewCentre = uViewSize * 0.5;
     vec2 viewVector = fragPx - viewCentre;
-    vec2 texVector = (viewVector - uPan) / uScale;
-    vec2 texPx = texVector + (uTexSize * 0.5);
+    
+    // Apply view transformation (camera)
+    vec2 worldVector = (viewVector - uPan) / uScale;
+    
+    // Apply model transformation (image scale/offset in crop mode)
+    // In crop mode: image can be scaled/translated independently of view
+    // uImgOffset is in "world" device pixels (same space as worldVector)
+    // Note: Y-axis is inverted for uImgOffset.y (Qt Y-down, world Y-up)
+    vec2 modelVector = (worldVector - vec2(uImgOffset.x, -uImgOffset.y)) / uImgScale;
+    
+    vec2 texPx = modelVector + (uTexSize * 0.5);
     vec2 uv = texPx / uTexSize;
 
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {

@@ -270,8 +270,24 @@ class GLRenderer:
         pan: QPointF,
         adjustments: Mapping[str, float],
         time_value: float | None = None,
+        img_scale: float = 1.0,
+        img_offset: QPointF = None,
     ) -> None:
-        """Draw the textured triangle covering the current viewport."""
+        """Draw the textured triangle covering the current viewport.
+        
+        Args:
+            view_width: Viewport width in device pixels
+            view_height: Viewport height in device pixels
+            scale: View/camera scale (device pixels per texture pixel)
+            pan: View/camera pan offset in device pixels
+            adjustments: Color adjustment parameters
+            time_value: Time value for animated effects
+            img_scale: Model scale (for crop mode) - scales the image independently
+            img_offset: Model offset (for crop mode) - translates the image independently
+        """
+        
+        if img_offset is None:
+            img_offset = QPointF(0.0, 0.0)
 
         if self._program is None:
             raise RuntimeError("Renderer has not been initialised")
@@ -335,6 +351,10 @@ class GLRenderer:
                 float(max(1, self._texture_height)),
             )
             self._set_uniform2f("uPan", float(pan.x()), float(pan.y()))
+            
+            # Model transformation (for crop mode)
+            self._set_uniform1f("uImgScale", max(img_scale, 1e-6))
+            self._set_uniform2f("uImgOffset", float(img_offset.x()), float(img_offset.y()))
 
             gf.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
         finally:
