@@ -295,6 +295,9 @@ class GLImageViewer(QOpenGLWidget):
         self._crop_anim_start_center = QPointF()
         self._crop_anim_target_center = QPointF()
         self._crop_faded_out: bool = False
+        
+        # ⭐️ New: Independent image scale in crop mode (mimics demo's img_scale)
+        self._crop_img_scale: float = 1.0
 
     # --------------------------- Public API ---------------------------
 
@@ -645,25 +648,34 @@ class GLImageViewer(QOpenGLWidget):
 
         texture_size = self._renderer.texture_size()
         base_scale = compute_fit_to_view_scale(texture_size, float(vw), float(vh))
-        zoom_factor = self._transform_controller.get_zoom_factor()
-        effective_scale = max(base_scale * zoom_factor, 1e-6)
+        
+        # This is the "view" zoom (static in crop mode)
+        view_zoom_factor = self._transform_controller.get_zoom_factor()
+        view_scale = max(base_scale * view_zoom_factor, 1e-6)
 
         time_value = time.monotonic() - self._time_base
         
-        # In crop mode, combine pan with crop_img_offset (like demo's img_offset)
-        # This keeps the view (pan) fixed while image moves via crop_img_offset
-        effective_pan = self._transform_controller.get_pan_pixels()
+        # This is the "view" pan (static in crop mode)
+        controller_pan = self._transform_controller.get_pan_pixels()
+
+        # ⭐️ Combine "view" and "image" transforms
         if self._crop_mode:
-            effective_pan = QPointF(
-                effective_pan.x() + self._crop_img_offset.x(),
-                effective_pan.y() - self._crop_img_offset.y(),  # Y inverted
+            # Final scale = view scale * image scale
+            final_scale = view_scale * self._crop_img_scale
+            # Final pan = view pan + image pan (note Y-axis flip)
+            final_pan = QPointF(
+                controller_pan.x() + self._crop_img_offset.x(),
+                controller_pan.y() - self._crop_img_offset.y(),
             )
+        else:
+            final_scale = view_scale
+            final_pan = controller_pan
 
         self._renderer.render(
             view_width=float(vw),
             view_height=float(vh),
-            scale=effective_scale,
-            pan=effective_pan,
+            scale=final_scale,   # ⭐️ Use final_scale
+            pan=final_pan,       # ⭐️ Use final_pan
             adjustments=self._adjustments,
             time_value=time_value,
         )
@@ -700,6 +712,7 @@ class GLImageViewer(QOpenGLWidget):
 
         # Reset image offset when entering crop mode
         self._crop_img_offset = QPointF(0.0, 0.0)
+        self._crop_img_scale = 1.0  # ⭐️ Reset image scale
         self._apply_crop_values(values)
         self._crop_faded_out = False
         self._crop_drag_handle = CropHandle.NONE
@@ -869,7 +882,10 @@ class GLImageViewer(QOpenGLWidget):
             return offset
             
         tex_w, tex_h = self._renderer.texture_size()
-        scale = self._effective_scale()
+        
+        # ⭐️ Must use the final combined scale
+        scale = self._effective_scale() * self._crop_img_scale
+        
         if scale <= 1e-9:
             return offset
             
@@ -997,24 +1013,10 @@ class GLImageViewer(QOpenGLWidget):
     def _image_to_viewport(self, x: float, y: float) -> QPointF:
         if not self._renderer or not self._renderer.has_texture():
             return QPointF()
-
-        # --- START FIX 2 ---
+        
         scale = self._effective_scale()
         pan = self._transform_controller.get_pan_pixels()
         
-        if self._crop_mode:
-            # In crop mode, the overlay should be drawn relative to the *static view*,
-            # not the *zoomed image*. We use the base fit-to-view scale
-            # and the controller's pan (which we assume is static in crop mode).
-            # The image itself is panned/zoomed using _crop_img_offset and _zoom_factor
-            # in paintGL, but the overlay ignores them.
-            
-            vw, vh = self._view_dimensions_device_px()
-            scale = compute_fit_to_view_scale(self._renderer.texture_size(), vw, vh)
-            # We continue to use controller's pan, assuming it's static.
-            # (This breaks if _auto_shrink_on_drag is used, but fixes wheel zoom)
-        # --- END FIX 2 ---
-
         tex_w, tex_h = self._renderer.texture_size()
         tex_vector_x = x - (tex_w / 2.0)
         tex_vector_y = y - (tex_h / 2.0)
@@ -1409,7 +1411,9 @@ class GLImageViewer(QOpenGLWidget):
             # The crop stays fixed in viewport because we're only changing img_offset,
             # not the view (pan)
         else:
-            scale = self._effective_scale()
+            # ⭐️ Must use the final combined scale
+            scale = self._effective_scale() * self._crop_img_scale
+            
             if scale <= 1e-6:
                 return
             dpr = self.devicePixelRatioF()
@@ -1488,101 +1492,81 @@ class GLImageViewer(QOpenGLWidget):
                 self._restart_crop_idle()
                 return
 
-            # Guard against devices that emit unusually large wheel deltas.  The
-            # exponential zoom curve is tuned for step values in the ±120 range,
-            # therefore restricting the raw delta avoids sudden jumps while
-            # still allowing high-resolution wheels to feel responsive.
             angle = max(-480, min(480, angle))
 
             tex_w, tex_h = self._renderer.texture_size()
             vw, vh = self._view_dimensions_device_px()
-            base_scale = compute_fit_to_view_scale((tex_w, tex_h), vw, vh)
-            if base_scale <= 1e-6:
+
+            # 1. Get the "view" static scale
+            view_scale = self._effective_scale()
+            if view_scale <= 1e-6:
                 return
 
-            # Calculate dynamic minimum zoom to ensure image always covers crop box
+            # 2. Calculate dynamic minimum "image" scale (ensures coverage of crop box)
             crop_rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
             crop_width = max(1.0, crop_rect["right"] - crop_rect["left"])
             crop_height = max(1.0, crop_rect["bottom"] - crop_rect["top"])
+            
+            # min_zoom_for_crop is the image scale factor (0..1+)
             min_zoom_for_crop = max(
                 crop_width / max(1.0, float(tex_w)),
                 crop_height / max(1.0, float(tex_h)),
             )
 
-            current_zoom = self._transform_controller.get_zoom_factor()
+            # 3. Calculate new "image" scale
+            current_img_scale = self._crop_img_scale
             factor = math.pow(1.0015, angle)
-            min_zoom = max(self._transform_controller.minimum_zoom(), min_zoom_for_crop)
-            max_zoom = self._transform_controller.maximum_zoom()
-            new_zoom = max(min_zoom, min(max_zoom, current_zoom * factor))
+            
+            # Image scale factor cannot be less than minimum needed to cover crop box
+            min_allowed_img_scale = min_zoom_for_crop
+            max_allowed_img_scale = self._transform_controller.maximum_zoom()  # (reuse limit)
+            
+            new_img_scale = max(
+                min_allowed_img_scale,
+                min(max_allowed_img_scale, current_img_scale * factor)
+            )
 
-            if abs(new_zoom - current_zoom) < 1e-6:
+            if abs(new_img_scale - current_img_scale) < 1e-6:
                 self._restart_crop_idle()
                 event.accept()
-                return  # No zoom change
+                return  # No scale change
 
-            # --- START FIX ---
+            # 4. Calculate new "image" pan around anchor (self._crop_img_offset)
+            # (Ported from demo/crop_final.py wheel logic)
             
-            # 1. Set zoom factor directly (does not change controller's pan)
-            self._transform_controller.set_zoom_factor_direct(new_zoom)
+            s = new_img_scale / max(1e-12, current_img_scale)
 
-            # 2. Calculate new pan offset (_crop_img_offset) based on anchor,
-            #    mimicking demo/crop_final.py's logic.
-            
-            old_scale_eff = base_scale * current_zoom
-            new_scale_eff = base_scale * new_zoom
-            
-            s = new_scale_eff / max(1e-9, old_scale_eff)
-        
-            # Get anchor in "screen" space (device pixels, Y-down, top-left origin)
+            # Get anchor (device pixels, Y-up, center origin)
             dpr = self.devicePixelRatioF()
             anchor_screen_px = event.position() * dpr
-        
-            # Convert anchor to "world" space (device pixels, Y-up, center origin)
             anchor_world = QPointF(
                 anchor_screen_px.x() - vw * 0.5,
                 vh * 0.5 - anchor_screen_px.y()
             )
 
-            # Get current *total* image offset (from controller pan + crop offset)
-            # This offset is in "world" space (Y-up)
-            controller_pan = self._transform_controller.get_pan_pixels()
-            current_offset_world = QPointF(
-                controller_pan.x() + self._crop_img_offset.x(),
-                controller_pan.y() - self._crop_img_offset.y() # convert crop_offset to Y-up
-            )
-        
-            # Apply demo's formula: new_offset = anchor + (old_offset - anchor) * s
-            new_offset_world = QPointF(
-                anchor_world.x() + (current_offset_world.x() - anchor_world.x()) * s,
-                anchor_world.y() + (current_offset_world.y() - anchor_world.y()) * s
+            # Get old "image" pan (device pixels, Y-up)
+            old_offset_world = QPointF(
+                self._crop_img_offset.x(), 
+                -self._crop_img_offset.y()  # Flip Y-axis
             )
             
-            # The controller's pan should remain static (it's the "view").
-            # The delta must be applied to _crop_img_offset.
-            # new_offset_world = controller_pan + new_crop_offset_world
-            # new_crop_offset_world = new_offset_world - controller_pan
-            
-            new_crop_offset_world = new_offset_world - controller_pan
-            
-            # Convert new crop offset back to Y-down to store in _crop_img_offset
-            new_crop_offset_y_down = QPointF(
-                new_crop_offset_world.x(),
-                -new_crop_offset_world.y()
-            )
+            # Key formula: new_offset = anchor + (old_offset - anchor) * s
+            # demo logic simplified for our implementation
+            vec_to_old_offset = old_offset_world - anchor_world
+            new_offset_world = anchor_world + vec_to_old_offset * s
 
-            # 3. Clamp and set the new offset
-            #    `_clamp_crop_img_offset` uses `_effective_scale()`, which is now
-            #    correctly set to the new scale.
-            self._crop_img_offset = self._clamp_crop_img_offset(new_crop_offset_y_down)
+            # 5. Apply new state
+            self._crop_img_scale = new_img_scale
+            
+            # Convert back to Y-down and apply constraints
+            new_offset_y_down = QPointF(new_offset_world.x(), -new_offset_world.y())
+            self._crop_img_offset = self._clamp_crop_img_offset(new_offset_y_down)
 
-            # 4. Old logic (which modified controller pan) is removed.
-            
-            # --- END FIX ---
-            
             self._restart_crop_idle()
             event.accept()
             return
-            
+
+        # Non-crop mode wheel event
         self._transform_controller.handle_wheel(event)
 
     def resizeGL(self, w: int, h: int) -> None:
