@@ -1266,16 +1266,17 @@ class GLImageViewer(QOpenGLWidget):
         anchor = self._crop_center_viewport_point()
         self._transform_controller.set_zoom(new_scale / max(base_scale, 1e-6), anchor=anchor)
 
-        # 2. Apply pan_gain and translate both crop and image
+        # 2. Apply pan_gain and translate the view (NOT the crop)
+        # Key insight: In demo, both img_offset and crop move by same world offset,
+        # maintaining their relative position. In our system, crop is in normalized
+        # coords relative to image, so it should NOT move. Only the view/pan moves.
         pan_gain = 0.75 + 0.25 * eased_pressure
         # d_offset is in world space (Y-up), convert back to texture space (Y-down) for application
         final_d_offset = QPointF(d_offset_x * pan_gain, -d_offset_y * pan_gain)
 
         if abs(final_d_offset.x()) > 1e-4 or abs(final_d_offset.y()) > 1e-4:
-            # 3. Move crop state (synchronized with image) - in texture pixel space
-            self._crop_state.translate_pixels(final_d_offset, tex_size)
-            
-            # 4. Move image center
+            # Move the image center (pan the view)
+            # Crop stays in same normalized position relative to image
             new_center = self._image_center_pixels() + final_d_offset
             actual_scale = self._effective_scale()
             clamped = self._clamp_image_center_to_crop(new_center, actual_scale)
