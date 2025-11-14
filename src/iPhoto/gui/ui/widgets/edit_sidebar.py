@@ -4,11 +4,10 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import Qt, Slot, Signal
+from PySide6.QtCore import Slot, Signal
 from PySide6.QtGui import QPalette, QColor
 from PySide6.QtWidgets import (
     QFrame,
-    QLabel,
     QScrollArea,
     QStackedWidget,
     QToolButton,
@@ -23,6 +22,7 @@ from ..models.edit_session import EditSession
 from .edit_light_section import EditLightSection
 from .edit_color_section import EditColorSection
 from .edit_bw_section import EditBWSection
+from .edit_crop_section import EditCropSection
 from .collapsible_section import CollapsibleSection
 from ..palette import SIDEBAR_BACKGROUND_COLOR, Edit_SIDEBAR_FONT
 from ..icon import load_icon
@@ -184,12 +184,6 @@ class EditSidebar(QWidget):
         self._stack.addWidget(adjust_container)
 
         # Crop page -----------------------------------------------------
-        crop_placeholder = QLabel(
-            "Cropping tools will arrive in a future update.",
-            self,
-        )
-        crop_placeholder.setWordWrap(True)
-        crop_placeholder.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
         crop_container = QWidget(self)
         crop_palette = crop_container.palette()
         crop_palette.setColor(QPalette.ColorRole.Window, SIDEBAR_BACKGROUND_COLOR)
@@ -197,8 +191,11 @@ class EditSidebar(QWidget):
         crop_container.setPalette(crop_palette)
         crop_container.setAutoFillBackground(True)
         crop_layout = QVBoxLayout(crop_container)
-        crop_layout.setContentsMargins(24, 24, 24, 24)
-        crop_layout.addWidget(crop_placeholder)
+        crop_layout.setContentsMargins(12, 12, 12, 12)
+        crop_layout.setSpacing(12)
+
+        self._crop_section = EditCropSection(crop_container)
+        crop_layout.addWidget(self._crop_section)
         crop_layout.addStretch(1)
         crop_container.setLayout(crop_layout)
         self._stack.addWidget(crop_container)

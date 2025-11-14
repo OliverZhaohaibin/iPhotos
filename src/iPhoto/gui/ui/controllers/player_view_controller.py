@@ -20,7 +20,7 @@ from ..widgets.video_area import VideoArea
 class _AdjustedImageSignals(QObject):
     """Relay worker completion events back to the GUI thread."""
 
-    completed = Signal(Path, QImage, dict)
+    completed = Signal(Path, QImage, dict, tuple)
     """Emitted when the adjusted image finished loading successfully."""
 
     failed = Signal(Path, str)
@@ -62,6 +62,23 @@ class _AdjustedImageWorker(QRunnable):
 
         try:
             raw_adjustments = sidecar.load_adjustments(self._source)
+            def _safe_float(key: str, default: float) -> float:
+                try:
+                    value = raw_adjustments.get(key, default)
+                except AttributeError:
+                    return default
+                try:
+                    numeric = float(value)
+                except (TypeError, ValueError):
+                    numeric = default
+                return max(0.0, min(1.0, numeric))
+
+            crop_uv = (
+                _safe_float("Crop_U0", 0.0),
+                _safe_float("Crop_V0", 0.0),
+                _safe_float("Crop_U1", 1.0),
+                _safe_float("Crop_V1", 1.0),
+            )
             stats = compute_color_statistics(image) if raw_adjustments else None
             adjustments = sidecar.resolve_render_adjustments(
                 raw_adjustments,
@@ -72,9 +89,8 @@ class _AdjustedImageWorker(QRunnable):
             return
 
         # Pass the raw image and adjustments to the main thread. The GL viewer
-        # Pass the raw image and adjustments to the main thread. The GL viewer
         # will apply the adjustments on the GPU.
-        self._signals.completed.emit(self._source, image, adjustments or {})
+        self._signals.completed.emit(self._source, image, adjustments or {}, crop_uv)
 
 
 class PlayerViewController(QObject):
@@ -191,7 +207,12 @@ class PlayerViewController(QObject):
         signals.completed.connect(self._on_adjusted_image_ready)
         signals.failed.connect(self._on_adjusted_image_failed)
 
-        def _finalize_on_completion(img_source: Path, img: QImage, adjustments: dict) -> None:
+        def _finalize_on_completion(
+            img_source: Path,
+            img: QImage,
+            adjustments: dict,
+            crop_uv: tuple[float, float, float, float],
+        ) -> None:
             self._release_worker(worker)
             signals.deleteLater()
 
@@ -273,7 +294,13 @@ class PlayerViewController(QObject):
     # ------------------------------------------------------------------
     # Worker callbacks
     # ------------------------------------------------------------------
-    def _on_adjusted_image_ready(self, source: Path, image: QImage, adjustments: dict) -> None:
+    def _on_adjusted_image_ready(
+        self,
+        source: Path,
+        image: QImage,
+        adjustments: dict,
+        crop_uv: tuple[float, float, float, float],
+    ) -> None:
         """Render *image* when the matching worker completes successfully."""
         if self._loading_source != source:
             return
@@ -292,6 +319,7 @@ class PlayerViewController(QObject):
             adjustments,
             image_source=source,
             reset_view=True,
+            display_uv=crop_uv,
         )
         self._image_viewer.update()
 

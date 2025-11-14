@@ -14,7 +14,7 @@ import logging
 import math
 import time
 
-from PySide6.QtCore import QPointF, QSize, Qt, Signal, QTimer
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QImage,
@@ -33,6 +33,7 @@ from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import QLabel
 from OpenGL import GL as gl
 
+from .crop_overlay import CropOverlay
 from .gl_renderer import GLRenderer
 from .view_transform_controller import (
     ViewTransformController,
@@ -209,6 +210,7 @@ class GLImageViewer(QOpenGLWidget):
     # Signals（保持与旧版一致）
     replayRequested = Signal()
     zoomChanged = Signal(float)
+    cropRectChanged = Signal(tuple)
     nextItemRequested = Signal()
     prevItemRequested = Signal()
     fullscreenExitRequested = Signal()
@@ -267,38 +269,12 @@ class GLImageViewer(QOpenGLWidget):
         )
         self._transform_controller.reset_zoom()
 
-        # Crop interaction state -------------------------------------------------
-        self._crop_mode: bool = False
-        self._crop_state = CropBoxState()
-        self._crop_drag_handle: CropHandle = CropHandle.NONE
-        self._crop_dragging: bool = False
-        self._crop_last_pos = QPointF()
-        self._crop_hit_padding: float = 12.0
-        self._crop_edge_threshold: float = 48.0
-        
-        # Following demo/crop_final.py architecture:
-        # During crop mode, maintain an image-space transform that is independent
-        # from the camera/view transform.  The offset lives in texture pixel space
-        # with the origin at the image centre and the Y axis pointing upwards to
-        # match the shader's world coordinates.
-        self._crop_img_offset = QPointF(0.0, 0.0)
-        self._crop_img_scale: float = 1.0
-        self._img_scale_clamp: tuple[float, float] = (0.02, 40.0)
-        
-        self._crop_idle_timer = QTimer(self)
-        self._crop_idle_timer.setInterval(1000)
-        self._crop_idle_timer.timeout.connect(self._on_crop_idle_timeout)
-        self._crop_anim_timer = QTimer(self)
-        self._crop_anim_timer.setInterval(16)
-        self._crop_anim_timer.timeout.connect(self._on_crop_anim_tick)
-        self._crop_anim_active: bool = False
-        self._crop_anim_start_time: float = 0.0
-        self._crop_anim_duration: float = 0.3
-        self._crop_anim_start_scale: float = 1.0
-        self._crop_anim_target_scale: float = 1.0
-        self._crop_anim_start_center = QPointF()
-        self._crop_anim_target_center = QPointF()
-        self._crop_faded_out: bool = False
+        self._display_uv: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 1.0)
+        self._crop_overlay = CropOverlay(self)
+        self._crop_overlay.hide()
+        self._crop_overlay.crop_finished.connect(self._handle_crop_overlay_finished)
+        self._crop_overlay_active = False
+        self._crop_mode_requested = False
 
     # --------------------------- Public API ---------------------------
 
@@ -318,6 +294,7 @@ class GLImageViewer(QOpenGLWidget):
         *,
         image_source: Optional[object] = None,
         reset_view: bool = True,
+        display_uv: tuple[float, float, float, float] | None = None,
     ) -> None:
         """Display *image* together with optional colour *adjustments*.
 
@@ -336,19 +313,27 @@ class GLImageViewer(QOpenGLWidget):
             ``True`` preserves the historic behaviour of resetting the zoom and
             pan state.  Passing ``False`` keeps the current transform so edit
             mode can reuse the detail view framing without a visible jump.
+        display_uv:
+            Optional normalised ``(u0, v0, u1, v1)`` rectangle to apply before
+            painting.  When omitted the previous UV window is preserved unless
+            *reset_view* forces the default framing.
         """
 
-        reuse_existing_texture = (
-            image_source is not None and image_source == getattr(self, "_current_image_source", None)
-        )
+        previous_source = getattr(self, "_current_image_source", None)
+        reuse_existing_texture = image_source is not None and image_source == previous_source
+        source_changed = image_source != previous_source
+        should_reset_view = reset_view or source_changed
 
         if reuse_existing_texture and image is not None and not image.isNull():
             # Skip the heavy texture re-upload when the caller explicitly
             # reports that the source asset is unchanged.  Only the adjustment
             # uniforms need to be refreshed in this scenario.
             self.set_adjustments(adjustments)
-            if reset_view:
+            if should_reset_view:
+                self._set_display_uv(0.0, 0.0, 1.0, 1.0)
                 self.reset_zoom()
+                if self._crop_overlay_active:
+                    self._update_crop_overlay_bounds(reset_selection=True)
             return
 
         self._current_image_source = image_source
@@ -357,8 +342,12 @@ class GLImageViewer(QOpenGLWidget):
         self._loading_overlay.hide()
         self._time_base = time.monotonic()
 
+        if should_reset_view:
+            self._set_display_uv(0.0, 0.0, 1.0, 1.0)
+
         if image is None or image.isNull():
             self._current_image_source = None
+            self.set_crop_mode(False)
             renderer = self._renderer
             if renderer is not None:
                 gl_context = self.context()
@@ -373,12 +362,22 @@ class GLImageViewer(QOpenGLWidget):
                     finally:
                         self.doneCurrent()
 
-        if reset_view:
+        if self._crop_overlay_active:
+            self._update_crop_overlay_bounds(reset_selection=should_reset_view)
+
+        if self._crop_mode_requested and not self._crop_overlay_active:
+            self.set_crop_mode(True)
+        elif not self._crop_mode_requested and self._crop_overlay_active:
+            self.set_crop_mode(False)
+
+        if should_reset_view:
             # Reset the interactive transform so every new asset begins in the
             # same fit-to-window baseline that the QWidget-based viewer
             # exposes.  ``reset_view`` lets callers preserve the zoom when the
             # user toggles between detail and edit modes.
             self.reset_zoom()
+        if self._crop_overlay_active:
+            self._update_crop_overlay_bounds(reset_selection=overlay_reset)
     def set_placeholder(self, pixmap) -> None:
         """Display *pixmap* without changing the tracked image source."""
 
@@ -454,6 +453,36 @@ class GLImageViewer(QOpenGLWidget):
 
     def set_wheel_action(self, action: str) -> None:
         self._transform_controller.set_wheel_action(action)
+
+    def set_crop_mode(self, enabled: bool) -> None:
+        """Toggle the interactive crop overlay."""
+
+        self._crop_mode_requested = bool(enabled)
+        target_state = (
+            self._crop_mode_requested
+            and self._image is not None
+            and not self._image.isNull()
+        )
+        if target_state == self._crop_overlay_active:
+            if target_state:
+                self._update_crop_overlay_bounds(reset_selection=False)
+            else:
+                self._crop_overlay.hide()
+            return
+
+        self._crop_overlay_active = target_state
+        if target_state:
+            self._transform_controller.reset_zoom()
+            self._crop_overlay.setVisible(True)
+            self._crop_overlay.raise_()
+            self._update_crop_overlay_bounds(reset_selection=True)
+        else:
+            self._crop_overlay.hide()
+
+    def is_crop_mode_active(self) -> bool:
+        """Return ``True`` when the overlay is accepting crop gestures."""
+
+        return self._crop_overlay_active
 
     def set_surface_color_override(self, colour: str | None) -> None:
         """Override the viewer backdrop with *colour* or restore the default."""
@@ -572,8 +601,8 @@ class GLImageViewer(QOpenGLWidget):
                 gf.glClearColor(0.0, 0.0, 0.0, 0.0)
                 gf.glClear(gl.GL_COLOR_BUFFER_BIT)
 
-                texture_size = self._renderer.texture_size()
-                base_scale = compute_fit_to_view_scale(texture_size, float(width), float(height))
+                display_size = self._displayed_texture_dimensions()
+                base_scale = compute_fit_to_view_scale(display_size, float(width), float(height))
                 effective_scale = max(base_scale, 1e-6)
                 time_value = time.monotonic() - self._time_base
                 self._renderer.render(
@@ -583,6 +612,7 @@ class GLImageViewer(QOpenGLWidget):
                     pan=QPointF(0.0, 0.0),
                     adjustments=dict(adjustments or self._adjustments),
                     time_value=time_value,
+                    uv_rect=self._display_uv,
                 )
 
                 return fbo.toImage().convertToFormat(QImage.Format.Format_ARGB32)
@@ -647,8 +677,8 @@ class GLImageViewer(QOpenGLWidget):
         if not self._renderer.has_texture():
             return
 
-        texture_size = self._renderer.texture_size()
-        base_scale = compute_fit_to_view_scale(texture_size, float(vw), float(vh))
+        display_size = self._displayed_texture_dimensions()
+        base_scale = compute_fit_to_view_scale(display_size, float(vw), float(vh))
         zoom_factor = self._transform_controller.get_zoom_factor()
         effective_scale = max(base_scale * zoom_factor, 1e-6)
 
@@ -668,8 +698,7 @@ class GLImageViewer(QOpenGLWidget):
             pan=view_pan,
             adjustments=self._adjustments,
             time_value=time_value,
-            img_scale=img_scale,
-            img_offset=img_offset,
+            uv_rect=self._display_uv,
         )
 
         if self._crop_mode:
@@ -1440,10 +1469,7 @@ class GLImageViewer(QOpenGLWidget):
     # --------------------------- Events ---------------------------
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        if self._crop_mode and event.button() == Qt.LeftButton:
-            self._handle_crop_mouse_press(event)
-            return
-        if event.button() == Qt.LeftButton:
+        if not self._crop_overlay_active and event.button() == Qt.LeftButton:
             if self._live_replay_enabled:
                 self.replayRequested.emit()
             else:
@@ -1451,18 +1477,12 @@ class GLImageViewer(QOpenGLWidget):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
-        if self._crop_mode:
-            self._handle_crop_mouse_move(event)
-            return
-        if not self._live_replay_enabled:
+        if not self._crop_overlay_active and not self._live_replay_enabled:
             self._transform_controller.handle_mouse_move(event)
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        if self._crop_mode and event.button() == Qt.LeftButton:
-            self._handle_crop_mouse_release(event)
-            return
-        if not self._live_replay_enabled:
+        if not self._crop_overlay_active and not self._live_replay_enabled:
             self._transform_controller.handle_mouse_release(event)
         super().mouseReleaseEvent(event)
 
@@ -1479,70 +1499,10 @@ class GLImageViewer(QOpenGLWidget):
         super().mouseDoubleClickEvent(event)
 
     def wheelEvent(self, event: QWheelEvent) -> None:
-        if self._crop_mode:
-            self._stop_crop_animation()
-            self._crop_faded_out = False
-            self._stop_crop_idle()
-            if not self._renderer or not self._renderer.has_texture():
-                return
-
-            angle = event.angleDelta().y()
-            if angle == 0:
-                self._restart_crop_idle()
-                return
-
-            # Guard against devices that emit unusually large wheel deltas.  The
-            # exponential zoom curve is tuned for step values in the ±120 range,
-            # therefore restricting the raw delta avoids sudden jumps while
-            # still allowing high-resolution wheels to feel responsive.
-            angle = max(-480, min(480, angle))
-
-            factor = math.pow(1.0015, angle)
-            dynamic_min = self._dynamic_min_scale_for_crop()
-            min_allowed = max(self._img_scale_clamp[0], dynamic_min)
-            max_allowed = self._img_scale_clamp[1]
-
-            new_scale_raw = self._crop_img_scale * factor
-            new_scale = max(min_allowed, min(max_allowed, new_scale_raw))
-
-            if abs(new_scale - self._crop_img_scale) <= 1e-6:
-                self._restart_crop_idle()
-                event.accept()
-                return
-
-            view_scale = self._effective_scale()
-            if view_scale <= 1e-6:
-                self._restart_crop_idle()
-                event.accept()
-                return
-
-            world_point = self._screen_to_world(event.position())
-            view_pan = self._transform_controller.get_pan_pixels()
-            screen_vector = QPointF(
-                world_point.x() - view_pan.x(),
-                world_point.y() - view_pan.y(),
-            )
-
-            anchor_world = QPointF(
-                screen_vector.x() / view_scale,
-                screen_vector.y() / view_scale,
-            )
-
-            scale_ratio = new_scale / max(self._crop_img_scale, 1e-6)
-            new_offset = QPointF(
-                anchor_world.x() + (self._crop_img_offset.x() - anchor_world.x()) * scale_ratio,
-                anchor_world.y() + (self._crop_img_offset.y() - anchor_world.y()) * scale_ratio,
-            )
-
-            new_offset = self._clamp_crop_img_offset(new_offset, new_scale)
-
-            self._crop_img_scale = new_scale
-            self._crop_img_offset = new_offset
-            self.update()
-            self._restart_crop_idle()
-            event.accept()
-            return
-        self._transform_controller.handle_wheel(event)
+        if not self._crop_overlay_active:
+            self._transform_controller.handle_wheel(event)
+        else:
+            event.ignore()
 
     def resizeGL(self, w: int, h: int) -> None:
         gf = self._gl_funcs
@@ -1555,13 +1515,15 @@ class GLImageViewer(QOpenGLWidget):
         super().resizeEvent(event)
         if self._loading_overlay is not None:
             self._loading_overlay.resize(self.size())
+        if self._crop_overlay is not None:
+            self._crop_overlay.setGeometry(self.rect())
+            if self._crop_overlay_active:
+                self._update_crop_overlay_bounds(reset_selection=False)
 
     def _texture_dimensions(self) -> tuple[int, int]:
         """Return the current texture size or ``(0, 0)`` when unavailable."""
 
-        if self._renderer is None:
-            return (0, 0)
-        return self._renderer.texture_size()
+        return self._displayed_texture_dimensions()
 
     def _fit_to_view_scale(self, view_width: float, view_height: float) -> float:
         """Return the baseline scale that fits the texture within the viewport."""
@@ -1585,3 +1547,134 @@ class GLImageViewer(QOpenGLWidget):
         self.setStyleSheet(f"background-color: {target.name()}; border: none;")
         self._backdrop_color = QColor(target)
         self.update()
+
+    def _displayed_texture_dimensions(self) -> tuple[int, int]:
+        """Return the pixel size of the currently visible UV region."""
+
+        tex_w = tex_h = 0
+        if self._renderer is not None:
+            tex_w, tex_h = self._renderer.texture_size()
+        if (tex_w <= 0 or tex_h <= 0) and self._image is not None and not self._image.isNull():
+            tex_w, tex_h = self._image.width(), self._image.height()
+        if tex_w <= 0 or tex_h <= 0:
+            return (0, 0)
+
+        u0, v0, u1, v1 = self._display_uv
+        du = max(1e-6, abs(u1 - u0))
+        dv = max(1e-6, abs(v1 - v0))
+        width_px = max(1, int(round(float(tex_w) * du)))
+        height_px = max(1, int(round(float(tex_h) * dv)))
+        return (width_px, height_px)
+
+    def _update_crop_overlay_bounds(self, *, reset_selection: bool) -> None:
+        overlay = self._crop_overlay
+        if overlay is None:
+            return
+        overlay.setGeometry(self.rect())
+        rect01 = self._calculate_overlay_rect_for_current_uv()
+        snapped = self._snap_overlay_rect01_to_pixels(rect01)
+        overlay.set_bounds_rect(snapped)
+        if reset_selection:
+            overlay.set_selection_rect(snapped)
+        overlay.update()
+
+    def _calculate_overlay_rect_for_current_uv(self) -> QRectF:
+        view_w = max(1, self.width())
+        view_h = max(1, self.height())
+        img_w, img_h = self._displayed_texture_dimensions()
+        if img_w <= 0 or img_h <= 0 or view_w <= 0 or view_h <= 0:
+            return QRectF(0.0, 0.0, 1.0, 1.0)
+
+        aspect_view = float(view_w) / float(view_h)
+        aspect_img = float(img_w) / float(img_h)
+        if aspect_img > aspect_view:
+            new_h = aspect_view / aspect_img
+            y_off = (1.0 - new_h) * 0.5
+            return QRectF(0.0, y_off, 1.0, new_h)
+        if aspect_img < aspect_view:
+            new_w = aspect_img / aspect_view
+            x_off = (1.0 - new_w) * 0.5
+            return QRectF(x_off, 0.0, new_w, 1.0)
+        return QRectF(0.0, 0.0, 1.0, 1.0)
+
+    def _snap_overlay_rect01_to_pixels(self, rect01: QRectF) -> QRectF:
+        overlay = self._crop_overlay
+        if overlay is None:
+            return QRectF(rect01)
+        width = max(1, overlay.width())
+        height = max(1, overlay.height())
+        left = max(0, int(math.floor(rect01.left() * width)))
+        top = max(0, int(math.floor(rect01.top() * height)))
+        right = min(width, int(math.ceil(rect01.right() * width)))
+        bottom = min(height, int(math.ceil(rect01.bottom() * height)))
+        if right <= left:
+            right = min(width, left + 1)
+        if bottom <= top:
+            bottom = min(height, top + 1)
+        return QRectF(
+            float(left) / float(width),
+            float(top) / float(height),
+            float(right - left) / float(width),
+            float(bottom - top) / float(height),
+        )
+
+    def _handle_crop_overlay_finished(self, rect01: QRectF) -> None:
+        if not self._crop_overlay_active:
+            return
+        contain_rect = self._calculate_overlay_rect_for_current_uv()
+        if contain_rect.width() <= 0.0 or contain_rect.height() <= 0.0:
+            return
+
+        clipped = rect01.intersected(contain_rect)
+        if clipped.isEmpty():
+            clipped = contain_rect
+
+        contain_width = max(1e-6, contain_rect.width())
+        contain_height = max(1e-6, contain_rect.height())
+        rel_left = (clipped.left() - contain_rect.left()) / contain_width
+        rel_right = (clipped.right() - contain_rect.left()) / contain_width
+        rel_top = (clipped.top() - contain_rect.top()) / contain_height
+        rel_bottom = (clipped.bottom() - contain_rect.top()) / contain_height
+
+        rel_left = max(0.0, min(1.0, rel_left))
+        rel_right = max(0.0, min(1.0, rel_right))
+        rel_top = max(0.0, min(1.0, rel_top))
+        rel_bottom = max(0.0, min(1.0, rel_bottom))
+
+        u0, v0, u1, v1 = self._display_uv
+        du = u1 - u0
+        dv = v1 - v0
+        if abs(du) <= 1e-9 or abs(dv) <= 1e-9:
+            return
+
+        new_u0 = u0 + rel_left * du
+        new_u1 = u0 + rel_right * du
+        rel_bottom_bl = 1.0 - rel_bottom
+        rel_top_bl = 1.0 - rel_top
+        new_v0 = v0 + rel_bottom_bl * dv
+        new_v1 = v0 + rel_top_bl * dv
+
+        self._set_display_uv(new_u0, new_v0, new_u1, new_v1)
+        self._transform_controller.reset_zoom()
+        self._update_crop_overlay_bounds(reset_selection=True)
+
+    def _set_display_uv(self, u0: float, v0: float, u1: float, v1: float) -> None:
+        normalised = self._normalise_uv_rect(u0, v0, u1, v1)
+        if normalised == self._display_uv:
+            return
+        self._display_uv = normalised
+        self.update()
+
+    @staticmethod
+    def _normalise_uv_rect(u0: float, v0: float, u1: float, v1: float) -> tuple[float, float, float, float]:
+        u_min, u_max = sorted((float(u0), float(u1)))
+        v_min, v_max = sorted((float(v0), float(v1)))
+        u_min = max(0.0, min(1.0, u_min))
+        u_max = max(0.0, min(1.0, u_max))
+        v_min = max(0.0, min(1.0, v_min))
+        v_max = max(0.0, min(1.0, v_max))
+        if abs(u_max - u_min) <= 1e-6:
+            u_max = min(1.0, max(0.0, u_min + 1e-6))
+        if abs(v_max - v_min) <= 1e-6:
+            v_max = min(1.0, max(0.0, v_min + 1e-6))
+        return (u_min, v_min, u_max, v_max)

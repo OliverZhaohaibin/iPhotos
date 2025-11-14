@@ -17,6 +17,20 @@ BW_KEYS = (
     "BW_Grain",
 )
 
+CROP_KEYS = (
+    "Crop_U0",
+    "Crop_V0",
+    "Crop_U1",
+    "Crop_V1",
+)
+
+CROP_DEFAULTS = {
+    "Crop_U0": 0.0,
+    "Crop_V0": 0.0,
+    "Crop_U1": 1.0,
+    "Crop_V1": 1.0,
+}
+
 BW_DEFAULTS = {
     "BW_Master": 0.5,
     "BW_Intensity": 0.5,
@@ -139,28 +153,15 @@ def load_adjustments(asset_path: Path) -> Dict[str, float | bool]:
         except ValueError:
             continue
 
-    crop_node = root.find(_CROP_NODE)
-    if crop_node is not None:
-        cx = crop_node.get(_ATTR_CX)
-        cy = crop_node.get(_ATTR_CY)
-        width = crop_node.get(_ATTR_WIDTH)
-        height = crop_node.get(_ATTR_HEIGHT)
+    for key in CROP_KEYS:
+        element = light_node.find(key)
+        if element is None or element.text is None:
+            continue
         try:
-            result["Crop_CX"] = _clamp01(float(cx)) if cx is not None else 0.5
-        except (TypeError, ValueError):
-            result["Crop_CX"] = 0.5
-        try:
-            result["Crop_CY"] = _clamp01(float(cy)) if cy is not None else 0.5
-        except (TypeError, ValueError):
-            result["Crop_CY"] = 0.5
-        try:
-            result["Crop_W"] = _clamp01(float(width)) if width is not None else 1.0
-        except (TypeError, ValueError):
-            result["Crop_W"] = 1.0
-        try:
-            result["Crop_H"] = _clamp01(float(height)) if height is not None else 1.0
-        except (TypeError, ValueError):
-            result["Crop_H"] = 1.0
+            numeric = float(element.text.strip())
+        except ValueError:
+            continue
+        result[key] = max(0.0, min(1.0, numeric))
 
     return result
 
@@ -209,11 +210,12 @@ def save_adjustments(asset_path: Path, adjustments: Mapping[str, float | bool]) 
         child = ET.SubElement(light, key)
         child.text = f"{value:.2f}"
 
-    crop = ET.SubElement(root, _CROP_NODE)
-    crop.set(_ATTR_CX, f"{_clamp01(adjustments.get('Crop_CX', 0.5)):.6f}")
-    crop.set(_ATTR_CY, f"{_clamp01(adjustments.get('Crop_CY', 0.5)):.6f}")
-    crop.set(_ATTR_WIDTH, f"{_clamp01(adjustments.get('Crop_W', 1.0)):.6f}")
-    crop.set(_ATTR_HEIGHT, f"{_clamp01(adjustments.get('Crop_H', 1.0)):.6f}")
+    for key in CROP_KEYS:
+        default = CROP_DEFAULTS[key]
+        value = float(adjustments.get(key, default))
+        value = max(0.0, min(1.0, value))
+        child = ET.SubElement(light, key)
+        child.text = f"{value:.6f}"
 
     tmp_path = sidecar_path.with_suffix(sidecar_path.suffix + ".tmp")
     tree = ET.ElementTree(root)
@@ -268,6 +270,8 @@ def resolve_render_adjustments(
         elif key in COLOR_KEYS:
             color_overrides[key] = numeric_value
         elif key == "BW_Master":
+            continue
+        elif key in CROP_KEYS:
             continue
         else:
             resolved[key] = numeric_value
