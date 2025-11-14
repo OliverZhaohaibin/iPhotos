@@ -1260,63 +1260,53 @@ class GLImageViewer(QOpenGLWidget):
         self._crop_faded_out = False
 
         if self._crop_drag_handle == CropHandle.INSIDE:
-            # Following demo/crop_final.py logic: when dragging inside,
-            # change pan (move image), keep crop fixed in viewport.
-            # Since crop is in normalized image coords, compensate by moving
-            # crop state by the same amount image moved.
+            # Following demo/crop_final.py: when dragging inside, only img_offset changes,
+            # crop.rect stays fixed. In demo, both are in world coords, so this naturally
+            # keeps crop fixed in viewport.
+            # 
+            # In this implementation, crop is in normalized image coords. To keep it fixed
+            # in viewport while image moves, we must move crop in image space opposite to
+            # how the view moved.
             
-            # Get mouse delta in device pixels
-            dpr = self.devicePixelRatioF()
-            delta_device_x = delta_view.x() * dpr
-            delta_device_y = delta_view.y() * dpr
-            
-            # Get current pan
-            old_pan = self._transform_controller.get_pan_pixels()
-            
-            # Pan moves opposite to mouse: dragging right means panning left
-            # to make image appear to move right
-            desired_pan = QPointF(
-                old_pan.x() - delta_device_x,
-                old_pan.y() + delta_device_y,  # Y is inverted in screen coords
-            )
-            
-            # Apply the desired pan
-            self._transform_controller.set_pan_pixels(desired_pan)
-            
-            # Get the actual pan after potential internal clamping
-            actual_pan = self._transform_controller.get_pan_pixels()
-            
-            # Calculate actual pan delta
-            pan_delta_x = actual_pan.x() - old_pan.x()
-            pan_delta_y = actual_pan.y() - old_pan.y()
-            
-            # Now clamp to ensure crop doesn't show outside image bounds
+            # Get image center before movement
+            centre_before = self._image_center_pixels()
             actual_scale = self._effective_scale()
             if actual_scale <= 1e-9:
                 return
-                
-            centre = self._image_center_pixels()
-            clamped_centre = self._clamp_image_center_to_crop(centre, actual_scale)
+
+            # Convert mouse delta to image space movement
+            previous_image = self._viewport_to_image(previous_pos)
+            current_image = self._viewport_to_image(pos)
+            translation = QPointF(
+                previous_image.x() - current_image.x(),
+                previous_image.y() - current_image.y(),
+            )
+
+            # Apply movement to image center
+            desired_centre = QPointF(
+                centre_before.x() + translation.x(),
+                centre_before.y() + translation.y(),
+            )
             
-            # Check if clamping changed the center
-            if abs(clamped_centre.x() - centre.x()) > 1e-6 or abs(clamped_centre.y() - centre.y()) > 1e-6:
-                self._set_image_center_pixels(clamped_centre, scale=actual_scale)
-                # Recalculate actual pan after clamping
-                new_pan = self._transform_controller.get_pan_pixels()
-                pan_delta_x = new_pan.x() - old_pan.x()
-                pan_delta_y = new_pan.y() - old_pan.y()
+            # Clamp to prevent crop showing black bars
+            clamped_centre = self._clamp_image_center_to_crop(desired_centre, actual_scale)
+            self._set_image_center_pixels(clamped_centre, scale=actual_scale)
             
-            # Convert pan delta to image space delta
-            # Pan is in device pixels, need to convert to image pixels
-            image_delta_x = -pan_delta_x / actual_scale
-            image_delta_y = pan_delta_y / actual_scale  # Y inverted
+            # Calculate how much image ACTUALLY moved (after clamping)
+            centre_after = self._image_center_pixels()
+            actual_movement = QPointF(
+                centre_after.x() - centre_before.x(),
+                centre_after.y() - centre_before.y(),
+            )
             
-            # Move crop state by same amount to keep it visually fixed
-            if abs(image_delta_x) > 1e-6 or abs(image_delta_y) > 1e-6:
+            # Move crop in OPPOSITE direction to keep it fixed in viewport
+            # Image moved right (+x) -> crop must move left (-x) in image space
+            crop_movement = QPointF(-actual_movement.x(), -actual_movement.y())
+            
+            if abs(crop_movement.x()) > 1e-6 or abs(crop_movement.y()) > 1e-6:
                 if self._renderer and self._renderer.has_texture():
                     tex_w, tex_h = self._renderer.texture_size()
-                    image_delta = QPointF(image_delta_x, image_delta_y)
-                    self._crop_state.translate_pixels(image_delta, (tex_w, tex_h))
+                    self._crop_state.translate_pixels(crop_movement, (tex_w, tex_h))
                     self._emit_crop_changed()
         else:
             scale = self._effective_scale()
