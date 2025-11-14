@@ -63,24 +63,6 @@ class ViewTransformController:
     def get_pan_pixels(self) -> QPointF:
         return QPointF(self._pan_px)
 
-    def set_pan_pixels(self, pan: QPointF) -> None:
-        self._pan_px = QPointF(pan)
-        self._viewer.update()
-
-    def minimum_zoom(self) -> float:
-        return self._min_zoom
-
-    def maximum_zoom(self) -> float:
-        return self._max_zoom
-
-    def set_zoom_factor_direct(self, factor: float) -> None:
-        clamped = max(self._min_zoom, min(self._max_zoom, float(factor)))
-        if abs(clamped - self._zoom_factor) < 1e-6:
-            return
-        self._zoom_factor = clamped
-        self._viewer.update()
-        self._on_zoom_changed(self._zoom_factor)
-
     def set_zoom_limits(self, minimum: float, maximum: float) -> None:
         """Clamp the interactive zoom range."""
 

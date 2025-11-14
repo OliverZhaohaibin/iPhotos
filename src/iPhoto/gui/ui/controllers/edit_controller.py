@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Mapping, Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING
 
 from PySide6.QtCore import QObject, QThreadPool, QTimer, Signal, QSize, Slot
 from PySide6.QtGui import QImage
@@ -239,12 +239,6 @@ class EditController(QObject):
         # redundant re-upload.  When the source matches we keep the user's
         # zoom/pan framing intact.
         viewer = self._ui.edit_image_viewer
-        try:
-            viewer.cropChanged.disconnect(self._handle_crop_changed)
-        except (TypeError, RuntimeError):
-            pass
-        viewer.cropChanged.connect(self._handle_crop_changed)
-        viewer.setCropMode(False, session.values())
         current_source = viewer.current_image_source()
         self._skip_next_preview_frame = current_source == source
         if not self._skip_next_preview_frame:
@@ -502,7 +496,6 @@ class EditController(QObject):
         # Ensure the preview surface shows the latest adjusted frame before any widgets start
         # disappearing so the user never sees a partially restored original.
         self._handle_compare_released()
-        self._ui.edit_image_viewer.setCropMode(False)
 
         self._disconnect_edit_zoom_controls()
         if self._detail_ui_controller is not None:
@@ -547,17 +540,6 @@ class EditController(QObject):
             return
         self._preview_manager.update_adjustments(self._session.values())
         self._apply_session_adjustments_to_viewer()
-
-    def _handle_crop_changed(self, cx: float, cy: float, width: float, height: float) -> None:
-        if self._session is None:
-            return
-        updates = {
-            "Crop_CX": float(cx),
-            "Crop_CY": float(cy),
-            "Crop_W": float(width),
-            "Crop_H": float(height),
-        }
-        self._session.set_values(updates, emit_individual=False)
 
     def _apply_session_adjustments_to_viewer(self) -> None:
         """Forward the latest session values to the GL viewer."""
@@ -721,10 +703,6 @@ class EditController(QObject):
         # the background worker recalculates the full-resolution frame.  A copy
         # keeps the pixmap alive after the edit widgets tear down their state.
         preview_pixmap = self._ui.edit_image_viewer.pixmap()
-        self._session.set_values(
-            self._ui.edit_image_viewer.crop_values(),
-            emit_individual=False,
-        )
         adjustments = self._session.values()
         if self._navigation is not None:
             # Saving adjustments writes sidecar files, which triggers the

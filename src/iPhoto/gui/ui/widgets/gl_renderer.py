@@ -23,28 +23,8 @@ from PySide6.QtOpenGL import (
     QOpenGLVertexArrayObject,
 )
 from OpenGL import GL as gl
-from shiboken6.Shiboken import VoidPtr
 
 _LOGGER = logging.getLogger(__name__)
-
-
-_OVERLAY_VERTEX_SHADER = """
-#version 330 core
-layout(location = 0) in vec2 aPos;
-void main() {
-    gl_Position = vec4(aPos, 0.0, 1.0);
-}
-"""
-
-
-_OVERLAY_FRAGMENT_SHADER = """
-#version 330 core
-out vec4 FragColor;
-uniform vec4 uColor;
-void main() {
-    FragColor = uColor;
-}
-"""
 
 
 def _load_shader_source(filename: str) -> str:
@@ -74,9 +54,6 @@ class GLRenderer:
         self._texture_id: int = 0
         self._texture_width: int = 0
         self._texture_height: int = 0
-        self._overlay_program: Optional[QOpenGLShaderProgram] = None
-        self._overlay_vao: Optional[QOpenGLVertexArrayObject] = None
-        self._overlay_vbo: int = 0
 
     # ------------------------------------------------------------------
     # Resource management
@@ -141,23 +118,6 @@ class GLRenderer:
         finally:
             program.release()
 
-        overlay_prog = QOpenGLShaderProgram(self._parent)
-        if not overlay_prog.addShaderFromSourceCode(QOpenGLShader.Vertex, _OVERLAY_VERTEX_SHADER):
-            raise RuntimeError("Unable to compile overlay vertex shader")
-        if not overlay_prog.addShaderFromSourceCode(QOpenGLShader.Fragment, _OVERLAY_FRAGMENT_SHADER):
-            raise RuntimeError("Unable to compile overlay fragment shader")
-        if not overlay_prog.link():
-            raise RuntimeError("Unable to link overlay shader program")
-        self._overlay_program = overlay_prog
-
-        overlay_vao = QOpenGLVertexArrayObject(self._parent)
-        overlay_vao.create()
-        self._overlay_vao = overlay_vao if overlay_vao.isCreated() else None
-        buffer_id = gl.glGenBuffers(1)
-        if isinstance(buffer_id, (tuple, list)):
-            buffer_id = buffer_id[0]
-        self._overlay_vbo = int(buffer_id)
-
     def destroy_resources(self) -> None:
         """Release the shader program, VAO and resident texture."""
 
@@ -169,15 +129,6 @@ class GLRenderer:
             self._program.removeAllShaders()
             self._program = None
         self._uniform_locations.clear()
-        if self._overlay_vao is not None:
-            self._overlay_vao.destroy()
-            self._overlay_vao = None
-        if self._overlay_program is not None:
-            self._overlay_program.removeAllShaders()
-            self._overlay_program = None
-        if self._overlay_vbo:
-            gl.glDeleteBuffers(1, np.array([int(self._overlay_vbo)], dtype=np.uint32))
-            self._overlay_vbo = 0
 
     # ------------------------------------------------------------------
     # Texture management
@@ -291,8 +242,6 @@ class GLRenderer:
             if self._dummy_vao is not None:
                 self._dummy_vao.bind()
 
-            offset_value = img_offset or QPointF(0.0, 0.0)
-
             gf.glActiveTexture(gl.GL_TEXTURE0)
             gf.glBindTexture(gl.GL_TEXTURE_2D, int(self._texture_id))
             self._set_uniform1i("uTex", 0)
@@ -331,9 +280,7 @@ class GLRenderer:
             if time_value is not None:
                 self._set_uniform1f("uTime", time_value)
 
-            safe_scale = max(scale, 1e-6)
-            safe_img_scale = max(img_scale, 1e-6)
-            self._set_uniform1f("uScale", safe_scale)
+            self._set_uniform1f("uScale", max(scale, 1e-6))
             self._set_uniform2f("uViewSize", max(view_width, 1.0), max(view_height, 1.0))
             self._set_uniform2f(
                 "uTexSize",
@@ -353,108 +300,6 @@ class GLRenderer:
         error = gf.glGetError()
         if error != gl.GL_NO_ERROR:
             _LOGGER.warning("OpenGL error after draw: 0x%04X", int(error))
-
-    def draw_crop_overlay(
-        self,
-        *,
-        view_width: float,
-        view_height: float,
-        crop_rect: Mapping[str, float],
-        faded: bool = False,
-    ) -> None:
-        """Render the semi-transparent crop mask and interactive handles."""
-
-        if (
-            self._overlay_program is None
-            or self._overlay_vao is None
-            or self._overlay_vbo == 0
-        ):
-            return
-
-        vw = max(1.0, float(view_width))
-        vh = max(1.0, float(view_height))
-
-        left = float(crop_rect.get("left", 0.0))
-        right = float(crop_rect.get("right", vw))
-        top = float(crop_rect.get("top", 0.0))
-        bottom = float(crop_rect.get("bottom", vh))
-
-        program = self._overlay_program
-        vao = self._overlay_vao
-        gf = self._gl_funcs
-
-        alpha = 1.0 if faded else 0.55
-        overlay_colour = (0.0, 0.0, 0.0, alpha)
-        border_colour = (1.0, 0.85, 0.2, 1.0)
-
-        def _to_clip(points: list[tuple[float, float]]) -> np.ndarray:
-            coords: list[float] = []
-            for px, py in points:
-                x_ndc = (2.0 * px / vw) - 1.0
-                y_ndc = 1.0 - (2.0 * py / vh)
-                coords.extend((x_ndc, y_ndc))
-            return np.array(coords, dtype=np.float32)
-
-        def _draw(vertices: np.ndarray, mode: int, colour: tuple[float, float, float, float]) -> None:
-            program.setUniformValue("uColor", *colour)
-            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, int(self._overlay_vbo))
-            gl.glBufferData(gl.GL_ARRAY_BUFFER, vertices.nbytes, vertices, gl.GL_DYNAMIC_DRAW)
-            gf.glEnableVertexAttribArray(0)
-            gf.glVertexAttribPointer(0, 2, gl.GL_FLOAT, False, 0, VoidPtr(0))
-            gf.glDrawArrays(mode, 0, int(vertices.size // 2))
-            gf.glDisableVertexAttribArray(0)
-            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
-
-        gf.glEnable(gl.GL_BLEND)
-        gf.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
-        if not program.bind():
-            gf.glDisable(gl.GL_BLEND)
-            return
-
-        try:
-            vao.bind()
-            quads = [
-                [(0.0, 0.0), (vw, 0.0), (vw, top), (0.0, top)],
-                [(0.0, bottom), (vw, bottom), (vw, vh), (0.0, vh)],
-                [(0.0, top), (left, top), (left, bottom), (0.0, bottom)],
-                [(right, top), (vw, top), (vw, bottom), (right, bottom)],
-            ]
-            for quad in quads:
-                vertices = _to_clip(quad)
-                _draw(vertices, gl.GL_TRIANGLE_FAN, overlay_colour)
-
-            if not faded:
-                border_points = _to_clip(
-                    [
-                        (left, bottom),
-                        (right, bottom),
-                        (right, top),
-                        (left, top),
-                        (left, bottom),
-                    ]
-                )
-                _draw(border_points, gl.GL_LINE_STRIP, border_colour)
-
-                handle_size = 7.0
-                corners = [
-                    (left, top),
-                    (right, top),
-                    (right, bottom),
-                    (left, bottom),
-                ]
-                for cx, cy in corners:
-                    square = [
-                        (cx - handle_size, cy - handle_size),
-                        (cx + handle_size, cy - handle_size),
-                        (cx + handle_size, cy + handle_size),
-                        (cx - handle_size, cy + handle_size),
-                    ]
-                    vertices = _to_clip(square)
-                    _draw(vertices, gl.GL_TRIANGLE_FAN, border_colour)
-        finally:
-            vao.release()
-            program.release()
-            gf.glDisable(gl.GL_BLEND)
 
     # ------------------------------------------------------------------
     # State helpers
