@@ -251,12 +251,14 @@ class GLImageViewer(QOpenGLWidget):
         self._crop_drag_handle: CropHandle = CropHandle.NONE
         self._crop_dragging: bool = False
         self._crop_last_pos = QPointF()
-        # During an inside-drag we freeze the crop overlay in viewport coordinates by caching
-        # its screen-space corners.  Each mouse move reprojects these anchors back into image
-        # space so floating-point noise or clamping never nudges the overlay itself.
-        self._crop_drag_anchor_viewport: Optional[tuple[QPointF, QPointF]] = None
         self._crop_hit_padding: float = 12.0
         self._crop_edge_threshold: float = 48.0
+        
+        # Following demo/crop_final.py architecture:
+        # During crop mode, maintain image offset separate from pan.
+        # Pan (view position) stays fixed, only img_offset changes during inside drag.
+        self._crop_img_offset = QPointF(0.0, 0.0)  # device pixels, like demo's img_offset
+        
         self._crop_idle_timer = QTimer(self)
         self._crop_idle_timer.setInterval(1000)
         self._crop_idle_timer.timeout.connect(self._on_crop_idle_timeout)
@@ -625,12 +627,21 @@ class GLImageViewer(QOpenGLWidget):
         effective_scale = max(base_scale * zoom_factor, 1e-6)
 
         time_value = time.monotonic() - self._time_base
+        
+        # In crop mode, combine pan with crop_img_offset (like demo's img_offset)
+        # This keeps the view (pan) fixed while image moves via crop_img_offset
+        effective_pan = self._transform_controller.get_pan_pixels()
+        if self._crop_mode:
+            effective_pan = QPointF(
+                effective_pan.x() + self._crop_img_offset.x(),
+                effective_pan.y() - self._crop_img_offset.y(),  # Y inverted
+            )
 
         self._renderer.render(
             view_width=float(vw),
             view_height=float(vh),
             scale=effective_scale,
-            pan=self._transform_controller.get_pan_pixels(),
+            pan=effective_pan,
             adjustments=self._adjustments,
             time_value=time_value,
         )
@@ -660,10 +671,13 @@ class GLImageViewer(QOpenGLWidget):
             self._crop_drag_handle = CropHandle.NONE
             self._crop_dragging = False
             self._crop_faded_out = False
+            self._crop_img_offset = QPointF(0.0, 0.0)  # Reset offset when exiting
             self.unsetCursor()
             self.update()
             return
 
+        # Reset image offset when entering crop mode
+        self._crop_img_offset = QPointF(0.0, 0.0)
         self._apply_crop_values(values)
         self._crop_faded_out = False
         self._crop_drag_handle = CropHandle.NONE
@@ -821,6 +835,51 @@ class GLImageViewer(QOpenGLWidget):
 
         clamped_x = max(min_center_x, min(max_center_x, float(center.x())))
         clamped_y = max(min_center_y, min(max_center_y, float(center.y())))
+        return QPointF(clamped_x, clamped_y)
+
+    def _clamp_crop_img_offset(self, offset: QPointF) -> QPointF:
+        """Clamp image offset to prevent crop from showing outside image bounds.
+        
+        Following demo/crop_final.py's _clamp_offset_to_cover_crop logic.
+        The offset is in device pixels, similar to demo's world-space offset.
+        """
+        if not self._renderer or not self._renderer.has_texture():
+            return offset
+            
+        tex_w, tex_h = self._renderer.texture_size()
+        scale = self._effective_scale()
+        if scale <= 1e-9:
+            return offset
+            
+        # Get crop bounds in image pixels
+        crop_rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
+        crop_left = float(crop_rect["left"])
+        crop_top = float(crop_rect["top"]) 
+        crop_right = float(crop_rect["right"])
+        crop_bottom = float(crop_rect["bottom"])
+        
+        # Half-dimensions of scaled image in device pixels
+        hw = (tex_w * scale) * 0.5
+        hh = (tex_h * scale) * 0.5
+        
+        # Convert crop bounds to device pixels relative to image center
+        # (crop is in image pixels, need to scale to device pixels)
+        crop_left_dev = (crop_left - tex_w/2) * scale
+        crop_right_dev = (crop_right - tex_w/2) * scale
+        crop_top_dev = (crop_top - tex_h/2) * scale  
+        crop_bottom_dev = (crop_bottom - tex_h/2) * scale
+        
+        # Calculate limits (same logic as demo)
+        # min_ox = c.r() - hw, max_ox = c.l() + hw
+        min_ox = crop_right_dev - hw
+        max_ox = crop_left_dev + hw
+        min_oy = crop_bottom_dev - hh
+        max_oy = crop_top_dev + hh
+        
+        # Clamp
+        clamped_x = max(min_ox, min(max_ox, offset.x()))
+        clamped_y = max(min_oy, min(max_oy, offset.y()))
+        
         return QPointF(clamped_x, clamped_y)
 
     def _update_crop_state_from_drag_anchor(self) -> bool:
@@ -1260,54 +1319,38 @@ class GLImageViewer(QOpenGLWidget):
         self._crop_faded_out = False
 
         if self._crop_drag_handle == CropHandle.INSIDE:
-            # Following demo/crop_final.py: when dragging inside, only img_offset changes,
-            # crop.rect stays fixed. In demo, both are in world coords, so this naturally
-            # keeps crop fixed in viewport.
+            # Following demo/crop_final.py exactly:
+            # dpx = (p.x - self._last_mouse_px.x, p.y - self._last_mouse_px.y)
+            # dw  = self.cam.screen_vec_to_world_vec(dpx)
+            # tentative = self.img_offset + dw
+            # self.img_offset = self._clamp_offset_to_cover_crop(tentative, self.img_scale)
+            #
+            # In demo: img_offset and crop.rect are both in world coords.
+            # Camera (view) doesn't move, only img_offset changes.
             # 
-            # In this implementation, crop is in normalized image coords. To keep it fixed
-            # in viewport while image moves, we must move crop in image space opposite to
-            # how the view moved.
+            # Here: we use _crop_img_offset to track image position offset,
+            # and keep crop state in normalized coords (doesn't change during inside drag).
             
-            # Get image center before movement
-            centre_before = self._image_center_pixels()
-            actual_scale = self._effective_scale()
-            if actual_scale <= 1e-9:
-                return
-
-            # Convert mouse delta to image space movement
-            previous_image = self._viewport_to_image(previous_pos)
-            current_image = self._viewport_to_image(pos)
-            translation = QPointF(
-                previous_image.x() - current_image.x(),
-                previous_image.y() - current_image.y(),
-            )
-
-            # Apply movement to image center
-            desired_centre = QPointF(
-                centre_before.x() + translation.x(),
-                centre_before.y() + translation.y(),
+            dpr = self.devicePixelRatioF()
+            # Mouse delta in device pixels
+            dpx = delta_view.x() * dpr
+            dpy = delta_view.y() * dpr
+            
+            # In demo, delta is added directly to img_offset (same direction as mouse)
+            # Here, we do the same with _crop_img_offset
+            tentative_offset = QPointF(
+                self._crop_img_offset.x() + dpx,
+                self._crop_img_offset.y() + dpy,
             )
             
             # Clamp to prevent crop showing black bars
-            clamped_centre = self._clamp_image_center_to_crop(desired_centre, actual_scale)
-            self._set_image_center_pixels(clamped_centre, scale=actual_scale)
+            # This is equivalent to demo's _clamp_offset_to_cover_crop
+            clamped_offset = self._clamp_crop_img_offset(tentative_offset)
+            self._crop_img_offset = clamped_offset
             
-            # Calculate how much image ACTUALLY moved (after clamping)
-            centre_after = self._image_center_pixels()
-            actual_movement = QPointF(
-                centre_after.x() - centre_before.x(),
-                centre_after.y() - centre_before.y(),
-            )
-            
-            # Move crop in OPPOSITE direction to keep it fixed in viewport
-            # Image moved right (+x) -> crop must move left (-x) in image space
-            crop_movement = QPointF(-actual_movement.x(), -actual_movement.y())
-            
-            if abs(crop_movement.x()) > 1e-6 or abs(crop_movement.y()) > 1e-6:
-                if self._renderer and self._renderer.has_texture():
-                    tex_w, tex_h = self._renderer.texture_size()
-                    self._crop_state.translate_pixels(crop_movement, (tex_w, tex_h))
-                    self._emit_crop_changed()
+            # Crop state (normalized coords) doesn't change!
+            # The crop stays fixed in viewport because we're only changing img_offset,
+            # not the view (pan)
         else:
             scale = self._effective_scale()
             if scale <= 1e-6:
