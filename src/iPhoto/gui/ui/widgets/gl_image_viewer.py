@@ -1255,7 +1255,10 @@ class GLImageViewer(QOpenGLWidget):
         tex_size = self._renderer.texture_size()
         vw_float, vh_float = float(vw), float(vh)
         base_scale = compute_fit_to_view_scale(tex_size, vw_float, vh_float)
-        min_scale = base_scale * self._transform_controller.minimum_zoom()
+        
+        # During auto-shrink, don't go below the fit-to-window scale (base_scale)
+        # This ensures the image always fills the window nicely
+        min_scale = max(base_scale, base_scale * self._transform_controller.minimum_zoom())
         max_scale = base_scale * self._transform_controller.maximum_zoom()
         
         k_max = 0.05  # Maximum shrink ratio per event
