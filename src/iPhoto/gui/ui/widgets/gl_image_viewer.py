@@ -864,12 +864,22 @@ class GLImageViewer(QOpenGLWidget):
         
         Following demo/crop_final.py's _clamp_offset_to_cover_crop logic.
         The offset is in device pixels, similar to demo's world-space offset.
+        
+        Args:
+            offset: The image offset to clamp (in device pixels, Y-down)
+            scale: The effective scale of the image (base_scale * zoom_factor)
         """
         if not self._renderer or not self._renderer.has_texture():
             return offset
             
         tex_w, tex_h = self._renderer.texture_size()
         if scale <= 1e-9:
+            return offset
+        
+        # Get base scale for crop box positioning (crop box uses base_scale, not effective_scale)
+        vw, vh = self._view_dimensions_device_px()
+        base_scale = compute_fit_to_view_scale((tex_w, tex_h), vw, vh)
+        if base_scale <= 1e-9:
             return offset
             
         # Get crop bounds in image pixels
@@ -884,14 +894,15 @@ class GLImageViewer(QOpenGLWidget):
         hh = (tex_h * scale) * 0.5
         
         # Convert crop bounds to device pixels relative to image center
-        # (crop is in image pixels, need to scale to device pixels)
-        crop_left_dev = (crop_left - tex_w/2) * scale
-        crop_right_dev = (crop_right - tex_w/2) * scale
-        crop_top_dev = (crop_top - tex_h/2) * scale  
-        crop_bottom_dev = (crop_bottom - tex_h/2) * scale
+        # IMPORTANT: Crop box is positioned using base_scale, not effective_scale
+        crop_left_dev = (crop_left - tex_w/2) * base_scale
+        crop_right_dev = (crop_right - tex_w/2) * base_scale
+        crop_top_dev = (crop_top - tex_h/2) * base_scale  
+        crop_bottom_dev = (crop_bottom - tex_h/2) * base_scale
         
         # Calculate limits (same logic as demo)
         # min_ox = c.r() - hw, max_ox = c.l() + hw
+        # These limits ensure the image always covers the crop box
         min_ox = crop_right_dev - hw
         max_ox = crop_left_dev + hw
         min_oy = crop_bottom_dev - hh
