@@ -1166,6 +1166,11 @@ class GLImageViewer(QOpenGLWidget):
         return max(min_scale, min(max_scale, target_scale))
 
     def _auto_shrink_on_drag(self, delta: QPointF) -> None:
+        """
+        Port from demo/crop_final.py: Auto zoom-out while pushing edges.
+        When crop edge is pushed against viewport edge, scale down and pan
+        in the opposite direction to bring in more content.
+        """
         if not self._renderer or not self._renderer.has_texture():
             return
         vw, vh = self._view_dimensions_device_px()
@@ -1173,95 +1178,101 @@ class GLImageViewer(QOpenGLWidget):
         if crop_rect is None:
             return
         threshold = self._crop_edge_threshold
-        left_margin = crop_rect["left"]
-        right_margin = vw - crop_rect["right"]
-        top_margin = crop_rect["top"]
-        bottom_margin = vh - crop_rect["bottom"]
-        pressure = 0.0
         delta_x = delta.x()
         delta_y = delta.y()
 
+        # Convert delta to image space (texture pixels)
+        dpr = self.devicePixelRatioF()
+        current_scale = self._effective_scale()
+        if current_scale <= 1e-6:
+            return
+        # image_delta is in texture pixel space
+        image_delta = QPointF(delta_x * dpr / current_scale, delta_y * dpr / current_scale)
+
+        # Calculate pressure and d_offset following demo/crop_final.py logic
+        pressure = 0.0
+        d_offset_x = 0.0
+        d_offset_y = 0.0
+
+        # Left edge pushing out (delta_x < 0): move right (+x) to bring left content
         if (
             self._crop_drag_handle in (CropHandle.LEFT, CropHandle.TOP_LEFT, CropHandle.BOTTOM_LEFT)
             and delta_x < 0.0
-            and left_margin < threshold
         ):
-            pressure = max(pressure, (threshold - left_margin) / threshold)
+            left_margin = crop_rect["left"]
+            if left_margin < threshold:
+                p = (threshold - left_margin) / threshold
+                pressure = max(pressure, p)
+                # Use max to ensure positive offset (move right)
+                d_offset_x = max(d_offset_x, -image_delta.x() * p)
+
+        # Right edge pushing out (delta_x > 0): move left (-x) to bring right content
         if (
             self._crop_drag_handle in (CropHandle.RIGHT, CropHandle.TOP_RIGHT, CropHandle.BOTTOM_RIGHT)
             and delta_x > 0.0
-            and right_margin < threshold
         ):
-            pressure = max(pressure, (threshold - right_margin) / threshold)
+            right_margin = vw - crop_rect["right"]
+            if right_margin < threshold:
+                p = (threshold - right_margin) / threshold
+                pressure = max(pressure, p)
+                # Use min to ensure negative offset (move left)
+                d_offset_x = min(d_offset_x, -image_delta.x() * p)
+
+        # Top edge pushing out (delta_y < 0): move down (-y) to bring top content
         if (
             self._crop_drag_handle in (CropHandle.TOP, CropHandle.TOP_LEFT, CropHandle.TOP_RIGHT)
             and delta_y < 0.0
-            and top_margin < threshold
         ):
-            pressure = max(pressure, (threshold - top_margin) / threshold)
+            top_margin = crop_rect["top"]
+            if top_margin < threshold:
+                p = (threshold - top_margin) / threshold
+                pressure = max(pressure, p)
+                # Use min to ensure negative offset (move down in image space)
+                d_offset_y = min(d_offset_y, -image_delta.y() * p)
+
+        # Bottom edge pushing out (delta_y > 0): move up (+y) to bring bottom content
         if (
             self._crop_drag_handle in (CropHandle.BOTTOM, CropHandle.BOTTOM_LEFT, CropHandle.BOTTOM_RIGHT)
             and delta_y > 0.0
-            and bottom_margin < threshold
         ):
-            pressure = max(pressure, (threshold - bottom_margin) / threshold)
+            bottom_margin = vh - crop_rect["bottom"]
+            if bottom_margin < threshold:
+                p = (threshold - bottom_margin) / threshold
+                pressure = max(pressure, p)
+                # Use max to ensure positive offset (move up in image space)
+                d_offset_y = max(d_offset_y, -image_delta.y() * p)
 
         if pressure <= 0.0:
             return
 
-        eased = ease_in_quad(min(1.0, pressure))
-        current_scale = self._effective_scale()
+        # Ease the pressure for smooth feel
+        eased_pressure = ease_in_quad(min(1.0, pressure))
+
+        # 1. Scale down around crop center (like demo)
         tex_size = self._renderer.texture_size()
-        vw_float, vh_float = vw, vh
+        vw_float, vh_float = float(vw), float(vh)
         base_scale = compute_fit_to_view_scale(tex_size, vw_float, vh_float)
         min_scale = base_scale * self._transform_controller.minimum_zoom()
         max_scale = base_scale * self._transform_controller.maximum_zoom()
-        new_scale = max(min_scale, min(max_scale, current_scale * (1.0 - 0.05 * eased)))
+        
+        k_max = 0.05  # Maximum shrink ratio per event
+        factor = 1.0 - k_max * eased_pressure
+        new_scale = max(min_scale, min(max_scale, current_scale * factor))
+        
+        # Scale around crop center
         anchor = self._crop_center_viewport_point()
         self._transform_controller.set_zoom(new_scale / max(base_scale, 1e-6), anchor=anchor)
 
-        dpr = self.devicePixelRatioF()
-        if current_scale <= 1e-6:
-            return
-        image_delta = QPointF(delta_x * dpr / current_scale, delta_y * dpr / current_scale)
+        # 2. Apply pan_gain and translate both crop and image
+        pan_gain = 0.75 + 0.25 * eased_pressure
+        final_d_offset = QPointF(d_offset_x * pan_gain, d_offset_y * pan_gain)
 
-        offset_x = 0.0
-        offset_y = 0.0
-        if (
-            self._crop_drag_handle in (CropHandle.LEFT, CropHandle.TOP_LEFT, CropHandle.BOTTOM_LEFT)
-            and delta_x < 0.0
-            and left_margin < threshold
-        ):
-            ratio = (threshold - left_margin) / threshold
-            offset_x += -image_delta.x() * ratio
-        if (
-            self._crop_drag_handle in (CropHandle.RIGHT, CropHandle.TOP_RIGHT, CropHandle.BOTTOM_RIGHT)
-            and delta_x > 0.0
-            and right_margin < threshold
-        ):
-            ratio = (threshold - right_margin) / threshold
-            offset_x += -image_delta.x() * ratio
-        if (
-            self._crop_drag_handle in (CropHandle.TOP, CropHandle.TOP_LEFT, CropHandle.TOP_RIGHT)
-            and delta_y < 0.0
-            and top_margin < threshold
-        ):
-            ratio = (threshold - top_margin) / threshold
-            offset_y += -image_delta.y() * ratio
-        if (
-            self._crop_drag_handle in (CropHandle.BOTTOM, CropHandle.BOTTOM_LEFT, CropHandle.BOTTOM_RIGHT)
-            and delta_y > 0.0
-            and bottom_margin < threshold
-        ):
-            ratio = (threshold - bottom_margin) / threshold
-            offset_y += -image_delta.y() * ratio
-
-        pan_gain = 0.75 + 0.25 * eased
-        translation = QPointF(offset_x * pan_gain, offset_y * pan_gain)
-        if abs(translation.x()) > 1e-4 or abs(translation.y()) > 1e-4:
-            tex_w, tex_h = tex_size
-            self._crop_state.translate_pixels(translation, tex_size)
-            new_center = self._image_center_pixels() + translation
+        if abs(final_d_offset.x()) > 1e-4 or abs(final_d_offset.y()) > 1e-4:
+            # 3. Move crop state (synchronized with image)
+            self._crop_state.translate_pixels(final_d_offset, tex_size)
+            
+            # 4. Move image center
+            new_center = self._image_center_pixels() + final_d_offset
             actual_scale = self._effective_scale()
             clamped = self._clamp_image_center_to_crop(new_center, actual_scale)
             self._set_image_center_pixels(clamped, scale=actual_scale)
