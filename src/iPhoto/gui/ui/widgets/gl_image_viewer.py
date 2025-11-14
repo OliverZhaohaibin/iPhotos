@@ -536,12 +536,6 @@ class GLImageViewer(QOpenGLWidget):
             return
         self._transform_controller.apply_image_center_pixels(center, scale)
 
-    def _set_image_center_pixels_internal(self, center: QPointF, scale: float) -> None:
-        """Internal helper for the crop controller to set image center."""
-        if not self._renderer or not self._renderer.has_texture():
-            return
-        self._transform_controller.apply_image_center_pixels(center, scale)
-
     def _image_to_viewport(self, x: float, y: float) -> QPointF:
         if not self._renderer or not self._renderer.has_texture():
             return QPointF()
