@@ -251,10 +251,6 @@ class GLImageViewer(QOpenGLWidget):
         self._crop_drag_handle: CropHandle = CropHandle.NONE
         self._crop_dragging: bool = False
         self._crop_last_pos = QPointF()
-        # During an inside-drag we freeze the crop overlay in viewport coordinates by caching
-        # its screen-space corners.  Each mouse move reprojects these anchors back into image
-        # space so floating-point noise or clamping never nudges the overlay itself.
-        self._crop_drag_anchor_viewport: Optional[tuple[QPointF, QPointF]] = None
         self._crop_hit_padding: float = 12.0
         self._crop_edge_threshold: float = 48.0
         self._crop_idle_timer = QTimer(self)
@@ -823,89 +819,6 @@ class GLImageViewer(QOpenGLWidget):
         clamped_y = max(min_center_y, min(max_center_y, float(center.y())))
         return QPointF(clamped_x, clamped_y)
 
-    def _update_crop_state_from_drag_anchor(self) -> bool:
-        """Reproject the cached crop anchor to image space and update the state.
-
-        When the user drags inside the crop we keep the overlay frozen in
-        viewport coordinates.  This helper converts the stored viewport points
-        back into texture pixels using the *current* pan/zoom configuration and
-        rewrites :attr:`_crop_state` accordingly.  The function returns ``True``
-        when the normalised crop rectangle actually changes—callers can then
-        emit ``cropChanged`` without worrying about redundant signals.
-        """
-
-        if (
-            self._crop_drag_anchor_viewport is None
-            or not self._renderer
-            or not self._renderer.has_texture()
-        ):
-            return False
-
-        tex_w, tex_h = self._renderer.texture_size()
-        if tex_w <= 0 or tex_h <= 0:
-            return False
-
-        top_left_vp, bottom_right_vp = self._crop_drag_anchor_viewport
-        top_left_img = self._viewport_to_image(top_left_vp)
-        bottom_right_img = self._viewport_to_image(bottom_right_vp)
-
-        raw_left = min(top_left_img.x(), bottom_right_img.x())
-        raw_right = max(top_left_img.x(), bottom_right_img.x())
-        raw_top = min(top_left_img.y(), bottom_right_img.y())
-        raw_bottom = max(top_left_img.y(), bottom_right_img.y())
-
-        tex_w_f = float(tex_w)
-        tex_h_f = float(tex_h)
-
-        min_width_px = self._crop_state.min_width * tex_w_f
-        min_height_px = self._crop_state.min_height * tex_h_f
-
-        width_px = max(min_width_px, raw_right - raw_left)
-        height_px = max(min_height_px, raw_bottom - raw_top)
-
-        width_px = min(width_px, tex_w_f)
-        height_px = min(height_px, tex_h_f)
-
-        half_w = width_px * 0.5
-        half_h = height_px * 0.5
-
-        center_x = (raw_left + raw_right) * 0.5
-        center_y = (raw_top + raw_bottom) * 0.5
-
-        center_x = max(half_w, min(tex_w_f - half_w, center_x))
-        center_y = max(half_h, min(tex_h_f - half_h, center_y))
-
-        before = (
-            float(self._crop_state.cx),
-            float(self._crop_state.cy),
-            float(self._crop_state.width),
-            float(self._crop_state.height),
-        )
-
-        if tex_w_f <= 1e-6 or tex_h_f <= 1e-6:
-            return False
-
-        self._crop_state.cx = center_x / tex_w_f
-        self._crop_state.cy = center_y / tex_h_f
-        self._crop_state.width = max(
-            self._crop_state.min_width,
-            min(1.0, width_px / tex_w_f),
-        )
-        self._crop_state.height = max(
-            self._crop_state.min_height,
-            min(1.0, height_px / tex_h_f),
-        )
-        self._crop_state.clamp()
-
-        after = (
-            float(self._crop_state.cx),
-            float(self._crop_state.cy),
-            float(self._crop_state.width),
-            float(self._crop_state.height),
-        )
-
-        return any(abs(a - b) > 1e-6 for a, b in zip(before, after))
-
     def _crop_center_viewport_point(self) -> QPointF:
         if not self._renderer or not self._renderer.has_texture():
             return self.viewport_center()
@@ -1228,20 +1141,8 @@ class GLImageViewer(QOpenGLWidget):
         self._crop_dragging = True
         self._crop_last_pos = QPointF(pos)
         if handle == CropHandle.INSIDE:
-            if self._renderer and self._renderer.has_texture():
-                tex_w, tex_h = self._renderer.texture_size()
-                rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
-                top_left = self._image_to_viewport(rect["left"], rect["top"])
-                bottom_right = self._image_to_viewport(rect["right"], rect["bottom"])
-                # Cache the logical viewport points rather than device pixels so the anchor
-                # survives DPI changes and matches the coordinate space used by
-                # ``QMouseEvent.position``.
-                self._crop_drag_anchor_viewport = (QPointF(top_left), QPointF(bottom_right))
-            else:
-                self._crop_drag_anchor_viewport = None
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
         else:
-            self._crop_drag_anchor_viewport = None
             self.setCursor(cursor_for_handle(handle))
         event.accept()
 
@@ -1260,6 +1161,10 @@ class GLImageViewer(QOpenGLWidget):
         self._crop_faded_out = False
 
         if self._crop_drag_handle == CropHandle.INSIDE:
+            # When dragging inside the crop box, ONLY move the image behind it.
+            # The crop box itself must remain fixed in image space, matching
+            # the behavior of demo/crop_final.py.
+            # 
             # Convert the pointer delta to texture-space coordinates so the
             # image can track the cursor exactly like ``demo/crop_final.py``.
             # ``_viewport_to_image`` reports positions in image pixels with the
@@ -1285,32 +1190,10 @@ class GLImageViewer(QOpenGLWidget):
             )
             clamped_centre = self._clamp_image_center_to_crop(desired_centre, actual_scale)
             self._set_image_center_pixels(clamped_centre, scale=actual_scale)
-
-            state_changed = False
-            if self._crop_drag_anchor_viewport is not None:
-                state_changed = self._update_crop_state_from_drag_anchor()
-            else:
-                effective_delta = QPointF(
-                    clamped_centre.x() - centre.x(),
-                    clamped_centre.y() - centre.y(),
-                )
-                if (
-                    (abs(effective_delta.x()) > 1e-6 or abs(effective_delta.y()) > 1e-6)
-                    and self._renderer
-                    and self._renderer.has_texture()
-                ):
-                    tex_w, tex_h = self._renderer.texture_size()
-                    before_center = self._crop_state.center_pixels(tex_w, tex_h)
-                    self._crop_state.translate_pixels(effective_delta, (tex_w, tex_h))
-                    after_center = self._crop_state.center_pixels(tex_w, tex_h)
-                    if (
-                        abs(after_center.x() - before_center.x()) > 1e-6
-                        or abs(after_center.y() - before_center.y()) > 1e-6
-                    ):
-                        state_changed = True
-
-            if state_changed:
-                self._emit_crop_changed()
+            
+            # NOTE: The crop box state must NOT be modified here. It stays fixed
+            # in image space while only the view position changes. This ensures
+            # the frame doesn't move when dragging near edges.
         else:
             scale = self._effective_scale()
             if scale <= 1e-6:
@@ -1333,7 +1216,6 @@ class GLImageViewer(QOpenGLWidget):
         self._crop_dragging = False
         self._crop_drag_handle = CropHandle.NONE
         self.unsetCursor()
-        self._crop_drag_anchor_viewport = None
         self._restart_crop_idle()
 
 
