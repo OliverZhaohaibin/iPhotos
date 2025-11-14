@@ -991,13 +991,40 @@ class GLImageViewer(QOpenGLWidget):
             return self.viewport_center()
         tex_w, tex_h = self._renderer.texture_size()
         center = self._crop_state.center_pixels(tex_w, tex_h)
-        return self._image_to_viewport(center.x(), center.y())
+        # Use base_scale_only to keep crop box fixed in viewport
+        return self._image_to_viewport(center.x(), center.y(), use_base_scale_only=True)
 
-    def _image_to_viewport(self, x: float, y: float) -> QPointF:
+    def _image_to_viewport(self, x: float, y: float, *, use_base_scale_only: bool = False) -> QPointF:
+        """Convert image pixel coordinates to viewport coordinates.
+        
+        Args:
+            x: Image X coordinate (pixels)
+            y: Image Y coordinate (pixels)
+            use_base_scale_only: If True, use only base_scale (no zoom_factor).
+                                 This is needed in crop mode to keep crop box static
+                                 while image zooms underneath.
+        """
         if not self._renderer or not self._renderer.has_texture():
             return QPointF()
-        scale = self._effective_scale()
+        
+        if use_base_scale_only and self._crop_mode:
+            # In crop mode: use only base_scale, not zoom_factor
+            # This makes crop box stay fixed in viewport while image zooms
+            vw, vh = self._view_dimensions_device_px()
+            base_scale = compute_fit_to_view_scale(self._renderer.texture_size(), vw, vh)
+            scale = base_scale
+        else:
+            scale = self._effective_scale()
+            
         pan = self._transform_controller.get_pan_pixels()
+        
+        # In crop mode, add crop_img_offset to pan
+        if self._crop_mode:
+            pan = QPointF(
+                pan.x() + self._crop_img_offset.x(),
+                pan.y() - self._crop_img_offset.y(),  # Y inverted
+            )
+        
         tex_w, tex_h = self._renderer.texture_size()
         tex_vector_x = x - (tex_w / 2.0)
         tex_vector_y = y - (tex_h / 2.0)
@@ -1030,8 +1057,9 @@ class GLImageViewer(QOpenGLWidget):
             return None
         tex_w, tex_h = self._renderer.texture_size()
         rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
-        top_left = self._image_to_viewport(rect["left"], rect["top"])
-        bottom_right = self._image_to_viewport(rect["right"], rect["bottom"])
+        # Use base_scale_only to keep crop box fixed in viewport while image zooms
+        top_left = self._image_to_viewport(rect["left"], rect["top"], use_base_scale_only=True)
+        bottom_right = self._image_to_viewport(rect["right"], rect["bottom"], use_base_scale_only=True)
         dpr = self.devicePixelRatioF()
         return {
             "left": top_left.x() * dpr,
@@ -1060,10 +1088,11 @@ class GLImageViewer(QOpenGLWidget):
             return CropHandle.NONE
         tex_w, tex_h = self._renderer.texture_size()
         rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
-        top_left = self._image_to_viewport(rect["left"], rect["top"])
-        top_right = self._image_to_viewport(rect["right"], rect["top"])
-        bottom_right = self._image_to_viewport(rect["right"], rect["bottom"])
-        bottom_left = self._image_to_viewport(rect["left"], rect["bottom"])
+        # Use base_scale_only to keep crop box fixed in viewport
+        top_left = self._image_to_viewport(rect["left"], rect["top"], use_base_scale_only=True)
+        top_right = self._image_to_viewport(rect["right"], rect["top"], use_base_scale_only=True)
+        bottom_right = self._image_to_viewport(rect["right"], rect["bottom"], use_base_scale_only=True)
+        bottom_left = self._image_to_viewport(rect["left"], rect["bottom"], use_base_scale_only=True)
 
         corners = [
             (CropHandle.TOP_LEFT, top_left),
@@ -1330,8 +1359,9 @@ class GLImageViewer(QOpenGLWidget):
             if self._renderer and self._renderer.has_texture():
                 tex_w, tex_h = self._renderer.texture_size()
                 rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
-                top_left = self._image_to_viewport(rect["left"], rect["top"])
-                bottom_right = self._image_to_viewport(rect["right"], rect["bottom"])
+                # Use base_scale_only to keep crop box fixed in viewport
+                top_left = self._image_to_viewport(rect["left"], rect["top"], use_base_scale_only=True)
+                bottom_right = self._image_to_viewport(rect["right"], rect["bottom"], use_base_scale_only=True)
                 # Cache the logical viewport points rather than device pixels so the anchor
                 # survives DPI changes and matches the coordinate space used by
                 # ``QMouseEvent.position``.
