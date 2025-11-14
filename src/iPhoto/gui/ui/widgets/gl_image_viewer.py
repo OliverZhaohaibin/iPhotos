@@ -662,7 +662,7 @@ class GLImageViewer(QOpenGLWidget):
         if self._crop_mode:
             # Apply model scale: multiply crop_img_scale with the view scale
             effective_scale = view_scale * self._crop_img_scale
-            # Apply model offset: add crop_img_offset to pan
+            # Apply model offset: add crop_img_offset to pan (no scaling needed)
             effective_pan = QPointF(
                 effective_pan.x() + self._crop_img_offset.x(),
                 effective_pan.y() - self._crop_img_offset.y(),  # Y inverted
@@ -870,23 +870,27 @@ class GLImageViewer(QOpenGLWidget):
         clamped_y = max(min_center_y, min(max_center_y, float(center.y())))
         return QPointF(clamped_x, clamped_y)
 
-    def _clamp_crop_img_offset(self, offset: QPointF, scale: float) -> QPointF:
+    def _clamp_crop_img_offset(self, offset: QPointF, view_scale: float, crop_img_scale: float) -> QPointF:
         """Clamp image offset to prevent crop from showing outside image bounds.
         
         Following demo/crop_final.py's _clamp_offset_to_cover_crop logic.
-        The offset is in device pixels, similar to demo's world-space offset.
+        The offset is in a "world space" similar to the demo (view-scale-independent device pixels).
         
         Args:
-            offset: Image offset in device pixels
-            scale: Total scale (view_scale * crop_img_scale) to use for clamping
+            offset: Image offset in world-space device pixels
+            view_scale: View scale (device pixels per texture pixel from base transform)
+            crop_img_scale: Model scale multiplier
         """
         if not self._renderer or not self._renderer.has_texture():
             return offset
             
-        tex_w, tex_h = self._renderer.texture_size()
-        if scale <= 1e-9:
+        # Total scale is view_scale * crop_img_scale
+        total_scale = view_scale * crop_img_scale
+        if total_scale <= 1e-9:
             return offset
             
+        tex_w, tex_h = self._renderer.texture_size()
+        
         # Get crop bounds in image pixels
         crop_rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
         crop_left = float(crop_rect["left"])
@@ -894,23 +898,23 @@ class GLImageViewer(QOpenGLWidget):
         crop_right = float(crop_rect["right"])
         crop_bottom = float(crop_rect["bottom"])
         
-        # Half-dimensions of scaled image in device pixels
-        hw = (tex_w * scale) * 0.5
-        hh = (tex_h * scale) * 0.5
+        # Half-dimensions of scaled image in world space
+        # Image is tex_w x tex_h pixels, scaled by crop_img_scale
+        hw = (tex_w * crop_img_scale) * 0.5
+        hh = (tex_h * crop_img_scale) * 0.5
         
-        # Convert crop bounds to device pixels relative to image center
-        # (crop is in image pixels, need to scale to device pixels)
-        crop_left_dev = (crop_left - tex_w/2) * scale
-        crop_right_dev = (crop_right - tex_w/2) * scale
-        crop_top_dev = (crop_top - tex_h/2) * scale  
-        crop_bottom_dev = (crop_bottom - tex_h/2) * scale
+        # Convert crop bounds to world space (relative to image center)
+        # Crop is at a certain position in the texture, and texture is scaled by crop_img_scale
+        crop_left_world = (crop_left - tex_w/2) * crop_img_scale
+        crop_right_world = (crop_right - tex_w/2) * crop_img_scale
+        crop_top_world = (crop_top - tex_h/2) * crop_img_scale  
+        crop_bottom_world = (crop_bottom - tex_h/2) * crop_img_scale
         
         # Calculate limits (same logic as demo)
-        # min_ox = c.r() - hw, max_ox = c.l() + hw
-        min_ox = crop_right_dev - hw
-        max_ox = crop_left_dev + hw
-        min_oy = crop_bottom_dev - hh
-        max_oy = crop_top_dev + hh
+        min_ox = crop_right_world - hw
+        max_ox = crop_left_world + hw
+        min_oy = crop_bottom_world - hh
+        max_oy = crop_top_world + hh
         
         # Clamp
         clamped_x = max(min_ox, min(max_ox, offset.x()))
@@ -1400,34 +1404,37 @@ class GLImageViewer(QOpenGLWidget):
             # self.img_offset = self._clamp_offset_to_cover_crop(tentative, self.img_scale)
             #
             # In demo: img_offset and crop.rect are both in world coords.
-            # Camera (view) doesn't move, only img_offset changes.
+            # Camera scale (view) doesn't move, only img_offset changes.
             # 
-            # Here: we use _crop_img_offset to track image position offset,
-            # and keep crop state in normalized coords (doesn't change during inside drag).
+            # Here: we use _crop_img_offset in device pixels (like demo's world space).
+            # The key insight: in demo, screen delta is divided by cam.scale to get world delta.
+            # In our case, we should divide by view_scale (not total_scale) to match.
             
             dpr = self.devicePixelRatioF()
             # Mouse delta in device pixels
             dpx = delta_view.x() * dpr
             dpy = delta_view.y() * dpr
             
-            # In demo, delta is added directly to img_offset (same direction as mouse)
-            # Here, we do the same with _crop_img_offset
-            tentative_offset = QPointF(
-                self._crop_img_offset.x() + dpx,
-                self._crop_img_offset.y() + dpy,
-            )
-            
-            # Clamp to prevent crop showing black bars
-            # This is equivalent to demo's _clamp_offset_to_cover_crop
-            # Need to pass the total scale (view_scale * crop_img_scale)
+            # Get view_scale for conversion (matches demo's cam.scale)
             vw, vh = self._view_dimensions_device_px()
             tex_size = self._renderer.texture_size()
             base_scale = compute_fit_to_view_scale(tex_size, vw, vh)
             zoom_factor = self._transform_controller.get_zoom_factor()
             view_scale = max(base_scale * zoom_factor, 1e-6)
-            total_scale = view_scale * self._crop_img_scale
             
-            clamped_offset = self._clamp_crop_img_offset(tentative_offset, total_scale)
+            # Convert screen delta to "world" delta (like demo's screen_vec_to_world_vec)
+            # In demo: world_delta = screen_delta / cam.scale
+            # Here: world_delta = device_delta / view_scale
+            world_delta_x = dpx / view_scale
+            world_delta_y = dpy / view_scale
+            
+            tentative_offset = QPointF(
+                self._crop_img_offset.x() + world_delta_x,
+                self._crop_img_offset.y() + world_delta_y,
+            )
+            
+            # Clamp to prevent crop showing black bars
+            clamped_offset = self._clamp_crop_img_offset(tentative_offset, view_scale, self._crop_img_scale)
             self._crop_img_offset = clamped_offset
             
             # Crop state (normalized coords) doesn't change!
@@ -1538,10 +1545,21 @@ class GLImageViewer(QOpenGLWidget):
                 event.accept()
                 return
             
-            # Calculate anchor point in device pixel space
-            # Convert screen position to world coordinates (center-origin, Y-up)
-            dpr = self.devicePixelRatioF()
-            anchor_world = self._screen_to_world(event.position())
+            # Calculate anchor point in "world" space (view-scale-independent device pixels)
+            # This matches demo's screen_to_world conversion
+            vw, vh = self._view_dimensions_device_px()
+            tex_size = self._renderer.texture_size()
+            base_scale = compute_fit_to_view_scale(tex_size, vw, vh)
+            zoom_factor = self._transform_controller.get_zoom_factor()
+            view_scale = max(base_scale * zoom_factor, 1e-6)
+            
+            # Convert screen position to world coordinates
+            anchor_screen = self._screen_to_world(event.position())
+            # Divide by view_scale to get view-scale-independent "world" coordinates
+            anchor_world = QPointF(
+                anchor_screen.x() / view_scale,
+                anchor_screen.y() / view_scale,
+            )
             
             # Apply scale around anchor point (following demo's math):
             # new_offset = anchor + (old_offset - anchor) * (new_scale / old_scale)
@@ -1552,15 +1570,7 @@ class GLImageViewer(QOpenGLWidget):
             )
             
             # Clamp offset to prevent black bars in crop area
-            # Need total scale: view_scale * new_crop_img_scale
-            vw, vh = self._view_dimensions_device_px()
-            tex_size = self._renderer.texture_size()
-            base_scale = compute_fit_to_view_scale(tex_size, vw, vh)
-            zoom_factor = self._transform_controller.get_zoom_factor()
-            view_scale = max(base_scale * zoom_factor, 1e-6)
-            total_scale = view_scale * new_scale
-            
-            new_offset = self._clamp_crop_img_offset(new_offset, total_scale)
+            new_offset = self._clamp_crop_img_offset(new_offset, view_scale, new_scale)
             
             self._crop_img_scale = new_scale
             self._crop_img_offset = new_offset
