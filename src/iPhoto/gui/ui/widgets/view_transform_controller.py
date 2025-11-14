@@ -55,6 +55,24 @@ class ViewTransformController:
         self._wheel_action: str = "zoom"
 
     # ------------------------------------------------------------------
+    # Helper methods for getting viewport info
+    # ------------------------------------------------------------------
+    def _get_view_dimensions_device_px(self) -> tuple[float, float]:
+        """Get viewport dimensions in device pixels."""
+        dpr = self._viewer.devicePixelRatioF()
+        vw = max(1.0, float(self._viewer.width()) * dpr)
+        vh = max(1.0, float(self._viewer.height()) * dpr)
+        return vw, vh
+    
+    def _get_dpr(self) -> float:
+        """Get device pixel ratio."""
+        return self._viewer.devicePixelRatioF()
+
+    def _get_view_dimensions_logical(self) -> tuple[float, float]:
+        """Get viewport dimensions in logical pixels."""
+        return float(self._viewer.width()), float(self._viewer.height())
+
+    # ------------------------------------------------------------------
     # State accessors
     # ------------------------------------------------------------------
     def get_zoom_factor(self) -> float:
@@ -294,3 +312,52 @@ class ViewTransformController:
         # where increasing values travel down the texture.
         tex_y = tex_h / 2.0 - tex_vector_y
         return QPointF(tex_x, tex_y)
+
+    # ------------------------------------------------------------------
+    # Convenience methods that use internal viewport state
+    # ------------------------------------------------------------------
+    def get_effective_scale(self) -> float:
+        """Calculate the effective rendering scale using internal viewport state."""
+        vw, vh = self._get_view_dimensions_device_px()
+        texture_size = self._texture_size_provider()
+        return self.effective_scale(texture_size, vw, vh)
+    
+    def get_image_center_pixels(self) -> QPointF:
+        """Return the image center in pixel coordinates using current pan/zoom."""
+        texture_size = self._texture_size_provider()
+        scale = self.get_effective_scale()
+        return self.image_center_pixels(texture_size, scale)
+    
+    def apply_image_center_pixels(self, center: QPointF, scale: float | None = None) -> None:
+        """Set the pan to center the image at the given pixel coordinate."""
+        texture_size = self._texture_size_provider()
+        scale_value = scale if scale is not None else self.get_effective_scale()
+        self.set_image_center_pixels(center, texture_size, scale_value)
+    
+    def convert_screen_to_world(self, screen_pt: QPointF) -> QPointF:
+        """Map a Qt screen coordinate to GL view's centre-origin space."""
+        view_width, view_height = self._get_view_dimensions_logical()
+        dpr = self._get_dpr()
+        return self.screen_to_world(screen_pt, view_width, view_height, dpr)
+    
+    def convert_world_to_screen(self, world_vec: QPointF) -> QPointF:
+        """Convert a GL centre-origin vector into a Qt screen coordinate."""
+        view_width, view_height = self._get_view_dimensions_logical()
+        dpr = self._get_dpr()
+        return self.world_to_screen(world_vec, view_width, view_height, dpr)
+    
+    def convert_image_to_viewport(self, x: float, y: float) -> QPointF:
+        """Convert image pixel coordinates to viewport coordinates."""
+        texture_size = self._texture_size_provider()
+        scale = self.get_effective_scale()
+        view_width, view_height = self._get_view_dimensions_logical()
+        dpr = self._get_dpr()
+        return self.image_to_viewport(x, y, texture_size, scale, view_width, view_height, dpr)
+    
+    def convert_viewport_to_image(self, point: QPointF) -> QPointF:
+        """Convert viewport coordinates to image pixel coordinates."""
+        texture_size = self._texture_size_provider()
+        scale = self.get_effective_scale()
+        view_width, view_height = self._get_view_dimensions_logical()
+        dpr = self._get_dpr()
+        return self.viewport_to_image(point, texture_size, scale, view_width, view_height, dpr)

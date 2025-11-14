@@ -518,89 +518,46 @@ class GLImageViewer(QOpenGLWidget):
     # --------------------------- Coordinate transformations ---------------------------
 
     def _view_dimensions_device_px(self) -> tuple[float, float]:
-        dpr = self.devicePixelRatioF()
-        vw = max(1.0, float(self.width()) * dpr)
-        vh = max(1.0, float(self.height()) * dpr)
-        return vw, vh
+        return self._transform_controller._get_view_dimensions_device_px()
 
     def _screen_to_world(self, screen_pt: QPointF) -> QPointF:
         """Map a Qt screen coordinate to the GL view's centre-origin space."""
-        dpr = self.devicePixelRatioF()
-        vw, vh = self._view_dimensions_device_px()
-        return self._transform_controller.screen_to_world(
-            screen_pt, float(self.width()), float(self.height()), dpr
-        )
+        return self._transform_controller.convert_screen_to_world(screen_pt)
 
     def _world_to_screen(self, world_vec: QPointF) -> QPointF:
         """Convert a GL centre-origin vector into a Qt screen coordinate."""
-        dpr = self.devicePixelRatioF()
-        return self._transform_controller.world_to_screen(
-            world_vec, float(self.width()), float(self.height()), dpr
-        )
+        return self._transform_controller.convert_world_to_screen(world_vec)
 
     def _effective_scale(self) -> float:
         if not self._renderer or not self._renderer.has_texture():
             return 1.0
-        vw, vh = self._view_dimensions_device_px()
-        return self._transform_controller.effective_scale(
-            self._renderer.texture_size(), vw, vh
-        )
+        return self._transform_controller.get_effective_scale()
 
     def _image_center_pixels(self) -> QPointF:
         if not self._renderer or not self._renderer.has_texture():
             return QPointF(0.0, 0.0)
-        scale = self._effective_scale()
-        return self._transform_controller.image_center_pixels(
-            self._renderer.texture_size(), scale
-        )
+        return self._transform_controller.get_image_center_pixels()
 
     def _set_image_center_pixels(self, center: QPointF, *, scale: float | None = None) -> None:
         if not self._renderer or not self._renderer.has_texture():
             return
-        scale_value = scale if scale is not None else self._effective_scale()
-        self._transform_controller.set_image_center_pixels(
-            center, self._renderer.texture_size(), scale_value
-        )
+        self._transform_controller.apply_image_center_pixels(center, scale)
 
     def _set_image_center_pixels_internal(self, center: QPointF, scale: float) -> None:
         """Internal helper for the crop controller to set image center."""
         if not self._renderer or not self._renderer.has_texture():
             return
-        self._transform_controller.set_image_center_pixels(
-            center, self._renderer.texture_size(), scale
-        )
+        self._transform_controller.apply_image_center_pixels(center, scale)
 
     def _image_to_viewport(self, x: float, y: float) -> QPointF:
         if not self._renderer or not self._renderer.has_texture():
             return QPointF()
-        scale = self._effective_scale()
-        pan = self._transform_controller.get_pan_pixels()
-        tex_w, tex_h = self._renderer.texture_size()
-        tex_vector_x = x - (tex_w / 2.0)
-        tex_vector_y = y - (tex_h / 2.0)
-        world_vector = QPointF(
-            tex_vector_x * scale + pan.x(),
-            -(tex_vector_y * scale) + pan.y(),
-        )
-        # ``world_vector`` is now expressed in the GL-friendly centre-origin
-        # space, so the last step is to convert it back to Qt's screen space for
-        # hit testing and overlay rendering.
-        return self._world_to_screen(world_vector)
+        return self._transform_controller.convert_image_to_viewport(x, y)
 
     def _viewport_to_image(self, point: QPointF) -> QPointF:
         if not self._renderer or not self._renderer.has_texture():
             return QPointF()
-        pan = self._transform_controller.get_pan_pixels()
-        scale = self._effective_scale()
-        world_vec = self._screen_to_world(point)
-        tex_vector_x = (world_vec.x() - pan.x()) / scale
-        tex_vector_y = (world_vec.y() - pan.y()) / scale
-        tex_w, tex_h = self._renderer.texture_size()
-        tex_x = tex_w / 2.0 + tex_vector_x
-        # Convert the world-space Y (upwards positive) back into image space
-        # where increasing values travel down the texture.
-        tex_y = tex_h / 2.0 - tex_vector_y
-        return QPointF(tex_x, tex_y)
+        return self._transform_controller.convert_viewport_to_image(point)
 
     def _clamp_image_center_to_crop(self, center: QPointF, scale: float) -> QPointF:
         """Return *center* limited so the crop box always sees valid pixels.
