@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 GPU-accelerated image viewer (pure OpenGL texture upload; pixel-accurate zoom/pan).
 - Ensures magnification samples the ORIGINAL pixels (no Qt/FBO resampling).
@@ -7,38 +6,29 @@ GPU-accelerated image viewer (pure OpenGL texture upload; pixel-accurate zoom/pa
 
 from __future__ import annotations
 
-from typing import Mapping, Optional
-
 import logging
-import math
 import time
+from collections.abc import Mapping
 
-from PySide6.QtCore import QPointF, QSize, Qt, Signal, QTimer
+from OpenGL import GL as gl
+from PySide6.QtCore import QPointF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QImage,
     QMouseEvent,
-    QWheelEvent,
-    QSurfaceFormat,
     QPixmap,
+    QSurfaceFormat,
+    QWheelEvent,
 )
 from PySide6.QtOpenGL import (
+    QOpenGLDebugLogger,
     QOpenGLFramebufferObject,
     QOpenGLFramebufferObjectFormat,
     QOpenGLFunctions_3_3_Core,
-    QOpenGLDebugLogger,
 )
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import QLabel
-from OpenGL import GL as gl
 
-from .gl_crop_utils import (
-    CropBoxState,
-    CropHandle,
-    cursor_for_handle,
-    ease_in_quad,
-    ease_out_cubic,
-)
 from .gl_crop_controller import CropInteractionController
 from .gl_renderer import GLRenderer
 from .view_transform_controller import (
@@ -68,7 +58,7 @@ class GLImageViewer(QOpenGLWidget):
     fullscreenToggleRequested = Signal()
     cropChanged = Signal(float, float, float, float)
 
-    def __init__(self, parent: Optional["QOpenGLWidget"] = None) -> None:
+    def __init__(self, parent: QOpenGLWidget | None = None) -> None:
         super().__init__(parent)
         self.setMouseTracking(True)
 
@@ -77,14 +67,14 @@ class GLImageViewer(QOpenGLWidget):
         fmt.setVersion(3, 3)
         fmt.setProfile(QSurfaceFormat.CoreProfile)
         self.setFormat(fmt)
-        self._gl_funcs: Optional[QOpenGLFunctions_3_3_Core] = None
-        self._renderer: Optional[GLRenderer] = None
-        self._logger: Optional[QOpenGLDebugLogger] = None
+        self._gl_funcs: QOpenGLFunctions_3_3_Core | None = None
+        self._renderer: GLRenderer | None = None
+        self._logger: QOpenGLDebugLogger | None = None
 
         # 状态
-        self._image: Optional[QImage] = None
+        self._image: QImage | None = None
         self._adjustments: dict[str, float] = {}
-        self._current_image_source: Optional[object] = None
+        self._current_image_source: object | None = None
         self._live_replay_enabled: bool = False
 
         # Track the viewer surface colour so immersive mode can temporarily
@@ -92,7 +82,7 @@ class GLImageViewer(QOpenGLWidget):
         # palette-derived colour string, which we normalise to ``QColor`` for
         # reliable comparisons and GL clear colour conversion.
         self._default_surface_color = self._normalise_colour(viewer_surface_color(self))
-        self._surface_override: Optional[QColor] = None
+        self._surface_override: QColor | None = None
         self._backdrop_color: QColor = QColor(self._default_surface_color)
         self._apply_surface_color()
 
@@ -149,10 +139,10 @@ class GLImageViewer(QOpenGLWidget):
 
     def set_image(
         self,
-        image: Optional[QImage],
-        adjustments: Optional[Mapping[str, float]] = None,
+        image: QImage | None,
+        adjustments: Mapping[str, float] | None = None,
         *,
-        image_source: Optional[object] = None,
+        image_source: object | None = None,
         reset_view: bool = True,
     ) -> None:
         """Display *image* together with optional colour *adjustments*.
@@ -225,8 +215,8 @@ class GLImageViewer(QOpenGLWidget):
 
     def set_pixmap(
         self,
-        pixmap: Optional[QPixmap],
-        image_source: Optional[object] = None,
+        pixmap: QPixmap | None,
+        image_source: object | None = None,
         *,
         reset_view: bool = True,
     ) -> None:
@@ -251,19 +241,19 @@ class GLImageViewer(QOpenGLWidget):
 
         self.set_image(None, {}, image_source=None)
 
-    def set_adjustments(self, adjustments: Optional[Mapping[str, float]] = None) -> None:
+    def set_adjustments(self, adjustments: Mapping[str, float] | None = None) -> None:
         """Update the active adjustment uniforms without replacing the texture."""
 
         mapped_adjustments = dict(adjustments or {})
         self._adjustments = mapped_adjustments
         self.update()
 
-    def current_image_source(self) -> Optional[object]:
+    def current_image_source(self) -> object | None:
         """Return the identifier describing the currently displayed image."""
 
         return getattr(self, "_current_image_source", None)
 
-    def pixmap(self) -> Optional[QPixmap]:
+    def pixmap(self) -> QPixmap | None:
         """Return a defensive copy of the currently displayed frame."""
 
         if self._image is None or self._image.isNull():
@@ -280,7 +270,7 @@ class GLImageViewer(QOpenGLWidget):
         else:
             self._loading_overlay.hide()
 
-    def viewport_widget(self) -> "GLImageViewer":
+    def viewport_widget(self) -> GLImageViewer:
         """Expose the drawable widget for API parity with :class:`ImageViewer`."""
 
         return self
@@ -305,7 +295,7 @@ class GLImageViewer(QOpenGLWidget):
 
         self.set_surface_color_override("#000000" if immersive else None)
 
-    def set_zoom(self, factor: float, anchor: Optional[QPointF] = None) -> None:
+    def set_zoom(self, factor: float, anchor: QPointF | None = None) -> None:
         """Adjust the zoom while preserving the requested *anchor* pixel."""
 
         anchor_point = anchor or self.viewport_center()
@@ -330,7 +320,7 @@ class GLImageViewer(QOpenGLWidget):
     def render_offscreen_image(
         self,
         target_size: QSize,
-        adjustments: Optional[Mapping[str, float]] = None,
+        adjustments: Mapping[str, float] | None = None,
     ) -> QImage:
         """Render the current texture into an off-screen framebuffer.
 
@@ -519,7 +509,7 @@ class GLImageViewer(QOpenGLWidget):
 
     # --------------------------- Crop helpers ---------------------------
 
-    def setCropMode(self, enabled: bool, values: Optional[Mapping[str, float]] = None) -> None:
+    def setCropMode(self, enabled: bool, values: Mapping[str, float] | None = None) -> None:
         self._crop_controller.set_active(enabled, values)
 
     def crop_values(self) -> dict[str, float]:

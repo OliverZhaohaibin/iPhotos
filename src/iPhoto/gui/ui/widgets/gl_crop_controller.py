@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Crop interaction controller for the GL image viewer.
 
@@ -11,7 +10,7 @@ from __future__ import annotations
 import logging
 import math
 import time
-from typing import Callable, Mapping, Optional
+from collections.abc import Callable, Mapping
 
 from PySide6.QtCore import QPointF, Qt, QTimer
 from PySide6.QtGui import QMouseEvent, QWheelEvent
@@ -92,7 +91,7 @@ class CropInteractionController:
         self._crop_last_pos = QPointF()
         self._crop_hit_padding: float = 12.0
         self._crop_edge_threshold: float = 48.0
-        self._crop_drag_anchor_viewport: Optional[tuple[QPointF, QPointF]] = None
+        self._crop_drag_anchor_viewport: tuple[QPointF, QPointF] | None = None
 
         # Crop model transform (independent from camera)
         self._crop_img_offset = QPointF(0.0, 0.0)
@@ -134,7 +133,7 @@ class CropInteractionController:
         """Return True if the crop overlay is currently faded out."""
         return self._crop_faded_out
 
-    def current_crop_rect_pixels(self) -> Optional[dict[str, float]]:
+    def current_crop_rect_pixels(self) -> dict[str, float] | None:
         """Return the crop rectangle in viewport device pixels."""
         tex_w, tex_h = self._texture_size_provider()
         if tex_w <= 0 or tex_h <= 0:
@@ -150,7 +149,7 @@ class CropInteractionController:
             "bottom": bottom_right.y() * dpr,
         }
 
-    def set_active(self, enabled: bool, values: Optional[Mapping[str, float]] = None) -> None:
+    def set_active(self, enabled: bool, values: Mapping[str, float] | None = None) -> None:
         """Enable or disable crop mode with optional initial crop values."""
         if enabled == self._active:
             if enabled and values is not None:
@@ -354,7 +353,7 @@ class CropInteractionController:
         self._crop_img_offset = QPointF(0.0, 0.0)
         self._crop_img_scale = 1.0
 
-    def _apply_crop_values(self, values: Optional[Mapping[str, float]]) -> None:
+    def _apply_crop_values(self, values: Mapping[str, float] | None) -> None:
         """Apply crop values to the crop state."""
         if values:
             self._crop_state.set_from_mapping(values)
@@ -649,7 +648,8 @@ class CropInteractionController:
 
         # Right edge pushing out
         if (
-            self._crop_drag_handle in (CropHandle.RIGHT, CropHandle.TOP_RIGHT, CropHandle.BOTTOM_RIGHT)
+            self._crop_drag_handle
+            in (CropHandle.RIGHT, CropHandle.TOP_RIGHT, CropHandle.BOTTOM_RIGHT)
             and delta_x > 0.0
         ):
             right_margin = vw - crop_rect["right"]
@@ -671,7 +671,8 @@ class CropInteractionController:
 
         # Bottom edge pushing out
         if (
-            self._crop_drag_handle in (CropHandle.BOTTOM, CropHandle.BOTTOM_LEFT, CropHandle.BOTTOM_RIGHT)
+            self._crop_drag_handle
+            in (CropHandle.BOTTOM, CropHandle.BOTTOM_LEFT, CropHandle.BOTTOM_RIGHT)
             and delta_y > 0.0
         ):
             bottom_margin = vh - crop_rect["bottom"]

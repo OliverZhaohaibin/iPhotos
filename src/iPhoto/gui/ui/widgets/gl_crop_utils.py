@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Crop-related data structures and utility functions for the GL image viewer.
 
@@ -9,7 +8,7 @@ functionality without any direct dependency on QOpenGLWidget or Qt event handlin
 from __future__ import annotations
 
 import enum
-from typing import Mapping
+from collections.abc import Mapping
 
 from PySide6.QtCore import QPointF, Qt
 
