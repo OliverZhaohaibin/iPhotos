@@ -977,12 +977,19 @@ class GLImageViewer(QOpenGLWidget):
             return QPointF()
         scale = self._effective_scale()
         pan = self._transform_controller.get_pan_pixels()
+        # In crop mode, include crop_img_offset to match rendering
+        if self._crop_mode:
+            effective_pan_x = pan.x() + self._crop_img_offset.x()
+            effective_pan_y = pan.y() - self._crop_img_offset.y()
+        else:
+            effective_pan_x = pan.x()
+            effective_pan_y = pan.y()
         tex_w, tex_h = self._renderer.texture_size()
         tex_vector_x = x - (tex_w / 2.0)
         tex_vector_y = y - (tex_h / 2.0)
         world_vector = QPointF(
-            tex_vector_x * scale + pan.x(),
-            -(tex_vector_y * scale) + pan.y(),
+            tex_vector_x * scale + effective_pan_x,
+            -(tex_vector_y * scale) + effective_pan_y,
         )
         # ``world_vector`` is now expressed in the GL-friendly centre-origin
         # space, so the last step is to convert it back to Qt's screen space for
@@ -993,10 +1000,17 @@ class GLImageViewer(QOpenGLWidget):
         if not self._renderer or not self._renderer.has_texture():
             return QPointF()
         pan = self._transform_controller.get_pan_pixels()
+        # In crop mode, include crop_img_offset to match rendering
+        if self._crop_mode:
+            effective_pan_x = pan.x() + self._crop_img_offset.x()
+            effective_pan_y = pan.y() - self._crop_img_offset.y()
+        else:
+            effective_pan_x = pan.x()
+            effective_pan_y = pan.y()
         scale = self._effective_scale()
         world_vec = self._screen_to_world(point)
-        tex_vector_x = (world_vec.x() - pan.x()) / scale
-        tex_vector_y = (world_vec.y() - pan.y()) / scale
+        tex_vector_x = (world_vec.x() - effective_pan_x) / scale
+        tex_vector_y = (world_vec.y() - effective_pan_y) / scale
         tex_w, tex_h = self._renderer.texture_size()
         tex_x = tex_w / 2.0 + tex_vector_x
         # Convert the world-space Y (upwards positive) back into image space
