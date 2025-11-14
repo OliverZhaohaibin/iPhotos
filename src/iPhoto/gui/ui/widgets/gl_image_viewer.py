@@ -859,7 +859,7 @@ class GLImageViewer(QOpenGLWidget):
         clamped_y = max(min_center_y, min(max_center_y, float(center.y())))
         return QPointF(clamped_x, clamped_y)
 
-    def _clamp_crop_img_offset(self, offset: QPointF) -> QPointF:
+    def _clamp_crop_img_offset(self, offset: QPointF, scale: float) -> QPointF:
         """Clamp image offset to prevent crop from showing outside image bounds.
         
         Following demo/crop_final.py's _clamp_offset_to_cover_crop logic.
@@ -869,7 +869,6 @@ class GLImageViewer(QOpenGLWidget):
             return offset
             
         tex_w, tex_h = self._renderer.texture_size()
-        scale = self._effective_scale()
         if scale <= 1e-9:
             return offset
             
@@ -1386,7 +1385,7 @@ class GLImageViewer(QOpenGLWidget):
             
             # Clamp to prevent crop showing black bars
             # This is equivalent to demo's _clamp_offset_to_cover_crop
-            clamped_offset = self._clamp_crop_img_offset(tentative_offset)
+            clamped_offset = self._clamp_crop_img_offset(tentative_offset, self._effective_scale())
             self._crop_img_offset = clamped_offset
             
             # Crop state (normalized coords) doesn't change!
@@ -1472,10 +1471,7 @@ class GLImageViewer(QOpenGLWidget):
                 self._restart_crop_idle()
                 return
 
-            # Guard against devices that emit unusually large wheel deltas.  The
-            # exponential zoom curve is tuned for step values in the ±120 range,
-            # therefore restricting the raw delta avoids sudden jumps while
-            # still allowing high-resolution wheels to feel responsive.
+            # Guard against devices that emit unusually large wheel deltas.
             angle = max(-480, min(480, angle))
 
             tex_w, tex_h = self._renderer.texture_size()
@@ -1492,25 +1488,69 @@ class GLImageViewer(QOpenGLWidget):
             crop_rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
             crop_width = max(1.0, crop_rect["right"] - crop_rect["left"])
             crop_height = max(1.0, crop_rect["bottom"] - crop_rect["top"])
-            # Fixed: Remove incorrect base_scale division to match demo/crop_final.py
+            
             min_zoom_for_crop = max(
                 crop_width / max(1.0, float(tex_w)),
                 crop_height / max(1.0, float(tex_h)),
             )
 
-            current_zoom = self._transform_controller.get_zoom_factor()
+            current_zoom_factor = self._transform_controller.get_zoom_factor()
             factor = math.pow(1.0015, angle)
             min_zoom = max(self._transform_controller.minimum_zoom(), min_zoom_for_crop)
             max_zoom = self._transform_controller.maximum_zoom()
-            new_zoom = max(min_zoom, min(max_zoom, current_zoom * factor))
+            
+            new_zoom_factor = max(min_zoom, min(max_zoom, current_zoom_factor * factor))
 
-            anchor = event.position()
-            self._transform_controller.set_zoom(new_zoom, anchor=anchor)
+            if abs(new_zoom_factor - current_zoom_factor) < 1e-6:
+                self._restart_crop_idle()
+                event.accept()
+                return
+            
+            # --- Begin: Mimic demo/crop_final.py wheel logic ---
+            
+            # 1. Directly set zoom factor (only changes _zoom_factor, not _pan_px)
+            self._transform_controller.set_zoom_factor_direct(new_zoom_factor)
 
-            actual_scale = self._effective_scale()
-            centre = self._image_center_pixels()
-            clamped_centre = self._clamp_image_center_to_crop(centre, actual_scale)
-            self._set_image_center_pixels(clamped_centre, scale=actual_scale)
+            # 2. Get old and new effective scales
+            old_effective_scale = base_scale * current_zoom_factor
+            new_effective_scale = base_scale * new_zoom_factor
+            
+            # 3. Get anchor point (mouse position), convert to device pixels, Y-up, center origin
+            anchor_world_device = self._screen_to_world(event.position())
+
+            # 4. Get "camera" pan (stays static)
+            view_pan_px = self._transform_controller.get_pan_pixels()
+
+            # 5. Get "old image" pan (Y-up)
+            old_crop_img_offset_y_up = QPointF(self._crop_img_offset.x(), -self._crop_img_offset.y())
+
+            # 6. Get "old total" pan
+            old_total_pan = view_pan_px + old_crop_img_offset_y_up
+
+            # 7. Find texture coordinate under anchor (a conceptual point)
+            tex_coord_x = (anchor_world_device.x() - old_total_pan.x()) / old_effective_scale
+            tex_coord_y = (anchor_world_device.y() - old_total_pan.y()) / old_effective_scale
+
+            # 8. Calculate "new total" pan to keep texture coordinate under anchor
+            new_total_pan_x = anchor_world_device.x() - tex_coord_x * new_effective_scale
+            new_total_pan_y = anchor_world_device.y() - tex_coord_y * new_effective_scale
+            new_total_pan = QPointF(new_total_pan_x, new_total_pan_y)
+
+            # 9. Separate "new image" pan from "new total" pan
+            new_crop_img_offset_y_up = new_total_pan - view_pan_px
+
+            # 10. Convert back to (x, y_down) format
+            tentative_offset_y_down = QPointF(new_crop_img_offset_y_up.x(), -new_crop_img_offset_y_up.y())
+
+            # 11. Clamp using "new" scale level
+            clamped_offset = self._clamp_crop_img_offset(tentative_offset_y_down, new_effective_scale)
+            self._crop_img_offset = clamped_offset
+            
+            # --- End: New logic ---
+
+            # Note: We do NOT call _set_image_center_pixels() here,
+            # because "camera" pan (_pan_px) must remain static.
+            
             self._restart_crop_idle()
             event.accept()
             return
