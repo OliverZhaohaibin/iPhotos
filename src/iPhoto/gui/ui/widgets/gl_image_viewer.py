@@ -1195,6 +1195,12 @@ class GLImageViewer(QOpenGLWidget):
         self.update()
 
     def _apply_crop_animation_state(self, scale: float, centre: QPointF) -> None:
+        """Apply animation state in crop mode.
+        
+        In crop mode, we should NOT move the camera (_pan_px), only modify
+        _zoom_factor and _crop_img_offset to maintain the architecture where
+        the crop box stays fixed.
+        """
         if not self._renderer or not self._renderer.has_texture():
             return
         vw, vh = self._view_dimensions_device_px()
@@ -1203,10 +1209,26 @@ class GLImageViewer(QOpenGLWidget):
         min_zoom = self._transform_controller.minimum_zoom()
         max_zoom = self._transform_controller.maximum_zoom()
         zoom_factor = max(min_zoom, min(max_zoom, scale / max(base_scale, 1e-6)))
+        
+        # Set zoom factor without moving camera
         self._transform_controller.set_zoom_factor_direct(zoom_factor)
+        
+        # Calculate the required crop_img_offset to center the image at the target center
+        # Without changing the camera pan
+        tex_w, tex_h = tex_size
         actual_scale = self._effective_scale()
-        clamped_center = self._clamp_image_center_to_crop(centre, actual_scale)
-        self._set_image_center_pixels(clamped_center, scale=actual_scale)
+        
+        # Target center in device pixels relative to image center
+        target_offset_x = -(centre.x() - tex_w / 2.0) * actual_scale
+        target_offset_y = (centre.y() - tex_h / 2.0) * actual_scale  # Y inverted
+        
+        tentative_offset = QPointF(target_offset_x, target_offset_y)
+        
+        # Clamp to ensure image covers crop box
+        clamped_offset = self._clamp_crop_img_offset(tentative_offset, actual_scale)
+        self._crop_img_offset = clamped_offset
+        
+        self.update()
 
     def _target_scale_for_crop(self) -> float:
         if not self._renderer or not self._renderer.has_texture():
