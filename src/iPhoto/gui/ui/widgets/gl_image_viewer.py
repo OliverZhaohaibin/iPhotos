@@ -1462,33 +1462,69 @@ class GLImageViewer(QOpenGLWidget):
             if base_scale <= 1e-6:
                 return
 
-            # Apply the wheel gesture in the same spirit as ``demo/crop_final.py``:
-            # zoom the image content around the pointer while the crop overlay
-            # remains stationary.  The dynamic minimum prevents shrinking the
-            # texture below the crop rectangle, avoiding any black bars inside
-            # the frame.
+            # Following demo/crop_final.py wheelEvent logic (lines 687-713):
+            # 1. Keep the view (camera/pan) FIXED - don't move it!
+            # 2. Scale the image directly (via zoom factor)
+            # 3. Adjust crop_img_offset to maintain anchor point
+            # 4. Clamp offset to prevent black bars
+            
+            # Calculate zoom factor like before but apply it differently
             crop_rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
             crop_width = max(1.0, crop_rect["right"] - crop_rect["left"])
             crop_height = max(1.0, crop_rect["bottom"] - crop_rect["top"])
-            min_zoom_for_crop = max(
-                crop_width / max(1.0, float(tex_w)),
-                crop_height / max(1.0, float(tex_h)),
-            ) / max(base_scale, 1e-6)
+            
+            # Dynamic minimum scale to cover crop (like demo's _dynamic_min_scale_to_cover_crop)
+            dyn_min_scale = max(crop_width / max(1.0, float(tex_w)),
+                               crop_height / max(1.0, float(tex_h)))
+            min_zoom_for_crop = dyn_min_scale / max(base_scale, 1e-6)
 
             current_zoom = self._transform_controller.get_zoom_factor()
             factor = math.pow(1.0015, angle)
             min_zoom = max(self._transform_controller.minimum_zoom(), min_zoom_for_crop)
             max_zoom = self._transform_controller.maximum_zoom()
             new_zoom = max(min_zoom, min(max_zoom, current_zoom * factor))
-
-            anchor = event.position()
-            self._transform_controller.set_zoom(new_zoom, anchor=anchor)
-
-            actual_scale = self._effective_scale()
-            centre = self._image_center_pixels()
-            clamped_centre = self._clamp_image_center_to_crop(centre, actual_scale)
-            self._set_image_center_pixels(clamped_centre, scale=actual_scale)
+            
+            # Calculate current and new scales
+            current_scale = max(base_scale * current_zoom, 1e-6)
+            new_scale = max(base_scale * new_zoom, 1e-6)
+            
+            # Get mouse position in device pixels (anchor point)
+            dpr = self.devicePixelRatioF()
+            anchor_screen_x = event.position().x() * dpr
+            anchor_screen_y = event.position().y() * dpr
+            
+            # Convert anchor to world space (center-origin, Y-up)
+            # This matches demo's self.cam.screen_to_world(ev.position().x(), ev.position().y())
+            anchor_world_x = anchor_screen_x - (vw * 0.5)
+            anchor_world_y = (vh * 0.5) - anchor_screen_y
+            
+            # Scale around the anchor point (like demo lines 703-709)
+            # The formula: new_offset = anchor + (old_offset - anchor) * scale_ratio
+            scale_ratio = new_scale / max(1e-12, current_scale)
+            
+            # Current offset in world space (combining pan and crop_img_offset)
+            # Note: crop_img_offset is already in device pixels
+            current_pan = self._transform_controller.get_pan_pixels()
+            current_offset_x = current_pan.x() + self._crop_img_offset.x()
+            current_offset_y = current_pan.y() - self._crop_img_offset.y()  # Y inverted
+            
+            # Apply scaling around anchor (world space calculation)
+            new_offset_x = anchor_world_x + (current_offset_x - anchor_world_x) * scale_ratio
+            new_offset_y = anchor_world_y + (current_offset_y - anchor_world_y) * scale_ratio
+            
+            # Extract the new crop_img_offset (keeping pan fixed)
+            new_crop_offset_x = new_offset_x - current_pan.x()
+            new_crop_offset_y = -(new_offset_y - current_pan.y())  # Y inverted back
+            new_crop_offset = QPointF(new_crop_offset_x, new_crop_offset_y)
+            
+            # Clamp to prevent black bars (like demo's _clamp_offset_to_cover_crop)
+            # Update zoom first so _clamp_crop_img_offset uses correct scale
+            self._transform_controller.set_zoom_factor_direct(new_zoom)
+            clamped_offset = self._clamp_crop_img_offset(new_crop_offset)
+            self._crop_img_offset = clamped_offset
+            
             self._restart_crop_idle()
+            self.update()
             event.accept()
             return
         self._transform_controller.handle_wheel(event)
