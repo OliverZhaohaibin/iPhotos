@@ -135,6 +135,8 @@ class GLRenderer:
                 "uTexSize",
                 "uScale",
                 "uPan",
+                "uImgScale",
+                "uImgOffset",
             ):
                 self._uniform_locations[name] = program.uniformLocation(name)
         finally:
@@ -270,6 +272,8 @@ class GLRenderer:
         pan: QPointF,
         adjustments: Mapping[str, float],
         time_value: float | None = None,
+        img_scale: float = 1.0,
+        img_offset: Optional[QPointF] = None,
     ) -> None:
         """Draw the textured triangle covering the current viewport."""
 
@@ -288,6 +292,8 @@ class GLRenderer:
         try:
             if self._dummy_vao is not None:
                 self._dummy_vao.bind()
+
+            offset_value = img_offset or QPointF(0.0, 0.0)
 
             gf.glActiveTexture(gl.GL_TEXTURE0)
             gf.glBindTexture(gl.GL_TEXTURE_2D, int(self._texture_id))
@@ -327,7 +333,9 @@ class GLRenderer:
             if time_value is not None:
                 self._set_uniform1f("uTime", time_value)
 
-            self._set_uniform1f("uScale", max(scale, 1e-6))
+            safe_scale = max(scale, 1e-6)
+            safe_img_scale = max(img_scale, 1e-6)
+            self._set_uniform1f("uScale", safe_scale)
             self._set_uniform2f("uViewSize", max(view_width, 1.0), max(view_height, 1.0))
             self._set_uniform2f(
                 "uTexSize",
@@ -335,6 +343,12 @@ class GLRenderer:
                 float(max(1, self._texture_height)),
             )
             self._set_uniform2f("uPan", float(pan.x()), float(pan.y()))
+            self._set_uniform1f("uImgScale", safe_img_scale)
+            self._set_uniform2f(
+                "uImgOffset",
+                float(offset_value.x()),
+                float(offset_value.y()),
+            )
 
             gf.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
         finally:

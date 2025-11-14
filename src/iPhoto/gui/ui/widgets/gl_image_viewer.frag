@@ -22,6 +22,8 @@ uniform vec2  uViewSize;
 uniform vec2  uTexSize;
 uniform float uScale;
 uniform vec2  uPan;
+uniform float uImgScale;
+uniform vec2  uImgOffset;
 
 float clamp01(float x) { return clamp(x, 0.0, 1.0); }
 
@@ -143,10 +145,13 @@ void main() {
         discard;
     }
 
+    float safeImgScale = max(uImgScale, 1e-6);
+
     vec2 fragPx = vec2(gl_FragCoord.x - 0.5, gl_FragCoord.y - 0.5);
     vec2 viewCentre = uViewSize * 0.5;
     vec2 viewVector = fragPx - viewCentre;
-    vec2 texVector = (viewVector - uPan) / uScale;
+    vec2 screenVector = viewVector - uPan;
+    vec2 texVector = (screenVector / uScale - uImgOffset) / safeImgScale;
     vec2 texPx = texVector + (uTexSize * 0.5);
     vec2 uv = texPx / uTexSize;
 
