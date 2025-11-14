@@ -52,8 +52,17 @@ def _normalise_bw_value(key: str, value: float) -> float:
 
 _SIDE_CAR_ROOT = "iPhotoAdjustments"
 _LIGHT_NODE = "Light"
+_CROP_NODE = "Crop"
+_ATTR_CX = "cx"
+_ATTR_CY = "cy"
+_ATTR_WIDTH = "w"
+_ATTR_HEIGHT = "h"
 _VERSION_ATTR = "version"
 _CURRENT_VERSION = "1.0"
+
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
 
 
 def sidecar_path_for_asset(asset_path: Path) -> Path:
