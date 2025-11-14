@@ -1186,8 +1186,11 @@ class GLImageViewer(QOpenGLWidget):
         current_scale = self._effective_scale()
         if current_scale <= 1e-6:
             return
-        # image_delta is in texture pixel space
+        # image_delta is in texture pixel space (Y-down)
         image_delta = QPointF(delta_x * dpr / current_scale, delta_y * dpr / current_scale)
+        # world_delta is in world space (Y-up, like demo), where Y-axis is flipped
+        world_delta_x = image_delta.x()
+        world_delta_y = -image_delta.y()  # Flip Y: texture down = world up
 
         # Calculate pressure and d_offset following demo/crop_final.py logic
         pressure = 0.0
@@ -1204,7 +1207,7 @@ class GLImageViewer(QOpenGLWidget):
                 p = (threshold - left_margin) / threshold
                 pressure = max(pressure, p)
                 # Use max to ensure positive offset (move right)
-                d_offset_x = max(d_offset_x, -image_delta.x() * p)
+                d_offset_x = max(d_offset_x, world_delta_x * -p)
 
         # Right edge pushing out (delta_x > 0): move left (-x) to bring right content
         if (
@@ -1216,9 +1219,9 @@ class GLImageViewer(QOpenGLWidget):
                 p = (threshold - right_margin) / threshold
                 pressure = max(pressure, p)
                 # Use min to ensure negative offset (move left)
-                d_offset_x = min(d_offset_x, -image_delta.x() * p)
+                d_offset_x = min(d_offset_x, world_delta_x * -p)
 
-        # Top edge pushing out (delta_y < 0): move down (-y) to bring top content
+        # Top edge pushing out (delta_y < 0): move down (-y in world) to bring top content
         if (
             self._crop_drag_handle in (CropHandle.TOP, CropHandle.TOP_LEFT, CropHandle.TOP_RIGHT)
             and delta_y < 0.0
@@ -1227,10 +1230,10 @@ class GLImageViewer(QOpenGLWidget):
             if top_margin < threshold:
                 p = (threshold - top_margin) / threshold
                 pressure = max(pressure, p)
-                # Use min to ensure negative offset (move down in image space)
-                d_offset_y = min(d_offset_y, -image_delta.y() * p)
+                # Use min to ensure negative offset (move down in world space)
+                d_offset_y = min(d_offset_y, world_delta_y * -p)
 
-        # Bottom edge pushing out (delta_y > 0): move up (+y) to bring bottom content
+        # Bottom edge pushing out (delta_y > 0): move up (+y in world) to bring bottom content
         if (
             self._crop_drag_handle in (CropHandle.BOTTOM, CropHandle.BOTTOM_LEFT, CropHandle.BOTTOM_RIGHT)
             and delta_y > 0.0
@@ -1239,8 +1242,8 @@ class GLImageViewer(QOpenGLWidget):
             if bottom_margin < threshold:
                 p = (threshold - bottom_margin) / threshold
                 pressure = max(pressure, p)
-                # Use max to ensure positive offset (move up in image space)
-                d_offset_y = max(d_offset_y, -image_delta.y() * p)
+                # Use max to ensure positive offset (move up in world space)
+                d_offset_y = max(d_offset_y, world_delta_y * -p)
 
         if pressure <= 0.0:
             return
@@ -1265,10 +1268,11 @@ class GLImageViewer(QOpenGLWidget):
 
         # 2. Apply pan_gain and translate both crop and image
         pan_gain = 0.75 + 0.25 * eased_pressure
-        final_d_offset = QPointF(d_offset_x * pan_gain, d_offset_y * pan_gain)
+        # d_offset is in world space (Y-up), convert back to texture space (Y-down) for application
+        final_d_offset = QPointF(d_offset_x * pan_gain, -d_offset_y * pan_gain)
 
         if abs(final_d_offset.x()) > 1e-4 or abs(final_d_offset.y()) > 1e-4:
-            # 3. Move crop state (synchronized with image)
+            # 3. Move crop state (synchronized with image) - in texture pixel space
             self._crop_state.translate_pixels(final_d_offset, tex_size)
             
             # 4. Move image center
