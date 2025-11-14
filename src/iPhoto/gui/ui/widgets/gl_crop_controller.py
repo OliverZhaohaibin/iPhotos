@@ -125,6 +125,10 @@ class CropInteractionController:
         """Return the current crop state as a mapping."""
         return self._crop_state.as_mapping()
 
+    def get_crop_state(self) -> CropBoxState:
+        """Return the current crop state object."""
+        return self._crop_state
+
     def get_crop_model_transform(self) -> tuple[QPointF, float]:
         """Return (offset, scale) for the crop-specific model transform."""
         return (QPointF(self._crop_img_offset), self._crop_img_scale)

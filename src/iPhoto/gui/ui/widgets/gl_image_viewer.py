@@ -516,6 +516,8 @@ class GLImageViewer(QOpenGLWidget):
         return self._crop_controller.get_crop_values()
 
     # --------------------------- Coordinate transformations ---------------------------
+
+    def _view_dimensions_device_px(self) -> tuple[float, float]:
         dpr = self.devicePixelRatioF()
         vw = max(1.0, float(self.width()) * dpr)
         vh = max(1.0, float(self.height()) * dpr)
@@ -568,6 +570,38 @@ class GLImageViewer(QOpenGLWidget):
             center, self._renderer.texture_size(), scale
         )
 
+    def _image_to_viewport(self, x: float, y: float) -> QPointF:
+        if not self._renderer or not self._renderer.has_texture():
+            return QPointF()
+        scale = self._effective_scale()
+        pan = self._transform_controller.get_pan_pixels()
+        tex_w, tex_h = self._renderer.texture_size()
+        tex_vector_x = x - (tex_w / 2.0)
+        tex_vector_y = y - (tex_h / 2.0)
+        world_vector = QPointF(
+            tex_vector_x * scale + pan.x(),
+            -(tex_vector_y * scale) + pan.y(),
+        )
+        # ``world_vector`` is now expressed in the GL-friendly centre-origin
+        # space, so the last step is to convert it back to Qt's screen space for
+        # hit testing and overlay rendering.
+        return self._world_to_screen(world_vector)
+
+    def _viewport_to_image(self, point: QPointF) -> QPointF:
+        if not self._renderer or not self._renderer.has_texture():
+            return QPointF()
+        pan = self._transform_controller.get_pan_pixels()
+        scale = self._effective_scale()
+        world_vec = self._screen_to_world(point)
+        tex_vector_x = (world_vec.x() - pan.x()) / scale
+        tex_vector_y = (world_vec.y() - pan.y()) / scale
+        tex_w, tex_h = self._renderer.texture_size()
+        tex_x = tex_w / 2.0 + tex_vector_x
+        # Convert the world-space Y (upwards positive) back into image space
+        # where increasing values travel down the texture.
+        tex_y = tex_h / 2.0 - tex_vector_y
+        return QPointF(tex_x, tex_y)
+
     def _clamp_image_center_to_crop(self, center: QPointF, scale: float) -> QPointF:
         """Return *center* limited so the crop box always sees valid pixels.
 
@@ -599,7 +633,9 @@ class GLImageViewer(QOpenGLWidget):
         half_view_w = (float(vw) / float(scale)) * 0.5
         half_view_h = (float(vh) / float(scale)) * 0.5
 
-        crop_rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
+        # Get crop state from the controller
+        crop_state = self._crop_controller.get_crop_state()
+        crop_rect = crop_state.to_pixel_rect(tex_w, tex_h)
         crop_left = float(crop_rect["left"])
         crop_top = float(crop_rect["top"])
         crop_right = float(crop_rect["right"])
@@ -630,7 +666,7 @@ class GLImageViewer(QOpenGLWidget):
         clamped_y = max(min_center_y, min(max_center_y, float(center.y())))
         return QPointF(clamped_x, clamped_y)
 
-    # --------------------------- Events ---------------------------
+    # --------------------------- Viewport helpers ---------------------------
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if self._crop_controller.is_active() and event.button() == Qt.LeftButton:
