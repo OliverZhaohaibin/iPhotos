@@ -24,6 +24,10 @@ uniform float uScale;
 uniform vec2  uPan;
 uniform float uImgScale;
 uniform vec2  uImgOffset;
+uniform float uCropCX;
+uniform float uCropCY;
+uniform float uCropW;
+uniform float uCropH;
 
 float clamp01(float x) { return clamp(x, 0.0, 1.0); }
 
@@ -160,6 +164,19 @@ void main() {
     }
 
     uv.y = 1.0 - uv.y;
+
+    // Apply crop in texture coordinate space
+    // Calculate normalized crop boundaries
+    float crop_min_x = uCropCX - uCropW * 0.5;
+    float crop_max_x = uCropCX + uCropW * 0.5;
+    float crop_min_y = uCropCY - uCropH * 0.5;
+    float crop_max_y = uCropCY + uCropH * 0.5;
+    
+    // Check if current fragment's texture coordinate is outside the crop box
+    if (uv.x < crop_min_x || uv.x > crop_max_x ||
+        uv.y < crop_min_y || uv.y > crop_max_y) {
+        discard; // Discard fragments outside the crop region
+    }
 
     vec4 texel = texture(uTex, uv);
     vec3 c = texel.rgb;
