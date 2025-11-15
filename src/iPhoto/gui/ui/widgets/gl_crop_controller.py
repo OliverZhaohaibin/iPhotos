@@ -239,7 +239,15 @@ class CropInteractionController:
             self._crop_img_offset = clamped_offset
         else:
             # Dragging edge/corner: resize the crop
-            scale = self._transform_controller.get_effective_scale() * self._crop_img_scale
+            # NOTE:
+            #   The drag delta originates in viewport space, so we only want to
+            #   compensate for the camera/view zoom level. Including
+            #   ``_crop_img_scale`` here would incorrectly shrink the delta when
+            #   the user zooms the texture via the crop model transform, making
+            #   the edge handles appear "stuck" at high zoom levels. Keeping the
+            #   scale factor limited to the view transform ensures edge drags
+            #   remain responsive regardless of the model zoom level.
+            scale = self._transform_controller.get_effective_scale()
             if scale <= 1e-6:
                 return
             dpr = self._transform_controller._get_dpr()
@@ -249,6 +257,17 @@ class CropInteractionController:
             )
             tex_size = self._texture_size_provider()
             self._crop_state.drag_edge_pixels(self._crop_drag_handle, image_delta, tex_size)
+            # It is possible that expanding the crop causes the previous image scale
+            # to fall below the newly required minimum. Re-evaluate the dynamic
+            # minimum and clamp the model transform immediately so no empty
+            # borders become visible in the crop overlay.
+            new_dynamic_min_scale = self._dynamic_min_scale_for_crop()
+            if self._crop_img_scale < new_dynamic_min_scale:
+                self._crop_img_scale = new_dynamic_min_scale
+            self._crop_img_offset = self._clamp_crop_img_offset(
+                self._crop_img_offset,
+                self._crop_img_scale,
+            )
             self._auto_shrink_on_drag(delta_view)
             self._emit_crop_changed()
 
