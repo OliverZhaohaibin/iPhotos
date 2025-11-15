@@ -131,6 +131,19 @@ class CropInteractionController:
             "bottom": bottom_right.y() * dpr,
         }
 
+    def edge_pressure_threshold(self) -> float:
+        """Return the padding before auto-shrink pressure engages (logical px).
+
+        The clamp logic in :class:`GLImageViewer` needs to know how much slack
+        to grant when constraining the pan position.  Allowing the view centre
+        to drift by this margin lets the crop handles travel a short distance
+        beyond the viewport edges, matching the behaviour of
+        :meth:`_auto_shrink_on_drag` without immediately triggering a hard
+        constraint that would block outward expansion.
+        """
+
+        return self._crop_edge_threshold
+
     def set_active(self, enabled: bool, values: Mapping[str, float] | None = None) -> None:
         """Enable or disable crop mode with optional initial crop values."""
         if enabled == self._active:

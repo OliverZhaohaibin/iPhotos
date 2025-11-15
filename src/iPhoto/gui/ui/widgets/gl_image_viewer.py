@@ -497,14 +497,14 @@ class GLImageViewer(QOpenGLWidget):
     def _clamp_image_center_to_crop(self, center: QPointF, scale: float) -> QPointF:
         """Return *center* limited so the crop box always sees valid pixels.
 
-        The permissible range is derived from the portion of the texture that
-        must remain visible *inside the crop overlay*.  Unlike the legacy
-        implementation—which forced the whole viewport to stay within the
-        texture—this formulation mirrors ``demo/crop_final.py`` and allows the
-        image to travel freely until a crop edge would reveal empty space.  The
-        calculation works in image-space pixels and therefore plays nicely with
-        the normalised crop state without introducing additional coordinate
-        transforms.
+        The earlier revision forced the viewport to *fully* contain the crop
+        rectangle.  That successfully avoided black borders but had an
+        undesirable side effect: when the user tried to drag a crop handle
+        outward the rigid centre constraint prevented the view from exposing
+        more of the texture.  We instead allow a small amount of slack based on
+        the auto-shrink threshold so the viewport can temporarily drift away
+        from the crop while keeping enough image data in view to avoid empty
+        space.
 
         ``scale`` represents the number of device pixels per image pixel.  It
         tells us how many texture pixels are required to fill the viewport and
@@ -521,11 +521,28 @@ class GLImageViewer(QOpenGLWidget):
 
         tex_w, tex_h = self._renderer.texture_size()
         vw, vh = self._view_dimensions_device_px()
+        dpr = max(1e-6, self.devicePixelRatioF())
 
         half_view_w = (float(vw) / float(scale)) * 0.5
         half_view_h = (float(vh) / float(scale)) * 0.5
 
-        # Get crop state from the controller
+        # Compute the global range that keeps the viewport inside the texture.
+        global_min_x = half_view_w
+        global_max_x = float(tex_w) - half_view_w
+        if global_min_x > global_max_x:
+            # Viewport larger than the texture.  Collapse to the texture centre
+            # so the image stays stable and no background leaks through.
+            centre_x = float(tex_w) * 0.5
+            global_min_x = centre_x
+            global_max_x = centre_x
+
+        global_min_y = half_view_h
+        global_max_y = float(tex_h) - half_view_h
+        if global_min_y > global_max_y:
+            centre_y = float(tex_h) * 0.5
+            global_min_y = centre_y
+            global_max_y = centre_y
+
         crop_state = self._crop_controller.get_crop_state()
         crop_rect = crop_state.to_pixel_rect(tex_w, tex_h)
         crop_left = float(crop_rect["left"])
@@ -533,29 +550,36 @@ class GLImageViewer(QOpenGLWidget):
         crop_right = float(crop_rect["right"])
         crop_bottom = float(crop_rect["bottom"])
 
-        min_center_x = crop_right - half_view_w
-        max_center_x = crop_left + half_view_w
-        min_center_y = crop_bottom - half_view_h
-        max_center_y = crop_top + half_view_h
+        # Translate the on-screen pressure threshold into image-space slack so
+        # the view is free to move a short distance away from the crop while
+        # the auto-shrink logic nudges it back into place.
+        slack_device = self._crop_controller.edge_pressure_threshold()
+        slack_x = (slack_device * dpr) / float(scale)
+        slack_y = (slack_device * dpr) / float(scale)
 
-        min_center_x = max(0.0, min_center_x)
-        max_center_x = min(float(tex_w), max_center_x)
-        min_center_y = max(0.0, min_center_y)
-        max_center_y = min(float(tex_h), max_center_y)
+        crop_min_x = crop_right - half_view_w - slack_x
+        crop_max_x = crop_left + half_view_w + slack_x
+        crop_min_y = crop_bottom - half_view_h - slack_y
+        crop_max_y = crop_top + half_view_h + slack_y
 
-        if min_center_x > max_center_x:
+        allowed_min_x = max(global_min_x, crop_min_x)
+        allowed_max_x = min(global_max_x, crop_max_x)
+        allowed_min_y = max(global_min_y, crop_min_y)
+        allowed_max_y = min(global_max_y, crop_max_y)
+
+        if allowed_min_x > allowed_max_x:
             crop_centre_x = (crop_left + crop_right) * 0.5
-            clamped = max(0.0, min(float(tex_w), crop_centre_x))
-            min_center_x = clamped
-            max_center_x = clamped
-        if min_center_y > max_center_y:
+            clamped = max(global_min_x, min(global_max_x, crop_centre_x))
+            allowed_min_x = clamped
+            allowed_max_x = clamped
+        if allowed_min_y > allowed_max_y:
             crop_centre_y = (crop_top + crop_bottom) * 0.5
-            clamped = max(0.0, min(float(tex_h), crop_centre_y))
-            min_center_y = clamped
-            max_center_y = clamped
+            clamped = max(global_min_y, min(global_max_y, crop_centre_y))
+            allowed_min_y = clamped
+            allowed_max_y = clamped
 
-        clamped_x = max(min_center_x, min(max_center_x, float(center.x())))
-        clamped_y = max(min_center_y, min(max_center_y, float(center.y())))
+        clamped_x = max(allowed_min_x, min(allowed_max_x, float(center.x())))
+        clamped_y = max(allowed_min_y, min(allowed_max_y, float(center.y())))
         return QPointF(clamped_x, clamped_y)
 
     def _constrain_view_center(self, center: QPointF, scale: float) -> QPointF:
