@@ -153,7 +153,7 @@ class CropBoxState:
             # Keep left fixed, recalculate width and cx
             self.width = new_right - left
             self.cx = left + self.width * 0.5
-            right = new_right  # Update right for potential subsequent edge updates
+            # right = new_right  # Removed unused assignment
 
         if handle in (CropHandle.BOTTOM, CropHandle.BOTTOM_LEFT, CropHandle.BOTTOM_RIGHT):
             new_bottom = bottom + dy
