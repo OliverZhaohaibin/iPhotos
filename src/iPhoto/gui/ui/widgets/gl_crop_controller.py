@@ -664,34 +664,58 @@ class CropInteractionController:
         if pressure <= 0.0:
             return
 
-        # Ease the pressure for smooth feel
+        # Ease the pressure for smooth feel.  The easing curve matches the demo
+        # implementation so the “push against edge → auto zoom-out” interaction
+        # feels identical across both code paths.
         eased_pressure = ease_in_quad(min(1.0, pressure))
 
-        # Scale down around crop center
-        tex_size = (tex_w, tex_h)
-        vw_float, vh_float = float(vw), float(vh)
-        base_scale = compute_fit_to_view_scale(tex_size, vw_float, vh_float)
+        dynamic_min = self._dynamic_min_scale_for_crop()
+        min_allowed = max(self._img_scale_clamp[0], dynamic_min)
+        max_allowed = self._img_scale_clamp[1]
 
-        min_scale = max(base_scale, base_scale * self._transform_controller.minimum_zoom())
-        max_scale = base_scale * self._transform_controller.maximum_zoom()
+        k_max = 0.05  # Maximum shrink ratio per interaction step (demo parity).
+        scale_factor = 1.0 - k_max * eased_pressure
+        new_scale_raw = self._crop_img_scale * scale_factor
+        new_scale = max(min_allowed, min(max_allowed, new_scale_raw))
 
-        k_max = 0.05  # Maximum shrink ratio per event
-        factor = 1.0 - k_max * eased_pressure
-        new_scale = max(min_scale, min(max_scale, current_scale * factor))
+        crop_rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
+        crop_left = float(crop_rect["left"])
+        crop_top = float(crop_rect["top"])
+        crop_right = float(crop_rect["right"])
+        crop_bottom = float(crop_rect["bottom"])
+        crop_center_x = (crop_left + crop_right) * 0.5
+        crop_center_y = (crop_top + crop_bottom) * 0.5
+        tex_half_w = float(tex_w) * 0.5
+        tex_half_h = float(tex_h) * 0.5
+        anchor_world = QPointF(
+            crop_center_x - tex_half_w,
+            tex_half_h - crop_center_y,
+        )
 
-        # Scale around crop center
-        anchor = self._crop_center_viewport_point()
-        self._transform_controller.set_zoom(new_scale / max(base_scale, 1e-6), anchor=anchor)
+        current_model_scale = max(self._crop_img_scale, 1e-6)
+        scale_ratio = new_scale / current_model_scale
+        new_offset = QPointF(
+            anchor_world.x() + (self._crop_img_offset.x() - anchor_world.x()) * scale_ratio,
+            anchor_world.y() + (self._crop_img_offset.y() - anchor_world.y()) * scale_ratio,
+        )
 
-        # Apply pan_gain and translate the view
         pan_gain = 0.75 + 0.25 * eased_pressure
-        final_d_offset = QPointF(d_offset_x * pan_gain, -d_offset_y * pan_gain)
+        final_d_offset = QPointF(d_offset_x * pan_gain, d_offset_y * pan_gain)
 
-        if abs(final_d_offset.x()) > 1e-4 or abs(final_d_offset.y()) > 1e-4:
-            new_center = self._transform_controller.get_image_center_pixels() + final_d_offset
-            actual_scale = self._transform_controller.get_effective_scale()
-            clamped = self._clamp_image_center_to_crop(new_center, actual_scale)
-            self._transform_controller.apply_image_center_pixels(clamped, actual_scale)
+        if abs(final_d_offset.x()) > 1e-6 or abs(final_d_offset.y()) > 1e-6:
+            new_offset = QPointF(
+                new_offset.x() + final_d_offset.x(),
+                new_offset.y() + final_d_offset.y(),
+            )
+            # ``translate_pixels`` expects the conventional top-left origin where
+            # Y grows downwards, hence the flipped sign for the vertical delta.
+            translate_delta = QPointF(final_d_offset.x(), -final_d_offset.y())
+            self._crop_state.translate_pixels(translate_delta, (tex_w, tex_h))
+
+        new_offset = self._clamp_crop_img_offset(new_offset, new_scale)
+
+        self._crop_img_scale = new_scale
+        self._crop_img_offset = new_offset
 
     def _emit_crop_changed(self) -> None:
         """Emit the crop changed signal."""
