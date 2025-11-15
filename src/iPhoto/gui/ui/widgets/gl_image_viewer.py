@@ -328,7 +328,13 @@ class GLImageViewer(QOpenGLWidget):
         Returns
         -------
         QImage
-            CPU-side image containing the rendered frame.
+            CPU-side image containing the rendered frame. The image is always
+            in Format_ARGB32 for downstream consumers.
+
+        Notes
+        -----
+        The width and height of the rendered image are clamped to at least one pixel
+        to avoid driver errors. The returned image is always in Format_ARGB32 format.
         """
         if target_size.isEmpty():
             _LOGGER.warning("render_offscreen_image: target size was empty")
