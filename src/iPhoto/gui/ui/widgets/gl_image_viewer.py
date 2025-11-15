@@ -22,8 +22,6 @@ from PySide6.QtGui import (
 )
 from PySide6.QtOpenGL import (
     QOpenGLDebugLogger,
-    QOpenGLFramebufferObject,
-    QOpenGLFramebufferObjectFormat,
     QOpenGLFunctions_3_3_Core,
 )
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
@@ -322,22 +320,16 @@ class GLImageViewer(QOpenGLWidget):
         Parameters
         ----------
         target_size:
-            Final size of the rendered preview.  The method clamps the width
-            and height to at least one pixel to avoid driver errors caused by
-            zero-sized viewports.
+            Final size of the rendered preview.
         adjustments:
             Mapping of shader uniform values to apply during rendering.  Passing
-            ``None`` renders the frame using the viewer's current adjustment
-            state.
+            ``None`` renders the frame using the viewer's current adjustment state.
 
         Returns
         -------
         QImage
-            CPU-side image containing the rendered frame.  The image is always
-            converted to ``Format_ARGB32`` so downstream consumers can compute
-            statistics without needing to normalise the pixel layout first.
+            CPU-side image containing the rendered frame.
         """
-
         if target_size.isEmpty():
             _LOGGER.warning("render_offscreen_image: target size was empty")
             return QImage()
@@ -350,71 +342,18 @@ class GLImageViewer(QOpenGLWidget):
             _LOGGER.warning("render_offscreen_image: no source image bound to the viewer")
             return QImage()
 
+        if self._renderer is None:
+            _LOGGER.warning("render_offscreen_image: renderer not initialized")
+            return QImage()
+
         self.makeCurrent()
         try:
-            if self._gl_funcs is None or self._renderer is None:
-                # Off-screen rendering can be triggered before the widget ever hits the
-                # on-screen GL lifecycle (e.g. a preview request while the window is
-                # still hidden).  Creating the renderer here would immediately be undone
-                # by ``initializeGL`` because Qt rebuilds the context once the widget is
-                # shown.  Instead of doing redundant work, bail out and let the caller
-                # retry after the viewer is fully initialised.
-                _LOGGER.warning(
-                    "render_offscreen_image: renderer not initialized, skipping."
-                )
-                return QImage()
-
-            gf = self._gl_funcs
-            assert gf is not None, "_gl_funcs should be set when renderer exists"
-
-            if not self._renderer.has_texture():
-                self._renderer.upload_texture(self._image)
-            if not self._renderer.has_texture():
-                _LOGGER.error("render_offscreen_image: texture upload failed")
-                return QImage()
-
-            width = max(1, int(target_size.width()))
-            height = max(1, int(target_size.height()))
-
-            previous_fbo = gl.glGetIntegerv(gl.GL_FRAMEBUFFER_BINDING)
-            previous_viewport = gl.glGetIntegerv(gl.GL_VIEWPORT)
-
-            fbo_format = QOpenGLFramebufferObjectFormat()
-            fbo_format.setAttachment(QOpenGLFramebufferObject.CombinedDepthStencil)
-            fbo_format.setTextureTarget(gl.GL_TEXTURE_2D)
-            fbo = QOpenGLFramebufferObject(width, height, fbo_format)
-            if not fbo.isValid():
-                _LOGGER.error("render_offscreen_image: failed to allocate framebuffer object")
-                return QImage()
-
-            try:
-                fbo.bind()
-                gf.glViewport(0, 0, width, height)
-                gf.glClearColor(0.0, 0.0, 0.0, 0.0)
-                gf.glClear(gl.GL_COLOR_BUFFER_BIT)
-
-                texture_size = self._renderer.texture_size()
-                base_scale = compute_fit_to_view_scale(texture_size, float(width), float(height))
-                effective_scale = max(base_scale, 1e-6)
-                time_value = time.monotonic() - self._time_base
-                self._renderer.render(
-                    view_width=float(width),
-                    view_height=float(height),
-                    scale=effective_scale,
-                    pan=QPointF(0.0, 0.0),
-                    adjustments=dict(adjustments or self._adjustments),
-                    time_value=time_value,
-                )
-
-                return fbo.toImage().convertToFormat(QImage.Format.Format_ARGB32)
-            finally:
-                fbo.release()
-                gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, previous_fbo)
-                try:
-                    x, y, w, h = [int(v) for v in previous_viewport]
-                    gf.glViewport(x, y, w, h)
-                except Exception:
-                    pass
+            return self._renderer.render_offscreen_image(
+                self._image,
+                adjustments or self._adjustments,
+                target_size,
+                time_base=self._time_base,
+            )
         finally:
             self.doneCurrent()
 
