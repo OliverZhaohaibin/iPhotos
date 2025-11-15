@@ -787,14 +787,13 @@ class CropInteractionController:
         final_d_offset = QPointF(d_offset_x * pan_gain, d_offset_y * pan_gain)
 
         if abs(final_d_offset.x()) > 1e-6 or abs(final_d_offset.y()) > 1e-6:
+            # Auto shrink should not mutate the persisted crop rectangle.  Keep
+            # the adjustments scoped to the view transform so state changes only
+            # reflect explicit user drags.
             new_offset = QPointF(
                 new_offset.x() + final_d_offset.x(),
                 new_offset.y() + final_d_offset.y(),
             )
-            # ``translate_pixels`` expects the conventional top-left origin where
-            # Y grows downwards, hence the flipped sign for the vertical delta.
-            translate_delta = QPointF(final_d_offset.x(), -final_d_offset.y())
-            self._crop_state.translate_pixels(translate_delta, (tex_w, tex_h))
 
         new_offset = self._clamp_crop_img_offset(new_offset, new_scale)
 
