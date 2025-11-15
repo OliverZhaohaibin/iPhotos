@@ -178,9 +178,30 @@ def apply_adjustments(
                 gain_b,
             )
         except (BufferError, RuntimeError, TypeError):
-            # Color adjustment failed, but we have the tone-adjusted image
-            # Fall through to handle color/BW differently
-            pass
+            # Color adjustment failed, apply color adjustments using fallback path
+            apply_adjustments_fallback(
+                transformed,
+                transformed.width(),
+                transformed.height(),
+                exposure_term,
+                brightness_term,
+                brilliance_strength,
+                highlights,
+                shadows,
+                contrast_factor,
+                black_point,
+                saturation,
+                vibrance,
+                cast,
+                gain_r,
+                gain_g,
+                gain_b,
+                False,  # Don't apply B&W here; handled below if needed
+                0.0,    # bw_intensity
+                0.0,    # bw_neutrals
+                0.0,    # bw_tone
+                0.0,    # bw_grain
+            )
 
         if apply_bw:
             if not apply_bw_only(
