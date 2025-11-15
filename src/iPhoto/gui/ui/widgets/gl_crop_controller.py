@@ -587,7 +587,8 @@ class CropInteractionController:
 
         target_scale = self._target_scale_for_crop()
         target_center = self._crop_state.center_pixels(tex_w, tex_h)
-        target_center = self._clamp_image_center_to_crop(target_center, target_scale)
+        # We intentionally avoid clamping the target centre; the animation must match the
+        # crop rectangle's true centre exactly to reproduce the demo behaviour.
 
         self._crop_anim_active = True
         self._crop_anim_start_time = time.monotonic()
@@ -643,8 +644,9 @@ class CropInteractionController:
         zoom_factor = max(min_zoom, min(max_zoom, scale / max(base_scale, 1e-6)))
         self._transform_controller.set_zoom_factor_direct(zoom_factor)
         actual_scale = self._transform_controller.get_effective_scale()
-        clamped_center = self._clamp_image_center_to_crop(centre, actual_scale)
-        self._transform_controller.apply_image_center_pixels(clamped_center, actual_scale)
+        # The interpolated centre is already expressed in image-space pixels, so we apply it
+        # directly without clamping to preserve the smooth easing trajectory.
+        self._transform_controller.apply_image_center_pixels(centre, actual_scale)
 
     def _target_scale_for_crop(self) -> float:
         """Calculate the target scale for crop fade-out animation."""
