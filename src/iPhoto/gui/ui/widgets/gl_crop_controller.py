@@ -12,9 +12,8 @@ import math
 import time
 from collections.abc import Callable, Mapping
 
-from PySide6.QtCore import QPointF, Qt, QTimer
+from PySide6.QtCore import QPointF, Qt, QTimer, QObject
 from PySide6.QtGui import QMouseEvent, QWheelEvent
-from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
 from .gl_crop_utils import CropBoxState, CropHandle, cursor_for_handle, ease_in_quad, ease_out_cubic
 from .view_transform_controller import compute_fit_to_view_scale
