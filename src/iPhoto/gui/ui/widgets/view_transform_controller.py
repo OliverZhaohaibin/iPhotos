@@ -73,6 +73,21 @@ class ViewTransformController:
         return float(self._viewer.width()), float(self._viewer.height())
 
     # ------------------------------------------------------------------
+    # Public wrappers for viewport info
+    # ------------------------------------------------------------------
+    def get_view_dimensions_device_px(self) -> tuple[float, float]:
+        """Public wrapper for device pixel viewport dimensions."""
+        return self._get_view_dimensions_device_px()
+
+    def get_dpr(self) -> float:
+        """Public wrapper for device pixel ratio."""
+        return self._get_dpr()
+
+    def get_view_dimensions_logical(self) -> tuple[float, float]:
+        """Public wrapper for logical pixel viewport dimensions."""
+        return self._get_view_dimensions_logical()
+
+    # ------------------------------------------------------------------
     # State accessors
     # ------------------------------------------------------------------
     def get_zoom_factor(self) -> float:
