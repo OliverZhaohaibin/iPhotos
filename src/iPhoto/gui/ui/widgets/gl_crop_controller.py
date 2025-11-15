@@ -12,7 +12,7 @@ import math
 import time
 from collections.abc import Callable, Mapping
 
-from PySide6.QtCore import QPointF, Qt, QTimer, QObject
+from PySide6.QtCore import QObject, QPointF, Qt, QTimer
 from PySide6.QtGui import QMouseEvent, QWheelEvent
 
 from .gl_crop_utils import CropBoxState, CropHandle, cursor_for_handle, ease_in_quad, ease_out_cubic
@@ -121,8 +121,8 @@ class CropInteractionController:
         if tex_w <= 0 or tex_h <= 0:
             return None
         rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
-        top_left = self._transform_controller.convert_image_to_viewport(rect["left"], rect["top"])
-        bottom_right = self._transform_controller.convert_image_to_viewport(rect["right"], rect["bottom"])
+        top_left = self._convert_image_to_viewport(rect["left"], rect["top"])
+        bottom_right = self._convert_image_to_viewport(rect["right"], rect["bottom"])
         dpr = self._transform_controller._get_dpr()
         return {
             "left": top_left.x() * dpr,
@@ -188,8 +188,8 @@ class CropInteractionController:
         if handle == CropHandle.INSIDE:
             # Cache viewport anchor points for inside dragging
             rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
-            top_left = self._transform_controller.convert_image_to_viewport(rect["left"], rect["top"])
-            bottom_right = self._transform_controller.convert_image_to_viewport(rect["right"], rect["bottom"])
+            top_left = self._convert_image_to_viewport(rect["left"], rect["top"])
+            bottom_right = self._convert_image_to_viewport(rect["right"], rect["bottom"])
             self._crop_drag_anchor_viewport = (QPointF(top_left), QPointF(bottom_right))
             self._on_cursor_change(Qt.CursorShape.ClosedHandCursor)
         else:
@@ -216,7 +216,7 @@ class CropInteractionController:
         self._crop_faded_out = False
 
         if self._crop_drag_handle == CropHandle.INSIDE:
-            # Dragging inside: move the view, not the crop
+            # Dragging inside: move the view (this logic has been corrected)
             view_scale = self._transform_controller.get_effective_scale()
             if view_scale <= 1e-6:
                 return
@@ -225,11 +225,13 @@ class CropInteractionController:
             delta_device_x = float(delta_view.x()) * dpr
             delta_device_y = float(delta_view.y()) * dpr
 
+            # View delta -> world delta
             delta_world = QPointF(
                 delta_device_x / view_scale,
-                -delta_device_y / view_scale,
+                -delta_device_y / view_scale,  # Flip Y axis
             )
 
+            # Apply world delta to crop_img_offset
             tentative_offset = QPointF(
                 self._crop_img_offset.x() + delta_world.x(),
                 self._crop_img_offset.y() + delta_world.y(),
@@ -239,16 +241,24 @@ class CropInteractionController:
             self._crop_img_offset = clamped_offset
         else:
             # Dragging edge/corner: resize the crop
-            scale = self._transform_controller.get_effective_scale() * self._crop_img_scale
-            if scale <= 1e-6:
+            if self._crop_img_scale == 0.0:
                 return
-            dpr = self._transform_controller._get_dpr()
-            image_delta = QPointF(
-                delta_view.x() * dpr / scale,
-                delta_view.y() * dpr / scale,
-            )
+            
+            # 1. Convert current and previous "viewport coordinates" to "image pixel coordinates"
+            img_pos = self._convert_viewport_to_image(pos)
+            img_prev_pos = self._convert_viewport_to_image(previous_pos)
+            
+            # 2. Calculate delta in "image pixel coordinate system"
+            image_delta = img_pos - img_prev_pos
+            # (Note: _convert_viewport_to_image returns Y-down pixel coordinates,
+            # drag_edge_pixels also expects Y-down delta, so no need to flip)
+            
             tex_size = self._texture_size_provider()
             self._crop_state.drag_edge_pixels(self._crop_drag_handle, image_delta, tex_size)
+            
+            # [THIS WILL NOW WORK!]
+            # Because current_crop_rect_pixels is correct, 
+            # _auto_shrink_on_drag can now be properly triggered
             self._auto_shrink_on_drag(delta_view)
             self._emit_crop_changed()
 
@@ -301,22 +311,17 @@ class CropInteractionController:
             event.accept()
             return
 
+        # Anchor point should be the "world coordinate" at the cursor
         world_point = self._transform_controller.convert_screen_to_world(event.position())
-        view_pan = self._transform_controller.get_pan_pixels()
-        screen_vector = QPointF(
-            world_point.x() - view_pan.x(),
-            world_point.y() - view_pan.y(),
-        )
-
-        anchor_world = QPointF(
-            screen_vector.x() / view_scale,
-            screen_vector.y() / view_scale,
-        )
 
         scale_ratio = new_scale / max(self._crop_img_scale, 1e-6)
+        
+        # Use correct "zoom around anchor point" formula
+        # new_offset = anchor + (old_offset - anchor) * ratio
+        # (world_point and _crop_img_offset are both in "world coordinate system")
         new_offset = QPointF(
-            anchor_world.x() + (self._crop_img_offset.x() - anchor_world.x()) * scale_ratio,
-            anchor_world.y() + (self._crop_img_offset.y() - anchor_world.y()) * scale_ratio,
+            world_point.x() + (self._crop_img_offset.x() - world_point.x()) * scale_ratio,
+            world_point.y() + (self._crop_img_offset.y() - world_point.y()) * scale_ratio,
         )
 
         new_offset = self._clamp_crop_img_offset(new_offset, new_scale)
@@ -415,7 +420,7 @@ class CropInteractionController:
             view_width, view_height = self._transform_controller._get_view_dimensions_logical()
             return QPointF(view_width / 2, view_height / 2)
         center = self._crop_state.center_pixels(tex_w, tex_h)
-        return self._transform_controller.convert_image_to_viewport(center.x(), center.y())
+        return self._convert_image_to_viewport(center.x(), center.y())
 
     @staticmethod
     def _distance_to_segment(point: QPointF, start: QPointF, end: QPointF) -> float:
@@ -440,10 +445,10 @@ class CropInteractionController:
             return CropHandle.NONE
 
         rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
-        top_left = self._transform_controller.convert_image_to_viewport(rect["left"], rect["top"])
-        top_right = self._transform_controller.convert_image_to_viewport(rect["right"], rect["top"])
-        bottom_right = self._transform_controller.convert_image_to_viewport(rect["right"], rect["bottom"])
-        bottom_left = self._transform_controller.convert_image_to_viewport(rect["left"], rect["bottom"])
+        top_left = self._convert_image_to_viewport(rect["left"], rect["top"])
+        top_right = self._convert_image_to_viewport(rect["right"], rect["top"])
+        bottom_right = self._convert_image_to_viewport(rect["right"], rect["bottom"])
+        bottom_left = self._convert_image_to_viewport(rect["left"], rect["bottom"])
 
         # Check corners first
         corners = [
@@ -699,3 +704,51 @@ class CropInteractionController:
         self._on_crop_changed(
             float(state.cx), float(state.cy), float(state.width), float(state.height)
         )
+
+    def _convert_image_to_viewport(self, x: float, y: float) -> QPointF:
+        """Convert image pixel coords to viewport logical coords.
+        
+        Accounts for *both* the crop model transform and the main
+        view transform.
+        """
+        tex_w, tex_h = self._texture_size_provider()
+        if tex_w <= 0 or tex_h <= 0:
+            return QPointF()
+
+        # 1. Image pixel (top-left origin) -> image center vector (center origin, Y up)
+        img_vec_x = x - tex_w * 0.5
+        img_vec_y = (tex_h * 0.5) - y  # Image Y down -> World Y up
+
+        # 2. Apply crop model transform (scale + offset)
+        world_x = img_vec_x * self._crop_img_scale + self._crop_img_offset.x()
+        world_y = img_vec_y * self._crop_img_scale + self._crop_img_offset.y()
+        world_vec = QPointF(world_x, world_y)
+
+        # 3. Apply main view transform (pan + scale)
+        # From world space -> Qt screen space (top-left origin, Y down)
+        return self._transform_controller.convert_world_to_screen(world_vec)
+
+    def _convert_viewport_to_image(self, point: QPointF) -> QPointF:
+        """Convert viewport logical coords to image pixel coords.
+        
+        Accounts for *both* the main view transform and the crop
+        model transform.
+        """
+        tex_w, tex_h = self._texture_size_provider()
+        if tex_w <= 0 or tex_h <= 0 or self._crop_img_scale == 0.0:
+            return QPointF()
+
+        # 1. Qt screen space (top-left origin, Y down) -> world space (center origin, Y up)
+        world_vec = self._transform_controller.convert_screen_to_world(point)
+
+        # 2. Undo crop model transform (offset then scale)
+        world_x = world_vec.x() - self._crop_img_offset.x()
+        world_y = world_vec.y() - self._crop_img_offset.y()
+        
+        img_vec_x = world_x / self._crop_img_scale
+        img_vec_y = world_y / self._crop_img_scale
+
+        # 3. Image center vector (center origin, Y up) -> image pixel (top-left origin, Y down)
+        tex_x = img_vec_x + tex_w * 0.5
+        tex_y = (tex_h * 0.5) - img_vec_y  # World Y up -> Image Y down
+        return QPointF(tex_x, tex_y)
