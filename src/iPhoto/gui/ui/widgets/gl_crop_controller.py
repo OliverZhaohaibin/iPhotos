@@ -12,7 +12,7 @@ import math
 import time
 from collections.abc import Callable, Mapping
 
-from PySide6.QtCore import QPointF, Qt, QTimer, QObject
+from PySide6.QtCore import QObject, QPointF, Qt, QTimer
 from PySide6.QtGui import QMouseEvent, QWheelEvent
 
 from .gl_crop_utils import CropBoxState, CropHandle, cursor_for_handle, ease_in_quad, ease_out_cubic
@@ -121,8 +121,11 @@ class CropInteractionController:
         if tex_w <= 0 or tex_h <= 0:
             return None
         rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
-        top_left = self._transform_controller.convert_image_to_viewport(rect["left"], rect["top"])
-        bottom_right = self._transform_controller.convert_image_to_viewport(rect["right"], rect["bottom"])
+        # [START OF CHANGE]
+        # 使用新的辅助函数
+        top_left = self._convert_image_to_viewport(rect["left"], rect["top"])
+        bottom_right = self._convert_image_to_viewport(rect["right"], rect["bottom"])
+        # [END OF CHANGE]
         dpr = self._transform_controller._get_dpr()
         return {
             "left": top_left.x() * dpr,
@@ -188,8 +191,11 @@ class CropInteractionController:
         if handle == CropHandle.INSIDE:
             # Cache viewport anchor points for inside dragging
             rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
-            top_left = self._transform_controller.convert_image_to_viewport(rect["left"], rect["top"])
-            bottom_right = self._transform_controller.convert_image_to_viewport(rect["right"], rect["bottom"])
+            # [START OF CHANGE]
+            # 使用新的辅助函数
+            top_left = self._convert_image_to_viewport(rect["left"], rect["top"])
+            bottom_right = self._convert_image_to_viewport(rect["right"], rect["bottom"])
+            # [END OF CHANGE]
             self._crop_drag_anchor_viewport = (QPointF(top_left), QPointF(bottom_right))
             self._on_cursor_change(Qt.CursorShape.ClosedHandCursor)
         else:
@@ -206,7 +212,10 @@ class CropInteractionController:
 
         pos = event.position()
         if not self._crop_dragging:
+            # [START OF CHANGE]
+            # 必须使用新的 hit_test，否则在 _crop_img_scale > 1.0 时点不中
             handle = self._crop_hit_test(pos)
+            # [END OF CHANGE]
             self._on_cursor_change(cursor_for_handle(handle))
             return
 
@@ -216,7 +225,10 @@ class CropInteractionController:
         self._crop_faded_out = False
 
         if self._crop_drag_handle == CropHandle.INSIDE:
-            # Dragging inside: move the view, not the crop
+            # 拖动内部: 移动视图 (这部分逻辑也需要修正)
+            
+            # [START OF CHANGE]
+            # 增量(delta)必须在"世界空间"中计算
             view_scale = self._transform_controller.get_effective_scale()
             if view_scale <= 1e-6:
                 return
@@ -225,31 +237,47 @@ class CropInteractionController:
             delta_device_x = float(delta_view.x()) * dpr
             delta_device_y = float(delta_view.y()) * dpr
 
+            # 视图增量 -> 世界增量
             delta_world = QPointF(
                 delta_device_x / view_scale,
-                -delta_device_y / view_scale,
+                -delta_device_y / view_scale,  # 翻转Y轴
             )
 
+            # 将世界增量应用到 crop_img_offset
             tentative_offset = QPointF(
                 self._crop_img_offset.x() + delta_world.x(),
                 self._crop_img_offset.y() + delta_world.y(),
             )
+            # [END OF CHANGE]
 
             clamped_offset = self._clamp_crop_img_offset(tentative_offset, self._crop_img_scale)
             self._crop_img_offset = clamped_offset
         else:
-            # Dragging edge/corner: resize the crop
-            scale = self._transform_controller.get_effective_scale() * self._crop_img_scale
-            if scale <= 1e-6:
+            # 拖动边缘: 调整裁剪框
+            
+            # [START OF CHANGE]
+            # 旧的 image_delta 计算是完全错误的
+            if self._crop_img_scale == 0.0:
                 return
-            dpr = self._transform_controller._get_dpr()
-            image_delta = QPointF(
-                delta_view.x() * dpr / scale,
-                delta_view.y() * dpr / scale,
-            )
+            
+            # 1. 将当前和之前的"视窗坐标"转换为"图像像素坐标"
+            img_pos = self._convert_viewport_to_image(pos)
+            img_prev_pos = self._convert_viewport_to_image(previous_pos)
+            
+            # 2. 在"图像像素坐标系"中计算增量
+            image_delta = img_pos - img_prev_pos
+            # (注意: _convert_viewport_to_image 返回Y轴向下的像素坐标,
+            # drag_edge_pixels 也需要Y轴向下的增量, 所以不需要翻转)
+            
+            # [END OF CHANGE]
+            
             tex_size = self._texture_size_provider()
             self._crop_state.drag_edge_pixels(self._crop_drag_handle, image_delta, tex_size)
-            self._auto_shrink_on_drag(delta_view)
+            
+            # [THIS WILL NOW WORK!]
+            # 因为 current_crop_rect_pixels 是正确的, 
+            # _auto_shrink_on_drag 现在可以被正确触发了
+            self._auto_shrink_on_drag(delta_view) 
             self._emit_crop_changed()
 
         self._restart_crop_idle()
@@ -301,23 +329,20 @@ class CropInteractionController:
             event.accept()
             return
 
+        # [START OF CHANGE]
+        # 锚点应该是光标所在的"世界坐标"
         world_point = self._transform_controller.convert_screen_to_world(event.position())
-        view_pan = self._transform_controller.get_pan_pixels()
-        screen_vector = QPointF(
-            world_point.x() - view_pan.x(),
-            world_point.y() - view_pan.y(),
-        )
-
-        anchor_world = QPointF(
-            screen_vector.x() / view_scale,
-            screen_vector.y() / view_scale,
-        )
 
         scale_ratio = new_scale / max(self._crop_img_scale, 1e-6)
+        
+        # 使用正确的"以锚点为中心缩放"公式
+        # new_offset = anchor + (old_offset - anchor) * ratio
+        # (world_point 和 _crop_img_offset 都在"世界坐标系"中)
         new_offset = QPointF(
-            anchor_world.x() + (self._crop_img_offset.x() - anchor_world.x()) * scale_ratio,
-            anchor_world.y() + (self._crop_img_offset.y() - anchor_world.y()) * scale_ratio,
+            world_point.x() + (self._crop_img_offset.x() - world_point.x()) * scale_ratio,
+            world_point.y() + (self._crop_img_offset.y() - world_point.y()) * scale_ratio,
         )
+        # [END OF CHANGE]
 
         new_offset = self._clamp_crop_img_offset(new_offset, new_scale)
 
@@ -415,7 +440,10 @@ class CropInteractionController:
             view_width, view_height = self._transform_controller._get_view_dimensions_logical()
             return QPointF(view_width / 2, view_height / 2)
         center = self._crop_state.center_pixels(tex_w, tex_h)
-        return self._transform_controller.convert_image_to_viewport(center.x(), center.y())
+        # [START OF CHANGE]
+        # 使用新的辅助函数
+        return self._convert_image_to_viewport(center.x(), center.y())
+        # [END OF CHANGE]
 
     @staticmethod
     def _distance_to_segment(point: QPointF, start: QPointF, end: QPointF) -> float:
@@ -440,10 +468,13 @@ class CropInteractionController:
             return CropHandle.NONE
 
         rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
-        top_left = self._transform_controller.convert_image_to_viewport(rect["left"], rect["top"])
-        top_right = self._transform_controller.convert_image_to_viewport(rect["right"], rect["top"])
-        bottom_right = self._transform_controller.convert_image_to_viewport(rect["right"], rect["bottom"])
-        bottom_left = self._transform_controller.convert_image_to_viewport(rect["left"], rect["bottom"])
+        # [START OF CHANGE]
+        # 使用新的辅助函数
+        top_left = self._convert_image_to_viewport(rect["left"], rect["top"])
+        top_right = self._convert_image_to_viewport(rect["right"], rect["top"])
+        bottom_right = self._convert_image_to_viewport(rect["right"], rect["bottom"])
+        bottom_left = self._convert_image_to_viewport(rect["left"], rect["bottom"])
+        # [END OF CHANGE]
 
         # Check corners first
         corners = [
@@ -699,3 +730,51 @@ class CropInteractionController:
         self._on_crop_changed(
             float(state.cx), float(state.cy), float(state.width), float(state.height)
         )
+
+    def _convert_image_to_viewport(self, x: float, y: float) -> QPointF:
+        """(新) Convert image pixel coords to viewport logical coords.
+        
+        Accounts for *both* the crop model transform and the main
+        view transform.
+        """
+        tex_w, tex_h = self._texture_size_provider()
+        if tex_w <= 0 or tex_h <= 0:
+            return QPointF()
+
+        # 1. 图像像素 (左上角) -> 图像中心向量 (中心原点, Y轴向上)
+        img_vec_x = x - tex_w * 0.5
+        img_vec_y = (tex_h * 0.5) - y  # 图像 Y轴向下 -> 世界 Y轴向上
+
+        # 2. 应用裁剪模型变换 (缩放 + 平移)
+        world_x = img_vec_x * self._crop_img_scale + self._crop_img_offset.x()
+        world_y = img_vec_y * self._crop_img_scale + self._crop_img_offset.y()
+        world_vec = QPointF(world_x, world_y)
+
+        # 3. 应用主视图变换 (平移 + 缩放)
+        # 从世界空间 -> Qt屏幕空间 (左上角, Y轴向下)
+        return self._transform_controller.convert_world_to_screen(world_vec)
+
+    def _convert_viewport_to_image(self, point: QPointF) -> QPointF:
+        """(新) Convert viewport logical coords to image pixel coords.
+        
+        Accounts for *both* the main view transform and the crop
+        model transform.
+        """
+        tex_w, tex_h = self._texture_size_provider()
+        if tex_w <= 0 or tex_h <= 0 or self._crop_img_scale == 0.0:
+            return QPointF()
+
+        # 1. Qt屏幕空间 (左上角, Y轴向下) -> 世界空间 (中心原点, Y轴向上)
+        world_vec = self._transform_controller.convert_screen_to_world(point)
+
+        # 2. 撤销裁剪模型变换 (平移 then 缩放)
+        world_x = world_vec.x() - self._crop_img_offset.x()
+        world_y = world_vec.y() - self._crop_img_offset.y()
+        
+        img_vec_x = world_x / self._crop_img_scale
+        img_vec_y = world_y / self._crop_img_scale
+
+        # 3. 图像中心向量 (中心原点, Y轴向上) -> 图像像素 (左上角, Y轴向下)
+        tex_x = img_vec_x + tex_w * 0.5
+        tex_y = (tex_h * 0.5) - img_vec_y  # 世界 Y轴向上 -> 图像 Y轴向下
+        return QPointF(tex_x, tex_y)
