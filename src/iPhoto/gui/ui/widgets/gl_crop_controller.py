@@ -295,7 +295,7 @@ class CropInteractionController:
             event.accept()
             return
 
-        world_point = self._screen_to_world(event.position())
+        world_point = self._transform_controller.convert_screen_to_world(event.position())
         view_pan = self._transform_controller.get_pan_pixels()
         screen_vector = QPointF(
             world_point.x() - view_pan.x(),
@@ -343,7 +343,7 @@ class CropInteractionController:
         center = self._crop_state.center_pixels(tex_w, tex_h)
         scale = self._transform_controller.get_effective_scale()
         clamped_center = self._clamp_image_center_to_crop(center, scale)
-        self._set_image_center(clamped_center, scale)
+        self._transform_controller.apply_image_center_pixels(clamped_center, scale)
 
     def _clamp_crop_img_offset(self, offset: QPointF, scale: float) -> QPointF:
         """Clamp the model transform so the crop never exposes empty pixels."""
@@ -507,7 +507,7 @@ class CropInteractionController:
         self._crop_anim_start_time = time.monotonic()
         self._crop_anim_start_scale = self._transform_controller.get_effective_scale()
         self._crop_anim_target_scale = target_scale
-        self._crop_anim_start_center = self._image_center_provider()
+        self._crop_anim_start_center = self._transform_controller.get_image_center_pixels()
         self._crop_anim_target_center = target_center
         self._crop_anim_timer.start()
         self._crop_faded_out = False
@@ -558,7 +558,7 @@ class CropInteractionController:
         self._transform_controller.set_zoom_factor_direct(zoom_factor)
         actual_scale = self._transform_controller.get_effective_scale()
         clamped_center = self._clamp_image_center_to_crop(centre, actual_scale)
-        self._set_image_center(clamped_center, actual_scale)
+        self._transform_controller.apply_image_center_pixels(clamped_center, actual_scale)
 
     def _target_scale_for_crop(self) -> float:
         """Calculate the target scale for crop fade-out animation."""
@@ -684,10 +684,10 @@ class CropInteractionController:
         final_d_offset = QPointF(d_offset_x * pan_gain, -d_offset_y * pan_gain)
 
         if abs(final_d_offset.x()) > 1e-4 or abs(final_d_offset.y()) > 1e-4:
-            new_center = self._image_center_provider() + final_d_offset
+            new_center = self._transform_controller.get_image_center_pixels() + final_d_offset
             actual_scale = self._transform_controller.get_effective_scale()
             clamped = self._clamp_image_center_to_crop(new_center, actual_scale)
-            self._set_image_center(clamped, actual_scale)
+            self._transform_controller.apply_image_center_pixels(clamped, actual_scale)
 
     def _emit_crop_changed(self) -> None:
         """Emit the crop changed signal."""
