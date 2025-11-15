@@ -74,6 +74,10 @@ class GLImageViewer(QOpenGLWidget):
         self._adjustments: dict[str, float] = {}
         self._current_image_source: object | None = None
         self._live_replay_enabled: bool = False
+        
+        # Store current crop parameters for rendering
+        # These are the saved crop values from sidecar, independent of interactive crop mode
+        self._current_crop_params: dict[str, float] | None = None
 
         # Track the viewer surface colour so immersive mode can temporarily
         # switch to a pure black canvas.  ``viewer_surface_color`` returns a
@@ -170,6 +174,18 @@ class GLImageViewer(QOpenGLWidget):
             # reports that the source asset is unchanged.  Only the adjustment
             # uniforms need to be refreshed in this scenario.
             self.set_adjustments(shader_adjustments)
+            
+            # Update stored crop parameters for rendering
+            if raw_adjustments_for_reset:
+                self._current_crop_params = {
+                    "Crop_CX": raw_adjustments_for_reset.get("Crop_CX", 0.5),
+                    "Crop_CY": raw_adjustments_for_reset.get("Crop_CY", 0.5),
+                    "Crop_W": raw_adjustments_for_reset.get("Crop_W", 1.0),
+                    "Crop_H": raw_adjustments_for_reset.get("Crop_H", 1.0),
+                }
+            else:
+                self._current_crop_params = None
+            
             if reset_view:
                 # Pass the current image size to avoid race conditions
                 img_size = image.size() if image is not None else None
@@ -181,6 +197,17 @@ class GLImageViewer(QOpenGLWidget):
         self._adjustments = dict(shader_adjustments or {})
         self._loading_overlay.hide()
         self._time_base = time.monotonic()
+        
+        # Update stored crop parameters for rendering
+        if raw_adjustments_for_reset:
+            self._current_crop_params = {
+                "Crop_CX": raw_adjustments_for_reset.get("Crop_CX", 0.5),
+                "Crop_CY": raw_adjustments_for_reset.get("Crop_CY", 0.5),
+                "Crop_W": raw_adjustments_for_reset.get("Crop_W", 1.0),
+                "Crop_H": raw_adjustments_for_reset.get("Crop_H", 1.0),
+            }
+        else:
+            self._current_crop_params = None
 
         if image is None or image.isNull():
             self._current_image_source = None
@@ -421,6 +448,42 @@ class GLImageViewer(QOpenGLWidget):
         return QImage()
 
     # --------------------------- GL lifecycle ---------------------------
+    
+    def _get_crop_model_transform_from_params(
+        self, crop_params: dict[str, float]
+    ) -> tuple[QPointF, float]:
+        """Calculate img_offset and img_scale from crop parameters.
+        
+        This converts normalized crop parameters (Crop_CX, Crop_CY, Crop_W, Crop_H)
+        into the offset and scale values needed by the renderer shader.
+        
+        Parameters
+        ----------
+        crop_params:
+            Dictionary with keys Crop_CX, Crop_CY, Crop_W, Crop_H in [0, 1] range.
+            
+        Returns
+        -------
+        tuple[QPointF, float]
+            (img_offset, img_scale) where:
+            - img_offset: texture coordinate offset for the crop center
+            - img_scale: scale factor to apply to texture coordinates
+        """
+        cx = float(crop_params.get("Crop_CX", 0.5))
+        cy = float(crop_params.get("Crop_CY", 0.5))
+        w = float(crop_params.get("Crop_W", 1.0))
+        h = float(crop_params.get("Crop_H", 1.0))
+        
+        # Calculate scale (inverse of crop size)
+        img_scale = 1.0 / min(w, h) if min(w, h) > 1e-6 else 1.0
+        
+        # Calculate offset to center the crop region
+        # In normalized texture coordinates, center is at (0.5, 0.5)
+        # We need to shift so that crop center (cx, cy) appears at texture center
+        img_offset_x = 0.5 - cx * img_scale
+        img_offset_y = 0.5 - cy * img_scale
+        
+        return QPointF(img_offset_x, img_offset_y), img_scale
 
     def initializeGL(self) -> None:
         self._gl_funcs = QOpenGLFunctions_3_3_Core()
@@ -478,8 +541,22 @@ class GLImageViewer(QOpenGLWidget):
         view_pan = self._transform_controller.get_pan_pixels()
         img_scale = 1.0
         img_offset = QPointF(0.0, 0.0)
+        
+        # Apply crop transforms from either:
+        # 1. Interactive crop mode (_crop_controller.is_active() == True), or
+        # 2. Saved crop parameters from sidecar (_current_crop_params)
         if self._crop_controller.is_active():
+            # Use interactive crop controller when actively editing crop
             img_offset, img_scale = self._crop_controller.get_crop_model_transform()
+        elif self._current_crop_params is not None:
+            # Use saved crop parameters when viewing a cropped image
+            # Check if actual crop exists (not default 1.0, 1.0)
+            crop_w = self._current_crop_params.get("Crop_W", 1.0)
+            crop_h = self._current_crop_params.get("Crop_H", 1.0)
+            if abs(crop_w - 1.0) > 1e-6 or abs(crop_h - 1.0) > 1e-6:
+                img_offset, img_scale = self._get_crop_model_transform_from_params(
+                    self._current_crop_params
+                )
 
         self._renderer.render(
             view_width=float(vw),
