@@ -495,21 +495,27 @@ class GLImageViewer(QOpenGLWidget):
         return self._transform_controller.convert_viewport_to_image(point)
 
     def _clamp_image_center_to_crop(self, center: QPointF, scale: float) -> QPointF:
-        """Return *center* limited so the crop box always sees valid pixels.
+        """Return *center* clamped to the texture bounds during crop mode.
 
-        The earlier revision forced the viewport to *fully* contain the crop
-        rectangle.  That successfully avoided black borders but had an
-        undesirable side effect: when the user tried to drag a crop handle
-        outward the rigid centre constraint prevented the view from exposing
-        more of the texture.  We instead allow a small amount of slack based on
-        the auto-shrink threshold so the viewport can temporarily drift away
-        from the crop while keeping enough image data in view to avoid empty
-        space.
+        Earlier iterations tried to keep the entire crop rectangle inside the
+        viewport at all times.  While that eliminated black borders it also
+        meant large crop regions effectively froze the camera, blocking the
+        outward handle drags that should reveal additional texture data.  The
+        crop interaction code already enforces that the model transform keeps
+        the crop fully covered by the image, so the viewer only needs to avoid
+        panning beyond the texture itself.  By constraining the image centre to
+        the global texture extents we prevent background exposure yet still let
+        the viewport slide past the crop boundaries whenever there is more
+        imagery available.
 
-        ``scale`` represents the number of device pixels per image pixel.  It
-        tells us how many texture pixels are required to fill the viewport and
-        consequently how far the image centre may move before the crop would
-        overrun the actual texture boundaries.
+        Parameters
+        ----------
+        center:
+            Proposed texture-space centre for the camera.
+        scale:
+            Effective number of device pixels per image pixel.  The value is
+            used to determine how much of the texture the viewport occupies so
+            we can derive the legal centre range.
         """
 
         if (
@@ -521,65 +527,31 @@ class GLImageViewer(QOpenGLWidget):
 
         tex_w, tex_h = self._renderer.texture_size()
         vw, vh = self._view_dimensions_device_px()
-        dpr = max(1e-6, self.devicePixelRatioF())
 
         half_view_w = (float(vw) / float(scale)) * 0.5
         half_view_h = (float(vh) / float(scale)) * 0.5
 
-        # Compute the global range that keeps the viewport inside the texture.
-        global_min_x = half_view_w
-        global_max_x = float(tex_w) - half_view_w
-        if global_min_x > global_max_x:
-            # Viewport larger than the texture.  Collapse to the texture centre
-            # so the image stays stable and no background leaks through.
+        # Restrict the camera to locations where the viewport remains entirely
+        # inside the texture.  This ensures no background is ever shown even if
+        # the crop handle temporarily moves outside the visible area.
+        min_x = half_view_w
+        max_x = float(tex_w) - half_view_w
+        if min_x > max_x:
+            # The viewport exceeds the texture; collapse the range to the
+            # texture centre so the frame remains stable.
             centre_x = float(tex_w) * 0.5
-            global_min_x = centre_x
-            global_max_x = centre_x
+            min_x = centre_x
+            max_x = centre_x
 
-        global_min_y = half_view_h
-        global_max_y = float(tex_h) - half_view_h
-        if global_min_y > global_max_y:
+        min_y = half_view_h
+        max_y = float(tex_h) - half_view_h
+        if min_y > max_y:
             centre_y = float(tex_h) * 0.5
-            global_min_y = centre_y
-            global_max_y = centre_y
+            min_y = centre_y
+            max_y = centre_y
 
-        crop_state = self._crop_controller.get_crop_state()
-        crop_rect = crop_state.to_pixel_rect(tex_w, tex_h)
-        crop_left = float(crop_rect["left"])
-        crop_top = float(crop_rect["top"])
-        crop_right = float(crop_rect["right"])
-        crop_bottom = float(crop_rect["bottom"])
-
-        # Translate the on-screen pressure threshold into image-space slack so
-        # the view is free to move a short distance away from the crop while
-        # the auto-shrink logic nudges it back into place.
-        slack_device = self._crop_controller.edge_pressure_threshold()
-        slack_x = (slack_device * dpr) / float(scale)
-        slack_y = (slack_device * dpr) / float(scale)
-
-        crop_min_x = crop_right - half_view_w - slack_x
-        crop_max_x = crop_left + half_view_w + slack_x
-        crop_min_y = crop_bottom - half_view_h - slack_y
-        crop_max_y = crop_top + half_view_h + slack_y
-
-        allowed_min_x = max(global_min_x, crop_min_x)
-        allowed_max_x = min(global_max_x, crop_max_x)
-        allowed_min_y = max(global_min_y, crop_min_y)
-        allowed_max_y = min(global_max_y, crop_max_y)
-
-        if allowed_min_x > allowed_max_x:
-            crop_centre_x = (crop_left + crop_right) * 0.5
-            clamped = max(global_min_x, min(global_max_x, crop_centre_x))
-            allowed_min_x = clamped
-            allowed_max_x = clamped
-        if allowed_min_y > allowed_max_y:
-            crop_centre_y = (crop_top + crop_bottom) * 0.5
-            clamped = max(global_min_y, min(global_max_y, crop_centre_y))
-            allowed_min_y = clamped
-            allowed_max_y = clamped
-
-        clamped_x = max(allowed_min_x, min(allowed_max_x, float(center.x())))
-        clamped_y = max(allowed_min_y, min(allowed_max_y, float(center.y())))
+        clamped_x = max(min_x, min(max_x, float(center.x())))
+        clamped_y = max(min_y, min(max_y, float(center.y())))
         return QPointF(clamped_x, clamped_y)
 
     def _constrain_view_center(self, center: QPointF, scale: float) -> QPointF:
