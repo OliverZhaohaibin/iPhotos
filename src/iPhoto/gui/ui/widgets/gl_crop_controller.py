@@ -699,3 +699,9 @@ class CropInteractionController:
         self._on_crop_changed(
             float(state.cx), float(state.cy), float(state.width), float(state.height)
         )
+        # The view transform needs to revalidate its pan immediately after the
+        # crop box changes size.  Without this nudge the asynchronous
+        # constraint enforcement might leave a one-frame gap where the crop
+        # overlay can reveal the background, especially during rapid
+        # drag+zoom gestures.
+        self._transform_controller.enforce_center_constraint()

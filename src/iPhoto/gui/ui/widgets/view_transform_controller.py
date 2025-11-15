@@ -53,6 +53,13 @@ class ViewTransformController:
         self._is_panning: bool = False
         self._pan_start_pos: QPointF = QPointF()
         self._wheel_action: str = "zoom"
+        # ``_center_constraint`` optionally injects a policy that keeps the image
+        # centre within an allowed region (for example the active crop box).  The
+        # controller owns the enforcement so all gestures—wheel zoom, mouse pan,
+        # animated recentering—automatically respect the constraint without
+        # requiring every caller to remember to reapply it manually.
+        self._center_constraint: Callable[[QPointF, float], QPointF] | None = None
+        self._applying_constraint: bool = False
 
     # ------------------------------------------------------------------
     # Helper methods for getting viewport info
@@ -99,6 +106,7 @@ class ViewTransformController:
     def set_pan_pixels(self, pan: QPointF) -> None:
         self._pan_px = QPointF(pan)
         self._viewer.update()
+        self._notify_transform_changed()
 
     def minimum_zoom(self) -> float:
         return self._min_zoom
@@ -113,6 +121,7 @@ class ViewTransformController:
         self._zoom_factor = clamped
         self._viewer.update()
         self._on_zoom_changed(self._zoom_factor)
+        self._notify_transform_changed()
 
     def set_zoom_limits(self, minimum: float, maximum: float) -> None:
         """Clamp the interactive zoom range."""
@@ -124,6 +133,14 @@ class ViewTransformController:
         """Switch between wheel zooming and item navigation."""
 
         self._wheel_action = "zoom" if action == "zoom" else "navigate"
+
+    def set_center_constraint(
+        self, constraint: Callable[[QPointF, float], QPointF] | None
+    ) -> None:
+        """Register *constraint* used to keep the image centre within bounds."""
+
+        self._center_constraint = constraint
+        self.enforce_center_constraint()
 
     # ------------------------------------------------------------------
     # Zoom utilities
@@ -164,6 +181,7 @@ class ViewTransformController:
         self._zoom_factor = clamped
         self._viewer.update()
         self._on_zoom_changed(self._zoom_factor)
+        self._notify_transform_changed()
         return True
 
     def reset_zoom(self) -> bool:
@@ -174,6 +192,7 @@ class ViewTransformController:
         self._pan_px = QPointF(0.0, 0.0)
         self._viewer.update()
         self._on_zoom_changed(self._zoom_factor)
+        self._notify_transform_changed()
         return changed
 
     # ------------------------------------------------------------------
@@ -193,11 +212,13 @@ class ViewTransformController:
         dpr = self._viewer.devicePixelRatioF()
         self._pan_px += QPointF(delta.x() * dpr, -delta.y() * dpr)
         self._viewer.update()
+        self._notify_transform_changed()
 
     def handle_mouse_release(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             self._is_panning = False
             self._viewer.unsetCursor()
+            self._notify_transform_changed()
 
     def handle_wheel(self, event: QWheelEvent) -> None:
         if self._wheel_action == "zoom":
@@ -214,6 +235,7 @@ class ViewTransformController:
             elif step > 0 and self._on_prev_item is not None:
                 self._on_prev_item()
         event.accept()
+        self._notify_transform_changed()
 
     # ------------------------------------------------------------------
     # Coordinate transformation utilities
@@ -376,3 +398,34 @@ class ViewTransformController:
         view_width, view_height = self._get_view_dimensions_logical()
         dpr = self._get_dpr()
         return self.viewport_to_image(point, texture_size, scale, view_width, view_height, dpr)
+
+    # ------------------------------------------------------------------
+    # Constraint helpers
+    # ------------------------------------------------------------------
+    def _notify_transform_changed(self) -> None:
+        """Apply the optional centre constraint after any transform update."""
+
+        if self._center_constraint is None:
+            return
+        self.enforce_center_constraint()
+
+    def enforce_center_constraint(self) -> None:
+        """Reapply the registered centre constraint immediately if present."""
+
+        if self._center_constraint is None or self._applying_constraint:
+            return
+        tex_w, tex_h = self._texture_size_provider()
+        if tex_w <= 0 or tex_h <= 0:
+            return
+
+        scale = self.get_effective_scale()
+        current_center = self.image_center_pixels((tex_w, tex_h), scale)
+        constrained_center = self._center_constraint(current_center, scale)
+        if (constrained_center - current_center).manhattanLength() <= 1e-4:
+            return
+
+        self._applying_constraint = True
+        try:
+            self.set_image_center_pixels(constrained_center, (tex_w, tex_h), scale)
+        finally:
+            self._applying_constraint = False

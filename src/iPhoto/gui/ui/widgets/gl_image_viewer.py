@@ -107,6 +107,7 @@ class GLImageViewer(QOpenGLWidget):
             on_prev_item=self.prevItemRequested.emit,
         )
         self._transform_controller.reset_zoom()
+        self._transform_controller.set_center_constraint(self._constrain_view_center)
 
         # Crop interaction controller
         self._crop_controller = CropInteractionController(
@@ -556,6 +557,13 @@ class GLImageViewer(QOpenGLWidget):
         clamped_x = max(min_center_x, min(max_center_x, float(center.x())))
         clamped_y = max(min_center_y, min(max_center_y, float(center.y())))
         return QPointF(clamped_x, clamped_y)
+
+    def _constrain_view_center(self, center: QPointF, scale: float) -> QPointF:
+        """Bridge ``ViewTransformController`` constraints to the crop logic."""
+
+        if not self._crop_controller.is_active():
+            return center
+        return self._clamp_image_center_to_crop(center, scale)
 
     # --------------------------- Viewport helpers ---------------------------
 
