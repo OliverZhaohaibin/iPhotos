@@ -96,7 +96,7 @@ def apply_adjustments_with_lut(image: QImage, lut: Sequence[int]) -> QImage | No
         if qt_image.format() != QImage.Format.Format_ARGB32:
             qt_image = qt_image.convertToFormat(QImage.Format.Format_ARGB32)
         return qt_image
-    except (RuntimeError, OSError, ValueError):
+    except Exception:
         # Pillow is optional; if anything goes wrong we fall back to the
         # original buffer-walking implementation.
         return None
