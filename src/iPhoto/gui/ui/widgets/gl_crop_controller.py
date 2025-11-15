@@ -238,17 +238,99 @@ class CropInteractionController:
             clamped_offset = self._clamp_crop_img_offset(tentative_offset, self._crop_img_scale)
             self._crop_img_offset = clamped_offset
         else:
-            # Dragging edge/corner: resize the crop
-            scale = self._transform_controller.get_effective_scale() * self._crop_img_scale
-            if scale <= 1e-6:
+            # Dragging edge/corner: resize the crop using world-space deltas so the
+            # drag feels identical regardless of crop zoom level, mirroring the
+            # demo implementation.
+            view_scale = self._transform_controller.get_effective_scale()
+            if view_scale <= 1e-6:
                 return
+
             dpr = self._transform_controller._get_dpr()
-            image_delta = QPointF(
-                delta_view.x() * dpr / scale,
-                delta_view.y() * dpr / scale,
+            delta_world = QPointF(
+                float(delta_view.x()) * dpr / view_scale,
+                -float(delta_view.y()) * dpr / view_scale,
             )
-            tex_size = self._texture_size_provider()
-            self._crop_state.drag_edge_pixels(self._crop_drag_handle, image_delta, tex_size)
+
+            # Compute the scaled image bounds in world space. The crop model keeps
+            # its own translation/scale separate from the camera, so we must clamp
+            # against these transformed bounds rather than the raw texture size.
+            scale_model = self._crop_img_scale
+            offset_x = self._crop_img_offset.x()
+            offset_y = self._crop_img_offset.y()
+            half_width_scaled = (tex_w * scale_model) * 0.5
+            half_height_scaled = (tex_h * scale_model) * 0.5
+            img_bounds_world = {
+                "left": offset_x - half_width_scaled,
+                "right": offset_x + half_width_scaled,
+                "bottom": offset_y - half_height_scaled,
+                "top": offset_y + half_height_scaled,
+            }
+
+            # Convert the current crop rectangle into world coordinates so we can
+            # manipulate each edge directly and perform clamping in the same space
+            # as the image bounds computed above.
+            crop_rect_px = self._crop_state.to_pixel_rect(tex_w, tex_h)
+            half_width_orig = tex_w * 0.5
+            half_height_orig = tex_h * 0.5
+            crop_world = {
+                "left": crop_rect_px["left"] - half_width_orig,
+                "right": crop_rect_px["right"] - half_width_orig,
+                "top": half_height_orig - crop_rect_px["top"],
+                "bottom": half_height_orig - crop_rect_px["bottom"],
+            }
+
+            # Translate the minimum crop dimensions from normalised space to the
+            # current texture space. One pixel is enforced to avoid degeneracy when
+            # the stored minimum ends up smaller than a device pixel.
+            min_width_px = max(1.0, self._crop_state.min_width * tex_w)
+            min_height_px = max(1.0, self._crop_state.min_height * tex_h)
+
+            handle = self._crop_drag_handle
+            delta_x = delta_world.x()
+            delta_y = delta_world.y()
+
+            if handle in (CropHandle.LEFT, CropHandle.TOP_LEFT, CropHandle.BOTTOM_LEFT):
+                new_left = crop_world["left"] + delta_x
+                new_left = min(new_left, crop_world["right"] - min_width_px)
+                new_left = max(new_left, img_bounds_world["left"])
+                crop_world["left"] = new_left
+
+            if handle in (CropHandle.RIGHT, CropHandle.TOP_RIGHT, CropHandle.BOTTOM_RIGHT):
+                new_right = crop_world["right"] + delta_x
+                new_right = max(new_right, crop_world["left"] + min_width_px)
+                new_right = min(new_right, img_bounds_world["right"])
+                crop_world["right"] = new_right
+
+            if handle in (CropHandle.BOTTOM, CropHandle.BOTTOM_LEFT, CropHandle.BOTTOM_RIGHT):
+                new_bottom = crop_world["bottom"] + delta_y
+                new_bottom = min(new_bottom, crop_world["top"] - min_height_px)
+                new_bottom = max(new_bottom, img_bounds_world["bottom"])
+                crop_world["bottom"] = new_bottom
+
+            if handle in (CropHandle.TOP, CropHandle.TOP_LEFT, CropHandle.TOP_RIGHT):
+                new_top = crop_world["top"] + delta_y
+                new_top = max(new_top, crop_world["bottom"] + min_height_px)
+                new_top = min(new_top, img_bounds_world["top"])
+                crop_world["top"] = new_top
+
+            # Convert the updated world-space rectangle back into normalised crop
+            # values so the rest of the controller continues to operate on the
+            # canonical representation.
+            new_px_left = crop_world["left"] + half_width_orig
+            new_px_right = crop_world["right"] + half_width_orig
+            new_px_top = half_height_orig - crop_world["top"]
+            new_px_bottom = half_height_orig - crop_world["bottom"]
+
+            if tex_w > 0 and tex_h > 0:
+                new_width = new_px_right - new_px_left
+                new_height = new_px_bottom - new_px_top
+                if new_width > 0.0 and new_height > 0.0:
+                    self._crop_state.cx = (new_px_left + new_px_right) * 0.5 / tex_w
+                    self._crop_state.cy = (new_px_top + new_px_bottom) * 0.5 / tex_h
+                    self._crop_state.width = new_width / tex_w
+                    self._crop_state.height = new_height / tex_h
+                    self._crop_state.clamp()
+
             self._auto_shrink_on_drag(delta_view)
             self._emit_crop_changed()
 
@@ -664,34 +746,58 @@ class CropInteractionController:
         if pressure <= 0.0:
             return
 
-        # Ease the pressure for smooth feel
+        # Ease the pressure for smooth feel.  The easing curve matches the demo
+        # implementation so the “push against edge → auto zoom-out” interaction
+        # feels identical across both code paths.
         eased_pressure = ease_in_quad(min(1.0, pressure))
 
-        # Scale down around crop center
-        tex_size = (tex_w, tex_h)
-        vw_float, vh_float = float(vw), float(vh)
-        base_scale = compute_fit_to_view_scale(tex_size, vw_float, vh_float)
+        dynamic_min = self._dynamic_min_scale_for_crop()
+        min_allowed = max(self._img_scale_clamp[0], dynamic_min)
+        max_allowed = self._img_scale_clamp[1]
 
-        min_scale = max(base_scale, base_scale * self._transform_controller.minimum_zoom())
-        max_scale = base_scale * self._transform_controller.maximum_zoom()
+        k_max = 0.05  # Maximum shrink ratio per interaction step (demo parity).
+        scale_factor = 1.0 - k_max * eased_pressure
+        new_scale_raw = self._crop_img_scale * scale_factor
+        new_scale = max(min_allowed, min(max_allowed, new_scale_raw))
 
-        k_max = 0.05  # Maximum shrink ratio per event
-        factor = 1.0 - k_max * eased_pressure
-        new_scale = max(min_scale, min(max_scale, current_scale * factor))
+        crop_rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
+        crop_left = float(crop_rect["left"])
+        crop_top = float(crop_rect["top"])
+        crop_right = float(crop_rect["right"])
+        crop_bottom = float(crop_rect["bottom"])
+        crop_center_x = (crop_left + crop_right) * 0.5
+        crop_center_y = (crop_top + crop_bottom) * 0.5
+        tex_half_w = float(tex_w) * 0.5
+        tex_half_h = float(tex_h) * 0.5
+        anchor_world = QPointF(
+            crop_center_x - tex_half_w,
+            tex_half_h - crop_center_y,
+        )
 
-        # Scale around crop center
-        anchor = self._crop_center_viewport_point()
-        self._transform_controller.set_zoom(new_scale / max(base_scale, 1e-6), anchor=anchor)
+        current_model_scale = max(self._crop_img_scale, 1e-6)
+        scale_ratio = new_scale / current_model_scale
+        new_offset = QPointF(
+            anchor_world.x() + (self._crop_img_offset.x() - anchor_world.x()) * scale_ratio,
+            anchor_world.y() + (self._crop_img_offset.y() - anchor_world.y()) * scale_ratio,
+        )
 
-        # Apply pan_gain and translate the view
         pan_gain = 0.75 + 0.25 * eased_pressure
-        final_d_offset = QPointF(d_offset_x * pan_gain, -d_offset_y * pan_gain)
+        final_d_offset = QPointF(d_offset_x * pan_gain, d_offset_y * pan_gain)
 
-        if abs(final_d_offset.x()) > 1e-4 or abs(final_d_offset.y()) > 1e-4:
-            new_center = self._transform_controller.get_image_center_pixels() + final_d_offset
-            actual_scale = self._transform_controller.get_effective_scale()
-            clamped = self._clamp_image_center_to_crop(new_center, actual_scale)
-            self._transform_controller.apply_image_center_pixels(clamped, actual_scale)
+        if abs(final_d_offset.x()) > 1e-6 or abs(final_d_offset.y()) > 1e-6:
+            new_offset = QPointF(
+                new_offset.x() + final_d_offset.x(),
+                new_offset.y() + final_d_offset.y(),
+            )
+            # ``translate_pixels`` expects the conventional top-left origin where
+            # Y grows downwards, hence the flipped sign for the vertical delta.
+            translate_delta = QPointF(final_d_offset.x(), -final_d_offset.y())
+            self._crop_state.translate_pixels(translate_delta, (tex_w, tex_h))
+
+        new_offset = self._clamp_crop_img_offset(new_offset, new_scale)
+
+        self._crop_img_scale = new_scale
+        self._crop_img_offset = new_offset
 
     def _emit_crop_changed(self) -> None:
         """Emit the crop changed signal."""

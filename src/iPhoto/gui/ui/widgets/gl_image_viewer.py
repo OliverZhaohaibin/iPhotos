@@ -494,21 +494,15 @@ class GLImageViewer(QOpenGLWidget):
         return self._transform_controller.convert_viewport_to_image(point)
 
     def _clamp_image_center_to_crop(self, center: QPointF, scale: float) -> QPointF:
-        """Return *center* limited so the crop box always sees valid pixels.
+        """Return *center* limited so the viewport never exposes empty pixels.
 
-        The permissible range is derived from the portion of the texture that
-        must remain visible *inside the crop overlay*.  Unlike the legacy
-        implementation—which forced the whole viewport to stay within the
-        texture—this formulation mirrors ``demo/crop_final.py`` and allows the
-        image to travel freely until a crop edge would reveal empty space.  The
-        calculation works in image-space pixels and therefore plays nicely with
-        the normalised crop state without introducing additional coordinate
-        transforms.
-
-        ``scale`` represents the number of device pixels per image pixel.  It
-        tells us how many texture pixels are required to fill the viewport and
-        consequently how far the image centre may move before the crop would
-        overrun the actual texture boundaries.
+        The demo reference keeps the camera free to roam while the crop-specific
+        model transform guarantees that the crop rectangle only samples valid
+        pixels.  To mirror that behaviour we clamp the *viewport* centre purely
+        against the texture bounds.  As soon as the viewport half extents exceed
+        the texture half extents we collapse the permissible interval to the
+        image midpoint, matching the demo's behaviour once the frame is larger
+        than the source.
         """
 
         if (
@@ -524,37 +518,28 @@ class GLImageViewer(QOpenGLWidget):
         half_view_w = (float(vw) / float(scale)) * 0.5
         half_view_h = (float(vh) / float(scale)) * 0.5
 
-        # Get crop state from the controller
-        crop_state = self._crop_controller.get_crop_state()
-        crop_rect = crop_state.to_pixel_rect(tex_w, tex_h)
-        crop_left = float(crop_rect["left"])
-        crop_top = float(crop_rect["top"])
-        crop_right = float(crop_rect["right"])
-        crop_bottom = float(crop_rect["bottom"])
+        tex_half_w = float(tex_w) * 0.5
+        tex_half_h = float(tex_h) * 0.5
 
-        min_center_x = crop_right - half_view_w
-        max_center_x = crop_left + half_view_w
-        min_center_y = crop_bottom - half_view_h
-        max_center_y = crop_top + half_view_h
-
-        min_center_x = max(0.0, min_center_x)
-        max_center_x = min(float(tex_w), max_center_x)
-        min_center_y = max(0.0, min_center_y)
-        max_center_y = min(float(tex_h), max_center_y)
+        min_center_x = half_view_w
+        max_center_x = float(tex_w) - half_view_w
 
         if min_center_x > max_center_x:
-            crop_centre_x = (crop_left + crop_right) * 0.5
-            clamped = max(0.0, min(float(tex_w), crop_centre_x))
-            min_center_x = clamped
-            max_center_x = clamped
+            min_center_x = tex_half_w
+            max_center_x = tex_half_w
+
+        min_center_y = half_view_h
+        max_center_y = float(tex_h) - half_view_h
+
         if min_center_y > max_center_y:
-            crop_centre_y = (crop_top + crop_bottom) * 0.5
-            clamped = max(0.0, min(float(tex_h), crop_centre_y))
-            min_center_y = clamped
-            max_center_y = clamped
+            min_center_y = tex_half_h
+            max_center_y = tex_half_h
 
         clamped_x = max(min_center_x, min(max_center_x, float(center.x())))
         clamped_y = max(min_center_y, min(max_center_y, float(center.y())))
+
+        clamped_x = max(0.0, min(float(tex_w), clamped_x))
+        clamped_y = max(0.0, min(float(tex_h), clamped_y))
         return QPointF(clamped_x, clamped_y)
 
     # --------------------------- Viewport helpers ---------------------------
