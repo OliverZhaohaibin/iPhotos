@@ -623,7 +623,81 @@ class CropInteractionController:
         world_delta_x = image_delta.x()
         world_delta_y = -image_delta.y()  # Flip Y: texture down = world up
 
-        # Calculate pressure and d_offset
+        left_margin = crop_rect["left"]
+        right_margin = vw - crop_rect["right"]
+        top_margin = crop_rect["top"]
+        bottom_margin = vh - crop_rect["bottom"]
+
+        # Before we start shrinking, try to translate the camera so the crop
+        # edge can keep travelling outward.  This mirrors what a human would do
+        # manually: pan first to reveal more image content, and only zoom out if
+        # there truly is no more room.  The safe margin stops the camera from
+        # hugging the viewport edges too tightly, giving `_clamp_image_center`
+        # enough slack to keep the crop visible without locking it in place.
+        safe_margin = max(0.0, threshold * 0.6)
+        move_center_x = 0.0
+        move_center_y = 0.0
+
+        if (
+            self._crop_drag_handle in (CropHandle.LEFT, CropHandle.TOP_LEFT, CropHandle.BOTTOM_LEFT)
+            and delta_x < 0.0
+            and left_margin > safe_margin
+        ):
+            available = (left_margin - safe_margin) / max(dpr * current_scale, 1e-6)
+            desired = world_delta_x
+            limited = max(desired, -available)
+            move_center_x += limited
+
+        if (
+            self._crop_drag_handle
+            in (CropHandle.RIGHT, CropHandle.TOP_RIGHT, CropHandle.BOTTOM_RIGHT)
+            and delta_x > 0.0
+            and right_margin > safe_margin
+        ):
+            available = (right_margin - safe_margin) / max(dpr * current_scale, 1e-6)
+            desired = world_delta_x
+            limited = min(desired, available)
+            move_center_x += limited
+
+        if (
+            self._crop_drag_handle in (CropHandle.TOP, CropHandle.TOP_LEFT, CropHandle.TOP_RIGHT)
+            and delta_y < 0.0
+            and top_margin > safe_margin
+        ):
+            available = (top_margin - safe_margin) / max(dpr * current_scale, 1e-6)
+            desired = -world_delta_y
+            limited = max(desired, -available)
+            move_center_y += limited
+
+        if (
+            self._crop_drag_handle
+            in (CropHandle.BOTTOM, CropHandle.BOTTOM_LEFT, CropHandle.BOTTOM_RIGHT)
+            and delta_y > 0.0
+            and bottom_margin > safe_margin
+        ):
+            available = (bottom_margin - safe_margin) / max(dpr * current_scale, 1e-6)
+            desired = -world_delta_y
+            limited = min(desired, available)
+            move_center_y += limited
+
+        if abs(move_center_x) > 1e-6 or abs(move_center_y) > 1e-6:
+            current_center = self._transform_controller.get_image_center_pixels()
+            new_center = current_center + QPointF(move_center_x, move_center_y)
+            clamped_center = self._clamp_image_center_to_crop(new_center, current_scale)
+            if not (
+                math.isclose(clamped_center.x(), current_center.x(), abs_tol=1e-6)
+                and math.isclose(clamped_center.y(), current_center.y(), abs_tol=1e-6)
+            ):
+                # Only apply the translation if it meaningfully moves the
+                # centre.  If the clamping logic keeps us stationary we fall
+                # back to the shrink path below so the crop never reveals the
+                # backdrop.
+                self._transform_controller.apply_image_center_pixels(
+                    clamped_center, current_scale
+                )
+                return
+
+        # Calculate pressure and d_offset for the fallback zoom-out path.
         pressure = 0.0
         d_offset_x = 0.0
         d_offset_y = 0.0
@@ -633,7 +707,6 @@ class CropInteractionController:
             self._crop_drag_handle in (CropHandle.LEFT, CropHandle.TOP_LEFT, CropHandle.BOTTOM_LEFT)
             and delta_x < 0.0
         ):
-            left_margin = crop_rect["left"]
             if left_margin < threshold:
                 p = (threshold - left_margin) / threshold
                 pressure = max(pressure, p)
@@ -645,7 +718,6 @@ class CropInteractionController:
             in (CropHandle.RIGHT, CropHandle.TOP_RIGHT, CropHandle.BOTTOM_RIGHT)
             and delta_x > 0.0
         ):
-            right_margin = vw - crop_rect["right"]
             if right_margin < threshold:
                 p = (threshold - right_margin) / threshold
                 pressure = max(pressure, p)
@@ -656,7 +728,6 @@ class CropInteractionController:
             self._crop_drag_handle in (CropHandle.TOP, CropHandle.TOP_LEFT, CropHandle.TOP_RIGHT)
             and delta_y < 0.0
         ):
-            top_margin = crop_rect["top"]
             if top_margin < threshold:
                 p = (threshold - top_margin) / threshold
                 pressure = max(pressure, p)
@@ -668,7 +739,6 @@ class CropInteractionController:
             in (CropHandle.BOTTOM, CropHandle.BOTTOM_LEFT, CropHandle.BOTTOM_RIGHT)
             and delta_y > 0.0
         ):
-            bottom_margin = vh - crop_rect["bottom"]
             if bottom_margin < threshold:
                 p = (threshold - bottom_margin) / threshold
                 pressure = max(pressure, p)
