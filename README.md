@@ -246,3 +246,4 @@ Created by **Haibin Zhao (OliverZhaohaibin)**
 
 > *iPhoto — A folder-native, human-readable, and fully rebuildable photo system.*  
 > *No imports. No database. Just your photos, organized elegantly.*
+# Code review test
