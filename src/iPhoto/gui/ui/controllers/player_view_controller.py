@@ -20,8 +20,20 @@ from ..widgets.video_area import VideoArea
 class _AdjustedImageSignals(QObject):
     """Relay worker completion events back to the GUI thread."""
 
-    completed = Signal(Path, QImage, dict)
-    """Emitted when the adjusted image finished loading successfully."""
+    completed = Signal(Path, QImage, dict, dict)
+    """Emitted when the adjusted image finished loading successfully.
+    
+    Parameters
+    ----------
+    Path
+        Image source path.
+    QImage
+        Loaded image.
+    dict
+        Resolved (shader) adjustments.
+    dict
+        Raw (sidecar) adjustments.
+    """
 
     failed = Signal(Path, str)
     """Emitted when loading or processing the image fails."""
@@ -61,9 +73,11 @@ class _AdjustedImageWorker(QRunnable):
             return
 
         try:
+            # 1. Load raw adjustments from sidecar
             raw_adjustments = sidecar.load_adjustments(self._source)
             stats = compute_color_statistics(image) if raw_adjustments else None
-            adjustments = sidecar.resolve_render_adjustments(
+            # 2. Resolve adjustments for shader rendering
+            resolved_adjustments = sidecar.resolve_render_adjustments(
                 raw_adjustments,
                 color_stats=stats,
             )
@@ -71,10 +85,13 @@ class _AdjustedImageWorker(QRunnable):
             self._signals.failed.emit(self._source, str(exc))
             return
 
-        # Pass the raw image and adjustments to the main thread. The GL viewer
-        # Pass the raw image and adjustments to the main thread. The GL viewer
-        # will apply the adjustments on the GPU.
-        self._signals.completed.emit(self._source, image, adjustments or {})
+        # 3. Emit both raw and resolved adjustments to the main thread
+        self._signals.completed.emit(
+            self._source,
+            image,
+            resolved_adjustments or {},
+            raw_adjustments or {},
+        )
 
 
 class PlayerViewController(QObject):
@@ -175,14 +192,14 @@ class PlayerViewController(QObject):
         """Begin loading ``source`` asynchronously, returning scheduling success."""
         self._loading_source = source
 
-        # 1) 先切到 GL 视图，保证有有效的 GL 上下文
+        # 1) Switch to GL view first to ensure valid GL context
         self.show_image_surface()
 
-        # 2) 若有占位图，先显示；否则仅清空，不上传空图像
+        # 2) Show placeholder if provided, otherwise clear the viewer
         if placeholder is not None and not placeholder.isNull():
             self._image_viewer.set_placeholder(placeholder)
         else:
-            self._image_viewer.set_image(None, {})
+            self._image_viewer.set_image(None, {}, raw_adjustments_for_reset=None)
 
         signals = _AdjustedImageSignals()
         worker = _AdjustedImageWorker(source, signals)
@@ -191,7 +208,12 @@ class PlayerViewController(QObject):
         signals.completed.connect(self._on_adjusted_image_ready)
         signals.failed.connect(self._on_adjusted_image_failed)
 
-        def _finalize_on_completion(img_source: Path, img: QImage, adjustments: dict) -> None:
+        def _finalize_on_completion(
+            img_source: Path,
+            img: QImage,
+            resolved_adjustments: dict,
+            raw_adjustments: dict,
+        ) -> None:
             self._release_worker(worker)
             signals.deleteLater()
 
@@ -214,7 +236,7 @@ class PlayerViewController(QObject):
     def clear_image(self) -> None:
         """Remove any pixmap currently shown in the image viewer."""
         # 清空而非传空图像，避免一帧“空绘制/空上传”
-        self._image_viewer.set_image(None, {})
+        self._image_viewer.set_image(None, {}, raw_adjustments_for_reset=None)
 
     # ------------------------------------------------------------------
     # Live badge helpers
@@ -273,7 +295,13 @@ class PlayerViewController(QObject):
     # ------------------------------------------------------------------
     # Worker callbacks
     # ------------------------------------------------------------------
-    def _on_adjusted_image_ready(self, source: Path, image: QImage, adjustments: dict) -> None:
+    def _on_adjusted_image_ready(
+        self,
+        source: Path,
+        image: QImage,
+        shader_adjustments: dict,
+        raw_adjustments: dict,
+    ) -> None:
         """Render *image* when the matching worker completes successfully."""
         if self._loading_source != source:
             return
@@ -281,15 +309,16 @@ class PlayerViewController(QObject):
         if image.isNull():
             if self._loading_source == source:
                 self._loading_source = None
-            self._image_viewer.set_image(None, {})
+            self._image_viewer.set_image(None, {}, raw_adjustments_for_reset=None)
             self.imageLoadingFailed.emit(source, "Image decoder returned an empty frame")
             return
 
-        # 先确保 GL 视图当前可见（上下文已就绪），再喂像素并强制一帧
+        # Ensure GL view is visible (context ready) before uploading pixels
         self.show_image_surface()
         self._image_viewer.set_image(
             image,
-            adjustments,
+            shader_adjustments,
+            raw_adjustments_for_reset=raw_adjustments,
             image_source=source,
             reset_view=True,
         )
@@ -306,7 +335,7 @@ class PlayerViewController(QObject):
 
         if self._loading_source == source:
             self._loading_source = None
-        self._image_viewer.set_image(None)
+        self._image_viewer.set_image(None, {}, raw_adjustments_for_reset=None)
         self.imageLoadingFailed.emit(source, message)
 
     def _release_worker(self, worker: _AdjustedImageWorker) -> None:

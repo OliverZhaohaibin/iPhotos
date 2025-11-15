@@ -133,8 +133,9 @@ class GLImageViewer(QOpenGLWidget):
     def set_image(
         self,
         image: QImage | None,
-        adjustments: Mapping[str, float] | None = None,
+        shader_adjustments: Mapping[str, float] | None = None,
         *,
+        raw_adjustments_for_reset: Mapping[str, float] | None = None,
         image_source: object | None = None,
         reset_view: bool = True,
     ) -> None:
@@ -144,8 +145,11 @@ class GLImageViewer(QOpenGLWidget):
         ----------
         image:
             ``QImage`` backing the GL texture. ``None`` clears the viewer.
-        adjustments:
-            Mapping of Photos-style adjustment values to apply in the shader.
+        shader_adjustments:
+            Mapping of Photos-style adjustment values (resolved) to apply in the shader.
+        raw_adjustments_for_reset:
+            Mapping of raw adjustment values (from sidecar/session) used for
+            view reset logic (e.g., zoom-to-crop).
         image_source:
             Stable identifier describing where *image* originated.  When the
             identifier matches the one from the previous call the viewer keeps
@@ -165,14 +169,14 @@ class GLImageViewer(QOpenGLWidget):
             # Skip the heavy texture re-upload when the caller explicitly
             # reports that the source asset is unchanged.  Only the adjustment
             # uniforms need to be refreshed in this scenario.
-            self.set_adjustments(adjustments)
+            self.set_adjustments(shader_adjustments)
             if reset_view:
-                self.reset_zoom_to_crop(adjustments)
+                self.reset_zoom_to_crop(raw_adjustments_for_reset)
             return
 
         self._current_image_source = image_source
         self._image = image
-        self._adjustments = dict(adjustments or {})
+        self._adjustments = dict(shader_adjustments or {})
         self._loading_overlay.hide()
         self._time_base = time.monotonic()
 
@@ -197,15 +201,21 @@ class GLImageViewer(QOpenGLWidget):
             # same fit-to-window baseline that the QWidget-based viewer
             # exposes.  ``reset_view`` lets callers preserve the zoom when the
             # user toggles between detail and edit modes.
-            # Use crop-aware reset if crop parameters exist in adjustments.
-            self.reset_zoom_to_crop(adjustments)
+            # Use crop-aware reset if crop parameters exist in raw adjustments.
+            self.reset_zoom_to_crop(raw_adjustments_for_reset)
+            
     def set_placeholder(self, pixmap) -> None:
         """Display *pixmap* without changing the tracked image source."""
 
         if pixmap and not pixmap.isNull():
-            self.set_image(pixmap.toImage(), {}, image_source=self._current_image_source)
+            self.set_image(
+                pixmap.toImage(),
+                {},
+                raw_adjustments_for_reset=None,
+                image_source=self._current_image_source,
+            )
         else:
-            self.set_image(None, {}, image_source=None)
+            self.set_image(None, {}, raw_adjustments_for_reset=None, image_source=None)
 
     def set_pixmap(
         self,
@@ -221,11 +231,18 @@ class GLImageViewer(QOpenGLWidget):
         """
 
         if pixmap is None or pixmap.isNull():
-            self.set_image(None, {}, image_source=None, reset_view=reset_view)
+            self.set_image(
+                None,
+                {},
+                raw_adjustments_for_reset=None,
+                image_source=None,
+                reset_view=reset_view,
+            )
             return
         self.set_image(
             pixmap.toImage(),
             {},
+            raw_adjustments_for_reset=None,
             image_source=image_source if image_source is not None else self._current_image_source,
             reset_view=reset_view,
         )
@@ -233,7 +250,7 @@ class GLImageViewer(QOpenGLWidget):
     def clear(self) -> None:
         """Reset the viewer to an empty state."""
 
-        self.set_image(None, {}, image_source=None)
+        self.set_image(None, {}, raw_adjustments_for_reset=None, image_source=None)
 
     def set_adjustments(self, adjustments: Mapping[str, float] | None = None) -> None:
         """Update the active adjustment uniforms without replacing the texture."""

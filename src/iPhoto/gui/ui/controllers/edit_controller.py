@@ -382,6 +382,7 @@ class EditController(QObject):
         self._ui.edit_image_viewer.set_image(
             image,
             resolved_adjustments,
+            raw_adjustments_for_reset=session.values(),
             image_source=path,
             reset_view=False,
         )
