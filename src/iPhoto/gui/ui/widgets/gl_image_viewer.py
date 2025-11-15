@@ -167,7 +167,7 @@ class GLImageViewer(QOpenGLWidget):
             # uniforms need to be refreshed in this scenario.
             self.set_adjustments(adjustments)
             if reset_view:
-                self.reset_zoom()
+                self.reset_zoom_to_crop(adjustments)
             return
 
         self._current_image_source = image_source
@@ -197,7 +197,8 @@ class GLImageViewer(QOpenGLWidget):
             # same fit-to-window baseline that the QWidget-based viewer
             # exposes.  ``reset_view`` lets callers preserve the zoom when the
             # user toggles between detail and edit modes.
-            self.reset_zoom()
+            # Use crop-aware reset if crop parameters exist in adjustments.
+            self.reset_zoom_to_crop(adjustments)
     def set_placeholder(self, pixmap) -> None:
         """Display *pixmap* without changing the tracked image source."""
 
@@ -296,6 +297,30 @@ class GLImageViewer(QOpenGLWidget):
 
     def reset_zoom(self) -> None:
         self._transform_controller.reset_zoom()
+
+    def reset_zoom_to_crop(self, adjustments: Mapping[str, float] | None = None) -> None:
+        """Reset zoom and pan to focus on the cropped region if crop parameters exist.
+        
+        Parameters
+        ----------
+        adjustments:
+            Mapping containing adjustment values including crop parameters.
+            If crop parameters indicate no actual crop or are missing, falls back
+            to standard reset_zoom() behavior.
+        """
+        if not adjustments:
+            self.reset_zoom()
+            return
+        
+        # Extract crop parameters
+        crop_params = {
+            "Crop_CX": adjustments.get("Crop_CX", 0.5),
+            "Crop_CY": adjustments.get("Crop_CY", 0.5),
+            "Crop_W": adjustments.get("Crop_W", 1.0),
+            "Crop_H": adjustments.get("Crop_H", 1.0),
+        }
+        
+        self._transform_controller.reset_zoom_to_rect(crop_params)
 
     def zoom_in(self) -> None:
         current = self._transform_controller.get_zoom_factor()

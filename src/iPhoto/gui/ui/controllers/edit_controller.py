@@ -234,7 +234,8 @@ class EditController(QObject):
         current_source = viewer.current_image_source()
         self._skip_next_preview_frame = current_source == source
         if not self._skip_next_preview_frame:
-            viewer.reset_zoom()
+            # Use crop-aware reset if crop parameters exist
+            viewer.reset_zoom_to_crop(adjustments)
 
         # Clear any stale preview content before attaching the fresh session.  The sidebar reuses
         # its last preview image until it receives an explicit replacement, so resetting it ahead

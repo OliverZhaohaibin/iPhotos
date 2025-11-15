@@ -1,9 +1,8 @@
-# -*- coding: utf-8 -*-
 """Utilities for handling zoom and pan interaction in the GL image viewer."""
 
 from __future__ import annotations
 
-from typing import Callable, Optional
+from collections.abc import Callable, Mapping
 
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QMouseEvent, QWheelEvent
@@ -37,8 +36,8 @@ class ViewTransformController:
         *,
         texture_size_provider: Callable[[], tuple[int, int]],
         on_zoom_changed: Callable[[float], None],
-        on_next_item: Optional[Callable[[], None]] = None,
-        on_prev_item: Optional[Callable[[], None]] = None,
+        on_next_item: Callable[[], None] | None = None,
+        on_prev_item: Callable[[], None] | None = None,
     ) -> None:
         self._viewer = viewer
         self._texture_size_provider = texture_size_provider
@@ -128,7 +127,7 @@ class ViewTransformController:
     # ------------------------------------------------------------------
     # Zoom utilities
     # ------------------------------------------------------------------
-    def set_zoom(self, factor: float, anchor: Optional[QPointF] = None) -> bool:
+    def set_zoom(self, factor: float, anchor: QPointF | None = None) -> bool:
         """Update the zoom factor while keeping *anchor* stationary."""
 
         clamped = max(self._min_zoom, min(self._max_zoom, float(factor)))
@@ -151,7 +150,9 @@ class ViewTransformController:
             old_scale = base_scale * self._zoom_factor
             new_scale = base_scale * clamped
             if old_scale > 1e-6 and new_scale > 0.0:
-                anchor_bottom_left = QPointF(anchor_point.x() * dpr, view_height - anchor_point.y() * dpr)
+                anchor_bottom_left = QPointF(
+                    anchor_point.x() * dpr, view_height - anchor_point.y() * dpr
+                )
                 view_centre = QPointF(view_width / 2.0, view_height / 2.0)
                 anchor_vector = anchor_bottom_left - view_centre
                 tex_coord_x = (anchor_vector.x() - self._pan_px.x()) / old_scale
@@ -169,11 +170,94 @@ class ViewTransformController:
     def reset_zoom(self) -> bool:
         """Restore the baseline zoom and recenter the texture."""
 
-        changed = abs(self._zoom_factor - 1.0) > 1e-6 or abs(self._pan_px.x()) > 1e-6 or abs(self._pan_px.y()) > 1e-6
+        changed = (
+            abs(self._zoom_factor - 1.0) > 1e-6
+            or abs(self._pan_px.x()) > 1e-6
+            or abs(self._pan_px.y()) > 1e-6
+        )
         self._zoom_factor = 1.0
         self._pan_px = QPointF(0.0, 0.0)
         self._viewer.update()
         self._on_zoom_changed(self._zoom_factor)
+        return changed
+
+    def reset_zoom_to_rect(self, crop_params: Mapping[str, float]) -> bool:
+        """Reset zoom and pan to fit the specified crop rectangle to the viewport.
+        
+        Parameters
+        ----------
+        crop_params:
+            Mapping containing normalized crop values (Crop_CX, Crop_CY, Crop_W, Crop_H).
+            All values are expected to be in [0.0, 1.0] range where:
+            - Crop_CX, Crop_CY: normalized center coordinates
+            - Crop_W, Crop_H: normalized width/height (1.0 = full dimension)
+            
+        Returns
+        -------
+        bool
+            True if the view transform was changed, False otherwise.
+            
+        Notes
+        -----
+        If crop parameters indicate no actual crop (Crop_W and Crop_H are 1.0),
+        this method falls back to the standard reset_zoom() behavior.
+        """
+        crop_w = float(crop_params.get("Crop_W", 1.0))
+        crop_h = float(crop_params.get("Crop_H", 1.0))
+        
+        # If no actual crop is applied, use standard reset
+        if abs(crop_w - 1.0) < 1e-6 and abs(crop_h - 1.0) < 1e-6:
+            return self.reset_zoom()
+        
+        # Get full texture dimensions
+        tex_w, tex_h = self._texture_size_provider()
+        if tex_w <= 0 or tex_h <= 0:
+            return self.reset_zoom()
+        
+        # Calculate crop region in pixels
+        crop_pixel_w = float(tex_w) * crop_w
+        crop_pixel_h = float(tex_h) * crop_h
+        
+        if crop_pixel_w <= 0.0 or crop_pixel_h <= 0.0:
+            return self.reset_zoom()
+        
+        # Get viewport dimensions in device pixels
+        vw, vh = self._get_view_dimensions_device_px()
+        
+        # Calculate the base scale needed to fit the crop region to the viewport
+        # This is similar to compute_fit_to_view_scale but for the crop region
+        base_scale = min(vw / crop_pixel_w, vh / crop_pixel_h)
+        
+        # Store old values to determine if anything changed
+        old_zoom = self._zoom_factor
+        old_pan = QPointF(self._pan_px)
+        
+        # Set zoom factor to 1.0 - the base_scale already represents "fit to crop"
+        self._zoom_factor = 1.0
+        
+        # Calculate the effective scale (base_scale already fits crop region)
+        effective_scale = base_scale * self._zoom_factor
+        
+        # Calculate crop center in pixel coordinates
+        crop_cx = float(crop_params.get("Crop_CX", 0.5))
+        crop_cy = float(crop_params.get("Crop_CY", 0.5))
+        crop_center_x = float(tex_w) * crop_cx
+        crop_center_y = float(tex_h) * crop_cy
+        
+        # Set the view center to the crop center using the effective scale
+        crop_center = QPointF(crop_center_x, crop_center_y)
+        self.set_image_center_pixels(crop_center, (tex_w, tex_h), effective_scale)
+        
+        # Notify about zoom change
+        self._viewer.update()
+        self._on_zoom_changed(self._zoom_factor)
+        
+        # Determine if anything actually changed
+        changed = (
+            abs(old_zoom - self._zoom_factor) > 1e-6
+            or abs(old_pan.x() - self._pan_px.x()) > 1e-6
+            or abs(old_pan.y() - self._pan_px.y()) > 1e-6
+        )
         return changed
 
     # ------------------------------------------------------------------
