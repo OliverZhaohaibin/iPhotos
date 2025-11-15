@@ -192,6 +192,9 @@ class GLImageViewer(QOpenGLWidget):
                     finally:
                         self.doneCurrent()
 
+        # Auto-apply crop mode based on adjustments data
+        self._auto_apply_crop_mode(adjustments)
+
         if reset_view:
             # Reset the interactive transform so every new asset begins in the
             # same fit-to-window baseline that the QWidget-based viewer
@@ -239,6 +242,8 @@ class GLImageViewer(QOpenGLWidget):
 
         mapped_adjustments = dict(adjustments or {})
         self._adjustments = mapped_adjustments
+        # Auto-apply crop mode based on adjustments data
+        self._auto_apply_crop_mode(adjustments)
         self.update()
 
     def current_image_source(self) -> object | None:
@@ -454,6 +459,32 @@ class GLImageViewer(QOpenGLWidget):
 
     def crop_values(self) -> dict[str, float]:
         return self._crop_controller.get_crop_values()
+
+    def _auto_apply_crop_mode(self, adjustments: Mapping[str, float] | None) -> None:
+        """Automatically enable or disable crop mode based on adjustments data.
+        
+        This method checks if valid crop data exists in the adjustments dictionary
+        and automatically activates crop mode when appropriate. A crop is considered
+        valid if the width or height is less than 1.0 (i.e., the image is cropped).
+        """
+        if adjustments is None:
+            # No adjustments means no crop
+            self.setCropMode(False, None)
+            return
+        
+        # Check if crop keys exist in adjustments
+        crop_w = adjustments.get("Crop_W", 1.0)
+        crop_h = adjustments.get("Crop_H", 1.0)
+        
+        # A crop is valid if either dimension is less than 1.0
+        has_valid_crop = crop_w < 1.0 or crop_h < 1.0
+        
+        if has_valid_crop:
+            # Enable crop mode with the adjustment values
+            self.setCropMode(True, adjustments)
+        else:
+            # Disable crop mode and reset to full image
+            self.setCropMode(False, None)
 
     # --------------------------- Coordinate transformations ---------------------------
 
