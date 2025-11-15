@@ -741,17 +741,26 @@ class CropInteractionController:
         if tex_w <= 0 or tex_h <= 0:
             return QPointF()
 
-        # 1. 图像像素 (左上角) -> 图像中心向量 (中心原点, Y轴向上)
-        img_vec_x = x - tex_w * 0.5
-        img_vec_y = (tex_h * 0.5) - y  # 图像 Y轴向下 -> 世界 Y轴向上
-
-        # 2. 应用裁剪模型变换 (缩放 + 平移)
-        world_x = img_vec_x * self._crop_img_scale + self._crop_img_offset.x()
-        world_y = img_vec_y * self._crop_img_scale + self._crop_img_offset.y()
+        # Match the shader's transformation order:
+        # texVector = (screenVector / uScale - uImgOffset) / safeImgScale
+        # Reversed: screenVector = (texVector * imgScale + imgOffset) * scale
+        
+        # 1. 图像像素 -> 图像中心向量 (图像空间, Y轴向下)
+        tex_vector_x = x - tex_w * 0.5
+        tex_vector_y = y - tex_h * 0.5
+        
+        # 2. 应用裁剪模型变换 (在图像空间中, Y轴向下)
+        temp_x = tex_vector_x * self._crop_img_scale + self._crop_img_offset.x()
+        temp_y = tex_vector_y * self._crop_img_scale + self._crop_img_offset.y()
+        
+        # 3. 应用主视图变换并转换到世界空间 (Y轴向上)
+        scale = self._transform_controller.get_effective_scale()
+        pan = self._transform_controller.get_pan_pixels()
+        world_x = temp_x * scale + pan.x()
+        world_y = -(temp_y * scale) + pan.y()  # 翻转Y轴: 图像空间(Y下) -> 世界空间(Y上)
         world_vec = QPointF(world_x, world_y)
-
-        # 3. 应用主视图变换 (平移 + 缩放)
-        # 从世界空间 -> Qt屏幕空间 (左上角, Y轴向下)
+        
+        # 4. 世界空间 -> Qt屏幕空间 (左上角, Y轴向下)
         return self._transform_controller.convert_world_to_screen(world_vec)
 
     def _convert_viewport_to_image(self, point: QPointF) -> QPointF:
@@ -764,17 +773,23 @@ class CropInteractionController:
         if tex_w <= 0 or tex_h <= 0 or self._crop_img_scale == 0.0:
             return QPointF()
 
+        # Match the shader's transformation order:
+        # texVector = (screenVector / uScale - uImgOffset) / safeImgScale
+        
         # 1. Qt屏幕空间 (左上角, Y轴向下) -> 世界空间 (中心原点, Y轴向上)
         world_vec = self._transform_controller.convert_screen_to_world(point)
-
-        # 2. 撤销裁剪模型变换 (平移 then 缩放)
-        world_x = world_vec.x() - self._crop_img_offset.x()
-        world_y = world_vec.y() - self._crop_img_offset.y()
         
-        img_vec_x = world_x / self._crop_img_scale
-        img_vec_y = world_y / self._crop_img_scale
-
-        # 3. 图像中心向量 (中心原点, Y轴向上) -> 图像像素 (左上角, Y轴向下)
-        tex_x = img_vec_x + tex_w * 0.5
-        tex_y = (tex_h * 0.5) - img_vec_y  # 世界 Y轴向上 -> 图像 Y轴向下
+        # 2. 撤销主视图变换, 转换到图像空间 (Y轴向下)
+        scale = self._transform_controller.get_effective_scale()
+        pan = self._transform_controller.get_pan_pixels()
+        temp_x = (world_vec.x() - pan.x()) / scale
+        temp_y = -(world_vec.y() - pan.y()) / scale  # 翻转Y轴: 世界空间(Y上) -> 图像空间(Y下)
+        
+        # 3. 撤销裁剪模型变换 (在图像空间中)
+        tex_vector_x = (temp_x - self._crop_img_offset.x()) / self._crop_img_scale
+        tex_vector_y = (temp_y - self._crop_img_offset.y()) / self._crop_img_scale
+        
+        # 4. 图像中心向量 -> 图像像素 (左上角, Y轴向下)
+        tex_x = tex_vector_x + tex_w * 0.5
+        tex_y = tex_vector_y + tex_h * 0.5
         return QPointF(tex_x, tex_y)
