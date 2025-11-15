@@ -212,9 +212,9 @@ def _clamp(value: float, min_val: float, max_val: float) -> float:
 def _float_to_uint8(value: float) -> int:
     """Convert *value* from ``[0.0, 1.0]`` to an 8-bit channel value."""
 
-    scaled = int(round(value * 255.0))
+    scaled = round(value * 255.0)
     if scaled < 0:
         return 0
     if scaled > 255:
         return 255
-    return scaled
+    return int(scaled)

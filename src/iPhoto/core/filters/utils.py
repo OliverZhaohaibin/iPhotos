@@ -66,7 +66,7 @@ def _resolve_pixel_buffer(image: QImage) -> tuple[memoryview, object]:
         view = view.cast("B", (view.nbytes,))
 
     if len(view) < expected_size:
-        # Some bindings expose padding that is smaller than ``bytesPerLine`` ×
+        # Some bindings expose padding that is smaller than ``bytesPerLine`` x
         # ``height``.  Restrict the view rather than risking out-of-bounds
         # writes.
         view = view[:expected_size]

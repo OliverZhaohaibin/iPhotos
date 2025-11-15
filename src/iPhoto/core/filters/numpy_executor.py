@@ -56,7 +56,7 @@ def _np_contrast_tone_signed(gray: np.ndarray, tone_adjust: float) -> np.ndarray
 
 
 def _generate_grain_field(width: int, height: int) -> np.ndarray:
-    """Return a deterministic ``height`` × ``width`` pseudo-random field."""
+    """Return a deterministic ``height`` x ``width`` pseudo-random field."""
 
     if width <= 0 or height <= 0:
         return np.zeros((max(1, height), max(1, width)), dtype=np.float32)

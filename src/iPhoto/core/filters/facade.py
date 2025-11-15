@@ -7,7 +7,7 @@ back when needed.
 
 from __future__ import annotations
 
-from typing import Mapping
+from collections.abc import Mapping
 
 from PySide6.QtGui import QImage
 
@@ -44,7 +44,7 @@ def apply_adjustments(
     The function intentionally works on a copy of *image* so that the caller can
     reuse the original QImage as the immutable source of truth for subsequent
     recalculations.  Each adjustment operates on normalised channel intensities
-    (``0.0`` – ``1.0``) and relies on simple tone curves so the preview remains
+    (``0.0`` - ``1.0``) and relies on simple tone curves so the preview remains
     responsive without requiring external numeric libraries.
 
     Parameters
@@ -104,10 +104,18 @@ def apply_adjustments(
     if bw_flag is None:
         bw_flag = adjustments.get("BWEnabled")
     bw_enabled = bool(bw_flag)
-    bw_intensity = _normalise_bw_param(adjustments.get("BW_Intensity", adjustments.get("BWIntensity", 0.5)))
-    bw_neutrals = _normalise_bw_param(adjustments.get("BW_Neutrals", adjustments.get("BWNeutrals", 0.0)))
-    bw_tone = _normalise_bw_param(adjustments.get("BW_Tone", adjustments.get("BWTone", 0.0)))
-    bw_grain = _normalise_bw_param(adjustments.get("BW_Grain", adjustments.get("BWGrain", 0.0)))
+    bw_intensity = _normalise_bw_param(
+        adjustments.get("BW_Intensity", adjustments.get("BWIntensity", 0.5))
+    )
+    bw_neutrals = _normalise_bw_param(
+        adjustments.get("BW_Neutrals", adjustments.get("BWNeutrals", 0.0))
+    )
+    bw_tone = _normalise_bw_param(
+        adjustments.get("BW_Tone", adjustments.get("BWTone", 0.0))
+    )
+    bw_grain = _normalise_bw_param(
+        adjustments.get("BW_Grain", adjustments.get("BWGrain", 0.0))
+    )
     apply_bw = bw_enabled
 
     # Early exit if no adjustments are needed
@@ -124,7 +132,7 @@ def apply_adjustments(
         )
     ) and all(abs(value) < 1e-6 for value in (saturation, vibrance)) and cast < 1e-6:
         if not apply_bw:
-            # Nothing to do – return a cheap copy so callers still get a detached
+            # Nothing to do - return a cheap copy so callers still get a detached
             # instance they are free to mutate independently.
             return QImage(result)
 

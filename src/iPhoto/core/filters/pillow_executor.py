@@ -6,7 +6,7 @@ application, which is particularly efficient for large images.
 
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
 from PySide6.QtGui import QImage
 
@@ -96,7 +96,7 @@ def apply_adjustments_with_lut(image: QImage, lut: Sequence[int]) -> QImage | No
         if qt_image.format() != QImage.Format.Format_ARGB32:
             qt_image = qt_image.convertToFormat(QImage.Format.Format_ARGB32)
         return qt_image
-    except Exception:
+    except (RuntimeError, OSError, ValueError):
         # Pillow is optional; if anything goes wrong we fall back to the
         # original buffer-walking implementation.
         return None
