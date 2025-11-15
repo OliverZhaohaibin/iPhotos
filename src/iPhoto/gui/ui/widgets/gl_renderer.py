@@ -10,13 +10,16 @@ API tailored to the viewer.
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import Mapping, Optional
 
 import numpy as np
-from PySide6.QtCore import QObject, QPointF
+from PySide6.QtCore import QObject, QPointF, QSize
 from PySide6.QtGui import QImage
 from PySide6.QtOpenGL import (
+    QOpenGLFramebufferObject,
+    QOpenGLFramebufferObjectFormat,
     QOpenGLFunctions_3_3_Core,
     QOpenGLShader,
     QOpenGLShaderProgram,
@@ -502,3 +505,93 @@ class GLRenderer:
         location = self._uniform_locations.get(name, -1)
         if location != -1:
             self._gl_funcs.glUniform4f(location, float(x), float(y), float(z), float(w))
+
+    def render_offscreen_image(
+        self,
+        image: QImage,
+        adjustments: Mapping[str, float],
+        target_size: QSize,
+        time_base: float = 0.0,
+    ) -> QImage:
+        """Render the image into an off-screen framebuffer.
+
+        Parameters
+        ----------
+        image:
+            Source image to render.
+        adjustments:
+            Mapping of shader uniform values to apply during rendering.
+        target_size:
+            Final size of the rendered preview. The method clamps the width
+            and height to at least one pixel to avoid driver errors.
+        time_base:
+            Time base for animated effects (default: 0.0).
+
+        Returns
+        -------
+        QImage
+            CPU-side image containing the rendered frame, converted to Format_ARGB32.
+        """
+        if target_size.isEmpty():
+            _LOGGER.warning("render_offscreen_image: target size was empty")
+            return QImage()
+
+        if self._gl_funcs is None:
+            _LOGGER.error("render_offscreen_image: renderer not initialized")
+            return QImage()
+
+        # Ensure texture is uploaded
+        if not self.has_texture():
+            self.upload_texture(image)
+        if not self.has_texture():
+            _LOGGER.error("render_offscreen_image: texture upload failed")
+            return QImage()
+
+        gf = self._gl_funcs
+        width = max(1, int(target_size.width()))
+        height = max(1, int(target_size.height()))
+
+        previous_fbo = gl.glGetIntegerv(gl.GL_FRAMEBUFFER_BINDING)
+        previous_viewport = gl.glGetIntegerv(gl.GL_VIEWPORT)
+
+        fbo_format = QOpenGLFramebufferObjectFormat()
+        fbo_format.setAttachment(QOpenGLFramebufferObject.CombinedDepthStencil)
+        fbo_format.setTextureTarget(gl.GL_TEXTURE_2D)
+        fbo = QOpenGLFramebufferObject(width, height, fbo_format)
+        if not fbo.isValid():
+            _LOGGER.error("render_offscreen_image: failed to allocate framebuffer object")
+            return QImage()
+
+        try:
+            fbo.bind()
+            gf.glViewport(0, 0, width, height)
+            gf.glClearColor(0.0, 0.0, 0.0, 0.0)
+            gf.glClear(gl.GL_COLOR_BUFFER_BIT)
+
+            # Import here to avoid circular dependency
+            from .view_transform_controller import compute_fit_to_view_scale
+
+            texture_size = self.texture_size()
+            base_scale = compute_fit_to_view_scale(texture_size, float(width), float(height))
+            effective_scale = max(base_scale, 1e-6)
+            time_value = time.monotonic() - time_base
+
+            self.render(
+                view_width=float(width),
+                view_height=float(height),
+                scale=effective_scale,
+                pan=QPointF(0.0, 0.0),
+                adjustments=dict(adjustments),
+                time_value=time_value,
+            )
+
+            return fbo.toImage().convertToFormat(QImage.Format.Format_ARGB32)
+        finally:
+            fbo.release()
+            gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, previous_fbo)
+            try:
+                x, y, w, h = [int(v) for v in previous_viewport]
+                gf.glViewport(x, y, w, h)
+            except Exception:
+                pass
+

@@ -55,6 +55,39 @@ class ViewTransformController:
         self._wheel_action: str = "zoom"
 
     # ------------------------------------------------------------------
+    # Helper methods for getting viewport info
+    # ------------------------------------------------------------------
+    def _get_view_dimensions_device_px(self) -> tuple[float, float]:
+        """Get viewport dimensions in device pixels."""
+        dpr = self._viewer.devicePixelRatioF()
+        vw = max(1.0, float(self._viewer.width()) * dpr)
+        vh = max(1.0, float(self._viewer.height()) * dpr)
+        return vw, vh
+    
+    def _get_dpr(self) -> float:
+        """Get device pixel ratio."""
+        return self._viewer.devicePixelRatioF()
+
+    def _get_view_dimensions_logical(self) -> tuple[float, float]:
+        """Get viewport dimensions in logical pixels."""
+        return float(self._viewer.width()), float(self._viewer.height())
+
+    # ------------------------------------------------------------------
+    # Public wrappers for viewport info
+    # ------------------------------------------------------------------
+    def get_view_dimensions_device_px(self) -> tuple[float, float]:
+        """Public wrapper for device pixel viewport dimensions."""
+        return self._get_view_dimensions_device_px()
+
+    def get_dpr(self) -> float:
+        """Public wrapper for device pixel ratio."""
+        return self._get_dpr()
+
+    def get_view_dimensions_logical(self) -> tuple[float, float]:
+        """Public wrapper for logical pixel viewport dimensions."""
+        return self._get_view_dimensions_logical()
+
+    # ------------------------------------------------------------------
     # State accessors
     # ------------------------------------------------------------------
     def get_zoom_factor(self) -> float:
@@ -181,3 +214,165 @@ class ViewTransformController:
             elif step > 0 and self._on_prev_item is not None:
                 self._on_prev_item()
         event.accept()
+
+    # ------------------------------------------------------------------
+    # Coordinate transformation utilities
+    # ------------------------------------------------------------------
+    def screen_to_world(
+        self, screen_pt: QPointF, view_width: float, view_height: float, dpr: float
+    ) -> QPointF:
+        """Map a Qt screen coordinate to the GL view's centre-origin space.
+
+        Qt reports positions in logical pixels with the origin at the top-left and
+        a downward pointing Y axis.  The renderer however reasons about vectors in
+        device pixels where the origin lives at the viewport centre and the Y axis
+        grows upwards.  This helper performs the origin shift, the device pixel
+        conversion and the Y flip so every caller receives a world-space vector
+        that matches what the shader expects.
+        """
+        vw = view_width * dpr
+        vh = view_height * dpr
+        sx = float(screen_pt.x()) * dpr
+        sy = float(screen_pt.y()) * dpr
+        world_x = sx - (vw * 0.5)
+        world_y = (vh * 0.5) - sy
+        return QPointF(world_x, world_y)
+
+    def world_to_screen(
+        self, world_vec: QPointF, view_width: float, view_height: float, dpr: float
+    ) -> QPointF:
+        """Convert a GL centre-origin vector into a Qt screen coordinate.
+
+        The inverse of :meth:`screen_to_world`: a world vector expressed in
+        pixels relative to the viewport centre (Y up) is translated back into the
+        top-left origin, Y-down coordinate system that Qt painting routines use.
+        The return value is expressed in logical pixels to remain consistent with
+        Qt's high-DPI handling.
+        """
+        vw = view_width * dpr
+        vh = view_height * dpr
+        sx = float(world_vec.x()) + (vw * 0.5)
+        sy = (vh * 0.5) - float(world_vec.y())
+        return QPointF(sx / dpr, sy / dpr)
+
+    def effective_scale(
+        self, texture_size: tuple[int, int], view_width: float, view_height: float
+    ) -> float:
+        """Calculate the effective rendering scale (base scale × zoom factor)."""
+        base_scale = compute_fit_to_view_scale(texture_size, view_width, view_height)
+        return max(base_scale * self._zoom_factor, 1e-6)
+
+    def image_center_pixels(
+        self, texture_size: tuple[int, int], scale: float
+    ) -> QPointF:
+        """Return the image center in pixel coordinates based on current pan/zoom."""
+        tex_w, tex_h = texture_size
+        centre_x = (tex_w / 2.0) - (self._pan_px.x() / scale)
+        # ``pan.y`` grows upwards in world space, therefore the corresponding
+        # image coordinate moves towards the bottom (larger Y values) in the
+        # conventional top-left origin texture space.
+        centre_y = (tex_h / 2.0) + (self._pan_px.y() / scale)
+        return QPointF(centre_x, centre_y)
+
+    def set_image_center_pixels(
+        self, center: QPointF, texture_size: tuple[int, int], scale: float
+    ) -> None:
+        """Set the pan to center the image at the given pixel coordinate."""
+        tex_w, tex_h = texture_size
+        delta_x = center.x() - (tex_w / 2.0)
+        delta_y = center.y() - (tex_h / 2.0)
+        # ``delta_y`` measures how far the requested centre sits below the image
+        # mid-line; in world space that translates to a positive upward pan.
+        pan = QPointF(-delta_x * scale, delta_y * scale)
+        self.set_pan_pixels(pan)
+
+    def image_to_viewport(
+        self,
+        x: float,
+        y: float,
+        texture_size: tuple[int, int],
+        scale: float,
+        view_width: float,
+        view_height: float,
+        dpr: float,
+    ) -> QPointF:
+        """Convert image pixel coordinates to viewport coordinates."""
+        tex_w, tex_h = texture_size
+        tex_vector_x = x - (tex_w / 2.0)
+        tex_vector_y = y - (tex_h / 2.0)
+        world_vector = QPointF(
+            tex_vector_x * scale + self._pan_px.x(),
+            -(tex_vector_y * scale) + self._pan_px.y(),
+        )
+        # ``world_vector`` is now expressed in the GL-friendly centre-origin
+        # space, so the last step is to convert it back to Qt's screen space.
+        return self.world_to_screen(world_vector, view_width, view_height, dpr)
+
+    def viewport_to_image(
+        self,
+        point: QPointF,
+        texture_size: tuple[int, int],
+        scale: float,
+        view_width: float,
+        view_height: float,
+        dpr: float,
+    ) -> QPointF:
+        """Convert viewport coordinates to image pixel coordinates."""
+        world_vec = self.screen_to_world(point, view_width, view_height, dpr)
+        tex_vector_x = (world_vec.x() - self._pan_px.x()) / scale
+        tex_vector_y = (world_vec.y() - self._pan_px.y()) / scale
+        tex_w, tex_h = texture_size
+        tex_x = tex_w / 2.0 + tex_vector_x
+        # Convert the world-space Y (upwards positive) back into image space
+        # where increasing values travel down the texture.
+        tex_y = tex_h / 2.0 - tex_vector_y
+        return QPointF(tex_x, tex_y)
+
+    # ------------------------------------------------------------------
+    # Convenience methods that use internal viewport state
+    # ------------------------------------------------------------------
+    def get_effective_scale(self) -> float:
+        """Calculate the effective rendering scale using internal viewport state."""
+        vw, vh = self._get_view_dimensions_device_px()
+        texture_size = self._texture_size_provider()
+        return self.effective_scale(texture_size, vw, vh)
+    
+    def get_image_center_pixels(self) -> QPointF:
+        """Return the image center in pixel coordinates using current pan/zoom."""
+        texture_size = self._texture_size_provider()
+        scale = self.get_effective_scale()
+        return self.image_center_pixels(texture_size, scale)
+    
+    def apply_image_center_pixels(self, center: QPointF, scale: float | None = None) -> None:
+        """Set the pan to center the image at the given pixel coordinate."""
+        texture_size = self._texture_size_provider()
+        scale_value = scale if scale is not None else self.get_effective_scale()
+        self.set_image_center_pixels(center, texture_size, scale_value)
+    
+    def convert_screen_to_world(self, screen_pt: QPointF) -> QPointF:
+        """Map a Qt screen coordinate to GL view's centre-origin space."""
+        view_width, view_height = self._get_view_dimensions_logical()
+        dpr = self._get_dpr()
+        return self.screen_to_world(screen_pt, view_width, view_height, dpr)
+    
+    def convert_world_to_screen(self, world_vec: QPointF) -> QPointF:
+        """Convert a GL centre-origin vector into a Qt screen coordinate."""
+        view_width, view_height = self._get_view_dimensions_logical()
+        dpr = self._get_dpr()
+        return self.world_to_screen(world_vec, view_width, view_height, dpr)
+    
+    def convert_image_to_viewport(self, x: float, y: float) -> QPointF:
+        """Convert image pixel coordinates to viewport coordinates."""
+        texture_size = self._texture_size_provider()
+        scale = self.get_effective_scale()
+        view_width, view_height = self._get_view_dimensions_logical()
+        dpr = self._get_dpr()
+        return self.image_to_viewport(x, y, texture_size, scale, view_width, view_height, dpr)
+    
+    def convert_viewport_to_image(self, point: QPointF) -> QPointF:
+        """Convert viewport coordinates to image pixel coordinates."""
+        texture_size = self._texture_size_provider()
+        scale = self.get_effective_scale()
+        view_width, view_height = self._get_view_dimensions_logical()
+        dpr = self._get_dpr()
+        return self.viewport_to_image(point, texture_size, scale, view_width, view_height, dpr)
