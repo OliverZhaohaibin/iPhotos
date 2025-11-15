@@ -131,6 +131,44 @@ class CropInteractionController:
             "bottom": bottom_right.y() * dpr,
         }
 
+    def set_crop_transform_values(
+        self, crop_params: Mapping[str, float] | None
+    ) -> None:
+        """Update internal crop transform values without activating crop mode.
+        
+        This allows the controller to provide correct crop transforms even when
+        not in active crop editing mode, for displaying saved crops from sidecar.
+        
+        Parameters
+        ----------
+        crop_params:
+            Mapping with Crop_CX, Crop_CY, Crop_W, Crop_H keys (normalized [0,1] range).
+            If None or indicates no crop, resets to neutral transform.
+        """
+        if not crop_params:
+            self._reset_crop_model_transform()
+            return
+            
+        cx = float(crop_params.get("Crop_CX", 0.5))
+        cy = float(crop_params.get("Crop_CY", 0.5))
+        w = float(crop_params.get("Crop_W", 1.0))
+        h = float(crop_params.get("Crop_H", 1.0))
+        
+        # Check if actual crop exists
+        if abs(w - 1.0) < 1e-6 and abs(h - 1.0) < 1e-6:
+            self._reset_crop_model_transform()
+            return
+        
+        # Calculate scale (inverse of crop size)
+        self._crop_img_scale = 1.0 / min(w, h) if min(w, h) > 1e-6 else 1.0
+        
+        # Calculate offset to center the crop region
+        # In normalized texture coordinates, center is at (0.5, 0.5)
+        # We need to shift so that crop center (cx, cy) appears at texture center
+        offset_x = 0.5 - cx * self._crop_img_scale
+        offset_y = 0.5 - cy * self._crop_img_scale
+        self._crop_img_offset = QPointF(offset_x, offset_y)
+
     def set_active(self, enabled: bool, values: Mapping[str, float] | None = None) -> None:
         """Enable or disable crop mode with optional initial crop values."""
         if enabled == self._active:
