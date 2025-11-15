@@ -295,7 +295,79 @@ class GLImageViewer(QOpenGLWidget):
         self._transform_controller.set_zoom(float(factor), anchor_point)
 
     def reset_zoom(self) -> None:
-        self._transform_controller.reset_zoom()
+        """Reset zoom to fit the image (or cropped region) to view."""
+        # Check if we have crop data in adjustments
+        adjustments = self._adjustments
+        crop_w = float(adjustments.get("Crop_W", 1.0))
+        crop_h = float(adjustments.get("Crop_H", 1.0))
+        is_cropped = crop_w < 1.0 or crop_h < 1.0
+        
+        if not is_cropped:
+            # No crop, use standard reset_zoom
+            self._transform_controller.reset_zoom()
+            return
+        
+        # Image is cropped - need to adjust zoom and pan
+        # First, get the texture (image) dimensions
+        if self._renderer is None or not self._renderer.has_texture():
+            self._transform_controller.reset_zoom()
+            return
+        
+        tex_w, tex_h = self._renderer.texture_size()
+        if tex_w <= 0 or tex_h <= 0:
+            self._transform_controller.reset_zoom()
+            return
+        
+        # Step 1: Calculate target size based on crop
+        cropped_pixel_w = float(tex_w) * crop_w
+        cropped_pixel_h = float(tex_h) * crop_h
+        
+        # Step 2: Calculate the zoom factor needed to fit the cropped region
+        dpr = self.devicePixelRatioF()
+        view_width = float(self.width()) * dpr
+        view_height = float(self.height()) * dpr
+        
+        if view_width <= 0 or view_height <= 0:
+            self._transform_controller.reset_zoom()
+            return
+        
+        # Calculate base scale for full image
+        from .view_transform_controller import compute_fit_to_view_scale
+        base_scale = compute_fit_to_view_scale((tex_w, tex_h), view_width, view_height)
+        
+        # Calculate scale for cropped region
+        width_ratio = view_width / cropped_pixel_w if cropped_pixel_w > 0 else 1.0
+        height_ratio = view_height / cropped_pixel_h if cropped_pixel_h > 0 else 1.0
+        target_scale = min(width_ratio, height_ratio)
+        
+        # Calculate zoom factor (target_scale / base_scale)
+        zoom_factor = target_scale / base_scale if base_scale > 1e-6 else 1.0
+        zoom_factor = max(self._transform_controller._min_zoom, 
+                         min(self._transform_controller._max_zoom, zoom_factor))
+        
+        # Set the zoom factor
+        self._transform_controller.set_zoom_factor_direct(zoom_factor)
+        
+        # Step 3: Calculate and apply pan to center the crop region
+        crop_cx = float(adjustments.get("Crop_CX", 0.5))
+        crop_cy = float(adjustments.get("Crop_CY", 0.5))
+        
+        # Calculate normalized offset from image center (0.5, 0.5) to crop center
+        norm_dx = crop_cx - 0.5
+        norm_dy = crop_cy - 0.5
+        
+        # Convert to pixel offset in the full image
+        pixel_dx = norm_dx * float(tex_w)
+        pixel_dy = norm_dy * float(tex_h)
+        
+        # Calculate pan in widget coordinates
+        # Note: pan direction is opposite to offset direction
+        effective_scale = base_scale * zoom_factor
+        pan_x = -pixel_dx * effective_scale
+        pan_y = -pixel_dy * effective_scale
+        
+        self._transform_controller.set_pan_pixels(QPointF(pan_x, pan_y))
+        self.update()
 
     def zoom_in(self) -> None:
         current = self._transform_controller.get_zoom_factor()

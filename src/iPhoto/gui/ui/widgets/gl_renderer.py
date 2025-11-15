@@ -140,6 +140,10 @@ class GLRenderer:
                 "uPan",
                 "uImgScale",
                 "uImgOffset",
+                "uCropCX",
+                "uCropCY",
+                "uCropW",
+                "uCropH",
             ):
                 self._uniform_locations[name] = program.uniformLocation(name)
         finally:
@@ -352,6 +356,12 @@ class GLRenderer:
                 float(offset_value.x()),
                 float(offset_value.y()),
             )
+
+            # Pass crop parameters to shader
+            self._set_uniform1f("uCropCX", adjustment_value("Crop_CX", 0.5))
+            self._set_uniform1f("uCropCY", adjustment_value("Crop_CY", 0.5))
+            self._set_uniform1f("uCropW", adjustment_value("Crop_W", 1.0))
+            self._set_uniform1f("uCropH", adjustment_value("Crop_H", 1.0))
 
             gf.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
         finally:

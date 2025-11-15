@@ -91,7 +91,12 @@ class ThumbnailJob(QRunnable):
             raw_adjustments,
             color_stats=stats,
         )
+        
+        # Apply crop before other adjustments and scaling
         if adjustments:
+            image = self._apply_crop(image, adjustments)
+            if image is None:
+                return None
             image = apply_adjustments(image, adjustments, color_stats=stats)
         return self._composite_canvas(image)
 
@@ -105,6 +110,57 @@ class ThumbnailJob(QRunnable):
         if image is None:
             return None
         return self._composite_canvas(image)
+
+    def _apply_crop(self, image: QImage, adjustments: Dict[str, float]) -> Optional[QImage]:
+        """Apply crop from adjustments to the image.
+        
+        Extracts the crop parameters (Crop_CX, Crop_CY, Crop_W, Crop_H) from
+        adjustments and uses QImage.copy to extract the cropped region.
+        
+        Args:
+            image: Source image to crop
+            adjustments: Dictionary containing crop parameters
+            
+        Returns:
+            Cropped QImage or original image if no valid crop data exists
+        """
+        from PySide6.QtCore import QRect
+        
+        # Get crop parameters with defaults (no crop)
+        crop_cx = adjustments.get("Crop_CX", 0.5)
+        crop_cy = adjustments.get("Crop_CY", 0.5)
+        crop_w = adjustments.get("Crop_W", 1.0)
+        crop_h = adjustments.get("Crop_H", 1.0)
+        
+        # Only apply crop if there's actual cropping (width or height < 1.0)
+        if crop_w >= 1.0 and crop_h >= 1.0:
+            return image
+        
+        # Convert normalized coordinates to pixel coordinates
+        img_width = image.width()
+        img_height = image.height()
+        
+        # Calculate crop rectangle in pixels
+        # Center coordinates are normalized (0-1)
+        # Width and height are normalized (0-1) representing the fraction of the image
+        crop_width_px = int(crop_w * img_width)
+        crop_height_px = int(crop_h * img_height)
+        
+        # Calculate top-left corner from center position
+        crop_left_px = int((crop_cx * img_width) - (crop_width_px / 2))
+        crop_top_px = int((crop_cy * img_height) - (crop_height_px / 2))
+        
+        # Clamp to image bounds
+        crop_left_px = max(0, min(crop_left_px, img_width - 1))
+        crop_top_px = max(0, min(crop_top_px, img_height - 1))
+        crop_width_px = max(1, min(crop_width_px, img_width - crop_left_px))
+        crop_height_px = max(1, min(crop_height_px, img_height - crop_top_px))
+        
+        # Create crop rectangle and extract the region
+        crop_rect = QRect(crop_left_px, crop_top_px, crop_width_px, crop_height_px)
+        cropped_image = image.copy(crop_rect)
+        
+        return cropped_image if not cropped_image.isNull() else image
 
     def _seek_targets(self) -> list[Optional[float]]:
         """Return seek offsets for video thumbnails with guard rails."""
