@@ -27,19 +27,19 @@ class CropInteractionController:
 
     def __init__(
         self,
-        viewer: QOpenGLWidget,
         *,
         texture_size_provider: Callable[[], tuple[int, int]],
         clamp_image_center_to_crop: Callable[[QPointF, float], QPointF],
         transform_controller,  # ViewTransformController
         on_crop_changed: Callable[[float, float, float, float], None],
+        on_cursor_change: Callable[[Qt.CursorShape | None], None],
+        on_request_update: Callable[[], None],
+        timer_parent: QObject | None = None,
     ) -> None:
         """Initialize the crop interaction controller.
 
         Parameters
         ----------
-        viewer:
-            The parent QOpenGLWidget for cursor management and updates.
         texture_size_provider:
             Callable that returns (width, height) of the current texture.
         clamp_image_center_to_crop:
@@ -48,12 +48,19 @@ class CropInteractionController:
             ViewTransformController instance for zoom/pan and coordinate transforms.
         on_crop_changed:
             Callback when crop values change, signature: (cx, cy, width, height).
+        on_cursor_change:
+            Callback to change cursor, signature: (cursor_shape or None to unset).
+        on_request_update:
+            Callback to request widget update/repaint.
+        timer_parent:
+            Parent QObject for timers (optional).
         """
-        self._viewer = viewer
         self._texture_size_provider = texture_size_provider
         self._clamp_image_center_to_crop = clamp_image_center_to_crop
         self._transform_controller = transform_controller
         self._on_crop_changed = on_crop_changed
+        self._on_cursor_change = on_cursor_change
+        self._on_request_update = on_request_update
 
         # Crop state
         self._active: bool = False
@@ -71,10 +78,10 @@ class CropInteractionController:
         self._img_scale_clamp: tuple[float, float] = (0.02, 40.0)
 
         # Animation state
-        self._crop_idle_timer = QTimer(self._viewer)
+        self._crop_idle_timer = QTimer(timer_parent)
         self._crop_idle_timer.setInterval(1000)
         self._crop_idle_timer.timeout.connect(self._on_crop_idle_timeout)
-        self._crop_anim_timer = QTimer(self._viewer)
+        self._crop_anim_timer = QTimer(timer_parent)
         self._crop_anim_timer.setInterval(16)
         self._crop_anim_timer.timeout.connect(self._on_crop_anim_tick)
         self._crop_anim_active: bool = False
@@ -117,7 +124,7 @@ class CropInteractionController:
         rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
         top_left = self._transform_controller.convert_image_to_viewport(rect["left"], rect["top"])
         bottom_right = self._transform_controller.convert_image_to_viewport(rect["right"], rect["bottom"])
-        dpr = self._viewer.devicePixelRatioF()
+        dpr = self._transform_controller._get_dpr()
         return {
             "left": top_left.x() * dpr,
             "top": top_left.y() * dpr,
@@ -140,8 +147,8 @@ class CropInteractionController:
             self._crop_dragging = False
             self._crop_faded_out = False
             self._reset_crop_model_transform()
-            self._viewer.unsetCursor()
-            self._viewer.update()
+            self._on_cursor_change(None)
+            self._on_request_update()
             return
 
         # Reset the image model transform when entering crop mode
@@ -152,7 +159,7 @@ class CropInteractionController:
         self._crop_dragging = False
         self._stop_crop_animation()
         self._restart_crop_idle()
-        self._viewer.update()
+        self._on_request_update()
 
     # ------------------------------------------------------------------
     # Event handlers
@@ -172,7 +179,7 @@ class CropInteractionController:
         if handle == CropHandle.NONE:
             self._crop_drag_handle = CropHandle.NONE
             self._crop_dragging = False
-            self._viewer.setCursor(Qt.CursorShape.ArrowCursor)
+            self._on_cursor_change(Qt.CursorShape.ArrowCursor)
             return
 
         self._crop_drag_handle = handle
@@ -185,10 +192,10 @@ class CropInteractionController:
             top_left = self._transform_controller.convert_image_to_viewport(rect["left"], rect["top"])
             bottom_right = self._transform_controller.convert_image_to_viewport(rect["right"], rect["bottom"])
             self._crop_drag_anchor_viewport = (QPointF(top_left), QPointF(bottom_right))
-            self._viewer.setCursor(Qt.CursorShape.ClosedHandCursor)
+            self._on_cursor_change(Qt.CursorShape.ClosedHandCursor)
         else:
             self._crop_drag_anchor_viewport = None
-            self._viewer.setCursor(cursor_for_handle(handle))
+            self._on_cursor_change(cursor_for_handle(handle))
 
         event.accept()
 
@@ -201,7 +208,7 @@ class CropInteractionController:
         pos = event.position()
         if not self._crop_dragging:
             handle = self._crop_hit_test(pos)
-            self._viewer.setCursor(cursor_for_handle(handle))
+            self._on_cursor_change(cursor_for_handle(handle))
             return
 
         previous_pos = QPointF(self._crop_last_pos)
@@ -215,7 +222,7 @@ class CropInteractionController:
             if view_scale <= 1e-6:
                 return
 
-            dpr = self._viewer.devicePixelRatioF()
+            dpr = self._transform_controller._get_dpr()
             delta_device_x = float(delta_view.x()) * dpr
             delta_device_y = float(delta_view.y()) * dpr
 
@@ -236,7 +243,7 @@ class CropInteractionController:
             scale = self._transform_controller.get_effective_scale() * self._crop_img_scale
             if scale <= 1e-6:
                 return
-            dpr = self._viewer.devicePixelRatioF()
+            dpr = self._transform_controller._get_dpr()
             image_delta = QPointF(
                 delta_view.x() * dpr / scale,
                 delta_view.y() * dpr / scale,
@@ -247,14 +254,14 @@ class CropInteractionController:
             self._emit_crop_changed()
 
         self._restart_crop_idle()
-        self._viewer.update()
+        self._on_request_update()
 
     def handle_mouse_release(self, event: QMouseEvent) -> None:
         """Handle mouse release events in crop mode."""
         del event  # unused
         self._crop_dragging = False
         self._crop_drag_handle = CropHandle.NONE
-        self._viewer.unsetCursor()
+        self._on_cursor_change(None)
         self._crop_drag_anchor_viewport = None
         self._restart_crop_idle()
 
@@ -317,7 +324,7 @@ class CropInteractionController:
 
         self._crop_img_scale = new_scale
         self._crop_img_offset = new_offset
-        self._viewer.update()
+        self._on_request_update()
         self._restart_crop_idle()
         event.accept()
 
@@ -406,10 +413,8 @@ class CropInteractionController:
         tex_w, tex_h = self._texture_size_provider()
         if tex_w <= 0 or tex_h <= 0:
             # Fallback to viewport center
-            return QPointF(
-                self._viewer.width() / 2,
-                self._viewer.height() / 2
-            )
+            view_width, view_height = self._transform_controller._get_view_dimensions_logical()
+            return QPointF(view_width / 2, view_height / 2)
         center = self._crop_state.center_pixels(tex_w, tex_h)
         return self._transform_controller.convert_image_to_viewport(center.x(), center.y())
 
@@ -526,7 +531,7 @@ class CropInteractionController:
             self._crop_anim_active = False
             self._crop_anim_timer.stop()
             self._crop_faded_out = True
-            self._viewer.update()
+            self._on_request_update()
             return
 
         progress = max(0.0, min(1.0, elapsed / self._crop_anim_duration))
@@ -541,7 +546,7 @@ class CropInteractionController:
             (self._crop_anim_target_center.y() - self._crop_anim_start_center.y()) * eased
         )
         self._apply_crop_animation_state(scale, QPointF(centre_x, centre_y))
-        self._viewer.update()
+        self._on_request_update()
 
     def _apply_crop_animation_state(self, scale: float, centre: QPointF) -> None:
         """Apply animation state to the viewer."""
@@ -570,7 +575,7 @@ class CropInteractionController:
         crop_rect = self._crop_state.to_pixel_rect(tex_w, tex_h)
         crop_width = max(1.0, crop_rect["right"] - crop_rect["left"])
         crop_height = max(1.0, crop_rect["bottom"] - crop_rect["top"])
-        padding = 20.0 * self._viewer.devicePixelRatioF()
+        padding = 20.0 * self._transform_controller._get_dpr()
         available_w = max(1.0, vw - padding * 2.0)
         available_h = max(1.0, vh - padding * 2.0)
         scale_w = available_w / crop_width
@@ -597,7 +602,7 @@ class CropInteractionController:
         delta_y = delta.y()
 
         # Convert delta to image space
-        dpr = self._viewer.devicePixelRatioF()
+        dpr = self._transform_controller._get_dpr()
         current_scale = self._transform_controller.get_effective_scale()
         if current_scale <= 1e-6:
             return

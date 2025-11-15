@@ -112,11 +112,13 @@ class GLImageViewer(QOpenGLWidget):
 
         # Crop interaction controller
         self._crop_controller = CropInteractionController(
-            self,
             texture_size_provider=self._texture_dimensions,
             clamp_image_center_to_crop=self._clamp_image_center_to_crop,
             transform_controller=self._transform_controller,
             on_crop_changed=self.cropChanged.emit,
+            on_cursor_change=self._handle_cursor_change,
+            on_request_update=self.update,
+            timer_parent=self,
         )
 
     # --------------------------- Public API ---------------------------
@@ -668,6 +670,15 @@ class GLImageViewer(QOpenGLWidget):
         super().resizeEvent(event)
         if self._loading_overlay is not None:
             self._loading_overlay.resize(self.size())
+
+    # --------------------------- Viewport helpers ---------------------------
+
+    def _handle_cursor_change(self, cursor: Qt.CursorShape | None) -> None:
+        """Handle cursor change request from controllers."""
+        if cursor is None:
+            self.unsetCursor()
+        else:
+            self.setCursor(cursor)
 
     def _texture_dimensions(self) -> tuple[int, int]:
         """Return the current texture size or ``(0, 0)`` when unavailable."""
