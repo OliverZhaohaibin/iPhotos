@@ -610,7 +610,7 @@ class GLImageViewer(QOpenGLWidget):
         if self._loading_overlay is not None:
             self._loading_overlay.resize(self.size())
 
-    # --------------------------- Viewport helpers ---------------------------
+    # --------------------------- Cursor management and helpers ---------------------------
 
     def _handle_cursor_change(self, cursor: Qt.CursorShape | None) -> None:
         """Handle cursor change request from controllers."""
