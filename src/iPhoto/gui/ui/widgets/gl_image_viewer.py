@@ -171,7 +171,9 @@ class GLImageViewer(QOpenGLWidget):
             # uniforms need to be refreshed in this scenario.
             self.set_adjustments(shader_adjustments)
             if reset_view:
-                self.reset_zoom_to_crop(raw_adjustments_for_reset)
+                # Pass the current image size to avoid race conditions
+                img_size = image.size() if image is not None else None
+                self.reset_zoom_to_crop(raw_adjustments_for_reset, new_image_size=img_size)
             return
 
         self._current_image_source = image_source
@@ -202,7 +204,9 @@ class GLImageViewer(QOpenGLWidget):
             # exposes.  ``reset_view`` lets callers preserve the zoom when the
             # user toggles between detail and edit modes.
             # Use crop-aware reset if crop parameters exist in raw adjustments.
-            self.reset_zoom_to_crop(raw_adjustments_for_reset)
+            # Pass the new image size to avoid race conditions with texture upload.
+            img_size = image.size() if image is not None and not image.isNull() else None
+            self.reset_zoom_to_crop(raw_adjustments_for_reset, new_image_size=img_size)
             
     def set_placeholder(self, pixmap) -> None:
         """Display *pixmap* without changing the tracked image source."""
@@ -315,7 +319,12 @@ class GLImageViewer(QOpenGLWidget):
     def reset_zoom(self) -> None:
         self._transform_controller.reset_zoom()
 
-    def reset_zoom_to_crop(self, adjustments: Mapping[str, float] | None = None) -> None:
+    def reset_zoom_to_crop(
+        self,
+        adjustments: Mapping[str, float] | None = None,
+        *,
+        new_image_size: QSize | None = None,
+    ) -> None:
         """Reset zoom and pan to focus on the cropped region if crop parameters exist.
         
         Parameters
@@ -324,6 +333,10 @@ class GLImageViewer(QOpenGLWidget):
             Mapping containing adjustment values including crop parameters.
             If crop parameters indicate no actual crop or are missing, falls back
             to standard reset_zoom() behavior.
+        new_image_size:
+            Optional QSize of the new image being loaded. If provided, this size
+            will be used for calculations instead of the current GPU texture size.
+            This avoids race conditions when the image hasn't been uploaded yet.
         """
         if not adjustments:
             self.reset_zoom()
@@ -337,7 +350,7 @@ class GLImageViewer(QOpenGLWidget):
             "Crop_H": adjustments.get("Crop_H", 1.0),
         }
         
-        self._transform_controller.reset_zoom_to_rect(crop_params)
+        self._transform_controller.reset_zoom_to_rect(crop_params, new_image_size=new_image_size)
 
     def zoom_in(self) -> None:
         current = self._transform_controller.get_zoom_factor()

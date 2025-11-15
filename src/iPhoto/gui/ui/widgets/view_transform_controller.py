@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QPointF, QSize, Qt
 from PySide6.QtGui import QMouseEvent, QWheelEvent
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
@@ -181,7 +181,12 @@ class ViewTransformController:
         self._on_zoom_changed(self._zoom_factor)
         return changed
 
-    def reset_zoom_to_rect(self, crop_params: Mapping[str, float]) -> bool:
+    def reset_zoom_to_rect(
+        self,
+        crop_params: Mapping[str, float],
+        *,
+        new_image_size: QSize | None = None,
+    ) -> bool:
         """Reset zoom and pan to fit the specified crop rectangle to the viewport.
         
         Parameters
@@ -191,6 +196,11 @@ class ViewTransformController:
             All values are expected to be in [0.0, 1.0] range where:
             - Crop_CX, Crop_CY: normalized center coordinates
             - Crop_W, Crop_H: normalized width/height (1.0 = full dimension)
+        new_image_size:
+            Optional QSize of the new image being loaded. If provided, this size
+            will be used instead of querying the (potentially stale) GPU texture size.
+            This avoids race conditions when set_image is called but the texture
+            hasn't been uploaded to GPU yet.
             
         Returns
         -------
@@ -209,8 +219,13 @@ class ViewTransformController:
         if abs(crop_w - 1.0) < 1e-6 and abs(crop_h - 1.0) < 1e-6:
             return self.reset_zoom()
         
-        # Get full texture dimensions
-        tex_w, tex_h = self._texture_size_provider()
+        # Get full texture dimensions - prefer new_image_size if provided
+        if new_image_size is not None and not new_image_size.isEmpty():
+            tex_w = new_image_size.width()
+            tex_h = new_image_size.height()
+        else:
+            tex_w, tex_h = self._texture_size_provider()
+            
         if tex_w <= 0 or tex_h <= 0:
             return self.reset_zoom()
         
